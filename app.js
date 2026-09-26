@@ -8,7 +8,7 @@
   "use strict";
 
   // رقم الإصدار المعروض للمستخدم — يُحدَّث مع كل مراجعة
-  const APP_VERSION = "83";
+  const APP_VERSION = "84";
 
   /* ================== التخزين ================== */
   const LS_CUSTOMERS = "mizan_customers_v1";
@@ -25,6 +25,15 @@
   const LS_USERS = "mizan_users_v1";
   const LS_VOUCHERS = "mizan_vouchers_v1";
   const LS_SETTINGS = "mizan_settings_v1";
+  // كل مفاتيح البيانات المحلية (مشتركة بين كل الحسابات في نفس المتصفح)
+  const LS_ALL_KEYS = [
+    LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_ACTIVITY, LS_SALES, LS_TREASURY,
+    LS_SUPPLIERS, LS_SUP_TXS, LS_PURCHASES, LS_ACCOUNTS, LS_JOURNAL,
+    LS_USERS, LS_VOUCHERS, LS_SETTINGS
+  ];
+  // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
+  // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
+  const LS_SRC_ORG = "mizan_src_org";
 
   const TAX = { enabled: true, rate: 0.14 };
   function getTaxPercent() {
@@ -224,7 +233,7 @@
 
   /* ================== الأدوات الأونلاين ================== */
   const DB = window.MIZAN_STATE;
-  const A = { online: false, uid: null, adopting: false };
+  const A = { online: false, uid: null, adopting: false, cleaning: false };
   let planWatchTimer = null;
   let presenceTimer = null;
 
@@ -243,7 +252,7 @@
   }
 
   function pushTable(name) {
-    if (!A.online || A.adopting) return;
+    if (!A.online || A.adopting || A.cleaning) return;
     if (!window.CLOUD) return;
     mirror();
     window.CLOUD.push(name).catch((e) => console.warn("push", name, e.message));
@@ -4199,10 +4208,7 @@
       return;
     }
     if (!confirm("سيتم مسح جميع البيانات المحفوظة في المتصفح والعودة للبيانات التجريبية. هل أنت متأكد؟")) return;
-    [
-      LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_SALES, LS_PURCHASES, LS_TREASURY,
-      LS_SUPPLIERS, LS_SUP_TXS, LS_ACCOUNTS, LS_JOURNAL, LS_USERS, LS_VOUCHERS, LS_ACTIVITY, LS_SETTINGS
-    ].forEach((k) => localStorage.removeItem(k));
+    LS_ALL_KEYS.forEach((k) => localStorage.removeItem(k));
     loadData();
     toast("تم مسح البيانات والعودة للوضع التجريبي.", "success");
     showView("dashboard");
@@ -4688,6 +4694,8 @@
 
   /* ================== شاشات الدخول (النظام الأونلاين) ================== */
   function showLogin() {
+    // 🛡 تنظيف أي أثر للحساب السابق (الخروج لازم يمسح الهوية مش البيانات فقط)
+    resetSessionState();
     $("#loginScreen").hidden = false;
     $("#orgScreen").hidden = true;
     $("#memberScreen").hidden = true;
@@ -4867,6 +4875,39 @@ const pwEye = document.getElementById("btnShowPass");
   }
 
   /* ================== بعد الدخول ================== */
+  // 🛡 تنظيف حالة الجلسة: ما يفضلش أي أثر للحساب السابق في الذاكرة
+  // (بيانات الجداول نفسها تفضل في localStorage بس هتُفحص عند الدخول بـ guardOrgSwitch)
+  function resetSessionState() {
+    window.__isOwner = false;
+    csetData = null;
+    ssetData = null;
+    lastOrgMembers = null;
+    // خريطة معرّفات السحابة تخص الشركة السابقة → نفضيها
+    if (window.MIZAN_STATE) window.MIZAN_STATE.idMap = {};
+    // 🛡 نرجّع الجداول لحالة تجريبية نظيفة (مفيش بقايا بيانات شركة في الذاكرة)
+    // مع منع أي رفع للسحابة أثناء التنظيف
+    A.cleaning = true;
+    try { loadData(); } finally { A.cleaning = false; }
+    mirror();
+    // 🛡 نخفي شاشات البرنامج القديمة حتى لا تبقى خلف شاشة الدخول
+    document.querySelectorAll(".view").forEach((v) => { v.hidden = true; });
+  }
+
+  // 🛡 عزل الشركات: لو البيانات المحلية كتبها حساب من شركة أخرى
+  // (أو مافيش علامة أصل أصلاً) → نمسحها ونرجع لحالة جهاز جديد
+  function guardOrgSwitch() {
+    const org = DATA && DATA.org && DATA.org() ? DATA.org().id : null;
+    if (!org) return;
+    let src = null;
+    try { src = localStorage.getItem(LS_SRC_ORG); } catch (e) { }
+    if (src !== org) {
+      LS_ALL_KEYS.forEach((k) => { try { localStorage.removeItem(k); } catch (e) { } });
+      loadData(); // يعيد البيانات التجريبية زي أي جهاز جديد
+      toast("تم مسح بيانات الحساب السابق من هذا المتصفح", "ok");
+    }
+    try { localStorage.setItem(LS_SRC_ORG, org); } catch (e) { }
+  }
+
   function seedPushFromLocal() {
     // لو السحابة فاضية والتطبيق لسه فيه بيانات تجريبية محلية → نرفعها للشركة الجديدة
     const S = window.MIZAN_STATE;
@@ -4875,7 +4916,11 @@ const pwEye = document.getElementById("btnShowPass");
       ["treasury", treasury], ["accounts", accounts]
     ];
     checks.forEach(([name, arr]) => {
-      if (arr && arr.length && (!S[name] || !S[name].length)) pushTable(name);
+      if (!arr || !arr.length || (S[name] && S[name].length)) return;
+      // 🛡 مانرفعش بيانات تجريبية إلا بعد التأكد من أن الجدول فاضي فعلًا في القاعدة
+      // (السحاب ممكن يحتوي سطورًا أُنشئت من أداة أخرى بلا local_id والتطبيق ما يقرأهاش)
+      if (!DATA.countRows) { pushTable(name); return; }
+      DATA.countRows(name).then((n) => { if (!n) pushTable(name); }).catch(() => { });
     });
   }
 
@@ -4887,72 +4932,76 @@ const pwEye = document.getElementById("btnShowPass");
     if (!bypassMembers && isOrgAdmin(p0)) { showMembersScreen(); return; }
     A.online = true;
     A.adopting = true;
-    stage("جاري التحميل: فتح الاتصال بالسحابة...");
-    window.CLOUD.loadAll().then(() => {
-      adoptCloud();
-      A.adopting = false;
-      persistLocalFromCloud();
-      seedPushFromLocal();
-      $("#btnLogout").hidden = false;
-      // لا نُظهره هنا: يُتحكم فيه داخل proceedOnline
-      // (لصاحب الشركة والسوبر أدمن فقط، لا للموظفين العاديين)
-      $("#btnChangePw").hidden = true;
-      const p = DATA.getProfile();
-      setUserInfo("👤 " + (p && p.full_name ? p.full_name : DATA.email()) + " | " + (p && p.role ? p.role : ""));
-      setDbStatus("🟢 متصل بالسحابة");
-      stage("جاري التحميل: فتح لوحة البيانات...");
-      hideScreens();
-      DATA.requestAccess().then((acc) => {
-        // اسم الشركة من القاعدة → يظهر تلقائيًا في الفواتير والمطبوعات
-        if (acc && acc.org_name) settings.orgName = acc.org_name;
-        const org = DATA && DATA.org ? DATA.org() : null;
-        if (org) {
-          if (org.tax_enabled !== undefined && org.tax_enabled !== null) {
-            applyTaxSettings(org.tax_enabled, org.tax_rate);
-          }
-        }
-        saveSettings();
-        setSubInfo(acc);
-        startPlanWatch();
-        startPresence();
-        // هل المالك (سوبر أدمن)؟ → زرار الإدارة + شاشة إعدادات المالك
-        const isAdmin = !!(acc && acc.is_superadmin);
-        window.__isOwner = isAdmin;
-        $("#btnAdmin").hidden = !isAdmin;
-        $("#viewAdmin").hidden = !isAdmin;
-        $("#viewSettings").hidden = !isAdmin;
-        // 🔑 زر تغيير الرقم السري: لصاحب الشركة (admin) وللسوبر أدمن فقط.
-        enforceChangePwBtn();
-        // شاشة «إعدادات مؤسستك»: يُفتح فقط لو صاحب الشركة فعّلها لهذا الحساب
-        // (أو المالك العام / صاحب الشركة نفسه).
-        const csAllowed = canUseView("clientSettings");
-        $("#viewClientSettings").hidden = !csAllowed;
-        const svO = document.querySelector('.sidebar .nav-btn[data-view="settings"]');
-        const svC = document.querySelector('.sidebar .nav-btn[data-view="clientSettings"]');
-        // تبويب «إعدادات ونسخ احتياطي المالك» للمالك وحده.
-        // بنحذفه من الـ DOM تمامًا (مش hidden بس) عشان ما يظهرش لحد ولا ينكشف بالفحص.
-        // ولو محذوف وكان داخل المالك، بنرجّعه تاني (بعد تبديل الحساب مثلًا).
-        if (svO) {
-          if (isAdmin) {
-            svO.hidden = false;
-            if (!svO.parentNode) {
-              const sb = document.querySelector(".sidebar");
-              if (sb) sb.appendChild(svO);
+    // 🛡 عزل الشركات: مانبقاش ببيانات أي حساب سابق قبل ما نبدأ التحميل
+    guardOrgSwitch();
+    // 🛡 فحص الصلاحيات الأول: ما نحمّلش أي بيانات من السحابة قبل تأكيد حق الدخول
+    stage("جاري التحميل: فحص الصلاحيات...");
+    DATA.requestAccess().then((acc) => {
+      if (!(acc && acc.allowed)) { A.adopting = false; showDeny(acc); return; }
+      stage("جاري التحميل: فتح الاتصال بالسحابة...");
+      return window.CLOUD.loadAll().then(() => {
+        adoptCloud();
+        A.adopting = false;
+        persistLocalFromCloud();
+        seedPushFromLocal();
+        $("#btnLogout").hidden = false;
+        // لا نُظهره هنا: يُتحكم فيه داخل proceedOnline
+        // (لصاحب الشركة والسوبر أدمن فقط، لا للموظفين العاديين)
+        $("#btnChangePw").hidden = true;
+        const p = DATA.getProfile();
+        setUserInfo("👤 " + (p && p.full_name ? p.full_name : DATA.email()) + " | " + (p && p.role ? p.role : ""));
+        setDbStatus("🟢 متصل بالسحابة");
+        stage("جاري التحميل: فتح لوحة البيانات...");
+        hideScreens();
+        {
+          // اسم الشركة من القاعدة → يظهر تلقائيًا في الفواتير والمطبوعات
+          if (acc && acc.org_name) settings.orgName = acc.org_name;
+          const org = DATA && DATA.org ? DATA.org() : null;
+          if (org) {
+            if (org.tax_enabled !== undefined && org.tax_enabled !== null) {
+              applyTaxSettings(org.tax_enabled, org.tax_rate);
             }
-          } else if (svO.parentNode) {
-            svO.parentNode.removeChild(svO);
           }
-        }
-        // «إعدادات مؤسستك» تختفي تمامًا لو صاحب الشركة قفلها لهذا الحساب
-        if (svC) {
-          if (csAllowed) {
-            svC.hidden = false;
-          } else if (svC.parentNode) {
-            svC.parentNode.removeChild(svC);
+          saveSettings();
+          setSubInfo(acc);
+          startPlanWatch();
+          startPresence();
+          // هل المالك (سوبر أدمن)؟ → زرار الإدارة + شاشة إعدادات المالك
+          const isAdmin = !!(acc && acc.is_superadmin);
+          window.__isOwner = isAdmin;
+          $("#btnAdmin").hidden = !isAdmin;
+          $("#viewAdmin").hidden = !isAdmin;
+          $("#viewSettings").hidden = !isAdmin;
+          // 🔑 زر تغيير الرقم السري: لصاحب الشركة (admin) وللسوبر أدمن فقط.
+          enforceChangePwBtn();
+          // شاشة «إعدادات مؤسستك»: يُفتح فقط لو صاحب الشركة فعّلها لهذا الحساب
+          // (أو المالك العام / صاحب الشركة نفسه).
+          const csAllowed = canUseView("clientSettings");
+          $("#viewClientSettings").hidden = !csAllowed;
+          const svO = document.querySelector('.sidebar .nav-btn[data-view="settings"]');
+          const svC = document.querySelector('.sidebar .nav-btn[data-view="clientSettings"]');
+          // تبويب «إعدادات ونسخ احتياطي المالك» للمالك وحده.
+          // بنحذفه من الـ DOM تمامًا (مش hidden بس) عشان ما يظهرش لحد ولا ينكشف بالفحص.
+          // ولو محذوف وكان داخل المالك، بنرجّعه تاني (بعد تبديل الحساب مثلًا).
+          if (svO) {
+            if (isAdmin) {
+              svO.hidden = false;
+              if (!svO.parentNode) {
+                const sb = document.querySelector(".sidebar");
+                if (sb) sb.appendChild(svO);
+              }
+            } else if (svO.parentNode) {
+              svO.parentNode.removeChild(svO);
+            }
           }
-        }
-        // هل يسمح له الوقت/القفل/العضوية؟
-        if (acc && acc.allowed) {
+          // «إعدادات مؤسستك» تختفي تمامًا لو صاحب الشركة قفلها لهذا الحساب
+          if (svC) {
+            if (csAllowed) {
+              svC.hidden = false;
+            } else if (svC.parentNode) {
+              svC.parentNode.removeChild(svC);
+            }
+          }
           ensureSettData().finally(() => {
             initApp();
             enforceChangePwBtn();
@@ -4960,17 +5009,20 @@ const pwEye = document.getElementById("btnShowPass");
             // أعد ملء قوائم الضبط بعد التحميل حتى تتوفر الوحدات/التصنيفات/المستودعات فورًا
             try {
               if (!document.getElementById("viewClientSettings").hidden || !document.getElementById("viewSettings").hidden) renderAllSettPanes("c");
-            } catch (e) {}
+            } catch (e) { }
           });
-        } else {
-          showDeny(acc);
         }
-      }).catch(() => initApp());
-    }).catch((e) => {
+      }).catch((e) => {
+        // الصلاحيات مؤكدة لكن تحميل البيانات فشل (مشكلة اتصال) → نفتح ببيانات محلية
+        A.adopting = false;
+        setDbStatus("🟠 مشكلة اتصال");
+        toast("تعذّر تحميل بيانات السحابة: " + e.message, "error");
+        initApp();
+      });
+    }).catch(() => {
+      // 🛡 إغلاق الفتحة القديمة (fail-open): فشل فحص الصلاحيات = مانفتحش البرنامج
       A.adopting = false;
-      setDbStatus("🟠 مشكلة اتصال");
-      toast("تعذّر تحميل بيانات السحابة: " + e.message, "error");
-      initApp();
+      showDeny(null);
     });
   }
 

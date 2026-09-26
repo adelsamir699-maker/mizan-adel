@@ -191,7 +191,10 @@
 
   function logout() {
     return (sb ? sb.auth.signOut() : Promise.resolve()).then(function () {
+      // 🛡 تنظيف هوية الحساب بالكامل: ما يفضلش بقايا صلاحيات/باسورد
+      // من حساب سابق تُستخدم لو دخل حساب تاني في نفس المتصفح
       profile = null; orgRow = null;
+      access = null; lastCreds = null; lastEmail = "";
     });
   }
 
@@ -225,6 +228,14 @@
       var out = {};
       pairs.forEach(function (p) { out[p[0]] = p[1]; });
       return out;
+    });
+  }
+
+  // عدد السطور الفعلية في الجدول (من غير قراءتها) — للتحقق قبل رفع بيانات تجريبية
+  function countRows(t) {
+    return sb.from(t).select("*", { count: "exact", head: true }).then(function (r) {
+      if (r.error) throw r.error;
+      return r.count || 0;
     });
   }
 
@@ -666,6 +677,7 @@ function changeMyPassword(oldPass, newPass) {
     logout: logout,
     loadEager: loadEager,
     loadEagerAll: loadEagerAll,
+    countRows: countRows,
     eagerCache: eagerCache,
     loadLazy: loadLazy,
     saveRow: saveRow,
