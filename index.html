@@ -4,8 +4,31 @@
   <meta charset="UTF-8" />
   <meta name="autocomplete" content="off" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>mizan web - برنامج ميزان للمحاسبة وإدارة الأعمال - By Adel Samir - واتس: 01002655282</title>
-  <link rel="stylesheet" href="styles.css" />
+  <script>
+    // المصدر الوحيد للنسخة: عدّل هنا بس
+    window.MIZAN_VERSION = "83"; // نسخة المنتج (اللي يشوفه العميل)
+    window.MIZAN_BUILD = 83;       // عدّاد البناء والكاش (للتطوير فقط)
+
+    (function () {
+      var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
+      if (m.length && m[0].type === "back_forward") { location.reload(); return; }
+      window.addEventListener("pageshow", function (e) { if (e.persisted) location.reload(); });
+    })();
+
+    // ختم النسخة في كل المواضع من المصدر الواحد
+    window.addEventListener("DOMContentLoaded", function () {
+      var f = document.getElementById("ftrVer");
+      if (f) f.textContent = window.MIZAN_VERSION;
+      var l = document.getElementById("loginVer");
+      if (l) l.textContent = window.MIZAN_VERSION;
+      console.info("mizan " + window.MIZAN_VERSION + " (build " + window.MIZAN_BUILD + ")");
+    });
+  </script>
+  <link rel="stylesheet" href="styles.css?v=83" />
 </head>
 <body>
 
@@ -15,10 +38,14 @@
       <span class="app-title">⚖️ mizan web - برنامج ميزان للمحاسبة وإدارة الأعمال</span>
       <span class="app-sub">By Adel Samir - واتس: 01002655282</span>
     </div>
-    <div class="header-left">
-      <span class="db-status">🟢 متصل</span>
+<div class="header-left">
+      <span class="db-status" id="dbStatus">🟢 متصل</span>
       <span id="clock"></span>
-      <span>👤 المستخدم: مدير النظام | الصلاحية: مدير | الفرع الرئيسي</span>
+      <span id="userInfo">👤 المستخدم: مدير النظام | الصلاحية: مدير | الفرع الرئيسي</span>
+      <span class="db-status" id="subInfo" hidden></span>
+      <button id="btnAdmin" class="btn small blue" type="button" hidden>🛠️ لوحة الإدارة</button>
+      <button id="btnChangePw" class="btn small orange" type="button" hidden>🔑 تغيير كلمة مرورك</button>
+      <button id="btnLogout" class="btn small red" type="button" hidden>الخروج ↩</button>
     </div>
   </header>
 
@@ -40,7 +67,9 @@
       <button class="nav-btn" data-view="reports">📈  تقارير المبيعات والمشتريات</button>
       <button class="nav-btn" data-view="users">👤  المستخدمون والصلاحيات</button>
       <button class="nav-btn" data-view="audit">📋  سجل العمليات</button>
-      <button class="nav-btn" data-view="settings">⚙️  الإعدادات والنسخ الاحتياطي</button>
+      <button class="nav-btn" data-view="clientSettings" hidden>⚙️ إعدادات مؤسستك</button>
+      <!-- آخر تبويب — للمالك (سوبر أدمن) فقط. يظهر له وحده. -->
+      <button class="nav-btn" data-view="settings" hidden>🛡️ إعدادات ونسخ احتياطي المالك</button>
     </aside>
 
     <!-- ===== منطقة العرض ===== -->
@@ -125,9 +154,9 @@
 
         <div class="pos-fields">
           <div class="pos-row">
-            <div class="fld"><label>رقم الفاتورة:</label><input id="txtInvoiceNo" class="ro" readonly /></div>
-            <div class="fld"><label>التاريخ:</label><input id="dtpDate" type="date" /></div>
-            <div class="fld grow"><label>العميل:</label><select id="cmbPosCustomer"></select></div>
+            <div class="fld" hidden><label>رقم الفاتورة:</label><input id="txtInvoiceNo" class="ro" readonly /></div>
+            <div class="fld" hidden><label>التاريخ:</label><input id="dtpDate" type="date" /></div>
+            <div class="fld fld-cust"><label>العميل:</label><select id="cmbPosCustomer"></select></div>
             <div class="fld"><label>الدفع:</label>
               <select id="cmbPaymentMethod">
                 <option>نقداً</option><option>آجل</option><option>تحويل بنكي</option><option>محافظ إلكترونية</option>
@@ -139,20 +168,18 @@
           </div>
 
           <div class="pos-row">
-            <div class="fld grow"><label class="lbl-accent">🔍 اكتب اسم الصنف أو الكود ثم Enter:</label>
+            <div class="fld fld-code"><label>كود الصنف:</label><input id="txtPosCode" autocomplete="off" /></div>
+            <div class="fld grow">
+              <div class="fld-card">
+                <label class="lbl-accent">🔍 اسم الصنف ثم Enter:</label>
+                <div class="stock-hint" id="posStockHint">📦 رصيد: -</div>
+              </div>
               <input id="txtPosSearch" autocomplete="off" list="posProductsList" />
               <datalist id="posProductsList"></datalist>
             </div>
-            <div class="fld grow2"><label>📋 أو اختر من قائمة أصناف المخزن:</label><select id="cmbPosPicker"></select></div>
-            <div class="fld"><label>الكمية:</label><input id="numPosQty" type="text" value="1" /></div>
-            <div class="fld"><label>سعر البيع:</label><input id="txtPosPrice" type="text" /></div>
+            <div class="fld fld-qty"><label>الكمية:</label><input id="numPosQty" type="text" value="1" /></div>
+            <div class="fld fld-price"><label>سعر البيع:</label><input id="txtPosPrice" type="text" readonly /></div>
             <div class="fld fld-btn"><button id="btnPosAdd" class="btn sky" type="button">إضافة ➕</button></div>
-            <div class="stock-badge" id="posStockBadge">
-              <div class="sb-title">📦 رصيد الصنف</div>
-              <div class="sb-line" id="sbName">—</div>
-              <div class="sb-line" id="sbQty">الرصيد: -</div>
-              <div class="sb-line" id="sbPrice">سعر البيع: -</div>
-            </div>
           </div>
         </div>
 
@@ -164,10 +191,10 @@
                 <th style="width:24%">اسم الصنف والمنتج</th>
                 <th style="width:6%">الوحدة</th>
                 <th style="width:8%">الكمية</th>
-                <th style="width:11%">السعر (قبل الضريبة)</th>
+                <th style="width:11%" id="thPosPrice">السعر (قبل الضريبة)</th>
                 <th style="width:8%">الخصم</th>
-                <th style="width:11%">الضريبة (14%)</th>
-                <th style="width:14%">الإجمالي شامل الضريبة</th>
+                <th style="width:11%" id="thPosTax" class="c-tax">الضريبة (14%)</th>
+                <th style="width:14%" id="thPosTotal">الإجمالي شامل الضريبة</th>
                 <th style="width:6%">حذف</th>
               </tr>
             </thead>
@@ -203,9 +230,9 @@
 
         <div class="pos-fields">
           <div class="pos-row">
-            <div class="fld"><label>رقم الفاتورة:</label><input id="txtPInvNo" class="ro" readonly /></div>
-            <div class="fld"><label>التاريخ:</label><input id="dtpPDate" type="date" /></div>
-            <div class="fld grow"><label>المورد:</label><select id="cmbPosSupplier"></select></div>
+            <div class="fld" hidden><label>رقم الفاتورة:</label><input id="txtPInvNo" class="ro" readonly /></div>
+            <div class="fld" hidden><label>التاريخ:</label><input id="dtpPDate" type="date" /></div>
+            <div class="fld fld-cust"><label>المورد:</label><select id="cmbPosSupplier"></select></div>
             <div class="fld"><label>الدفع:</label>
               <select id="cmbPPaymentMethod">
                 <option>نقداً</option><option>آجل</option><option>تحويل بنكي</option><option>محافظ إلكترونية</option>
@@ -217,20 +244,18 @@
           </div>
 
           <div class="pos-row">
-            <div class="fld grow"><label class="lbl-accent">🔍 اكتب اسم الصنف أو الكود ثم Enter:</label>
+            <div class="fld fld-code"><label>كود الصنف:</label><input id="txtPPCode" autocomplete="off" /></div>
+            <div class="fld grow">
+              <div class="fld-card">
+                <label class="lbl-accent">🔍 اسم الصنف ثم Enter:</label>
+                <div class="stock-hint" id="ppStockHint">📦 رصيد: -</div>
+              </div>
               <input id="txtPPSearch" autocomplete="off" list="ppProductsList" />
               <datalist id="ppProductsList"></datalist>
             </div>
-            <div class="fld grow2"><label>📋 أو اختر من قائمة أصناف المخزن:</label><select id="cmbPPPicker"></select></div>
-            <div class="fld"><label>الكمية:</label><input id="numPPQty" type="text" value="1" /></div>
-            <div class="fld"><label>سعر الشراء:</label><input id="txtPPPrice" type="text" /></div>
+            <div class="fld fld-qty"><label>الكمية:</label><input id="numPPQty" type="text" value="1" /></div>
+            <div class="fld fld-price"><label>سعر الشراء:</label><input id="txtPPPrice" type="text" /></div>
             <div class="fld fld-btn"><button id="btnPPAdd" class="btn sky" type="button">إضافة ➕</button></div>
-            <div class="stock-badge" id="pStockBadge">
-              <div class="sb-title">📦 رصيد الصنف</div>
-              <div class="sb-line" id="sbPName">—</div>
-              <div class="sb-line" id="sbPQty">الرصيد: -</div>
-              <div class="sb-line" id="sbPPrice">سعر الشراء: -</div>
-            </div>
           </div>
         </div>
 
@@ -242,10 +267,10 @@
                 <th style="width:24%">اسم الصنف والمنتج</th>
                 <th style="width:6%">الوحدة</th>
                 <th style="width:8%">الكمية</th>
-                <th style="width:11%">السعر (قبل الضريبة)</th>
+                <th style="width:11%" id="thPPPrice">السعر (قبل الضريبة)</th>
                 <th style="width:8%">الخصم</th>
-                <th style="width:11%">الضريبة (14%)</th>
-                <th style="width:14%">الإجمالي شامل الضريبة</th>
+                <th style="width:11%" id="thPPTax" class="c-tax">الضريبة (14%)</th>
+                <th style="width:14%" id="thPPTotal">الإجمالي شامل الضريبة</th>
                 <th style="width:6%">حذف</th>
               </tr>
             </thead>
@@ -315,6 +340,7 @@
           <div class="view-actions">
             <button id="btnAddProduct" class="btn green" type="button">➕ إضافة صنف جديد للمخزن</button>
             <button id="btnStockTake" class="btn orange" type="button">📋 جرد المخزون لكل مستودع</button>
+            <button id="btnTransferStock" class="btn blue" type="button">🔃 نقل أصناف بين المخازن</button>
           </div>
           <h1 class="view-title">🏷️ دليل الأصناف وإدارة المخزون والتكاليف</h1>
         </div>
@@ -709,32 +735,20 @@
 
         <div class="view-header">
           <div class="view-actions">
-            <button id="btnAddUser" class="btn blue" type="button">➕ إضافة مستخدم</button>
+            <button id="btnAddUser" class="btn blue" type="button">➕ إنشاء حساب جديد</button>
           </div>
-          <h1 class="view-title">👤 المستخدمون والصلاحيات (إعداد المدير فقط)</h1>
+          <h1 class="view-title">👤 المستخدمون والصلاحيات</h1>
         </div>
+
+        <p class="login-sub" id="usersOrgInfo">حسابات شركتك كما أنشأتها من شاشة «تسجيل دخول شركة».</p>
 
         <div class="search-bar">
           <label class="filter-label" for="txtUserSearch">🔍 بحث في المستخدمين:</label>
           <input type="text" id="txtUserSearch" class="search-input" autocomplete="new-search" />
         </div>
 
-        <div class="table-wrap">
-          <table id="dgvUsers" class="dgv">
-            <thead>
-              <tr>
-                <th hidden>المعرف</th>
-                <th style="width:14%">اسم المستخدم</th>
-                <th style="width:22%">الاسم الكامل</th>
-                <th style="width:16%">الصلاحية (الدور)</th>
-                <th style="width:12%">الفرع</th>
-                <th style="width:12%">الحالة</th>
-                <th style="width:14%">آخر ظهور</th>
-                <th style="width:10%">تعديل</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+        <div class="tbl-wrap" id="usersListWrap" style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:4px">
+          <p class="login-sub">جارٍ التحميل...</p>
         </div>
 
       </section>
@@ -767,77 +781,408 @@
 
       </section>
 
-      <!-- ===== شاشة الإعدادات والنسخ الاحتياطي ===== -->
+      <!-- ===== شاشة إعدادات ونسخ احتياطي المالك (عادل) ===== -->
       <section class="view view-settings" id="viewSettings" data-id="settings" hidden>
 
         <div class="view-header">
           <div class="view-actions">
-            <button id="btnSaveSettings" class="btn blue" type="button">💾 حفظ الإعدادات</button>
+            <button id="btnSaveSettings" class="btn blue" type="button">💾 حفظ جميع تبويبات الشركة</button>
+            <button id="btnBackupAll" class="btn green" type="button">💾 نسخة شاملة على جهازي (كل العملاء)</button>
           </div>
-          <h1 class="view-title">⚙️ الإعدادات والنسخ الاحتياطي (نسخة الويب أونلاين)</h1>
+          <h1 class="view-title">🛡️ إعدادات ونسخ احتياطي المالك (عادل)</h1>
         </div>
+        <p class="login-sub">بصفتك المالك: اختر أي شركة سجلت على النظام لتعرض وتعدّل جميع تبويبات إعداداتها، أو اعمل نسخة شاملة لكل بيانات العملاء على جهازك.</p>
 
-        <div class="sett-box">
-          <div class="panel-title">🏢 بيانات الشركة والمؤسسة</div>
+        <div class="sett-box" style="margin-top:14px">
+          <div class="panel-title">🏢 اختر الشركة التي تريد إدارتها</div>
           <div class="form-grid">
-            <label for="setOrgName">اسم المؤسسة:</label>
-            <input type="text" id="setOrgName" autocomplete="off" />
-            <label for="setOrgPhone">رقم الهاتف:</label>
-            <input type="text" id="setOrgPhone" autocomplete="off" />
-            <label for="setOrgAddress">العنوان:</label>
-            <input type="text" id="setOrgAddress" autocomplete="off" />
-            <label for="setOrgVat">الرقم الضريبي (VAT):</label>
-            <input type="text" id="setOrgVat" autocomplete="off" />
-            <label for="setOrgNote">سطر مطبوع أسفل الفواتير:</label>
-            <input type="text" id="setOrgNote" autocomplete="off" />
+            <label for="setOrgPicker">الشركة:</label>
+            <select id="setOrgPicker" style="min-height:34px"></select>
           </div>
         </div>
 
-        <div class="sett-box">
-          <div class="panel-title">🧾 الضريبة</div>
-          <div class="form-grid">
-            <label for="setTaxEnabled">تطبيق ضريبة المبيعات:</label>
-            <select id="setTaxEnabled"><option value="1">نشطة 🟢</option><option value="0">معطلة 🔴</option></select>
-            <label for="setTaxRate">نسبة الضريبة (%):</label>
-            <input type="text" id="setTaxRate" autocomplete="off" />
+        <div class="tabs" id="setTabs">
+          <button class="tab-btn active" data-tab="sorg">🏢 بيانات المنشأة</button>
+          <button class="tab-btn" data-tab="stax">🧾 الضريبة والفواتير</button>
+          <button class="tab-btn" data-tab="scat">🏷️ التصنيفات</button>
+          <button class="tab-btn" data-tab="sunit">📏 وحدات القياس</button>
+          <button class="tab-btn" data-tab="swh">🏬 المستودعات</button>
+          <button class="tab-btn" data-tab="swal">📱 المحافظ الإلكترونية</button>
+          <button class="tab-btn" data-tab="sbnk">🏦 حسابات البنوك</button>
+          <button class="tab-btn" data-tab="sown">👥 أصحاب المنشأة</button>
+          <button class="tab-btn" data-tab="sbak">💾 النسخ الاحتياطي</button>
+        </div>
+
+        <div class="sett-pane" data-pane="sorg">
+          <div class="sett-box">
+            <div class="panel-title">🏢 بيانات المنشأة</div>
+            <div class="form-grid">
+              <label for="setOrgName">اسم المنشأة:</label>
+              <input type="text" id="setOrgName" autocomplete="off" />
+              <label for="setOrgPhone">رقم الهاتف:</label>
+              <input type="text" id="setOrgPhone" autocomplete="off" />
+              <label for="setOrgAddress">العنوان:</label>
+              <input type="text" id="setOrgAddress" autocomplete="off" />
+              <label for="setOrgVat">الرقم الضريبي (VAT):</label>
+              <input type="text" id="setOrgVat" autocomplete="off" />
+              <label for="setOrgNote">سطر مطبوع أسفل الفواتير:</label>
+              <input type="text" id="setOrgNote" autocomplete="off" />
+            </div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-ssave="org">💾 حفظ بيانات المنشأة</button>
+            </div>
           </div>
         </div>
 
-        <div class="sett-box">
-          <div class="panel-title">🌐 خصائص النسخة الأونلاين (الاشتراك)</div>
-          <div class="form-grid">
-            <label for="setPlan">باقة الاشتراك:</label>
-            <select id="setPlan">
-              <option>فردي (مستخدم واحد)</option>
-              <option>فريق (حتى 5 مستخدمين)</option>
-              <option>شركة (غير محدود)</option>
-            </select>
-            <label for="setPlanEnd">نهاية الاشتراك:</label>
-            <input type="date" id="setPlanEnd" autocomplete="off" />
-            <label for="setPlanStatus">حالة الاشتراك:</label>
-            <select id="setPlanStatus"><option>نشط 🟢</option><option>منتهي 🔴</option><option>تجربة 🧪</option></select>
-            <label for="setPublishUrl">رابط النشر الحالي:</label>
-            <input type="text" id="setPublishUrl" class="ro" readonly />
-            <label for="setAdminOnly">🧑‍💼 (خاص بالمدير) إدارة المستخدمين والصلاحيات:</label>
-            <span class="stk-hint">تظهر هذه الشاشة كاملة للمدير فقط ولا تظهر لعملاء الاشتراك (كل مؤسسة ترى بياناتها وصلاحياتها فقط).</span>
+        <div class="sett-pane" data-pane="stax" hidden>
+          <div class="sett-box">
+            <div class="panel-title">🧾 الضريبة وبيانات الفاتورة</div>
+            <div class="form-grid">
+              <label for="setTaxEnabled">تطبيق ضريبة المبيعات:</label>
+              <select id="setTaxEnabled"><option value="1">نشطة 🟢</option><option value="0">معطلة 🔴</option></select>
+              <label for="setTaxRate">نسبة الضريبة (%):</label>
+              <input type="text" id="setTaxRate" autocomplete="off" />
+              <label for="setTaxTitle">عنوان عمود الضريبة في الفاتورة:</label>
+              <input type="text" id="setTaxTitle" autocomplete="off" placeholder="مثال: ضريبة المبيعات" />
+              <label for="setPaper">حجم ورق طباعة الفواتير:</label>
+              <select id="setPaper">
+                <option value="A4">A4</option>
+                <option value="A5">A5</option>
+                <option value="thermal">حرارية 80mm</option>
+              </select>
+              <label for="setWarranty">شروط الفاتورة والضمان:</label>
+              <input type="text" id="setWarranty" autocomplete="off" />
+            </div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-ssave="tax">💾 حفظ الضريبة والفواتير</button>
+            </div>
           </div>
         </div>
 
-        <div class="sett-box">
-          <div class="panel-title">💾 النسخ الاحتياطي والاستعادة</div>
-          <div class="sett-btns">
-            <button id="btnBackup" class="btn green" type="button">📤 تصدير/نسخة احتياطية (JSON)</button>
-            <button id="btnRestore" class="btn orange" type="button">📥 استعادة/استيراد نسخة</button>
-            <button id="btnResetData" class="btn red" type="button">🗑️ مسح جميع البيانات التجريبية</button>
+        <div class="sett-pane" data-pane="scat" hidden>
+          <div class="sett-box">
+            <div class="panel-title">🏷️ تصنيفات المنتجات والأصناف</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-sadd="cat">➕ إضافة تصنيف</button>
+              <button class="btn blue" type="button" data-sedit="cat">✏️ تعديل</button>
+              <button class="btn red" type="button" data-sdel="cat">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-sref="cat">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-ssave="cat">💾 حفظ التصنيفات</button>
+            </div>
+            <div class="tbl-wrap" id="sGridCat"></div>
           </div>
-          <input type="file" id="fileRestore" accept=".json,application/json" hidden />
+        </div>
+
+        <div class="sett-pane" data-pane="sunit" hidden>
+          <div class="sett-box">
+            <div class="panel-title">📏 وحدات القياس</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-sadd="unit">➕ إضافة وحدة</button>
+              <button class="btn blue" type="button" data-sedit="unit">✏️ تعديل</button>
+              <button class="btn red" type="button" data-sdel="unit">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-sref="unit">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-ssave="unit">💾 حفظ الوحدات</button>
+            </div>
+            <div class="tbl-wrap" id="sGridUnit"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="swh" hidden>
+          <div class="sett-box">
+            <div class="panel-title">🏬 المستودعات</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-sadd="wh">➕ إضافة مستودع</button>
+              <button class="btn blue" type="button" data-sedit="wh">✏️ تعديل</button>
+              <button class="btn red" type="button" data-sdel="wh">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-sref="wh">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-ssave="wh">💾 حفظ المستودعات</button>
+            </div>
+            <div class="tbl-wrap" id="sGridWh"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="swal" hidden>
+          <div class="sett-box">
+            <div class="panel-title">📱 المحافظ الإلكترونية</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-sadd="wallet">➕ إضافة محفظة</button>
+              <button class="btn blue" type="button" data-sedit="wallet">✏️ تعديل</button>
+              <button class="btn red" type="button" data-sdel="wallet">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-sref="wallet">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-ssave="wallet">💾 حفظ المحافظ</button>
+            </div>
+            <div class="tbl-wrap" id="sGridWallet"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="sbnk" hidden>
+          <div class="sett-box">
+            <div class="panel-title">🏦 حسابات البنوك</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-sadd="bank">➕ إضافة بنك</button>
+              <button class="btn blue" type="button" data-sedit="bank">✏️ تعديل</button>
+              <button class="btn red" type="button" data-sdel="bank">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-sref="bank">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-ssave="bank">💾 حفظ البنوك</button>
+            </div>
+            <div class="tbl-wrap" id="sGridBank"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="sown" hidden>
+          <div class="sett-box">
+            <div class="panel-title">👥 أصحاب المنشأة والشركاء</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-sadd="owner">➕ إضافة مالك</button>
+              <button class="btn blue" type="button" data-sedit="owner">✏️ تعديل</button>
+              <button class="btn red" type="button" data-sdel="owner">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-sref="owner">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-ssave="owner">💾 حفظ الأصحاب</button>
+            </div>
+            <div class="tbl-wrap" id="sGridOwner"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="sbak" hidden>
+          <div class="sett-box">
+            <div class="panel-title">🛡️ النسخ الاحتياطي الشامل (كل بيانات العملاء)</div>
+
+            <div class="form-grid" style="grid-template-columns:240px 1fr; margin:10px 0 4px">
+              <label>اختر الشركة التي تريد نسخها:</label>
+              <select id="setBackupScope" style="min-height:34px"></select>
+            </div>
+            <button id="btnBackupAll2" class="btn green" type="button">💾 حفظ نسخة احتياطية على جهازي</button>
+
+            <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)" />
+
+            <div class="form-grid" style="grid-template-columns:240px 1fr; margin:10px 0 4px">
+              <label>الشركة التي تريد استعادة نسختها:</label>
+              <select id="setRestoreScope" style="min-height:34px"></select>
+            </div>
+            <div class="sett-btns">
+              <button id="btnRestore" class="btn orange" type="button">📥 استعادة/استيراد نسخة</button>
+            </div>
+            <p class="stk-hint">اختر أولًا من القائمة: «الكل (كل العملاء)» أو شركة بعينها. النسخة الشاملة بتضم كل الشركات: العملاء والموردين والأصناف والفواتير والخزائن والحسابات والقيود والتصنيفات والوحدات والمستودعات وأصحاب المنشأة. بتختار أنت مكان الحفظ على جهازك. <b>الاستعادة لك أنت المالك فقط، دون طلب كلمة مرور — بصلاحية الإدارة الكاملة.</b></p>
+            <input type="file" id="fileRestore" accept=".json,application/json" hidden />
+          </div>
         </div>
 
       </section>
 
+      <!-- ===== شاشة إعدادات العميل (تظهر للشركات المشتركة فقط) ===== -->
+      <section class="view view-settings" id="viewClientSettings" data-id="clientSettings" hidden>
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnSaveClientSettings" class="btn blue" type="button">💾 حفظ جميع تبويبات المؤسسة</button>
+          </div>
+          <h1 class="view-title">⚙️ إعدادات مؤسستك</h1>
+        </div>
+        <p class="login-sub">تبويبات الإعدادات مطابقة لنظام ميزان ديسك توب. كل تبويب يخص شركتك وحدك، وتحدد مزاياها شركة المشغل.</p>
+
+        <div class="tabs" id="csettTabs">
+          <button class="tab-btn active" data-tab="corg">🏢 بيانات المنشأة</button>
+          <button class="tab-btn" data-tab="ctax">🧾 الضريبة والفواتير</button>
+          <button class="tab-btn" data-tab="ccat">🏷️ التصنيفات</button>
+          <button class="tab-btn" data-tab="cunit">📏 وحدات القياس</button>
+          <button class="tab-btn" data-tab="cwh">🏬 المستودعات</button>
+          <button class="tab-btn" data-tab="cwal">📱 المحافظ الإلكترونية</button>
+          <button class="tab-btn" data-tab="cbnk">🏦 حسابات البنوك</button>
+          <button class="tab-btn" data-tab="cown">👥 أصحاب المنشأة</button>
+          <button class="tab-btn" data-tab="cbak">💾 النسخ الاحتياطي</button>
+        </div>
+
+        <div class="sett-pane" data-pane="corg">
+          <div class="sett-box">
+            <div class="panel-title">🏢 بيانات المنشأة</div>
+            <div class="form-grid">
+              <label for="csetOrgName">اسم المنشأة:</label>
+              <input type="text" id="csetOrgName" autocomplete="off" />
+              <label for="csetOrgPhone">رقم الهاتف:</label>
+              <input type="text" id="csetOrgPhone" autocomplete="off" />
+              <label for="csetOrgAddress">العنوان:</label>
+              <input type="text" id="csetOrgAddress" autocomplete="off" />
+              <label for="csetOrgVat">الرقم الضريبي (VAT):</label>
+              <input type="text" id="csetOrgVat" autocomplete="off" />
+              <label for="csetOrgNote">سطر مطبوع أسفل الفواتير:</label>
+              <input type="text" id="csetOrgNote" autocomplete="off" />
+            </div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-csave="org">💾 حفظ بيانات المنشأة</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="ctax" hidden>
+          <div class="sett-box">
+            <div class="panel-title">🧾 الضريبة وبيانات الفاتورة</div>
+            <div class="form-grid">
+              <label for="csetTaxEnabled">تطبيق ضريبة المبيعات:</label>
+              <select id="csetTaxEnabled"><option value="1">نشطة 🟢</option><option value="0">معطلة 🔴</option></select>
+              <label for="csetTaxRate">نسبة الضريبة (%):</label>
+              <input type="text" id="csetTaxRate" autocomplete="off" />
+              <label for="csetTaxTitle">عنوان عمود الضريبة في الفاتورة:</label>
+              <input type="text" id="csetTaxTitle" autocomplete="off" placeholder="مثال: ضريبة المبيعات" />
+              <label for="csetPaper">حجم ورق طباعة الفواتير:</label>
+              <select id="csetPaper">
+                <option value="A4">A4</option>
+                <option value="A5">A5</option>
+                <option value="thermal">حرارية 80mm</option>
+              </select>
+              <label for="csetWarranty">شروط الفاتورة والضمان:</label>
+              <input type="text" id="csetWarranty" autocomplete="off" />
+            </div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-csave="tax">💾 حفظ الضريبة والفواتير</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="ccat" hidden data-feat="catTab" data-feat-label="الميزة غير مفعلة في اشتراكك — تواصل مع المالك لتفعيل تبويب التصنيفات">
+          <div class="sett-box">
+            <div class="panel-title">🏷️ تصنيفات المنتجات والأصناف</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-cadd="cat">➕ إضافة تصنيف</button>
+              <button class="btn blue" type="button" data-cedit="cat">✏️ تعديل</button>
+              <button class="btn red" type="button" data-cdel="cat">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-cref="cat">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-csave="cat">💾 حفظ التصنيفات</button>
+            </div>
+            <div class="tbl-wrap" id="cGridCat"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="cunit" hidden data-feat="unitTab" data-feat-label="الميزة غير مفعلة في اشتراكك — تواصل مع المالك لتفعيل تبويب وحدات القياس">
+          <div class="sett-box">
+            <div class="panel-title">📏 وحدات القياس</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-cadd="unit">➕ إضافة وحدة</button>
+              <button class="btn blue" type="button" data-cedit="unit">✏️ تعديل</button>
+              <button class="btn red" type="button" data-cdel="unit">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-cref="unit">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-csave="unit">💾 حفظ الوحدات</button>
+            </div>
+            <div class="tbl-wrap" id="cGridUnit"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="cwh" hidden data-feat="whTab" data-feat-label="الميزة غير مفعلة في اشتراكك — تواصل مع المالك لتفعيل تبويب المستودعات">
+          <div class="sett-box">
+            <div class="panel-title">🏬 المستودعات</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-cadd="wh">➕ إضافة مستودع</button>
+              <button class="btn blue" type="button" data-cedit="wh">✏️ تعديل</button>
+              <button class="btn red" type="button" data-cdel="wh">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-cref="wh">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-csave="wh">💾 حفظ المستودعات</button>
+            </div>
+            <div class="tbl-wrap" id="cGridWh"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="cwal" hidden data-feat="walletTab" data-feat-label="الميزة غير مفعلة في اشتراكك — تواصل مع المالك لتفعيل تبويب المحافظ الإلكترونية">
+          <div class="sett-box">
+            <div class="panel-title">📱 المحافظ الإلكترونية</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-cadd="wallet">➕ إضافة محفظة</button>
+              <button class="btn blue" type="button" data-cedit="wallet">✏️ تعديل</button>
+              <button class="btn red" type="button" data-cdel="wallet">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-cref="wallet">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-csave="wallet">💾 حفظ المحافظ</button>
+            </div>
+            <div class="tbl-wrap" id="cGridWallet"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="cbnk" hidden data-feat="bankTab" data-feat-label="الميزة غير مفعلة في اشتراكك — تواصل مع المالك لتفعيل تبويب حسابات البنوك">
+          <div class="sett-box">
+            <div class="panel-title">🏦 حسابات البنوك</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-cadd="bank">➕ إضافة بنك</button>
+              <button class="btn blue" type="button" data-cedit="bank">✏️ تعديل</button>
+              <button class="btn red" type="button" data-cdel="bank">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-cref="bank">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-csave="bank">💾 حفظ البنوك</button>
+            </div>
+            <div class="tbl-wrap" id="cGridBank"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="cown" hidden data-feat="ownerTab" data-feat-label="الميزة غير مفعلة في اشتراكك — تواصل مع المالك لتفعيل تبويب أصحاب المنشأة">
+          <div class="sett-box">
+            <div class="panel-title">👥 أصحاب المنشأة والشركاء</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-cadd="owner">➕ إضافة مالك</button>
+              <button class="btn blue" type="button" data-cedit="owner">✏️ تعديل</button>
+              <button class="btn red" type="button" data-cdel="owner">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-cref="owner">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-csave="owner">💾 حفظ الأصحاب</button>
+            </div>
+            <div class="tbl-wrap" id="cGridOwner"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="cbak" hidden>
+          <div class="sett-box">
+            <div class="panel-title">💾 نسخة احتياطية لمؤسستك (بيانات شركتك وحدك)</div>
+            <div class="sett-btns">
+              <button id="btnClientBackup" class="btn green" type="button">📤 تصدير/نسخة احتياطية (JSON)</button>
+              <button id="btnClientRestore" class="btn orange" type="button">📥 استعادة/استيراد نسخة</button>
+            </div>
+            <p class="stk-hint">النسخة الاحتياطية بتضم بيانات شركتك وحدك — لا يظهر لك أبدًا أي شيء من الشركات الأخرى. الاستعادة تتطلب كلمة مرور الدخول وتحذيرًا شديدًا قبل التنفيذ.</p>
+            <input type="file" id="fileClientRestore" accept=".json,application/json" hidden />
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ====== لوحة إدارة المالك (الوقت والشركات والأعضاء والمزايا) ====== -->
+      <section class="view view-admin" id="viewAdmin" data-id="admin" hidden>
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnAdminRefresh" class="btn blue" type="button">🔄 تحديث القائمة</button>
+            <button id="btnAdminAddOrg" class="btn green" type="button">➕ إضافة شركة جديدة</button>
+            <button id="btnAdminAccounts" class="btn orange" type="button">🔑 حسابات الموظفين المُنشأة</button>
+            <button id="btnAdminPw" class="btn orange" type="button">🔑 كلمة المرور الحالية + إعادة تعيين</button>
+            <button id="btnAdminLog" class="btn orange" type="button">🔒 سجل تغييرات كلمات المرور</button>
+          </div>
+          <h1 class="view-title">🛠️ إدارة الشركات (صلاحياتك كمالك النظام)</h1>
+        </div>
+        <p class="login-sub">حدد لكل شركة مدة اشتراكها (من تاريخ إلى تاريخ)، ونشاطها، وأعضاءها، والمزايا المفتوحة لها.</p>
+        <div id="adminStats" class="kpi-row"></div>
+        <div id="adminAlerts"></div>
+        <div class="sett-box">
+          <div id="adminList" class="tbl-wrap"></div>
+        </div>
+        <div id="adminDetail" class="sett-box" hidden>
+          <div class="panel-title">👥 أعضاء الشركة: <span id="adminDetailTitle"></span></div>
+          <div id="adminMembers" class="tbl-wrap"></div>
+        </div>
+        <div id="adminAccounts" class="sett-box" hidden>
+          <div class="panel-title">🔑 حسابات الموظفين التي أنشأها أصحاب الشركات</div>
+          <p class="login-sub">هذه الحسابات أنشأها أصحاب الشركات من شاشة «تسجيل دخول شركة»، وتظهر هنا لمتابعتها أو نسخ بياناتها.</p>
+          <div id="adminAccountsList" class="tbl-wrap"></div>
+        </div>
+        <div id="adminPwBox" class="sett-box" hidden>
+          <div class="panel-title">🔑 كلمة المرور الحالية لكل الحسابات + إعادة تعيين</div>
+          <p class="login-sub">كلمة المرور الحالية محدّثة تلقائيًا عند الإنشاء أو التغيير أو إعادة التعيين. لإعادة التعيين: اضغط 🔑 «إعادة تعيين» واكتب كلمة مرور جديدة — هنهي جلسات الحساب القديم فورًا.</p>
+          <div id="adminPwList" class="tbl-wrap"></div>
+        </div>
+      </section>
+
+      <!-- ====== شاشة كلمة "الشركة غير متاحة" ====== -->
+      <div class="login-screen" id="denyScreen" hidden>
+        <div class="login-box">
+          <div class="login-logo">🔒</div>
+          <h2>لا يمكنك الدخول</h2>
+          <button type="button" id="btnDenyLogout" class="btn red full">خروج ↩</button>
+          <div id="denyMsg" class="login-msg err"></div>
+        </div>
+      </div>
+
       <!-- ====== صفحة كشف الحساب للطباعة ====== -->
-      <section class="print-only statement-page" id="statementPage">
+<section class="print-only statement-page" id="statementPage">
         <div class="statement-head">
+          <div class="inv-brand-name" id="stmOrgName"></div>
           <h2>📋 كشف حساب تفصيلي: <span id="stmName"></span></h2>
           <p>الكود: <span id="stmCode"></span> | الفترة: <span id="stmRange"></span> | الرصيد الحالي: <span id="stmBal"></span> ج.م</p>
           <p class="stmt-brand">برنامج «ميزان» للمحاسبة وإدارة الأعمال | By Adel Samir - واتس: 01002655282</p>
@@ -855,6 +1200,7 @@
       <!-- ====== صفحة جرد المخزون للطباعة ====== -->
       <section class="print-only statement-page" id="stockPage">
         <div class="statement-head">
+          <div class="inv-brand-name" id="skOrgName"></div>
           <h2>📋 جرد المخزون - رصيد البرنامج - مستودع: <span id="skWh"></span></h2>
           <p>تاريخ الطباعة: <span id="skDate"></span> | إجمالي الأصناف: <span id="skCount"></span></p>
           <p class="stmt-brand">برنامج «ميزان» للمحاسبة وإدارة الأعمال | By Adel Samir - واتس: 01002655282</p>
@@ -872,6 +1218,7 @@
       <!-- ====== صفحة فاتورة المبيعات للطباعة ====== -->
       <section class="print-only statement-page" id="invoicePage">
         <div class="statement-head">
+          <div class="inv-brand-name" id="invOrgName"></div>
           <h2>🧾 فاتورة مبيعات رقم: <span id="invNoPrint"></span></h2>
           <p>التاريخ: <span id="invDatePrint"></span> | العميل: <span id="invCustPrint"></span> | المستودع: <span id="invWhPrint"></span> | الدفع: <span id="invPayPrint"></span></p>
           <p class="stmt-brand">mizan web | برنامج «ميزان» للمحاسبة وإدارة الأعمال | By Adel Samir - واتس: 01002655282</p>
@@ -879,7 +1226,7 @@
         <table class="stmt-table">
           <thead>
             <tr>
-              <th>كود الصنف</th><th>اسم الصنف</th><th>الوحدة</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th>الضريبة</th><th>الإجمالي</th>
+              <th>كود الصنف</th><th>اسم الصنف</th><th>الوحدة</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th id="thPrintTax">الضريبة</th><th>الإجمالي</th>
             </tr>
           </thead>
           <tbody id="invBodyPrint"></tbody>
@@ -890,6 +1237,7 @@
       <!-- ====== صفحة فاتورة المشتريات للطباعة ====== -->
       <section class="print-only statement-page" id="purchasePage">
         <div class="statement-head">
+          <div class="inv-brand-name" id="ppOrgName"></div>
           <h2>🧾 فاتورة مشتريات رقم: <span id="ppInvNo"></span></h2>
           <p>التاريخ: <span id="ppDate"></span> | المورد: <span id="ppSuppPrint"></span> | المستودع: <span id="ppWhPrint"></span> | الدفع: <span id="ppPayPrint"></span></p>
           <p class="stmt-brand">mizan web | برنامج «ميزان» للمحاسبة وإدارة الأعمال | By Adel Samir - واتس: 01002655282</p>
@@ -897,7 +1245,7 @@
         <table class="stmt-table">
           <thead>
             <tr>
-              <th>كود الصنف</th><th>اسم الصنف</th><th>الوحدة</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th>الضريبة</th><th>الإجمالي</th>
+              <th>كود الصنف</th><th>اسم الصنف</th><th>الوحدة</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th id="thPPPrintTax">الضريبة</th><th>الإجمالي</th>
             </tr>
           </thead>
           <tbody id="ppBody"></tbody>
@@ -908,6 +1256,7 @@
       <!-- ====== صفحة قائمة المركز المالي للطباعة ====== -->
       <section class="print-only statement-page" id="balancePage">
         <div class="statement-head">
+          <div class="inv-brand-name" id="blpOrgName"></div>
           <h2>⚖️ قائمة المركز المالي: <span id="blpOrg"></span></h2>
           <p>حتى تاريخ: <span id="blpDate"></span></p>
           <p class="stmt-brand">mizan web | برنامج «ميزان» للمحاسبة وإدارة الأعمال | By Adel Samir - واتس: 01002655282</p>
@@ -926,6 +1275,7 @@
       <!-- ====== صفحة كشف حساب الخزينة للطباعة ====== -->
       <section class="print-only statement-page" id="treStmtPage">
         <div class="statement-head">
+          <div class="inv-brand-name" id="trpOrgName"></div>
           <h2>📑 كشف حساب الخزينة: <span id="trpName"></span></h2>
           <p>أساس الحساب: <span id="trpBase"></span> | الرصيد الحالي: <span id="trpBal"></span> ج.م</p>
           <p class="stmt-brand">mizan web | برنامج «ميزان» للمحاسبة وإدارة الأعمال | By Adel Samir - واتس: 01002655282</p>
@@ -942,7 +1292,7 @@
 
   <!-- ===== التذييل ===== -->
   <footer class="app-footer">
-    <span>mizan web | برنامج «ميزان» للمحاسبة وإدارة الأعمال | الإصدار 1.0</span>
+    <span>mizan web | برنامج «ميزان» للمحاسبة وإدارة الأعمال | الإصدار <b id="ftrVer"></b></span>
     <span>حقوق الملكية والبرمجة والتطوير محفوظة © By Adel Samir - واتس: 01002655282</span>
   </footer>
 
@@ -1323,39 +1673,9 @@
     </div>
   </div>
 
-  <!-- نافذة إضافة / تعديل مستخدم -->
-  <div class="modal-overlay" id="mUser" hidden>
-    <div class="modal m520" id="mUserBox">
-      <h3 id="userModalTitle">➕ إضافة مستخدم</h3>
-      <div class="form-grid">
-        <label for="uUsername">اسم المستخدم (للدخول): *</label>
-        <input type="text" id="uUsername" autocomplete="off" />
-        <label for="uFullName">الاسم الكامل: *</label>
-        <input type="text" id="uFullName" autocomplete="off" />
-        <label for="uPassword">كلمة المرور: *</label>
-        <input type="password" id="uPassword" autocomplete="new-password" />
-        <label for="uRole">الصلاحية (الدور):</label>
-        <select id="uRole">
-          <option>مدير النظام</option>
-          <option>مشرف</option>
-          <option>محاسب</option>
-          <option>أمين خزينة</option>
-          <option>موظف مبيعات</option>
-        </select>
-        <label for="uBranch">الفرع:</label>
-        <select id="uBranch"></select>
-        <label for="uActive">الحالة:</label>
-        <select id="uActive">
-          <option value="1">نشط 🟢</option>
-          <option value="0">موقوف 🔴</option>
-        </select>
-      </div>
-      <div class="modal-actions">
-        <button id="btnCancelUser" class="btn gray" type="button">إلغاء</button>
-        <button id="btnSaveUser" class="btn blue" type="button">💾 حفظ المستخدم</button>
-      </div>
-    </div>
-  </div>
+  <!-- نافذة إضافة / تعديل مستخدم: تم حذفها.
+       حسابات الشركة الحقيقية تُدار من شاشة «تسجيل دخول شركة»
+       وتبويب «المستخدمون والصلاحيات» (نفس البيانات من Supabase). -->
 
   <!-- نافذة جرد المخزون لكل مستودع -->
   <div class="modal-overlay" id="mStockTake" hidden>
@@ -1391,6 +1711,34 @@
     </div>
   </div>
 
+  <!-- نافذة نقل الأصناف بين المخازن -->
+  <div class="modal-overlay" id="mTransfer" hidden>
+    <div class="modal m560" id="mTransferBox">
+      <h3>🔃 نقل أصناف بين المخازن</h3>
+      <div class="fld-block">
+        <label for="trFrom">من المخزن:</label>
+        <select id="trFrom"></select>
+      </div>
+      <div class="fld-block">
+        <label for="trTo">إلى المخزن:</label>
+        <select id="trTo"></select>
+      </div>
+      <div class="fld-block">
+        <label for="trProduct">الصنف المراد نقله:</label>
+        <select id="trProduct"></select>
+        <div class="stk-summary" id="trAvailHint"></div>
+      </div>
+      <div class="fld-block">
+        <label for="trQty">الكمية المطلوب نقلها:</label>
+        <input id="trQty" type="text" value="1" />
+      </div>
+      <div class="modal-actions">
+        <button id="btnCancelTransfer" class="btn gray" type="button">إلغاء</button>
+        <button id="btnDoTransfer" class="btn blue" type="button">🔃 تنفيذ النقل</button>
+      </div>
+    </div>
+  </div>
+
   <!-- نافذة كشف الحساب -->
   <div class="modal-overlay" id="mStatement" hidden>
     <div class="modal m640 modal-tall">
@@ -1413,11 +1761,119 @@
     </div>
   </div>
 
-  <!-- التنبيهات -->
+<!-- التنبيهات -->
   <div class="toast" id="toast" hidden></div>
 
-  <script src="supabase.config.js"></script>
-  <script src="data.js"></script>
-  <script src="app.js"></script>
+  <!-- ===== شاشة تسجيل الدخول (النظام الأونلاين) ===== -->
+  <div class="login-screen" id="loginScreen" hidden>
+    <div class="login-box">
+      <div class="login-logo">⚖️</div>
+      <h2>برنامج ميزان للمحاسبة</h2>
+      <p class="login-sub" style="color:#c0392b;font-weight:800;font-size:16px">نظام أونلاين — الإصدار <span id="loginVer">83</span> — بياناتك محفوظة في السحابة بأمان</p>
+      <p class="login-sub" style="color:#555;font-weight:600;font-size:13px">المبرمج adelsamir — للاشتراك والمتابعة واتس:<br><b dir="ltr" style="color:#1d7a46">01002655282</b></p>
+
+      <div class="login-tabs">
+        <button type="button" class="ltab active" data-lt="in">تسجيل دخول مستخدم</button>
+        <button type="button" class="ltab" data-lt="up">تسجيل دخول شركة</button>
+      </div>
+
+      <form id="authForm" autocomplete="on">
+        <label class="filter-label">اسم المستخدم</label>
+        <input type="text" id="authUser" class="inp" placeholder="مثال: ahmed" required autocomplete="username">
+
+        <label class="filter-label">كلمة المرور</label>
+        <div class="pw-wrap">
+          <input type="password" id="authPass" class="inp" placeholder="اكتب كلمة المرور" autocomplete="current-password">
+          <button type="button" id="btnShowPass" class="pw-eye" title="إظهار/إخفاء كلمة المرور">👁</button>
+        </div>
+
+        <button type="submit" id="btnAuthGo" class="btn green full">دخول</button>
+        <div id="authMsg" class="login-msg"></div>
+        <button type="button" id="btnWipe" class="btn gray full" style="margin-top:8px;background:#64748b;color:#fff">🗑 مسح الجلسة القديمة والبدء من جديد</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== شاشة إنشاء الشركة (تظهر بعد نجاح الدخول لما الحساب مالهوش شركة) ===== -->
+  <div class="login-screen" id="orgScreen" hidden>
+    <div class="login-box">
+      <div class="login-logo">🏢</div>
+      <h2>مرحبًا بك</h2>
+      <p class="login-sub">تم تسجيل دخولك بنجاح ✅ — الخطوة الأخيرة: حدد شركتك</p>
+      <div class="login-tabs">
+        <button type="button" class="ltab active" data-ot="new">شركة جديدة</button>
+        <button type="button" class="ltab" data-ot="join">لدي رمز دعوة</button>
+      </div>
+      <div id="orgNew">
+        <label class="filter-label">اسم الشركة</label>
+        <input type="text" id="orgNewName" class="inp" placeholder="مؤسستي التجارية">
+        <label class="filter-label">اسمك</label>
+        <input type="text" id="orgNewFull" class="inp" placeholder="الاسم الكامل">
+        <button type="button" id="btnOrgNew" class="btn green full">إنشاء الشركة والبدء</button>
+      </div>
+      <div id="orgJoin" hidden>
+        <label class="filter-label">رمز الدعوة</label>
+        <input type="text" id="orgJoinCode" class="inp" placeholder="مثال: ABC12345">
+        <label class="filter-label">اسمك</label>
+        <input type="text" id="orgJoinName" class="inp" placeholder="الاسم الكامل">
+        <button type="button" id="btnOrgJoin" class="btn green full">الانضمام</button>
+      </div>
+      <div id="orgMsg" class="login-msg"></div>
+      <button type="button" id="btnOrgLogout" class="btn gray full" style="margin-top:8px">تسجيل خروج</button>
+    </div>
+  </div>
+
+  <!-- ===== شاشة حسابات الشركة (تظهر بعد الدخول بحساب الشركة) ===== -->
+  <div class="login-screen" id="memberScreen" hidden>
+    <div class="login-box login-box-wide">
+      <div class="login-logo">🏢</div>
+      <h2>حسابات شركتك</h2>
+      <p class="login-sub" id="memberOrgName" style="color:#1d7a46;font-weight:800;font-size:17px"></p>
+      <p class="login-sub" id="memberCount"></p>
+      <p class="login-sub" style="font-size:12px">أنشئ حسابات موظفي شركتك من هنا. كل حساب يدخل البرنامج من تبويب «تسجيل دخول مستخدم». (وأنت أيضًا تستطيع إنشاء حساب لنفسك والدخول به).</p>
+      <div id="memberList" class="tbl-wrap" style="max-height:38vh;overflow:auto;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:4px"></div>
+      <div class="login-actions" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:14px">
+        <button type="button" id="btnMemberSelfPw" class="btn orange" style="flex:1;min-width:150px;margin-top:0">🔑 تغيير الرقم السري بتاعي</button>
+        <button type="button" id="btnMemberAdd" class="btn green" style="flex:1;min-width:150px">➕ إنشاء حساب جديد</button>
+        <button type="button" id="btnMemberLogout" class="btn gray" style="flex:1;min-width:150px;margin-top:0">تسجيل خروج</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="lib_supabase.js?v=83"></script>
+  <script src="supabase.config.js?v=83"></script>
+  <script src="data.js?v=83"></script>
+  <script src="cloud.js?v=83"></script>
+  <script src="app.js?v=83"></script>
+  <script>
+    // كاشف أخطاء على الشاشة (بيحول أي خطأ JS لرسالة مرئية)
+    (function () {
+      function show(err) {
+        try {
+          var box = document.getElementById("errTrace");
+          if (!box) {
+            box = document.createElement("div");
+            box.id = "errTrace";
+            box.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:999999;max-width:92vw;background:#7f1d1d;color:#fff;font-family:Consolas,monospace;font-size:11px;line-height:1.5;padding:8px 10px;border-radius:8px;direction:ltr;text-align:left;white-space:pre-wrap;box-shadow:0 2px 10px rgba(0,0,0,.4)";
+            document.body.appendChild(box);
+          }
+          var t = err && (err.stack || err.message || String(err));
+          box.textContent = "⚠ " + (box.textContent ? box.textContent + "\n" : "") + t;
+        } catch (e) { }
+      }
+      window.addEventListener("error", function (e) { show(e.error || e.message); });
+      window.addEventListener("unhandledrejection", function (e) { show(e.reason); });
+    })();
+  </script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+

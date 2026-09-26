@@ -1,9 +1,7 @@
 // ============================================================
 // إعدادات الاتصال بقاعدة البيانات المركزية (Supabase)
-// هتلصق قبل النشر: رابط المشروع + anon public key من
-// Supabase > Settings > API
 // ============================================================
 window.MIZAN_CONFIG = {
-  url: "",
-  anon: ""
+  url: "https://osjbbccckonfzhtjwsre.supabase.co",
+  anon: "sb_publishable_u9qhTfK7EFDnqPnnbFpP_Q_1fLHkIIb"
 };

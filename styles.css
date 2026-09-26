@@ -1,4 +1,6 @@
-/* ===== نظام ألوان برنامج ميزان (UITheme) ===== */
+﻿/* ===== نظام ألوان برنامج ميزان (UITheme) ===== */
+/* مهما كان الاختيار، خاصية hidden لازم تنتصر: لو العنصر فيه hidden يختفي، ولا صندوق الدخول ولا شاشاتها تظهر */
+[hidden] { display: none !important; }
 :root {
   --primary-dark: #0F172A;
   --sidebar-dark: #1E293B;
@@ -265,6 +267,12 @@ body {
 .dgv tbody tr.selected { background: var(--sel-bg); color: var(--sel-fg); }
 .dgv tbody tr { cursor: pointer; }
 
+/* في فاتورتي المبيعات والمشتريات: تصغير الصفوف ليدخل أكبر عدد ممكن من الأصناف (8 أسطر على الأقل) */
+#viewSales .dgv, #viewPurchases .dgv { font-size: 12px; }
+#viewSales .dgv thead th, #viewPurchases .dgv thead th { padding: 3px 4px; font-size: 12px; }
+#viewSales .dgv tbody td, #viewPurchases .dgv tbody td { padding: 2px 4px; font-size: 12px; }
+#viewSales .dgv tbody tr, #viewPurchases .dgv tbody tr { height: 24px; }
+
 .balance-debit { color: var(--danger); font-weight: bold; }
 .balance-credit { color: var(--success); font-weight: bold; }
 
@@ -282,6 +290,9 @@ body {
 }
 
 /* ===== النوافذ الحوارية (Modals) ===== */
+/* z-index أعلى من .login-screen (2000) عشان النوافذ اللي بتتفتح من
+   شاشات الدخول (تسجيل دخول شركة) تبان فوقها. و bdi z-index 3001
+   عشان التوست يفضل فوق النافذة. */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -289,7 +300,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: 3000;
 }
 
 .modal-overlay[hidden] { display: none; }
@@ -396,7 +407,7 @@ body {
   top: 16px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 2000;
+  z-index: 3001;
   padding: 12px 22px;
   color: #fff;
   font-size: 14px;
@@ -506,6 +517,43 @@ body {
 
 .stk-summary { color: var(--primary-dark); font-weight: bold; }
 
+.fld-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.fld-block label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: bold;
+}
+
+.fld-block select,
+.fld-block input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: bold;
+  background: #fff;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.fld-block select:focus,
+.fld-block input:focus { outline: 2px solid var(--sidebar-active); }
+
+.stk-mini {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: normal;
+  margin-top: 2px;
+  direction: ltr;
+  text-align: right;
+}
+
 .stk-grid-wrap {
   overflow: auto;
   flex: 1;
@@ -552,7 +600,7 @@ body {
 
 .pos-row {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: flex-end;
   flex-wrap: wrap;
 }
@@ -563,6 +611,12 @@ body {
   gap: 4px;
   min-width: 0;
 }
+
+/* عروض مضغوطة لصف الفاتورة */
+.fld-cust { width: 210px; }
+.fld-code { width: 95px; }
+.fld-qty { width: 80px; }
+.fld-price { width: 120px; }
 
 .fld.grow { flex: 1 1 200px; }
 .fld.grow2 { flex: 1 1 240px; }
@@ -588,22 +642,30 @@ body {
 .fld input.ro { background: var(--bg); color: var(--text-secondary); }
 .fld button { height: 34px; }
 
-.stock-badge {
-  width: 132px;
-  border: 2px solid var(--accent);
-  background: #EFF6FF;
-  padding: 6px;
+/* سطر أعلى حقل اسم الصنف: الاسم + الرصيد، وعند الضيق ينزل الرصيد لسطر لوحده */
+.fld-card {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 12px;
-  align-self: stretch;
-  justify-content: center;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 18px;
 }
 
-.sb-title { font-weight: bold; color: var(--accent); font-size: 11px; }
-.sb-line { color: var(--text-primary); }
+.stock-hint {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--accent);
+  background: #EFF6FF;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-bottom: 2px;
+}
 
+/* ===== حقول داخل جدول الأصناف ===== */
 .cell-input {
   width: 100%;
   min-width: 56px;
@@ -617,6 +679,8 @@ body {
 }
 
 .cell-input:focus { outline: 2px solid var(--sidebar-active); }
+
+.c-fixed { color: var(--text-secondary); font-weight: 600; cursor: not-allowed; }
 .c-tax, .c-total { font-weight: bold; color: var(--primary-dark); }
 
 .pos-footer {
@@ -734,6 +798,85 @@ body {
   margin-top: 8px;
 }
 
+/* إضافات ترقية v34: ألواح التبويبات داخل الإعدادات */
+.sett-pane {
+  animation: fadein .18s ease;
+}
+
+.sett-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.sett-pane .data-table td, .sett-pane .data-table th {
+  white-space: nowrap;
+}
+
+/* جداول شاشات الضبط: عرض كامل وواضح (السابق كان بلا تنسيق فبدت ضيقة) */
+#viewSettings table.data-table,
+#viewClientSettings table.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 820px;
+}
+#viewSettings table.data-table th,
+#viewClientSettings table.data-table th {
+  background: #f1f5f9;
+  padding: 9px 10px;
+  text-align: right;
+  border-bottom: 2px solid #cbd5e0;
+  white-space: nowrap;
+}
+#viewSettings table.data-table td,
+#viewClientSettings table.data-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+#viewSettings table.data-table tbody tr:hover,
+#viewClientSettings table.data-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+/* عشاء التبويب المقفول (الميزة غير مفعلة) */
+.pane-locked {
+  position: relative;
+  border: 1px dashed var(--danger);
+  border-radius: 10px;
+  background: repeating-linear-gradient(45deg, #FFF7F7, #FFF7F7 10px, #FFEFEF 10px, #FFEFEF 20px);
+  padding: 14px 16px;
+  margin-top: 14px;
+  color: var(--danger);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.pane-locked .plk-icon { font-size: 20px; }
+
+.tab-btn.locked {
+  color: var(--text-muted);
+  border-style: dashed;
+  cursor: not-allowed;
+  background: #FAFAFA;
+}
+
+/* استبدال دمج: الحقل المقفل داخل جدول */
+.sett-edit-row td {
+  padding: 2px !important;
+}
+
+@keyframes fadein {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* ===== أسطر القيد اليومي ===== */
 .jrn-lines {
   margin-top: 10px;
@@ -790,3 +933,80 @@ body {
   font-weight: bold;
   color: var(--primary-dark);
 }
+
+/* ===== شاشة تسجيل الدخول (أونلاين) ===== */
+.login-screen{position:fixed;inset:0;background:linear-gradient(135deg,#0f2a43,#123a5c);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px}
+.login-box{background:#fff;border-radius:14px;padding:26px 28px;width:100%;max-width:400px;box-shadow:0 18px 50px rgba(0,0,0,.35);text-align:center}
+.login-logo{font-size:46px;margin-bottom:6px}
+.login-box h2{margin:0 0 4px;color:#123a5c;font-size:22px}
+.login-sub{margin:0 0 16px;color:#6b7a8a;font-size:13px}
+.login-tabs{display:flex;gap:8px;margin:0 0 14px}
+.ltab{flex:1;padding:9px;border:1px solid #cbd5e0;background:#f1f5f9;color:#334;border-radius:8px;cursor:pointer;font-weight:600}
+.ltab.active{background:#1d7a46;border-color:#1d7a46;color:#fff}
+.login-box .inp{width:100%;box-sizing:border-box;margin-bottom:10px}
+.pw-wrap{position:relative;width:100%;margin-bottom:10px}
+.pw-wrap .inp{margin-bottom:0;padding-left:38px}
+.pw-eye{position:absolute;top:50%;left:4px;transform:translateY(-50%);background:transparent;border:none;font-size:18px;cursor:pointer;opacity:.7;padding:4px}
+.pw-eye:hover{opacity:1}
+.login-box .filter-label{display:block;text-align:right;margin:4px 0 3px;font-weight:600;color:#334;font-size:13px}
+.login-box.login-box-wide{max-width:640px}
+/* شاشة «حسابات شركتك» — عرض أكبر لأنها جدول حسابات */
+#memberScreen .login-box{max-width:960px;width:100%;padding:26px 30px;text-align:right}
+#memberScreen h2,#memberScreen .login-logo{text-align:center}
+#memberScreen .login-sub{text-align:right}
+#memberScreen #memberList{max-height:54vh;overflow:auto}
+#memberScreen #memberList table{width:100%}
+#memberScreen .login-actions{max-width:760px;margin-left:auto;margin-right:auto}
+.btn.full{width:100%}
+.login-msg{margin-top:10px;font-size:13px;min-height:18px;color:#6b7a8a}
+.login-msg.err{color:#c0392b;font-weight:600}
+.login-msg.ok{color:#1d7a46;font-weight:600}
+.btn.small{padding:5px 10px;font-size:12px;margin-right:8px}
+.btn.red{background:#c0392b}
+.btn.red:hover{background:#a93226}
+
+
+/* حقول الإدخال الموحدة */
+.inp{padding:9px 11px;border:1px solid #cbd5e0;border-radius:8px;font-size:14px;background:#fff;color:#1e293b;outline:none;transition:border .15s}
+.inp:focus{border-color:#1d7a46}
+
+/* اسم الشركة في رأس صفحات الطباعة */
+.inv-brand-name{font-size:16px;font-weight:800;color:#123a5c;margin-bottom:4px}
+
+/* ===== لوحة إدارة المالك ===== */
+#viewAdmin .tbl-wrap{overflow-x:auto}
+#viewAdmin table.data-table{width:100%;border-collapse:collapse;font-size:13px;min-width:820px}
+#viewAdmin table.data-table th{background:#f1f5f9;padding:8px;text-align:right;border-bottom:2px solid #cbd5e0;white-space:nowrap}
+#viewAdmin table.data-table td{padding:6px 8px;border-bottom:1px solid #e2e8f0;vertical-align:middle;white-space:nowrap}
+#viewAdmin .inp.small{width:auto;padding:6px 8px;font-size:13px}
+.badge-ok{color:#1d7a46;font-weight:700}
+.badge-no{color:#c0392b;font-weight:700}
+.badge-warn{color:#b45309;font-weight:700}
+#viewAdmin .kpi-row{grid-template-columns:repeat(7,1fr);gap:6px;margin:2px 0 10px}
+#viewAdmin .kpi-mini{min-height:52px;padding:6px 8px;border-right-width:3px;justify-content:center;gap:2px}
+#viewAdmin .kpi-mini .kpi-title{font-size:11px}
+#viewAdmin .kpi-mini .kpi-value{font-size:16px}
+#viewAdmin .kpi-mini.clk{user-select:none;transition:transform .1s}
+#viewAdmin .kpi-mini.clk:hover{transform:translateY(-2px);box-shadow:0 4px 10px rgba(15,23,42,.12)}
+#adminAlerts{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.adm-alert{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:700;border:1px solid}
+.adm-alert.red{background:#fef2f2;color:#b91c1c;border-color:#fecaca}
+.adm-alert.orange{background:#fffbeb;color:#b45309;border-color:#fde68a}
+.adm-alert.green{background:#f0fdf4;color:#15803d;border-color:#bbf7d0}
+.adm-alert code{background:rgba(0,0,0,.06);padding:1px 6px;border-radius:5px;font-size:12px}
+@media (max-width:900px){#viewAdmin .kpi-row{grid-template-columns:repeat(4,1fr)}}
+@media (max-width:560px){#viewAdmin .kpi-row{grid-template-columns:repeat(2,1fr)}}
+.feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0;max-height:60vh;overflow:auto}
+.feat-line{display:flex;align-items:center;gap:6px;background:#f8fafc;border:1px solid #e2e8f0;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px}
+.feat-line input{accent-color:#1d7a46}
+.feat-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
+.modal-box{background:#fff;border-radius:12px;padding:20px;width:min(760px,94vw);box-shadow:0 20px 50px rgba(15,23,42,.35)}
+@media (max-width:640px){.feat-grid{grid-template-columns:1fr 1fr}}
+
+/* إخفاء عمود وخانات الضريبة عند تعطيلها */
+.c-tax.tax-hidden,
+th.c-tax.tax-hidden,
+td.c-tax.tax-hidden {
+  display: none !important;
+}
+

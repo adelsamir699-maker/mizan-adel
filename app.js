@@ -1,4 +1,4 @@
-/* ================================================================
+﻿/* ================================================================
    برنامج ميزان - نسخة الويب | صفحة دليل العملاء
    By Adel Samir - واتس: 01002655282
    نسخة تجريبية: البيانات محفوظة في متصفحك (localStorage)
@@ -6,6 +6,9 @@
 
 (function () {
   "use strict";
+
+  // رقم الإصدار المعروض للمستخدم — يُحدَّث مع كل مراجعة
+  const APP_VERSION = "83";
 
   /* ================== التخزين ================== */
   const LS_CUSTOMERS = "mizan_customers_v1";
@@ -24,6 +27,56 @@
   const LS_SETTINGS = "mizan_settings_v1";
 
   const TAX = { enabled: true, rate: 0.14 };
+  function getTaxPercent() {
+    return Math.round((TAX.rate || 0) * 100);
+  }
+  function updatePosTaxUI() {
+    const en = Boolean(TAX.enabled);
+    const pct = getTaxPercent();
+    const thPrice = $("#thPosPrice");
+    if (thPrice) thPrice.textContent = en ? "السعر (قبل الضريبة)" : "السعر";
+    const thTax = $("#thPosTax");
+    if (thTax) {
+      thTax.style.display = en ? "" : "none";
+      thTax.classList.toggle("tax-hidden", !en);
+      thTax.textContent = en ? ("الضريبة (" + pct + "%)") : "";
+    }
+    const thTotal = $("#thPosTotal");
+    if (thTotal) thTotal.textContent = en ? "الإجمالي شامل الضريبة" : "الإجمالي";
+    const lblTax = $("#lblPosTax");
+    if (lblTax) {
+      lblTax.style.display = en ? "" : "none";
+      lblTax.hidden = !en;
+    }
+    const thPPPrice = $("#thPPPrice");
+    if (thPPPrice) thPPPrice.textContent = en ? "السعر (قبل الضريبة)" : "السعر";
+    const thPPTax = $("#thPPTax");
+    if (thPPTax) {
+      thPPTax.style.display = en ? "" : "none";
+      thPPTax.classList.toggle("tax-hidden", !en);
+      thPPTax.textContent = en ? ("الضريبة (" + pct + "%)") : "";
+    }
+    const thPPTotal = $("#thPPTotal");
+    if (thPPTotal) thPPTotal.textContent = en ? "الإجمالي شامل الضريبة" : "الإجمالي";
+    const lblPPTax = $("#lblPPTax");
+    if (lblPPTax) {
+      lblPPTax.style.display = en ? "" : "none";
+      lblPPTax.hidden = !en;
+    }
+  }
+  function applyTaxSettings(enabled, rawRate) {
+    TAX.enabled = Boolean(enabled);
+    const r = parseFloat(rawRate) || 0;
+    TAX.rate = r > 1 ? r / 100 : (r > 0 ? r : 0);
+    settings.taxEnabled = TAX.enabled;
+    settings.taxRate = TAX.rate;
+    saveSettings();
+    updatePosTaxUI();
+    if (typeof posRecalc === "function") posRecalc();
+    if (typeof renderPosItems === "function") renderPosItems();
+    if (typeof ppRecalc === "function") ppRecalc();
+    if (typeof renderPPItems === "function") renderPPItems();
+  }
 
   /* ================== البيانات التجريبية ================== */
   const seedCustomers = [
@@ -169,8 +222,125 @@
   /* ================== أدوات ================== */
   const $ = (sel) => document.querySelector(sel);
 
+  /* ================== الأدوات الأونلاين ================== */
+  const DB = window.MIZAN_STATE;
+  const A = { online: false, uid: null, adopting: false };
+  let planWatchTimer = null;
+  let presenceTimer = null;
+
+  function mirror() {
+    DB.customers = customers;
+    DB.products = products;
+    DB.suppliers = suppliers;
+    DB.treasury = treasury;
+    DB.accounts = accounts;
+    DB.sales = sales;
+    DB.purchases = purchases;
+    DB.supplier_txs = supplierTxs;
+    DB.customer_txs = txs;
+    DB.vouchers = vouchers;
+    DB.journalEntries = journalEntries;
+  }
+
+  function pushTable(name) {
+    if (!A.online || A.adopting) return;
+    if (!window.CLOUD) return;
+    mirror();
+    window.CLOUD.push(name).catch((e) => console.warn("push", name, e.message));
+  }
+
+  function setDbStatus(txt) {
+    const el = $("#dbStatus");
+    if (el) el.textContent = txt;
+  }
+  function setUserInfo(txt) {
+    const el = $("#userInfo");
+    if (el) el.textContent = txt;
+  }
+  function setSubInfo(acc) {
+    const el = $("#subInfo");
+    if (!el) return;
+    if (!acc || !acc.plan_end) { el.hidden = true; return; }
+    let end;
+    try { end = new Date(acc.plan_end + "T00:00:00"); } catch (e) { el.hidden = true; return; }
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const days = Math.round((end - now) / 86400000);
+    if (end.getTime() - now.getTime() < 0) { el.hidden = true; return; }
+    const fmt = end.getFullYear() + "/" + String(end.getMonth() + 1).padStart(2, "0") + "/" + String(end.getDate()).padStart(2, "0");
+    const arNums = ["۰","۱","۲","۳","۴","۵","۶","۷","۸","۹"];
+    const toAr = (s) => String(s).replace(/[0-9]/g, (d) => arNums[+d]);
+    el.textContent = "نهاية الاشتراك يوم " + toAr(fmt) + " (باقي " + toAr(days) + " يوم)";
+    el.hidden = false;
+  }
+
+  // مراقبة الاشتراك لحظيًا: لو غيّر المالك التاريخ أو قفل الشركة يظهر فورًا للعميل
+  function checkPlanNow() {
+    if (planWatchTimer === null) return Promise.resolve();
+    return DATA.requestAccess().then((acc) => {
+      setSubInfo(acc);
+      setDbStatus("🟢 متصل بالسحابة");
+      if (!acc) return;
+      if (!acc.allowed) {
+        showDeny(acc);
+      } else if (!$("#denyScreen").hidden) {
+        // كان العميل على شاشة "لا يمكنك الدخول" وأصبح الاشتراك مفعّلًا → ندخله فورًا
+        DATA.loadEagerAll().finally(() => {
+          $("#denyScreen").hidden = true;
+          hideScreens();
+          initApp();
+          setDbStatus("🟢 متصل بالسحابة");
+        });
+      }
+    }).catch(() => {});
+  }
+  function startPlanWatch() {
+    stopPlanWatch();
+    planWatchTimer = setInterval(checkPlanNow, 30000);
+    checkPlanNow();
+  }
+  function stopPlanWatch() {
+    if (planWatchTimer !== null) {
+      clearInterval(planWatchTimer);
+      planWatchTimer = null;
+    }
+  }
+  // ---- الحضور (من فاتح التطبيق الآن) ----
+  function isPresenceEligible() {
+    return A.online && window.DATA && DATA.isOnline() && !DATA.accessInfo().locked;
+  }
+  function startPresence() {
+    stopPresence();
+    if (!isPresenceEligible()) return;
+    presenceTimer = setInterval(() => {
+      DATA.presenceHeartbeat().catch(() => {});
+    }, 15000);
+    DATA.presenceHeartbeat().catch(() => {});
+  }
+  function stopPresence() {
+    if (presenceTimer !== null) {
+      clearInterval(presenceTimer);
+      presenceTimer = null;
+    }
+  }
+  // مؤقت تحديث بطاقة (متصلون الآن) في لوحة الإدارة كل 15 ثانية
+  let presenceViewTimer = null;
+  function startPresenceView() {
+    stopPresenceView();
+    presenceViewTimer = setInterval(() => {
+      const av = document.getElementById("viewAdmin");
+      if (av && !av.hidden) refreshPresenceCard();
+    }, 15000);
+  }
+  function stopPresenceView() {
+    if (presenceViewTimer !== null) {
+      clearInterval(presenceViewTimer);
+      presenceViewTimer = null;
+    }
+  }
+
   function normalizeProduct(p) {
-    return Object.assign({
+    const g = Object.assign({
       barcode: "",
       nameEn: "",
       category: "عام",
@@ -186,6 +356,43 @@
       reorder: 50,
       isActive: true
     }, p);
+    migrateProductStock(g);
+    return g;
+  }
+
+  function migrateProductStock(p) {
+    if (!p.stock || typeof p.stock !== "object") p.stock = {};
+    if (Object.keys(p.stock).length === 0 && Number(p.qty || 0) > 0) {
+      p.stock[p.defaultWarehouse || WAREHOUSES[0]] = Number(p.qty);
+    }
+    let total = 0;
+    Object.keys(p.stock).forEach((k) => total += Number(p.stock[k]) || 0);
+    p.qty = Math.round(total * 100) / 100;
+  }
+
+  function stockAt(p, wh) {
+    if (!p) return 0;
+    if (!p.stock || typeof p.stock !== "object") return Number(p && p.qty) || 0;
+    const specific = wh ? (Number(p.stock[wh]) || 0) : NaN;
+    if (!isNaN(specific) && specific > 0) return specific;
+    // إذا لم توجد كمية في المستودع المحدد (اسم مختلف/قديم) بينما الكمية موجودة في مخازن أخرى
+    // نعود إلى الإجمالي بدلًا من منع البيع ظنًا بأن المخزون صفر.
+    let total = 0;
+    Object.keys(p.stock).forEach((k) => total += Number(p.stock[k]) || 0);
+    if (total > 0) return total;
+    return isNaN(specific) ? 0 : specific;
+  }
+
+  function setStockAt(p, wh, v) {
+    if (!p.stock) p.stock = {};
+    p.stock[wh] = Math.round(v * 100) / 100;
+    let total = 0;
+    Object.keys(p.stock).forEach((k) => total += Number(p.stock[k]) || 0);
+    p.qty = Math.round(total * 100) / 100;
+  }
+
+  function addStockAt(p, wh, v) {
+    setStockAt(p, wh, stockAt(p, wh) + v);
   }
 
   function loadData() {
@@ -204,8 +411,11 @@
       users = JSON.parse(localStorage.getItem(LS_USERS)) || seedUsers;
       vouchers = JSON.parse(localStorage.getItem(LS_VOUCHERS)) || seedVouchers;
       settings = Object.assign({}, defaultSettings, JSON.parse(localStorage.getItem(LS_SETTINGS)) || {});
-      TAX.enabled = settings.taxEnabled == null ? TAX.enabled : settings.taxEnabled;
-      TAX.rate = settings.taxRate == null ? TAX.rate : settings.taxRate;
+      TAX.enabled = settings.taxEnabled == null ? TAX.enabled : Boolean(settings.taxEnabled);
+      if (settings.taxRate != null) {
+        const r = parseFloat(settings.taxRate) || 0;
+        TAX.rate = r > 1 ? r / 100 : r;
+      }
     } catch (e) {
       customers = seedCustomers;
       txs = seedTxs;
@@ -240,34 +450,42 @@
 
   function saveProducts() {
     localStorage.setItem(LS_PRODUCTS, JSON.stringify(products));
+    pushTable("products");
   }
 
   function saveSales() {
     localStorage.setItem(LS_SALES, JSON.stringify(sales));
+    pushTable("sales");
   }
 
   function saveTreasury() {
     localStorage.setItem(LS_TREASURY, JSON.stringify(treasury));
+    pushTable("treasury");
   }
 
   function saveSuppliers() {
     localStorage.setItem(LS_SUPPLIERS, JSON.stringify(suppliers));
+    pushTable("suppliers");
   }
 
   function saveSupplierTxs() {
     localStorage.setItem(LS_SUP_TXS, JSON.stringify(supplierTxs));
+    pushTable("supplier_txs");
   }
 
   function savePurchases() {
     localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
+    pushTable("purchases");
   }
 
   function saveAccounts() {
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
+    pushTable("accounts");
   }
 
   function persistJournal() {
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
+    pushTable("journal_entries");
   }
 
   function saveUsers() {
@@ -276,6 +494,7 @@
 
   function saveVouchers() {
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
+    pushTable("vouchers");
   }
 
   function saveSettings() {
@@ -301,10 +520,12 @@
 
   function saveCustomers() {
     localStorage.setItem(LS_CUSTOMERS, JSON.stringify(customers));
+    pushTable("customers");
   }
 
   function saveTxs() {
     localStorage.setItem(LS_TXS, JSON.stringify(txs));
+    pushTable("customer_txs");
   }
 
   function fmt(n) {
@@ -373,6 +594,14 @@
   }
 
   function printSection(el) {
+    // اسم الشركة من الضبط (لكل شركة على حدة) يظهر في كل صفحات الطباعة
+    const settOrg = (csetData && csetData.org) || (ssetData && ssetData.org);
+    const settName = settOrg && settOrg.name;
+    const org = settName || (settings && settings.orgName ? settings.orgName : (DATA.org() && DATA.org().name) || "مؤسستي التجارية");
+    [["invOrgName"], ["ppOrgName"], ["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"]].forEach(([id]) => {
+      const x = document.getElementById(id);
+      if (x) x.textContent = org;
+    });
     document.querySelectorAll(".print-only").forEach((s) => s.classList.remove("print-target"));
     el.classList.add("print-target");
     document.body.classList.add("printing");
@@ -387,9 +616,81 @@
   }
 
   /* ================== الروترة بين الشاشات ================== */
-  const BUILT_VIEWS = ["dashboard", "customers", "products", "sales", "purchases", "suppliers", "returns", "treasury", "accounts", "journal", "balance", "treasuryStatements", "reports", "users", "audit", "settings"];
+  const BUILT_VIEWS = ["dashboard", "customers", "products", "sales", "purchases", "suppliers", "returns", "treasury", "accounts", "journal", "balance", "treasuryStatements", "reports", "users", "audit", "settings", "clientSettings"];
+
+  // حساب المستخدم الحالي — المصدر الموثوق هو mizan_access (فيه role + is_superadmin)
+  // لأن getProfile() قد يكون null أو ناقصًا لحظة الدخول.
+  function currentAcct() {
+    var DE = window.DATA || {};
+    var a = DE.accessInfo ? DE.accessInfo() : null;
+    if (a && a.role) return a;
+    var p = DE.getProfile ? DE.getProfile() : null;
+    if (p && p.role) return p;
+    return a || p || null;
+  }
+
+  // صاحب الشركة = role admin وليس سوبر أدمن
+  function isCompanyOwnerAcct() {
+    var r = currentAcct();
+    return !!(r && r.role === "admin" && !r.is_superadmin);
+  }
+  function isSuperAcct() {
+    var r = currentAcct();
+    return !!(r && r.is_superadmin);
+  }
+
+  // 🔑 زر تغيير الرقم السري في الشريط العلوي — لصاحب الشركة والسوبر أدمن
+  function enforceChangePwBtn() {
+    var btn = document.getElementById("btnChangePw");
+    if (!btn) return;
+    var show = isSuperAcct() || isCompanyOwnerAcct();
+    btn.hidden = !show;
+    if (show) {
+      btn.title = isSuperAcct()
+        ? "الرقم السري لحسابك في البرنامج"
+        : "الرقم السري لحساب صاحب الشركة — سيظهر الجديد عند مالك البرنامج";
+    }
+  }
+
+  // هل يُسمح بعرض هذه الشاشة لهذا الحساب؟
+  // «إعدادات مؤسستك» استثناءً: يجب أن يفعّلها صاحب الشركة **صريحًا** (opt-in).
+  // المالك العام وصاحب الشركة مسموح لهما دائمًا لأن البيانات شركتهما.
+  function canUseView(name) {
+    var DE = window.DATA || {};
+    if (name === "clientSettings") {
+      if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+      if (!DE.featureFlag) return true; // احتياطي: لو الدالة غير موجودة نسمح
+      return DE.featureFlag("clientSettings") === true;
+    }
+    return DE.featureEnabled ? DE.featureEnabled(name) : true;
+  }
+
+  // إخفاء أزرار الشاشات غير المفعّلة في اشتراك الشركة الحالية
+  function applyFeatureGating() {
+    var fe = window.DATA && window.DATA.featureEnabled;
+    if (!fe) return;
+    document.querySelectorAll(".nav-btn").forEach((b) => {
+      const n = b.dataset.view;
+      b.hidden = !canUseView(n);
+    });
+    // لو الشاشة الحالية أصبحت معطّلة → عد للوحة
+    const cur = document.querySelector(".view:not([hidden])");
+    if (cur && !canUseView(cur.dataset.id)) showView("dashboard");
+  }
 
   function showView(name) {
+    // حماية: تبويب «إعدادات ونسخ احتياطي المالك» للمالك (سوبر أدمن) وحده.
+    // أي حساب تاني — حتى لو حاول فتحه برمجيًا — يتحوّل لـ«إعدادات مؤسستك».
+    const isOwner = !!window.__isOwner;
+    if (name === "settings" && !isOwner) {
+      name = "clientSettings";
+      toast("هذا القسم للمالك فقط", "error");
+    }
+    // «إعدادات مؤسستك» لا تُفتح إلا لمن فعّلها صاحب الشركة (أو المالك/صاحب الشركة)
+    if (name === "clientSettings" && !canUseView("clientSettings")) {
+      toast("صلاحية «إعدادات مؤسستك» غير مفعّلة لحسابك", "error");
+      name = "dashboard";
+    }
     document.querySelectorAll(".view[data-id]").forEach((v) => {
       v.hidden = v.dataset.id !== name;
     });
@@ -400,22 +701,30 @@
     if (name === "customers") renderTable();
     if (name === "products") renderProducts();
     if (name === "sales") {
+      updatePosTaxUI();
       if (!posInitialized) {
         posInitialized = true;
         posNewInvoice();
+      } else {
+        renderPosItems();
+        posRecalc();
       }
       renderSalesLookups();
     }
     if (name === "purchases") {
+      updatePosTaxUI();
       if (!ppInitialized) {
         ppInitialized = true;
         ppNewInvoice();
+      } else {
+        renderPPItems();
+        ppRecalc();
       }
       renderPurchasesLookups();
     }
     if (name === "suppliers") renderSuppliers();
     if (name === "returns") renderInvoiceQuery();
-    if (name === "treasury") { renderTreasury(); renderTreMoves(); }
+    if (name === "treasury") { syncTreasuryFromSett(); renderTreasury(); renderTreMoves(); }
     if (name === "accounts") renderAccounts();
     if (name === "journal") renderJournal();
     if (name === "balance") renderBalance();
@@ -424,6 +733,9 @@
     if (name === "users") renderUsers();
     if (name === "audit") renderAudit();
     if (name === "settings") loadSettingsForm();
+    if (name === "clientSettings") loadClientSettingsForm();
+    if (name === "admin") { if (window.refreshPresenceCard) { startPresenceView(); refreshPresenceCard(); } }
+    if (name !== "admin") stopPresenceView();
   }
 
   /* ================== لوحة التحكم ================== */
@@ -794,17 +1106,112 @@
   }
 
   function nextProductCode() {
-    let max = 0;
+    const used = new Set();
     products.forEach((p) => {
-      const m = /^PRD-(\d+)$/.exec(p.code || "");
-      if (m) max = Math.max(max, +m[1]);
+      const m = /(\d+)\s*$/.exec((p.code || "").trim());
+      if (m) used.add(parseInt(m[1], 10));
     });
-    return "PRD-" + String(max + 1).padStart(4, "0");
+    let n = 1;
+    while (used.has(n)) n++;
+    return String(n);
+  }
+
+  function settListByName(key) {
+    const out = [];
+    [csetData, ssetData].forEach((src) => {
+      if (src && Array.isArray(src[key])) {
+        src[key].forEach((it) => {
+          const n = (it && (typeof it === "string" ? it : (it.name || it.symbol))) || it;
+          if (n && out.indexOf(n) === -1) out.push(n);
+        });
+      }
+    });
+    return out;
+  }
+
+  function categoryList() {
+    const l = settListByName("categories");
+    return l.length ? l : CATEGORIES.slice();
+  }
+
+  function warehouseList() {
+    const l = settListByName("warehouses");
+    return l.length ? l : WAREHOUSES.slice();
+  }
+
+  function orgSettValue(field, fallback) {
+    const src = (csetData && csetData.org) || (ssetData && ssetData.org);
+    const v = src && src[field];
+    return (v !== undefined && v !== null && v !== "") ? v : fallback;
+  }
+
+  function ensureSettData() {
+    if (csetData || !(A.online && DATA && DATA.clientSett)) {
+      if (csetData) syncTreasuryFromSett();
+      return Promise.resolve(csetData);
+    }
+    return DATA.clientSett().then((p) => {
+      if (p) {
+        csetData = p;
+        csetData.__online = true;
+        if (p.org) {
+          if (p.org.name) settings.orgName = p.org.name;
+          if (!settings.orgAddress && p.org.address) settings.orgAddress = p.org.address;
+        }
+      }
+      applyTaxSettingsFromSett(p);
+      syncTreasuryFromSett();
+      return csetData;
+    }).catch(() => csetData);
+  }
+
+  function applyTaxSettingsFromSett(p) {
+    if (p && p.org && p.org.tax_enabled !== undefined && p.org.tax_enabled !== null) {
+      applyTaxSettings(p.org.tax_enabled === true || p.org.tax_enabled === 1 || p.org.tax_enabled === "1", p.org.tax_rate);
+    }
+  }
+
+  function fillCatSelect(sel, current) {
+    const apply = (catsArr) => {
+      const l = [];
+      (catsArr || []).forEach((c) => {
+        const n = (c && (typeof c === "string" ? c : c.name)) || c;
+        if (n && l.indexOf(n) === -1) l.push(n);
+      });
+      if (current && l.indexOf(current) === -1) l.push(current);
+      fillSelect(sel, l.length ? l : CATEGORIES.slice(), current && l.indexOf(current) !== -1 ? current : undefined);
+    };
+    apply((csetData && csetData.categories) || (ssetData && ssetData.categories));
+    if (A.online && DATA && DATA.clientSett && !csetData) {
+      DATA.clientSett().then((p) => {
+        if (p && p.categories) { csetData = p; apply(p.categories); }
+      }).catch(() => {});
+    }
+  }
+
+  function fillWhSelect(sel, current) {
+    const apply = (whsArr) => {
+      const l = [];
+      (whsArr || []).forEach((w) => {
+        const n = (w && (typeof w === "string" ? w : w.name)) || w;
+        if (n && l.indexOf(n) === -1) l.push(n);
+      });
+      if (current && l.indexOf(current) === -1) l.push(current);
+      fillSelect(sel, l.length ? l : WAREHOUSES.slice(), current && l.indexOf(current) !== -1 ? current : undefined);
+    };
+    apply((csetData && csetData.warehouses) || (ssetData && ssetData.warehouses));
+    if (A.online && DATA && DATA.clientSett && !csetData) {
+      DATA.clientSett().then((p) => {
+        if (p && p.warehouses) { csetData = p; apply(p.warehouses); }
+      }).catch(() => {});
+    }
   }
 
   function productCategories() {
-    const set = new Set(products.map((p) => p.category).filter(Boolean));
-    CATEGORIES.concat([...set]).forEach((c) => set.add(c));
+    const set = new Set(categoryList());
+    set.add("");
+    products.map((p) => p.category).filter(Boolean).forEach((c) => set.add(c));
+    set.delete("");
     return [...set];
   }
 
@@ -818,6 +1225,37 @@
       el.appendChild(opt);
     });
     if (selected != null) el.value = selected;
+  }
+
+  function productUnits() {
+    const list = [];
+    [csetData, ssetData].forEach((src) => {
+      if (src && Array.isArray(src.units)) {
+        src.units.forEach((u) => {
+          const n = (u && (typeof u === "string" ? u : (u.name || u.symbol))) || u;
+          if (n && list.indexOf(n) === -1) list.push(n);
+        });
+      }
+    });
+    return list;
+  }
+
+  function fillUnitSelect(sel, current) {
+    const apply = (unitsArr) => {
+      const list = [];
+      (unitsArr || []).forEach((u) => {
+        const n = (u && (typeof u === "string" ? u : (u.name || u.symbol))) || u;
+        if (n && list.indexOf(n) === -1) list.push(n);
+      });
+      if (current && list.indexOf(current) === -1) list.push(current);
+      fillSelect(sel, list, current != null && list.indexOf(current) !== -1 ? current : (list[0] || ""));
+    };
+    apply((csetData && csetData.units) || (ssetData && ssetData.units));
+    if (A.online && DATA && DATA.clientSett && !csetData) {
+      DATA.clientSett().then((p) => {
+        if (p && p.units) { csetData = p; apply(p.units); }
+      }).catch(() => {});
+    }
   }
 
   function discountStatusText(p) {
@@ -868,10 +1306,11 @@
       const stBadge = p.isActive
         ? '<span class="badge badge-active">نشط 🟢</span>'
         : '<span class="badge badge-inactive">معطل 🔴</span>';
+      const stockDetail = WAREHOUSES.map((w) => Number(stockAt(p, w)).toLocaleString("en-US") + "@" + w).join("   ");
       tr.innerHTML =
         '<td>' + esc(p.code) + '</td>' +
         '<td>' + esc(p.barcode || "-") + '</td>' +
-        '<td>' + esc(p.nameAr) + '</td>' +
+        '<td>' + esc(p.nameAr) + '<div class="stk-mini">' + esc(stockDetail) + '</div></td>' +
         '<td>' + esc(p.category) + '</td>' +
         '<td>' + esc(p.unit) + '</td>' +
         '<td>' + esc(Number(p.qty).toLocaleString("en-US")) + '</td>' +
@@ -891,9 +1330,9 @@
   /* ---- نافذة إضافة / تعديل صنف ---- */
   function openProductDialog(product) {
     editingProductId = product ? product.id : null;
-    fillSelect("#fPCategory", productCategories(), product ? product.category : CATEGORIES[0]);
-    fillSelect("#fPUnit", UNITS, product ? product.unit : UNITS[0]);
-    fillSelect("#fPWarehouse", WAREHOUSES, product ? product.defaultWarehouse : WAREHOUSES[0]);
+    fillCatSelect("#fPCategory", product ? product.category : null);
+    fillUnitSelect("#fPUnit", product ? product.unit : null);
+    fillWhSelect("#fPWarehouse", product ? product.defaultWarehouse : null);
 
     if (product) {
       $("#productModalTitle").textContent = "✏️ تعديل صنف (" + product.nameAr + ")";
@@ -915,7 +1354,7 @@
       $("#productModalTitle").textContent = "➕ إضافة صنف جديد للمخزن";
       $("#btnSaveProduct").textContent = "💾 حفظ الصنف";
       $("#fPCode").value = nextProductCode();
-      $("#fPCode").disabled = false;
+      $("#fPCode").disabled = true;
       $("#fPBarcode").value = "";
       $("#fPNameAr").value = "";
       $("#fPNameEn").value = "";
@@ -965,7 +1404,7 @@
     if (editingProductId == null) {
       const pr = {
         id: nextProductId(),
-        code: $("#fPCode").value.trim(),
+        code: nextProductCode(),
         barcode: $("#fPBarcode").value.trim() || "",
         nameAr: nameAr,
         nameEn: $("#fPNameEn").value.trim(),
@@ -978,6 +1417,7 @@
         discountPercent: discount,
         discountStart: dStart,
         discountEnd: dEnd,
+        stock: { [($("#fPWarehouse").value || WAREHOUSES[0])]: opening },
         qty: opening,
         reorder: 50,
         isActive: status
@@ -1010,7 +1450,7 @@
 
   /* ---- جرد المخزون لكل مستودع ---- */
   function openStockTake() {
-    fillSelect("#stkWarehouse", WAREHOUSES, WAREHOUSES[0]);
+    fillWhSelect("#stkWarehouse", null);
     renderStockTake();
     showModal("mStockTake");
   }
@@ -1019,13 +1459,13 @@
     const wh = $("#stkWarehouse").value;
     const tbody = $("#dgvStockTake tbody");
     tbody.innerHTML = "";
-    const lines = products.filter((p) => p.defaultWarehouse === wh || p.defaultWarehouse === WAREHOUSES[0]);
+    const lines = products.filter((p) => p.defaultWarehouse === wh || stockAt(p, wh) > 0);
     lines.forEach((p) => {
       const tr = document.createElement("tr");
       tr.innerHTML =
         '<td>' + esc(p.code) + '</td>' +
         '<td>' + esc(p.nameAr) + '</td>' +
-        '<td>' + esc(Number(p.qty).toLocaleString("en-US")) + '</td>' +
+        '<td>' + esc(Number(stockAt(p, wh)).toLocaleString("en-US")) + '</td>' +
         '<td><input class="stk-qty-input" type="text" data-id="' + p.id + '" autocomplete="off" /></td>' +
         '<td class="stk-diff diff-zero">-</td>';
       tbody.appendChild(tr);
@@ -1072,7 +1512,7 @@
     items.forEach((it) => {
       const pr = products.find((p) => p.id === it.id);
       if (pr) {
-        pr.qty = it.qty;
+        setStockAt(pr, wh, it.qty);
         pr.weightedAvgCost = pr.weightedAvgCost || pr.purchasePrice;
       }
     });
@@ -1128,6 +1568,86 @@
     printSection($("#stockPage"));
   }
 
+  /* ---- نقل الأصناف بين المخازن ---- */
+  function openTransferModal() {
+    fillWhSelect("#trFrom", null);
+    fillTransferTarget();
+    fillTransferProducts();
+    $("#trQty").value = "1";
+    showModal("mTransfer");
+  }
+
+  function fillTransferTarget() {
+    const from = $("#trFrom").value;
+    const others = WAREHOUSES.filter((w) => w !== from);
+    const sel = $("#trTo");
+    const prev = sel.value;
+    sel.innerHTML = "";
+    others.forEach((w) => {
+      const opt = document.createElement("option");
+      opt.value = w;
+      opt.textContent = w;
+      sel.appendChild(opt);
+    });
+    if (prev && others.includes(prev)) sel.value = prev;
+  }
+
+  function fillTransferProducts() {
+    const from = $("#trFrom").value;
+    const sel = $("#trProduct");
+    const prev = sel.value;
+    sel.innerHTML = "";
+    const opt0 = document.createElement("option");
+    opt0.value = "0";
+    opt0.textContent = "-- اختر صنفاً للنقل --";
+    sel.appendChild(opt0);
+    products.filter((p) => p.isActive && stockAt(p, from) > 0).forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = "[" + p.code + "] " + p.nameAr + " (رصيده في " + from + ": " + Number(stockAt(p, from)).toLocaleString("en-US") + " " + p.unit + ")";
+      sel.appendChild(opt);
+    });
+    sel.value = "0";
+  }
+
+  function doStockTransfer() {
+    const from = $("#trFrom").value;
+    const to = $("#trTo").value;
+    const pid = parseInt($("#trProduct").value, 10);
+    if (!from || !to || from === to) {
+      toast("اختر مخزنين مختلفين.", "warning");
+      return;
+    }
+    const p = products.find((x) => x.id === pid);
+    if (!p) {
+      toast("اختر الصنف المراد نقله.", "warning");
+      return;
+    }
+    const avail = stockAt(p, from);
+    const qty = parseFloat(String($("#trQty").value).replace(/,/g, ""));
+    if (!(qty > 0)) {
+      toast("اكتب كمية صحيحة أكبر من صفر.", "warning");
+      return;
+    }
+    if (qty > avail) {
+      toast("الكمية المطلوبة أكبر من الرصيد المتاح في " + from + ".\nالمتاح: " + Number(avail).toLocaleString("en-US") + " " + p.unit, "warning");
+      return;
+    }
+    if (!confirm("نقل " + qty + " " + p.unit + " من صنف («" + p.nameAr + "»)\nمن مخزن (" + from + ") إلى مخزن (" + to + ").\n\nهل أنت متأكد؟")) return;
+    addStockAt(p, from, -qty);
+    addStockAt(p, to, qty);
+    saveProducts();
+    addActivity("نقل مخزون", "نقل " + qty + " من «" + p.nameAr + "» من (" + from + ") إلى (" + to + ")");
+    fillTransferProducts();
+    $("#trQty").value = "1";
+    fillPosDatalist();
+    fillPPDatalist();
+    renderProducts();
+    renderSalesLookups();
+    posUpdateBadge(p);
+    toast("تم نقل " + qty + " " + p.unit + " من («" + p.nameAr + "») بنجاح.", "success");
+  }
+
   /* ================== شاشة فواتير المبيعات (POS) ================== */
   let posItems = [];
   let posInitialized = false;
@@ -1175,7 +1695,7 @@
     const whSel = $("#cmbPosWarehouse");
     const prevWh = whSel.value;
     whSel.innerHTML = "";
-    WAREHOUSES.forEach((w) => {
+    warehouseList().forEach((w) => {
       const opt = document.createElement("option");
       opt.value = w;
       opt.textContent = w;
@@ -1183,25 +1703,7 @@
     });
     if (prevWh) whSel.value = prevWh;
 
-    fillPosPicker();
     fillPosDatalist();
-  }
-
-  function fillPosPicker() {
-    const sel = $("#cmbPosPicker");
-    const prev = sel.value;
-    sel.innerHTML = "";
-    const opt0 = document.createElement("option");
-    opt0.value = "0";
-    opt0.textContent = "-- اختر صنفاً من المخزن للإضافة --";
-    sel.appendChild(opt0);
-    products.filter((p) => p.isActive).forEach((p) => {
-      const opt = document.createElement("option");
-      opt.value = p.id;
-      opt.textContent = "[" + p.code + "] " + p.nameAr + " (المخزن: " + Number(p.qty).toLocaleString("en-US") + " " + p.unit + " | " + fmt(p.salePrice) + " ج.م)";
-      sel.appendChild(opt);
-    });
-    sel.value = prev && sel.querySelector('option[value="' + prev + '"]') ? prev : "0";
   }
 
   function fillPosDatalist() {
@@ -1224,15 +1726,16 @@
   }
 
   function posUpdateBadge(p) {
+    const hint = $("#posStockHint");
     if (!p) {
-      $("#sbName").textContent = "—";
-      $("#sbQty").textContent = "الرصيد: -";
-      $("#sbPrice").textContent = "السعر البيعي المرجعي: -";
+      hint.textContent = "📦 رصيد: -";
       return;
     }
-    $("#sbName").textContent = p.nameAr;
-    $("#sbQty").textContent = "الرصيد: " + Number(p.qty).toLocaleString("en-US") + " " + p.unit;
-    $("#sbPrice").textContent = "السعر البيعي المرجعي: " + fmt(p.salePrice) + " ج.م";
+    const wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
+    hint.textContent =
+      "🏷️ " + p.nameAr +
+      " | 📦 الرصيد في " + wh + ": " + Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit +
+      " | 💰 سعر البيع: " + fmt(p.salePrice) + " ج.م";
   }
 
   function posNewInvoice() {
@@ -1242,9 +1745,9 @@
     $("#cmbPaymentMethod").value = "نقداً";
     $("#txtPosDiscount").value = "0";
     $("#txtPosSearch").value = "";
+    $("#txtPosCode").value = "";
     $("#numPosQty").value = "1";
     $("#txtPosPrice").value = "";
-    $("#cmbPosPicker").value = "0";
     posSelectDefaultCustomer();
     posPaymentVisibility();
     posUpdateBadge(null);
@@ -1273,30 +1776,38 @@
   }
 
   function posOnSearch() {
+    // مثل ديسك توب: بمجرد مطابقة المنتج يُملأ سعر البيع تلقائيًا من بياناته في المخزن
     const q = $("#txtPosSearch").value.trim();
     if (!q) return;
     const p = findProductFlexible(q);
     if (p) {
       posUpdateBadge(p);
+      const input = $("#txtPosPrice");
+      if (input) input.value = fmt(p.salePrice);
     }
   }
 
-  function posPickFromList() {
-    const id = parseInt($("#cmbPosPicker").value, 10);
-    if (!id) return;
-    const p = products.find((x) => x.id === id);
-    if (!p) return;
-    $("#txtPosSearch").value = p.nameAr;
-    posUpdateBadge(p);
-    $("#txtPosPrice").focus();
+  function posOnCode() {
+    const q = $("#txtPosCode").value.trim();
+    if (!q) return;
+    const p = findProductFlexible(q);
+    if (p) {
+      posUpdateBadge(p);
+      const input = $("#txtPosPrice");
+      if (input) input.value = fmt(p.salePrice);
+    } else {
+      posUpdateBadge(null);
+    }
   }
+
+  let posAddSource = "search";
 
   function posAddItem() {
     let q = $("#txtPosSearch").value.trim();
     let prod = q ? findProductFlexible(q) : null;
     if (!prod) {
-      const pid = parseInt($("#cmbPosPicker").value, 10);
-      if (pid) prod = products.find((p) => p.id === pid);
+      const code = $("#txtPosCode").value.trim();
+      if (code) prod = findProductFlexible(code);
     }
     if (!prod) {
       toast("لم يتم العثور على صنف يطابق الاسم أو الكود المكتوب.\nيمكنك استخدام زر (➕ إضافة صنف جديد للمخزن).", "warning");
@@ -1306,8 +1817,20 @@
       toast("الصنف (" + prod.nameAr + ") معطل وغير متاح للبيع.", "warning");
       return;
     }
+    const wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
+    const availableStock = stockAt(prod, wh);
+    if (!(availableStock > 0)) {
+      posUpdateBadge(prod);
+      toast("المنتج (" + prod.nameAr + ") غير متوفر في مخزن (" + wh + ").", "warning");
+      return;
+    }
     let qty = parseFloat(String($("#numPosQty").value).replace(/,/g, ""));
     if (!(qty > 0)) qty = 1;
+    const alreadyInInvoice = posItems.reduce((s, it) => s + (it.productId === prod.id ? it.qty : 0), 0);
+    if (qty + alreadyInInvoice > availableStock) {
+      toast("الكمية المطلوبة أكبر من المتوفر في مخزن (" + wh + ").\nالمتوفر: " + Number(availableStock - alreadyInInvoice).toLocaleString("en-US") + " " + prod.unit, "warning");
+      return;
+    }
     let price = parseFloat(String($("#txtPosPrice").value).replace(/,/g, ""));
     if (isNaN(price) || price <= 0) {
       toast("اكتب سعر البيع المتفق عليه مع العميل في خانة «سعر البيع».", "warning");
@@ -1334,13 +1857,14 @@
       });
     }
     $("#txtPosSearch").value = "";
+    $("#txtPosCode").value = "";
     $("#numPosQty").value = "1";
     $("#txtPosPrice").value = "";
-    $("#cmbPosPicker").value = "0";
     posUpdateBadge(prod);
     renderPosItems();
     posRecalc();
-    $("#txtPosSearch").focus();
+    if (posAddSource === "code") $("#txtPosCode").focus();
+    else $("#txtPosSearch").focus();
   }
 
   function posCalcRow(idx) {
@@ -1362,10 +1886,12 @@
     const extra = parseFloat(String($("#txtPosDiscount").value).replace(/,/g, "")) || 0;
     let grand = Math.round((sub + tax - extra) * 100) / 100;
     if (grand < 0) grand = 0;
+    const pct = getTaxPercent();
     $("#lblPosSubTotal").textContent = (TAX.enabled ? "المجموع: " : "الإجمالي: ") + fmt(sub) + " ج.م";
-    $("#lblPosTax").textContent = TAX.enabled ? "ضريبة المبيعات (" + Math.round(TAX.rate * 100) + "%): " + fmt(tax) + " ج.م" : "";
+    $("#lblPosTax").textContent = TAX.enabled ? ("ضريبة المبيعات (" + pct + "%): " + fmt(tax) + " ج.م") : "";
+    $("#lblPosTax").style.display = TAX.enabled ? "" : "none";
     $("#lblPosTax").hidden = !TAX.enabled;
-    $("#lblPosTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الإجمالي: ") + fmt(grand) + " ج.م";
+    $("#lblPosTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الصافي: ") + fmt(grand) + " ج.م";
     return { sub: sub, tax: tax, extra: extra, grand: grand };
   }
 
@@ -1381,9 +1907,9 @@
         '<td style="text-align:right">' + esc(it.nameAr) + '</td>' +
         '<td>' + esc(it.unit) + '</td>' +
         '<td><input class="cell-input" data-f="qty" type="text" value="' + esc(it.qty) + '" /></td>' +
-        '<td><input class="cell-input" data-f="price" type="text" value="' + fmt(it.price) + '" /></td>' +
+        '<td class="c-fixed">' + fmt(it.price) + '</td>' +
         '<td><input class="cell-input" data-f="discount" type="text" value="' + fmt(it.discount) + '" /></td>' +
-        '<td class="c-tax">' + fmt(it.tax) + '</td>' +
+        '<td class="c-tax' + (TAX.enabled ? '' : ' tax-hidden') + '"' + (TAX.enabled ? '' : ' style="display:none"') + '>' + fmt(it.tax) + '</td>' +
         '<td class="c-total">' + fmt(it.total) + '</td>' +
         '<td class="cell-actions"><button class="btn small red" type="button" data-f="del">❌</button></td>';
       tr.addEventListener("mouseenter", () => posUpdateBadge(products.find((p) => p.id === it.productId) || null));
@@ -1417,7 +1943,8 @@
     const shortages = posItems
       .map((it) => {
         const p = products.find((x) => x.id === it.productId);
-        return p && p.qty >= it.qty ? null : it.nameAr + " (المتاح: " + (p ? Number(p.qty).toLocaleString("en-US") : 0) + ")";
+        const avail = p ? stockAt(p, warehouse) : 0;
+        return p && avail >= it.qty ? null : it.nameAr + " (المتاح: " + Number(avail).toLocaleString("en-US") + ")";
       })
       .filter(Boolean);
     if (shortages.length > 0) {
@@ -1463,7 +1990,7 @@
 
     posItems.forEach((it) => {
       const p = products.find((x) => x.id === it.productId);
-      if (p) p.qty = Math.round((p.qty - it.qty) * 100) / 100;
+      if (p) addStockAt(p, warehouse, -it.qty);
     });
     saveProducts();
 
@@ -1473,7 +2000,6 @@
 
     toast("تم حفظ وتأكيد فاتورة المبيعات بنجاح برقم (" + invoice.invoiceNumber + ").", "success");
     printInvoice(invoice);
-    fillPosPicker();
     fillPosDatalist();
     posNewInvoice();
   }
@@ -1484,6 +2010,9 @@
     $("#invCustPrint").textContent = inv.customerName;
     $("#invWhPrint").textContent = inv.warehouse;
     $("#invPayPrint").textContent = inv.paymentMethod;
+    const hasTax = (inv.taxAmount > 0) || (TAX.enabled && TAX.rate > 0);
+    const thTax = $("#thPrintTax");
+    if (thTax) thTax.style.display = hasTax ? "" : "none";
     const tb = $("#invBodyPrint");
     tb.innerHTML = "";
     inv.items.forEach((it) => {
@@ -1495,13 +2024,15 @@
         '<td>' + esc(Number(it.qty).toLocaleString("en-US")) + '</td>' +
         '<td>' + fmt(it.price) + '</td>' +
         '<td>' + fmt(it.discount) + '</td>' +
-        '<td>' + fmt(it.tax) + '</td>' +
+        (hasTax ? ('<td>' + fmt(it.tax) + '</td>') : '') +
         '<td>' + fmt(it.total) + '</td>';
       tb.appendChild(tr);
     });
-    $("#invFootPrint").innerHTML =
-      "المجموع: <b>" + fmt(inv.subTotal) + " ج.م</b> | الخصم الإضافي: <b>" + fmt(inv.discountAmount) + " ج.م</b> | " +
-      "الضريبة: <b>" + fmt(inv.taxAmount) + " ج.م</b> | الصافي النهائي: <b>" + fmt(inv.grandTotal) + " ج.م</b>";
+    let footStr = "المجموع: <b>" + fmt(inv.subTotal) + " ج.م</b>";
+    if (inv.discountAmount) footStr += " | الخصم الإضافي: <b>" + fmt(inv.discountAmount) + " ج.م</b>";
+    if (hasTax) footStr += " | الضريبة: <b>" + fmt(inv.taxAmount) + " ج.م</b>";
+    footStr += " | الصافي النهائي: <b>" + fmt(inv.grandTotal) + " ج.م</b>";
+    $("#invFootPrint").innerHTML = footStr;
     printSection($("#invoicePage"));
   }
 
@@ -1514,9 +2045,10 @@
 
   /* ---- إضافة سريعة: صنف ---- */
   function openQuickProduct() {
-    fillSelect("#qCat", productCategories(), CATEGORIES[0]);
-    fillSelect("#qUnit", UNITS, UNITS[0]);
+    fillCatSelect("#qCat", null);
+    fillUnitSelect("#qUnit", null);
     $("#qCode").value = nextProductCode();
+    $("#qCode").disabled = true;
     $("#qName").value = "";
     $("#qQty").value = "10";
     $("#qCost").value = "100";
@@ -1538,7 +2070,7 @@
     const disc = parseFloat($("#qDisc").value) || 0;
     const p = {
       id: nextProductId(),
-      code: $("#qCode").value.trim() || nextProductCode(),
+      code: nextProductCode(),
       barcode: "",
       nameAr: nameAr,
       nameEn: "",
@@ -1551,6 +2083,7 @@
       discountPercent: disc,
       discountStart: "",
       discountEnd: "",
+      stock: { [($("#cmbPosWarehouse").value || WAREHOUSES[0])]: qty },
       qty: qty,
       reorder: 50,
       isActive: true
@@ -1559,9 +2092,7 @@
     saveProducts();
     addActivity("إضافة صنف", "إضافة صنف سريع من شاشة المبيعات: " + p.nameAr + " (" + p.code + ")");
     hideModal("mQuickProduct");
-    fillPosPicker();
     fillPosDatalist();
-    fillPPPicker();
     fillPPDatalist();
     $("#txtPosSearch").value = p.nameAr;
     $("#txtPosPrice").value = fmt(p.salePrice);
@@ -1629,7 +2160,7 @@
     const whSel = $("#cmbPPWarehouse");
     const prevWh = whSel.value;
     whSel.innerHTML = "";
-    WAREHOUSES.forEach((w) => {
+    warehouseList().forEach((w) => {
       const opt = document.createElement("option");
       opt.value = w;
       opt.textContent = w;
@@ -1637,25 +2168,7 @@
     });
     if (prevWh && whSel.querySelector('option[value="' + prevWh + '"]')) whSel.value = prevWh;
 
-    fillPPPicker();
     fillPPDatalist();
-  }
-
-  function fillPPPicker() {
-    const sel = $("#cmbPPPicker");
-    const prev = sel.value;
-    sel.innerHTML = "";
-    const opt0 = document.createElement("option");
-    opt0.value = "0";
-    opt0.textContent = "-- اختر صنفاً من المخزن للإضافة --";
-    sel.appendChild(opt0);
-    products.filter((p) => p.isActive).forEach((p) => {
-      const opt = document.createElement("option");
-      opt.value = p.id;
-      opt.textContent = "[" + p.code + "] " + p.nameAr + " (المخزن: " + Number(p.qty).toLocaleString("en-US") + " " + p.unit + " | شراء: " + fmt(p.purchasePrice) + " ج.م)";
-      sel.appendChild(opt);
-    });
-    sel.value = prev && sel.querySelector('option[value="' + prev + '"]') ? prev : "0";
   }
 
   function fillPPDatalist() {
@@ -1678,15 +2191,16 @@
   }
 
   function ppUpdateBadge(p) {
+    const hint = $("#ppStockHint");
     if (!p) {
-      $("#sbPName").textContent = "—";
-      $("#sbPQty").textContent = "الرصيد: -";
-      $("#sbPPrice").textContent = "سعر الشراء المرجعي: -";
+      hint.textContent = "📦 رصيد: -";
       return;
     }
-    $("#sbPName").textContent = p.nameAr;
-    $("#sbPQty").textContent = "الرصيد: " + Number(p.qty).toLocaleString("en-US") + " " + p.unit;
-    $("#sbPPrice").textContent = "سعر الشراء المرجعي: " + fmt(p.purchasePrice) + " ج.م";
+    const wh = $("#cmbPPWarehouse").value || WAREHOUSES[0];
+    hint.textContent =
+      "🏷️ " + p.nameAr +
+      " | 📦 الرصيد في " + wh + ": " + Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit +
+      " | 💰 سعر الشراء: " + fmt(p.purchasePrice) + " ج.م";
   }
 
   function ppNewInvoice() {
@@ -1696,9 +2210,9 @@
     $("#cmbPPaymentMethod").value = "نقداً";
     $("#txtPPDiscount").value = "0";
     $("#txtPPSearch").value = "";
+    $("#txtPPCode").value = "";
     $("#numPPQty").value = "1";
     $("#txtPPPrice").value = "";
-    $("#cmbPPPicker").value = "0";
     ppSelectDefaultSupplier();
     ppPaymentVisibility();
     ppUpdateBadge(null);
@@ -1735,22 +2249,25 @@
     }
   }
 
-  function ppPickFromList() {
-    const id = parseInt($("#cmbPPPicker").value, 10);
-    if (!id) return;
-    const p = products.find((x) => x.id === id);
-    if (!p) return;
-    $("#txtPPSearch").value = p.nameAr;
-    ppUpdateBadge(p);
-    $("#txtPPPrice").focus();
+  function ppOnCode() {
+    const q = $("#txtPPCode").value.trim();
+    if (!q) return;
+    const p = findProductFlexible(q);
+    if (p) {
+      ppUpdateBadge(p);
+    } else {
+      ppUpdateBadge(null);
+    }
   }
+
+  let ppAddSource = "search";
 
   function ppAddItem() {
     let q = $("#txtPPSearch").value.trim();
     let prod = q ? findProductFlexible(q) : null;
     if (!prod) {
-      const pid = parseInt($("#cmbPPPicker").value, 10);
-      if (pid) prod = products.find((p) => p.id === pid);
+      const code = $("#txtPPCode").value.trim();
+      if (code) prod = findProductFlexible(code);
     }
     if (!prod) {
       toast("لم يتم العثور على صنف يطابق الاسم أو الكود المكتوب.\nيمكنك استخدام زر (➕ إضافة صنف جديد للمخزن).", "warning");
@@ -1763,9 +2280,11 @@
     let qty = parseFloat(String($("#numPPQty").value).replace(/,/g, ""));
     if (!(qty > 0)) qty = 1;
     let price = parseFloat(String($("#txtPPPrice").value).replace(/,/g, ""));
-    if (isNaN(price) || price <= 0) {
-      toast("اكتب سعر الشراء المتفق عليه مع المورد في خانة «سعر الشراء».", "warning");
-      $("#txtPPPrice").focus();
+    if (!(price > 0)) {
+      price = Number(prod.purchasePrice) || 0;
+    }
+    if (!(price > 0)) {
+      toast("اكتب سعر الشراء في خانة (سعر الشراء) قبل إضافة الصنف.", "warning");
       return;
     }
 
@@ -1786,13 +2305,14 @@
       });
     }
     $("#txtPPSearch").value = "";
+    $("#txtPPCode").value = "";
     $("#numPPQty").value = "1";
     $("#txtPPPrice").value = "";
-    $("#cmbPPPicker").value = "0";
     ppUpdateBadge(prod);
     renderPPItems();
     ppRecalc();
-    $("#txtPPSearch").focus();
+    if (ppAddSource === "code") $("#txtPPCode").focus();
+    else $("#txtPPSearch").focus();
   }
 
   function ppCalcRow(idx) {
@@ -1814,10 +2334,12 @@
     const extra = parseFloat(String($("#txtPPDiscount").value).replace(/,/g, "")) || 0;
     let grand = Math.round((sub + tax - extra) * 100) / 100;
     if (grand < 0) grand = 0;
+    const pct = getTaxPercent();
     $("#lblPPSubTotal").textContent = (TAX.enabled ? "المجموع: " : "الإجمالي: ") + fmt(sub) + " ج.م";
-    $("#lblPPTax").textContent = TAX.enabled ? "ضريبة المبيعات (" + Math.round(TAX.rate * 100) + "%): " + fmt(tax) + " ج.م" : "";
+    $("#lblPPTax").textContent = TAX.enabled ? ("ضريبة المبيعات (" + pct + "%): " + fmt(tax) + " ج.م") : "";
+    $("#lblPPTax").style.display = TAX.enabled ? "" : "none";
     $("#lblPPTax").hidden = !TAX.enabled;
-    $("#lblPPTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الإجمالي: ") + fmt(grand) + " ج.م";
+    $("#lblPPTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الصافي: ") + fmt(grand) + " ج.م";
     return { sub: sub, tax: tax, extra: extra, grand: grand };
   }
 
@@ -1835,7 +2357,7 @@
         '<td><input class="cell-input" data-f="qty" type="text" value="' + esc(it.qty) + '" /></td>' +
         '<td><input class="cell-input" data-f="price" type="text" value="' + fmt(it.price) + '" /></td>' +
         '<td><input class="cell-input" data-f="discount" type="text" value="' + fmt(it.discount) + '" /></td>' +
-        '<td class="c-tax">' + fmt(it.tax) + '</td>' +
+        '<td class="c-tax' + (TAX.enabled ? '' : ' tax-hidden') + '"' + (TAX.enabled ? '' : ' style="display:none"') + '>' + fmt(it.tax) + '</td>' +
         '<td class="c-total">' + fmt(it.total) + '</td>' +
         '<td class="cell-actions"><button class="btn small red" type="button" data-f="del">❌</button></td>';
       tr.addEventListener("mouseenter", () => ppUpdateBadge(products.find((p) => p.id === it.productId) || null));
@@ -1909,7 +2431,7 @@
       const oldCost = Number(p.weightedAvgCost) || 0;
       const newQty = oldQty + it.qty;
       p.weightedAvgCost = Math.round(((oldCost * oldQty) + (it.price * it.qty)) / newQty * 100) / 100;
-      p.qty = Math.round(newQty * 100) / 100;
+      addStockAt(p, warehouse, it.qty);
       p.purchasePrice = it.price;
     });
     saveProducts();
@@ -1920,7 +2442,6 @@
 
     toast("تم حفظ وتأكيد فاتورة المشتريات بنجاح برقم (" + invoice.invoiceNumber + ").", "success");
     printPurchaseInvoice(invoice);
-    fillPPPicker();
     fillPPDatalist();
     ppNewInvoice();
   }
@@ -1931,6 +2452,9 @@
     $("#ppSuppPrint").textContent = inv.supplierName;
     $("#ppWhPrint").textContent = inv.warehouse;
     $("#ppPayPrint").textContent = inv.paymentMethod;
+    const hasTax = (inv.taxAmount > 0) || (TAX.enabled && TAX.rate > 0);
+    const thTax = $("#thPPPrintTax");
+    if (thTax) thTax.style.display = hasTax ? "" : "none";
     const tb = $("#ppBody");
     tb.innerHTML = "";
     inv.items.forEach((it) => {
@@ -1942,13 +2466,15 @@
         '<td>' + esc(Number(it.qty).toLocaleString("en-US")) + '</td>' +
         '<td>' + fmt(it.price) + '</td>' +
         '<td>' + fmt(it.discount) + '</td>' +
-        '<td>' + fmt(it.tax) + '</td>' +
+        (hasTax ? ('<td>' + fmt(it.tax) + '</td>') : '') +
         '<td>' + fmt(it.total) + '</td>';
       tb.appendChild(tr);
     });
-    $("#ppFoot").innerHTML =
-      "المجموع: <b>" + fmt(inv.subTotal) + " ج.م</b> | الخصم الإضافي: <b>" + fmt(inv.discountAmount) + " ج.م</b> | " +
-      "الضريبة: <b>" + fmt(inv.taxAmount) + " ج.م</b> | الصافي النهائي: <b>" + fmt(inv.grandTotal) + " ج.م</b>";
+    let footStr = "المجموع: <b>" + fmt(inv.subTotal) + " ج.م</b>";
+    if (inv.discountAmount) footStr += " | الخصم الإضافي: <b>" + fmt(inv.discountAmount) + " ج.م</b>";
+    if (hasTax) footStr += " | الضريبة: <b>" + fmt(inv.taxAmount) + " ج.م</b>";
+    footStr += " | الصافي النهائي: <b>" + fmt(inv.grandTotal) + " ج.م</b>";
+    $("#ppFoot").innerHTML = footStr;
     printSection($("#purchasePage"));
   }
 
@@ -2298,6 +2824,71 @@
   let treasuryEditingId = null;
   let voucherMode = "in";
 
+  // الضبط هو المرجع: نبني قائمة الخزائن من بيانات الضبط (بنوك + محافظ) مع إبقاء
+  // الخزائن النقدية الموجودة، ونحافظ على معرفات الأصناف الشبيهة حتى لا تنكسر الفواتير.
+  // إن لم تصل بيانات ضبط فعلية من السحابة (غير محمّلة/فارغة) نحتفظ بالقائمة الحالية دون مساس.
+  function syncTreasuryFromSett() {
+    try {
+      const banks = (csetData && csetData.banks) || null;
+      const wallets = (csetData && csetData.wallets) || null;
+      if (!csetData || csetData.__online !== true) return false;
+      const hasBankData = Array.isArray(banks) && banks.length;
+      const hasWalletData = Array.isArray(wallets) && wallets.length;
+      if (!hasBankData && !hasWalletData) {
+        // لا بنوك ولا محافظ في الضبط → لا نمسّ القائمة الحالية
+        return false;
+      }
+      const nextId = treasury.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
+      const built = [];
+      const used = {};
+      const match = (type, name) => {
+        for (const t of treasury) {
+          if (used[t.id]) continue;
+          if (t.type === type && t.name === name) { used[t.id] = true; return t; }
+        }
+        return null;
+      };
+      (banks || []).forEach((b) => {
+        const name = (b.name || "").trim(); if (!name) return;
+        const prev = match("bank", name);
+        built.push({
+          id: prev ? prev.id : nextId++,
+          name: name,
+          type: "bank",
+          accountNo: (b.account_no || "").trim(),
+          openingBalance: Number(b.opening_balance || 0),
+          balance: Number((b.balance != null ? b.balance : b.opening_balance) || 0),
+          isActive: b.is_active !== false
+        });
+      });
+      (wallets || []).forEach((w) => {
+        const name = (w.name || "").trim(); if (!name) return;
+        const prev = match("wallet", name);
+        built.push({
+          id: prev ? prev.id : nextId++,
+          name: name,
+          type: "wallet",
+          accountNo: (w.account_no || "").trim(),
+          openingBalance: Number(w.opening_balance || 0),
+          balance: Number((w.balance != null ? w.balance : w.opening_balance) || 0),
+          isActive: w.is_active !== false
+        });
+      });
+      // إبقاء الخزائن النقدية فقط؛ البنوك/المحافظ القديمة تُستبدل من الضبط
+      treasury.forEach((t) => {
+        if (used[t.id]) return;
+        if (t.type !== "cash") return;
+        built.push(t);
+      });
+      if (built.length === treasury.length &&
+          built.every((b, i) => b.id === treasury[i].id && b.name === treasury[i].name && b.balance === treasury[i].balance)) {
+        return false;
+      }
+      treasury = built;
+      return true;
+    } catch (e) { return false; }
+  }
+
   function renderTreasury() {
     const tbody = $("#dgvTreasury tbody");
     tbody.innerHTML = "";
@@ -2590,7 +3181,7 @@
     $("#jDate").value = todayISO();
     $("#jDesc").value = "";
     $("#jRef").value = "قيد يدوي";
-    jrnLines = [{ accountId: "0", debit: "", credit: "" }, { accountId: "0", debit: "", credit: "" }];
+    jrnLines = [{ accountId: "0", accountText: "", debit: "", credit: "" }, { accountId: "0", accountText: "", debit: "", credit: "" }];
     renderJrnLines();
     showModal("mJournal");
     $("#jDesc").focus();
@@ -2599,35 +3190,67 @@
   function renderJrnLines() {
     const box = $("#jrnLines");
     box.innerHTML = "";
+    // datalist مشترك لكل أسطر القيد يعرض كل الحسابات النشطة
+    let dlId = "jrnAccountsList";
+    let dl = document.getElementById(dlId);
+    if (!dl) {
+      dl = document.createElement("datalist");
+      dl.id = dlId;
+      document.body.appendChild(dl);
+    }
+    dl.innerHTML = "";
+    accounts.filter((a) => a.parentId !== 0 && a.isActive).forEach((a) => {
+      const opt = document.createElement("option");
+      opt.value = a.code + " - " + a.nameAr;
+      dl.appendChild(opt);
+    });
     jrnLines.forEach((line, i) => {
       const div = document.createElement("div");
       div.className = "jrn-line";
-      const sel = document.createElement("select");
-      sel.dataset.i = i;
-      sel.dataset.f = "accountId";
-      sel.innerHTML = '<option value="0">— اختر الحساب —</option>';
-      accounts.filter((a) => a.parentId !== 0 && a.isActive).forEach((a) => {
-        const opt = document.createElement("option");
-        opt.value = a.id;
-        opt.textContent = a.code + " - " + a.nameAr;
-        sel.appendChild(opt);
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.dataset.i = i;
+      inp.dataset.f = "accountId";
+      inp.autocomplete = "off";
+      inp.placeholder = "اكتب كود أو اسم الحساب...";
+      inp.setAttribute("list", dlId);
+      inp.value = line.accountText || (line.accountId && line.accountId !== "0" ? (accounts.find((a) => a.id === parseInt(line.accountId, 10)) || {}).nameAr || "" : "");
+      inp.addEventListener("input", () => {
+        jrnLines[i].accountId = "0";
+        jrnLines[i].accountText = inp.value;
+        $("#jrnSum").textContent = jrnSummary();
       });
-      sel.value = String(line.accountId);
       const dIn = document.createElement("input");
       dIn.dataset.i = i; dIn.dataset.f = "debit"; dIn.type = "text"; dIn.value = line.debit;
+      dIn.addEventListener("input", () => { jrnLines[i].debit = dIn.value; $("#jrnSum").textContent = jrnSummary(); });
       const dOut = document.createElement("input");
       dOut.dataset.i = i; dOut.dataset.f = "credit"; dOut.type = "text"; dOut.value = line.credit;
+      dOut.addEventListener("input", () => { jrnLines[i].credit = dOut.value; $("#jrnSum").textContent = jrnSummary(); });
       const btn = document.createElement("button");
       btn.className = "btn small red"; btn.type = "button"; btn.textContent = "❌";
       btn.addEventListener("click", () => {
         jrnLines.splice(i, 1);
-        if (!jrnLines.length) jrnLines.push({ accountId: "0", debit: "", credit: "" });
+        if (!jrnLines.length) jrnLines.push({ accountId: "0", accountText: "", debit: "", credit: "" });
         renderJrnLines();
       });
-      div.appendChild(sel); div.appendChild(dIn); div.appendChild(dOut); div.appendChild(btn);
+      div.appendChild(inp); div.appendChild(dIn); div.appendChild(dOut); div.appendChild(btn);
       box.appendChild(div);
     });
     $("#jrnSum").textContent = jrnSummary();
+  }
+
+  // حسم نص الحساب المكتوب إلى حساب فعلي (كود أو اسم أو جزء من الاسم)
+  function resolveJournalAccount(text) {
+    const q = String(text || "").trim();
+    if (!q) return null;
+    const list = accounts.filter((a) => a.parentId !== 0 && a.isActive);
+    let hit = list.find((a) => String(a.code) === q) || list.find((a) => a.code && q.startsWith(a.code) && q.slice(a.code.length).trim().startsWith("-"));
+    if (hit) return hit;
+    hit = list.find((a) => a.nameAr === q);
+    if (hit) return hit;
+    hit = list.find((a) => (a.nameAr || "").indexOf(q) !== -1);
+    if (hit) return hit;
+    return null;
   }
 
   function jrnSummary() {
@@ -2649,9 +3272,13 @@
     }
     let d = 0, c = 0;
     for (const l of jrnLines) {
-      const aid = parseInt(l.accountId, 10);
+      let aid = parseInt(l.accountId, 10);
+      if (!aid && l.accountText) {
+        const hit = resolveJournalAccount(l.accountText);
+        if (hit) { aid = hit.id; l.accountId = String(hit.id); }
+      }
       if (!aid) {
-        toast("يرجى اختيار حساب لكل سطر.", "warning");
+        toast("يرجى اختيار حساب لكل سطر (اكتب كود أو اسم الحساب).", "warning");
         return;
       }
       d += parseFloat(l.debit) || 0;
@@ -2876,103 +3503,61 @@
   }
 
   /* ================== المستخدمون والصلاحيات ================== */
-  let editingUserId = null;
+  let editingUserId = null; // مستخدم محلي قديم (مستخدم في النسخ الاحتياطي فقط)
 
-  function renderUsers() {
-    const tbody = $("#dgvUsers tbody");
-    tbody.innerHTML = "";
-    const q = normalizeAr($("#txtUserSearch").value);
-    users
-      .filter((u) => {
-        if (!q) return true;
-        return normalizeAr(u.username).includes(q) || normalizeAr(u.fullName).includes(q) || normalizeAr(u.role).includes(q);
-      })
-      .forEach((u) => {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          '<td hidden></td>' +
-          '<td>' + esc(u.username) + '</td>' +
-          '<td>' + esc(u.fullName) + '</td>' +
-          '<td>' + esc(u.role) + '</td>' +
-          '<td>' + esc(u.branch || "الفرع الرئيسي") + '</td>' +
-          '<td>' + (u.isActive ? "نشط 🟢" : "موقوف 🔴") + '</td>' +
-          '<td>' + esc(u.lastSeen || "—") + '</td>' +
-          '<td><button class="btn small blue" type="button" data-act="edit">✏️</button>' +
-          ' <button class="btn small ' + (u.username === "admin" ? "gray" : "red") + '" type="button" data-act="toggle">' + (u.username === "admin" ? "🔒" : (u.isActive ? "⏸" : "▶")) + '</button></td>';
-        tr.dataset.uid = u.id;
-        tbody.appendChild(tr);
-      });
-    if (!users.length) tbody.innerHTML = '<tr><td colspan="8">لا يوجد مستخدمون.</td></tr>';
-  }
+  // تبويب «المستخدمون والصلاحيات» — يعرض حسابات الشركة الحقيقية من Supabase
+  // (نفس بيانات شاشة «تسجيل دخول شركة») بدل النظام المحلي الوهمي.
+  var lastOrgMembers = null;
+  function renderUsers(forceFetch) {
+    const wrap = $("#usersListWrap");
+    if (!wrap) return;
+    const info = $("#usersOrgInfo");
+    const q = normalizeAr($("#txtUserSearch") ? $("#txtUserSearch").value : "");
 
-  function openUserDialog(u) {
-    editingUserId = u ? u.id : null;
-    $("#userModalTitle").textContent = u ? "✏️ تعديل مستخدم" : "➕ إضافة مستخدم";
-    $("#uUsername").value = u ? u.username : "";
-    $("#uFullName").value = u ? u.fullName : "";
-    $("#uPassword").value = u ? u.password : "";
-    $("#uRole").value = u ? u.role : "موظف مبيعات";
-    const sel = $("#uBranch");
-    sel.innerHTML = "";
-    ["الفرع الرئيسي", "فرع المنصورة", "فرع الزقازيق"].forEach((b) => {
-      const opt = document.createElement("option");
-      opt.value = b;
-      opt.textContent = b;
-      sel.appendChild(opt);
-    });
-    sel.value = u ? (u.branch || "الفرع الرئيسي") : "الفرع الرئيسي";
-    $("#uActive").value = u ? (u.isActive ? "1" : "0") : "1";
-    showModal("mUser");
-    $("#uUsername").focus();
-  }
+    const p0 = DATA.getProfile();
+    const canManage = isOrgAdmin(p0) || !!(p0 && p0.is_superadmin);
 
-  function saveUser() {
-    const username = $("#uUsername").value.trim();
-    const fullName = $("#uFullName").value.trim();
-    if (!username || !fullName) {
-      toast("اسم المستخدم والاسم الكامل مطلوبان.", "warning");
+    if (!A.online) {
+      wrap.innerHTML = "<p class=\"login-sub\">هذا الجدول يعرض حسابات شركتك من السحابة. يلزم الدخول أونلاين.</p>";
+      if (info) info.textContent = "";
       return;
     }
-    if (editingUserId) {
-      const u = users.find((x) => x.id === editingUserId);
-      u.username = username;
-      u.fullName = fullName;
-      if ($("#uPassword").value.trim()) u.password = $("#uPassword").value.trim();
-      u.role = $("#uRole").value;
-      u.branch = $("#uBranch").value;
-      u.isActive = $("#uActive").value === "1";
-      saveUsers();
-      toast("تم حفظ التعديلات بنجاح.", "success");
-    } else {
-      if (users.some((u) => u.username.toLowerCase() === username.toLowerCase())) {
-        toast("اسم المستخدم موجود بالفعل.", "warning");
-        return;
-      }
-      users.push({
-        id: users.reduce((m, x) => Math.max(m, x.id), 0) + 1,
-        username: username,
-        fullName: fullName,
-        password: $("#uPassword").value.trim() || "123456",
-        role: $("#uRole").value,
-        branch: $("#uBranch").value,
-        isActive: $("#uActive").value === "1",
-        lastSeen: ""
-      });
-      saveUsers();
-      addActivity("إضافة مستخدم", "إضافة مستخدم جديد: " + username + " (" + $("#uRole").value + ")");
-      toast("تمت إضافة المستخدم بنجاح.", "success");
+
+    // البحث يشتغل من الذاكرة بدون طلب جديد للسحابة
+    if (lastOrgMembers && !forceFetch) {
+      paintOrgMembers(wrap, info, lastOrgMembers, q, canManage);
+      return;
     }
-    hideModal("mUser");
-    renderUsers();
+
+    wrap.innerHTML = "<p class=\"login-sub\">جارٍ التحميل...</p>";
+    DATA.orgInfo().then((o) => {
+      if (!o) throw new Error("لا يوجد حساب مرتبط بشركة");
+      if (info) {
+        info.textContent = "🏢 " + (o.org_name || "") + " — عدد الحسابات: " +
+          (o.members_count || 0) + " من " + (o.max_members || 5);
+      }
+      return DATA.orgMembers(o.org_id);
+    }).then((rows) => {
+      lastOrgMembers = rows || [];
+      paintOrgMembers(wrap, info, lastOrgMembers, q, canManage);
+    }).catch((e) => {
+      wrap.innerHTML = '<p class="login-msg err">' + (e.message || e) + "</p>";
+    });
   }
 
-  function toggleUser(id) {
-    const u = users.find((x) => x.id === id);
-    if (!u || u.username === "admin") return;
-    u.isActive = !u.isActive;
-    saveUsers();
-    toast("تم " + (u.isActive ? "تفعيل" : "إيقاف") + " المستخدم (" + u.username + ").", "success");
-    renderUsers();
+  function paintOrgMembers(wrap, info, rows, q, canManage) {
+    const list = (rows || []).filter((u) => {
+      if (!q) return true;
+      return normalizeAr(u.username || "").indexOf(q) >= 0 ||
+             normalizeAr(u.full_name || "").indexOf(q) >= 0;
+    });
+    if (!list.length) {
+      wrap.innerHTML = '<p class="login-sub">' +
+        (rows && rows.length ? "لا توجد نتائج للبحث." : "لا توجد حسابات بعد.") +
+        (canManage ? ' اضغط «➕ إنشاء حساب جديد» لإضافة موظف.' : "") + "</p>";
+      return;
+    }
+    renderMemberList(list, canManage, wrap);
   }
 
   /* ================== سجل العمليات ================== */
@@ -3003,41 +3588,438 @@
     toast("تم تنزيل سجل العمليات.", "success");
   }
 
-  /* ================== الإعدادات والنسخ الاحتياطي ================== */
+  /* ================== الإعدادات والنسخ الاحتياطي (تبويبات ديسك توب) ================== */
+  // حالة تبويبات الإعدادات: نفس الشكل (org + categories/units/warehouses/owners/wallets/banks)
+  //  - العميل: csetData (بيانات شركته) ويحفظها عبر DATA.saveClientSett
+  //  - المالك: ssetData (الشركة المحددة في القائمة) ويحفظها عبر DATA.adminSettSave
+  let csetData = null;
+  let ssetData = null;
+  let ssetOrgs = [];
+
+  const SETT_TYPES = {
+    cat: { key: "categories", title: "تصنيف", fields: [["name", "اسم التصنيف"], ["description", "الوصف"]] },
+    unit: { key: "units", title: "وحدة قياس", fields: [["name", "اسم الوحدة"], ["symbol", "الرمز"]] },
+    wh: { key: "warehouses", title: "مستودع", fields: [["code", "الكود"], ["name", "اسم المستودع"], ["address", "العنوان"], ["is_active", "نشط (checkbox)"]] },
+    wallet: { key: "wallets", title: "محفظة", fields: [["name", "الشركة / اسم المحفظة"], ["account_no", "رقم المحفظة"], ["opening_balance", "رصيد افتتاحي"], ["balance", "الرصيد الحالي"]] },
+    bank: { key: "banks", title: "حساب بنكي", fields: [["name", "اسم البنك"], ["account_no", "رقم الحساب"], ["opening_balance", "رصيد افتتاحي"], ["balance", "الرصيد الحالي"]] },
+    owner: { key: "owners", title: "مالك/شريك", fields: [["name", "الاسم"], ["phone", "الهاتف"], ["capital", "رأس المال"], ["withdrawals", "المسحوبات"], ["is_active", "نشط (checkbox)"]] }
+  };
+  const SETT_HEADERS = {
+    categories: [["name", "الاسم"], ["description", "الوصف"]],
+    units: [["name", "الاسم"], ["symbol", "الرمز"]],
+    warehouses: [["code", "الكود"], ["name", "الاسم"], ["address", "العنوان"], ["is_active", "الحالة"]],
+    wallets: [["name", "الشركة / المحفظة"], ["account_no", "رقم المحفظة"], ["balance", "الرصيد"]],
+    banks: [["name", "اسم البنك"], ["account_no", "رقم الحساب"], ["balance", "الرصيد"]],
+    owners: [["name", "الاسم"], ["phone", "الهاتف"], ["capital", "رأس المال"], ["withdrawals", "المسحوبات"], ["is_active", "الحالة"]]
+  };
+
+  function settPayload(prefix) { return prefix === "c" ? csetData : ssetData; }
+  function settList(prefix, type) {
+    const p = settPayload(prefix);
+    if (!p) return [];
+    const key = SETT_TYPES[type].key;
+    return p[key] || [];
+  }
+  function settGridId(prefix, type) {
+    return (prefix === "c" ? "cGrid" : "sGrid") + type.charAt(0).toUpperCase() + type.slice(1);
+  }
+  function settCap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  function fmtNumArrow(v) {
+    const n = Number(v || 0);
+    return (n < 0 ? "-" : "") + fmt(Math.abs(n)) + " ج.م";
+  }
+
+  // رسم جدول تبويب معيّن (العميل أو المالك)
+  function renderSettGrid(prefix, type) {
+    const box = document.getElementById(settGridId(prefix, type));
+    if (!box) return;
+    const key = SETT_TYPES[type].key;
+    const rows = settList(prefix, type);
+    const heads = SETT_HEADERS[key];
+    let h = '<table class="data-table"><thead><tr>';
+    heads.forEach(([, lbl]) => { h += "<th>" + lbl + "</th>"; });
+    h += "<th>إجراءات</th></tr></thead><tbody>";
+    rows.forEach((r, idx) => {
+      h += "<tr>";
+      heads.forEach(([f]) => {
+        let v = r[f];
+        if (f === "is_active") v = v === false || v === "false" ? "🔴 موقف" : "🟢 نشط";
+        else if (f === "balance" || f === "opening_balance" || f === "capital" || f === "withdrawals") {
+          v = f === "balance" ? (typeof v === "number" ? fmtNumArrow(v) : esc(v || "0")) : esc(Number(v || 0).toLocaleString("en-US"));
+        }
+        else v = esc(v || (f === "is_active" ? "🟢 نشط" : "-"));
+        h += "<td>" + v + "</td>";
+      });
+      h += "<td>" +
+        "<button class=\"btn small blue\" type=\"button\" onclick=\"window.__settEdit('" + prefix + "','" + type + "'," + idx + ")\">✏️</button> " +
+        "<button class=\"btn small red\" type=\"button\" onclick=\"window.__settDel('" + prefix + "','" + type + "'," + idx + ")\">🗑️</button>" +
+        "</td></tr>";
+    });
+    if (!rows.length) h += '<tr><td colspan="' + (heads.length + 1) + '">لا توجد بيانات بعد.</td></tr>';
+    h += "</tbody></table>";
+    box.innerHTML = h;
+  }
+
+  // نافذة إضافة / تعديل سطر في أحد التبويبات (تخزين مؤقت حتى الضغط على حفظ)
+  function settOpenEditor(prefix, type, idx) {
+    const def = SETT_TYPES[type];
+    const existing = idx != null ? settList(prefix, type)[idx] : null;
+    // تنشئ نافذة التحرير ديناميكيًا (لا حاجة لعنصر ثابت في الصفحة)
+    let root = document.getElementById("settEditorModal");
+    if (!root) {
+      const ov = document.createElement("div");
+      ov.className = "modal-overlay";
+      ov.id = "settEditorModal";
+      ov.hidden = true;
+      document.body.appendChild(ov);
+      ov.addEventListener("click", (e) => { if (e.target === ov) ov.hidden = true; });
+      root = ov;
+    }
+    root.hidden = false;
+    root.__prefix = prefix;
+    root.__type = type;
+    root.__idx = idx == null ? -1 : idx;
+    let h = '<div class="modal-box"><div class="panel-title">' +
+      (existing ? "✏️ تعديل " : "➕ إضافة ") + def.title + "</div>" +
+      '<div class="form-grid" style="grid-template-columns:180px 1fr">';
+    def.fields.forEach(([f, label]) => {
+      let val = existing ? existing[f] : "";
+      if (f === "is_active") {
+        const on = val === false || val === "false" || val === undefined ? "1" : "0";
+        h += '<label>' + label + ':</label><select id="setF_is_active"><option value="1">🟢 نشط</option><option value="0">🔴 موقف</option></select>';
+      } else {
+        h += '<label>' + label + ':</label><input id="setF_' + f + '" class="inp" autocomplete="off" value="' + esc(String(val == null ? "" : val)) + '" />';
+      }
+    });
+    h += '</div>' +
+      '<div class="sett-btns"><button class="btn green" type="button" id="settEditSave">💾 حفظ</button>' +
+      '<button class="btn gray" type="button" id="settEditCancel">إلغاء</button></div></div>';
+    root.innerHTML = h;
+    root.querySelector("#settEditCancel").onclick = () => (root.hidden = true);
+    root.querySelector("#settEditSave").onclick = () => {
+      if (root.__type === "cat" && !document.getElementById("setF_name").value.trim()) {
+        toast("اكتب اسم التصنيف أولًا.", "warning"); return;
+      }
+      if (root.__type === "unit" && !document.getElementById("setF_name").value.trim()) {
+        toast("اكتب اسم الوحدة أولًا.", "warning"); return;
+      }
+      if (root.__type !== "wallet" && root.__type !== "bank") {
+        const nm = document.getElementById("setF_name").value.trim();
+        if (!nm) { toast("اكتب اسم " + SETT_TYPES[root.__type].title + " أولًا.", "warning"); return; }
+      }
+      const data = settPayload(root.__prefix);
+      const key = SETT_TYPES[root.__type].key;
+      const list = data[key] || [];
+      const rec = existing ? Object.assign({}, existing) : { id: null, name: "", created_at: new Date().toISOString() };
+      def.fields.forEach(([f]) => {
+        if (f === "is_active") { rec[f] = document.getElementById("setF_is_active").value === "1"; return; }
+        const el = document.getElementById("setF_" + f);
+        const v = el ? el.value : "";
+        if (f === "balance" || f === "opening_balance" || f === "capital" || f === "withdrawals") rec[f] = parseFloat(v) || 0;
+        else rec[f] = v;
+      });
+      if (root.__idx >= 0) list[root.__idx] = rec; else list.push(rec);
+      data[key] = list;
+      root.hidden = true;
+      renderSettGrid(root.__prefix, root.__type);
+      toast("تم التعديل محليًا. اضغط «حفظ جميع تبويبات» لحفظه.", "info");
+    };
+  }
+
+  window.__settEdit = function (prefix, type, idx) { settOpenEditor(prefix, type, idx); };
+  window.__settDel = function (prefix, type, idx) {
+    const data = settPayload(prefix);
+    const key = SETT_TYPES[type].key;
+    const list = data[key] || [];
+    const nm = list[idx] ? (list[idx].name || "هذا السجل") : "هذا السجل";
+    if (!confirm("حذف «" + nm + "»؟")) return;
+    list.splice(idx, 1);
+    data[key] = list;
+    renderSettGrid(prefix, type);
+    toast("تم الحذف محليًا. اضغط «حفظ جميع تبويبات» لحفظه.", "info");
+  };
+
+  // تعبئة حقول بيانات المنشأة / الضريبة من كائن org (سحابة)
+  function settFillOrgFields(prefix) {
+    const p = settPayload(prefix);
+    const org = (p && p.org) || {};
+    const en = org.tax_enabled === true || org.tax_enabled === "true" || org.tax_enabled === 1 || org.tax_enabled === "1";
+    let rt = Number(org.tax_rate != null ? org.tax_rate : 0);
+    if (rt > 0 && rt <= 1) rt = Math.round(rt * 100);
+    else if (rt === 0 && settings.taxRate != null && en) {
+      let sr = Number(settings.taxRate);
+      rt = sr > 1 ? sr : Math.round(sr * 100);
+    }
+    const g = (sel, val) => { const el = document.querySelector(sel); if (el) el.value = val == null ? "" : String(val); };
+    g("#" + prefix + "setOrgName", org.name || "");
+    g("#" + prefix + "setOrgPhone", org.phone || "");
+    g("#" + prefix + "setOrgAddress", org.address || "");
+    g("#" + prefix + "setOrgVat", org.tax_number || "");
+    g("#" + prefix + "setOrgNote", org.org_note || "");
+    g("#" + prefix + "setTaxEnabled", en ? "1" : "0");
+    g("#" + prefix + "setTaxRate", rt || (en ? "14" : "0"));
+    g("#" + prefix + "setTaxTitle", org.tax_title || "");
+    g("#" + prefix + "setPaper", org.paper_size || "A4");
+    g("#" + prefix + "setWarranty", org.warranty_terms || "");
+  }
+
+  // قراءة حقول بيانات المنشأة / الضريبة إلى كائن org (قبل الحفظ)
+  function settReadOrgFields(prefix) {
+    const p = settPayload(prefix);
+    const org = p.org || {};
+    const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+    org.name = v(prefix + "setOrgName");
+    org.phone = v(prefix + "setOrgPhone");
+    org.address = v(prefix + "setOrgAddress");
+    org.tax_number = v(prefix + "setOrgVat");
+    org.org_note = v(prefix + "setOrgNote");
+    org.tax_enabled = (v(prefix + "setTaxEnabled") === "1");
+    const rawRate = parseFloat(String(v(prefix + "setTaxRate")).replace(/[^\d.-]/g, "")) || 0;
+    org.tax_rate = rawRate;
+    org.tax_title = v(prefix + "setTaxTitle");
+    org.paper_size = v(prefix + "setPaper") || "A4";
+    org.warranty_terms = v(prefix + "setWarranty");
+    p.org = org;
+    return org;
+  }
+
+  // ================== العميل: تحميل وحفظ تبويبات شركته ==================
+  function loadClientSettingsForm() {
+    if (A.online && DATA && DATA.clientSett) {
+      $("#csettTabs").disabled = true;
+      DATA.clientSett().then((p) => {
+        csetData = p || { org: {}, categories: [], units: [], warehouses: [], owners: [], wallets: [], banks: [] };
+        csetData.__online = true;
+        if (csetData && csetData.org) {
+          if (csetData.org.tax_enabled !== undefined && csetData.org.tax_enabled !== null) {
+            applyTaxSettings(csetData.org.tax_enabled, csetData.org.tax_rate);
+          }
+        }
+        applySettFeatureGatingClient();
+        renderAllSettPanes("c");
+        syncTreasuryFromSett();
+      }).catch((e) => toast("تعذّر تحميل إعدادات مؤسستك: " + (e.message || e), "error"));
+      return;
+    }
+    csetData = {
+      org: { name: settings.orgName || "", phone: settings.orgPhone || "", address: settings.orgAddress || "", tax_number: settings.orgVat || "", org_note: settings.orgNote || "", tax_enabled: !!settings.taxEnabled, tax_rate: Math.round((settings.taxRate || 0) * 100), tax_title: "", paper_size: "A4", warranty_terms: "" },
+      categories: [], units: [], warehouses: [], owners: [], wallets: [], banks: []
+    };
+    renderAllSettPanes("c");
+  }
+
+  function gatherSettPayload(prefix) {
+    settReadOrgFields(prefix);
+    return settPayload(prefix);
+  }
+
+  function saveClientSettingsForm() {
+    const payload = gatherSettPayload("c");
+    const doAfter = () => {
+      applyTaxSettings(payload.org.tax_enabled, payload.org.tax_rate);
+      settings.orgName = payload.org.name;
+      saveSettings();
+      addActivity("إعدادات", "تعديل إعدادات المؤسسة");
+      toast("تم حفظ إعدادات مؤسستك بنجاح.", "success");
+    };
+    if (A.online && DATA && DATA.saveClientSett) {
+      DATA.saveClientSett(payload).then(doAfter).catch((e) => toast("خطأ في الحفظ: " + (e.message || e), "error"));
+    } else doAfter();
+  }
+
+  // بعد حفظ أي تبويب ضبط: تحدّث القوائم الحية المفتوحة (تصنيفات/وحدات/مستودعات) فورًا
+  function syncOpenListsAfterSett() {
+    try {
+      if (document.getElementById("viewProducts") && !document.getElementById("viewProducts").hidden) {
+        renderProducts();
+      }
+      if (document.getElementById("fPCategory")) fillCatSelect("#fPCategory", ($("#fPCategory") || {}).value || null);
+      if (document.getElementById("fPUnit")) fillUnitSelect("#fPUnit", ($("#fPUnit") || {}).value || null);
+      if (document.getElementById("fPWarehouse")) fillWhSelect("#fPWarehouse", ($("#fPWarehouse") || {}).value || null);
+      if (document.getElementById("qCat")) fillCatSelect("#qCat", null);
+      if (document.getElementById("qUnit")) fillUnitSelect("#qUnit", null);
+      if (document.getElementById("cmbPosWarehouse")) {
+        const w = $("#cmbPosWarehouse").value;
+        const s = $("#cmbPosWarehouse");
+        s.innerHTML = "";
+        warehouseList().forEach((x) => { const o = document.createElement("option"); o.value = x; o.textContent = x; s.appendChild(o); });
+        if (w) s.value = w;
+      }
+      if (document.getElementById("cmbPPWarehouse")) {
+        const w = $("#cmbPPWarehouse").value;
+        const s = $("#cmbPPWarehouse");
+        s.innerHTML = "";
+        warehouseList().forEach((x) => { const o = document.createElement("option"); o.value = x; o.textContent = x; s.appendChild(o); });
+        if (w) s.value = w;
+      }
+      if (document.getElementById("stkWarehouse")) fillWhSelect("#stkWarehouse", ($("#stkWarehouse") || {}).value || null);
+      if (document.getElementById("trFrom")) fillWhSelect("#trFrom", ($("#trFrom") || {}).value || null);
+    } catch (e) {}
+  }
+
+  // حفظ تبويب واحد فقط (منفصل لكل قائمة): يرسل جزئه فقط دون المساس بالباقي
+  function saveSettPane(prefix, type) {
+    const isOwner = prefix === "s";
+    const ttl = type === "org" ? "بيانات المنشأة" : type === "tax" ? "الضريبة والفواتير" : (SETT_TYPES[type] ? SETT_TYPES[type].title : type);
+    let payload = {};
+    if (type === "org" || type === "tax") {
+      // يقرأ حقول المنشأة/الضريبة الحالية من الواجهة ويحدّث كائن org فقط (لا يمسّ القوائم)
+      settReadOrgFields(prefix);
+      payload.org = settPayload(prefix).org;
+    } else {
+      const key = SETT_TYPES[type].key;
+      payload[key] = settList(prefix, type).slice();
+    }
+    const after = () => {
+      if (payload.org) {
+        applyTaxSettings(payload.org.tax_enabled, payload.org.tax_rate);
+        settings.orgName = payload.org.name;
+        saveSettings();
+      }
+      renderAllSettPanes(prefix);
+      // الضبط هو المرجع → حدّث القوائم الحية بعد الحفظ مباشرة
+      try {
+        if (csetData && csetData.units) csetData = payload;
+        syncOpenListsAfterSett();
+        syncTreasuryFromSett();
+        if (!document.getElementById("viewTreasury").hidden) renderTreasury();
+      } catch (e) {}
+      addActivity("إعدادات", "حفظ تبويب «" + ttl + "»");
+      toast("تم حفظ «" + ttl + "» بنجاح.", "success");
+    };
+    if (isOwner) {
+      const orgId = $("#setOrgPicker") ? $("#setOrgPicker").value : null;
+      if (!orgId || !ssetData) { toast("اختر الشركة أولًا.", "warning"); return; }
+      DATA.adminSettSave(orgId, payload).then(() => {
+        after();
+        // لو عدّل اسم الشركة → يتحدث في شاشة الإدارة فورًا
+        if (type === "org" && payload.org && payload.org.name) {
+          const o = ssetOrgs.find((x) => x.org_id === orgId);
+          if (o) o.org_name = payload.org.name;
+          if (window.__admDbl) { /* سيُعاد الجلب عند فتح شاشة الإدارة */ }
+        }
+      }).catch((e) => toast("خطأ في الحفظ: " + (e.message || e), "error"));
+      return;
+    }
+    DATA.saveClientSett(payload).then(after).catch((e) => toast("خطأ في الحفظ: " + (e.message || e), "error"));
+  }
+
+  // ================== المالك: تبويبات الشركة المحددة ==================
   function loadSettingsForm() {
-    $("#setOrgName").value = settings.orgName || "";
-    $("#setOrgPhone").value = settings.orgPhone || "";
-    $("#setOrgAddress").value = settings.orgAddress || "";
-    $("#setOrgVat").value = settings.orgVat || "";
-    $("#setOrgNote").value = settings.orgNote || "";
-    $("#setTaxEnabled").value = settings.taxEnabled == null ? "1" : String(settings.taxEnabled ? 1 : 0);
-    $("#setTaxRate").value = settings.taxRate == null ? "14" : String(settings.taxRate * 100);
-    $("#setPlan").value = settings.plan || "فردي (مستخدم واحد)";
-    $("#setPlanEnd").value = settings.planEnd || "";
-    $("#setPlanStatus").value = settings.planStatus || "تجربة 🧪";
-    $("#setPublishUrl").value = settings.publishUrl || "https://adelsamir699-maker.github.io/";
+    if (!(A.online && DATA && DATA.adminOrgs && DATA.adminSettLoad)) {
+      toast("هذه الشاشة للسحابة فقط.", "warning");
+      showView("dashboard");
+      return;
+    }
+    DATA.adminOrgs().then((orgs) => {
+      ssetOrgs = orgs || [];
+      const picker = $("#setOrgPicker");
+      if (!picker) return;
+      let prev = picker.value;
+      picker.innerHTML = "";
+      ssetOrgs.forEach((o) => {
+        const opt = document.createElement("option");
+        opt.value = o.org_id;
+        opt.textContent = o.org_name;
+        if (!prev || !ssetOrgs.some((x) => x.org_id === prev)) prev = o.org_id;
+        if (o.org_id === prev) opt.selected = true;
+        picker.appendChild(opt);
+      });
+      // قوائم نطاق النسخ والاستعادة (الكل + كل شركة)
+      const fillScope = (selId, extraRows) => {
+        const sel = document.getElementById(selId);
+        if (!sel) return;
+        sel.innerHTML = "";
+        extraRows.forEach(([v, t]) => {
+          const op = document.createElement("option");
+          op.value = v;
+          op.textContent = t;
+          sel.appendChild(op);
+        });
+        ssetOrgs.forEach((o) => {
+          const op = document.createElement("option");
+          op.value = o.org_id;
+          op.textContent = o.org_name;
+          sel.appendChild(op);
+        });
+      };
+      fillScope("setBackupScope", [["", "🔵 الكل (كل العملاء)"]]);
+      fillScope("setRestoreScope", [["", "🔵 الكل (كل العملاء)"]]);
+      loadSettForOrg((picker.value || prev));
+    }).catch((e) => toast("تعذّر تحميل الشركات: " + (e.message || e), "error"));
+  }
+
+  function loadSettForOrg(orgId) {
+    if (!orgId) return;
+    DATA.adminSettLoad(orgId).then((p) => {
+      ssetData = p || { org: {}, categories: [], units: [], warehouses: [], owners: [], wallets: [], banks: [] };
+      renderAllSettPanes("s");
+      const o = ssetOrgs.find((x) => x.org_id === orgId);
+      if (o) {
+        const t = $("#viewSettings .view-title");
+        if (t) t.textContent = "🛡️ إعدادات ونسخ احتياطي المالك — " + (o.org_name || "");
+      }
+    }).catch((e) => toast("تعذّر تحميل إعدادات الشركة: " + (e.message || e), "error"));
   }
 
   function saveSettingsForm() {
-    settings.orgName = $("#setOrgName").value.trim();
-    settings.orgPhone = $("#setOrgPhone").value.trim();
-    settings.orgAddress = $("#setOrgAddress").value.trim();
-    settings.orgVat = $("#setOrgVat").value.trim();
-    settings.orgNote = $("#setOrgNote").value.trim();
-    settings.taxEnabled = $("#setTaxEnabled").value === "1";
-    settings.taxRate = (parseFloat($("#setTaxRate").value) || 0) / 100;
-    settings.plan = $("#setPlan").value;
-    settings.planEnd = $("#setPlanEnd").value;
-    settings.planStatus = $("#setPlanStatus").value;
-    settings.publishUrl = $("#setPublishUrl").value.trim();
-    TAX.enabled = settings.taxEnabled;
-    TAX.rate = settings.taxRate;
-    saveSettings();
-    addActivity("إعدادات", "تعديل إعدادات البرنامج");
-    toast("تم حفظ الإعدادات بنجاح.", "success");
+    const orgId = $("#setOrgPicker") ? $("#setOrgPicker").value : null;
+    if (!orgId || !ssetData) { toast("اختر الشركة أولًا.", "warning"); return; }
+    const payload = gatherSettPayload("s");
+    DATA.adminSettSave(orgId, payload).then(() => {
+      addActivity("إعدادات", "تعديل إعدادات شركة (المالك)");
+      toast("تم حفظ تبويبات الشركة بنجاح.", "success");
+      renderAllSettPanes("s");
+    }).catch((e) => toast("خطأ في الحفظ: " + (e.message || e), "error"));
   }
 
+  // رسم كل ألواح التبويبات لجلسة معيّنة (c/s)
+  function renderAllSettPanes(prefix) {
+    settFillOrgFields(prefix);
+    ["cat", "unit", "wh", "wallet", "bank", "owner"].forEach((t) => renderSettGrid(prefix, t));
+  }
+
+  // قفل تبويبات العميل المعطلة في الاشتراك (الميزات جديدة من لوحة الإدارة)
+  function applySettFeatureGatingClient() {
+    const featMap = { ccat: "catTab", cunit: "unitTab", cwh: "whTab", cwal: "walletTab", cbnk: "bankTab", cown: "ownerTab" };
+    const root = document.getElementById("viewClientSettings");
+    if (!root) return;
+    root.querySelectorAll("#csettTabs .tab-btn").forEach((b) => {
+      const pane = root.querySelector('.sett-pane[data-pane="' + b.dataset.tab + '"]');
+      const feat = featMap[b.dataset.tab];
+      const enabled = !feat || (window.DATA && DATA.featureEnabled(feat) !== false);
+      if (!enabled) b.classList.add("locked");
+      else b.classList.remove("locked");
+      // التبويبات المعطلة تبقى مقفلة برسالة (لا يظهر فحواها)
+      if (pane && pane.dataset.feat && !enabled) {
+        const tl = pane.dataset.featLabel || "الميزة غير مفعلة في اشتراكك — تواصل مع المالك";
+        pane.setAttribute("data-orig", pane.innerHTML);
+        pane.innerHTML = '<div class="pane-locked"><span class="plk-icon">🔒</span><span>' + tl + "</span></div>";
+        pane.hidden = true;
+      } else if (pane && !enabled) {
+        pane.hidden = true;
+      }
+    });
+  }
+
+  // ================== نسخة احتياطية واستعادة للعميل (شركته فقط) ==================
   function backupData() {
+    if (A.online && DATA && DATA.clientExport) {
+      toast("جارٍ تجهيز نسخة احتياطية من بيانات شركتك...", "info");
+      DATA.clientExport().then((pack) => {
+        if (!pack) throw new Error("لا توجد بيانات لشركتك");
+        const blob = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "mizan-backup-" + todayISO() + ".json";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        addActivity("نسخ احتياطي", "تصدير نسخة احتياطية من بيانات مؤسستي");
+        toast("تم تنزيل نسخة احتياطية من بيانات شركتك (JSON).", "success");
+      }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+      return;
+    }
     const pack = {
       exportedAt: new Date().toISOString(),
       settings: settings,
@@ -3063,6 +4045,124 @@
     URL.revokeObjectURL(a.href);
     addActivity("نسخ احتياطي", "تصدير نسخة احتياطية كاملة من البيانات");
     toast("تم تنزيل النسخة الاحتياطية (JSON).", "success");
+  }
+
+  // استعادة العميل: تحذير شديد + طلب كلمة مرور الدخول (والقاعدة تتحقق منها)
+  function clientRestoreFile(jsonStr) {
+    let payload;
+    try { payload = JSON.parse(jsonStr); } catch (e) { toast("الملف غير صالح أو تالف.", "warning"); return; }
+    if (!payload || typeof payload !== "object") { toast("ملف النسخة غير صحيح.", "warning"); return; }
+    const w = confirm("تحذير شديد ⚠️⚠️⚠️\n\nسيتم استبدال جميع بيانات شركتك الحالية ببيانات هذا الملف نهائيًا.\nلا يمكن التراجع عن هذه العملية.\n\nهل أنت متأكد تمامًا؟");
+    if (!w) { toast("تم إلغاء الاستعادة.", "info"); return; }
+    const pass = prompt("لتنفيذ الاستعادة: أدخل كلمة مرور الدخول إلى النظام:\n(بدونها لن تتم الاستعادة)");
+    if (!pass) { toast("أُلغيت الاستعادة — لم تُدخل كلمة المرور.", "warning"); return; }
+    if (!(A.online && DATA && DATA.clientRestore)) {
+      toast("الاستعادة السحابية غير متاحة حاليًا.", "error");
+      return;
+    }
+    toast("جارٍ استعادة بيانات شركتك...", "info");
+    DATA.clientRestore(pass, payload).then(() => {
+      toast("تمت استعادة بيانات شركتك بنجاح.", "success");
+      addActivity("استعادة", "استعادة نسخة احتياطية لبيانات مؤسستي");
+      setTimeout(() => window.location.reload(), 1600);
+    }).catch((e) => {
+      const msg = e && e.message ? e.message : String(e);
+      if (msg.indexOf("كلمة المرور") !== -1) toast("كلمة المرور غير صحيحة — لم تتم الاستعادة.", "error");
+      else toast("خطأ في الاستعادة: " + (msg.length > 120 ? msg.slice(0, 120) : msg), "error");
+    });
+  }
+
+  // النسخة الاحتياطية الشاملة للمالك (كل العملاء) أو لشركة محددة — حسب اختياره في القائمة
+  function backupAllData() {
+    if (!DATA) return;
+    const sel = document.getElementById("setBackupScope");
+    const orgId = sel ? sel.value : "";
+    const orgName = sel && sel.selectedOptions.length
+      ? sel.selectedOptions[0].textContent.trim()
+      : "الكل (كل العملاء)";
+    toast("جارٍ تجهيز النسخة الاحتياطية (" + orgName + ")...", "info");
+    const run = (prom) => prom.then((pack) => {
+      if (!pack) throw new Error("لا توجد بيانات");
+      const jsonStr = JSON.stringify(pack, null, 2);
+      const blob = new Blob([jsonStr], { type: "application/json" });
+      const name = (orgId ? "mizan-company-backup-" : "mizan-full-backup-") + todayISO() + ".json";
+      const saveFile = (resolve) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        resolve(true);
+      };
+      if (window.showSaveFilePicker) {
+        window.showSaveFilePicker({
+          suggestedName: name,
+          types: [{ description: "JSON", accept: { "application/json": [".json"] } }]
+        }).then((handle) => {
+          return handle.createWritable().then((w) => w.write(blob).then(() => w.close()));
+        }).then(() => {
+          addActivity("نسخ احتياطي شامل", "تصدير نسخة احتياطية (" + orgName + ")");
+          toast("تم حفظ النسخة الاحتياطية في المكان الذي اخترته.", "success");
+        }).catch((e) => {
+          if (e && e.name === "AbortError") return;
+          saveFile(() => {
+            addActivity("نسخ احتياطي شامل", "تصدير نسخة احتياطية (" + orgName + ")");
+            toast("تم حفظ النسخة الاحتياطية في مجلد التنزيلات.", "success");
+          });
+        });
+      } else {
+        saveFile(() => {
+          addActivity("نسخ احتياطي شامل", "تصدير نسخة احتياطية (" + orgName + ")");
+          toast("تم حفظ النسخة الاحتياطية في مجلد التنزيلات.", "success");
+        });
+      }
+    });
+    if (orgId) run(DATA.adminExportOne(orgId));
+    else if (DATA.adminExportAll) run(DATA.adminExportAll());
+    else toast("النسخة الاحتياطية غير متاحة.", "error");
+  }
+
+  // استعادة نسخة للمالك: يختار الشركة أولًا (أو الكل) من القائمة، بتحذير فقط — بدون باسورد
+  function ownerRestoreFile(jsonStr) {
+    let payload;
+    try { payload = JSON.parse(jsonStr); } catch (e) { toast("الملف غير صالح أو تالف.", "warning"); return; }
+    if (!payload || typeof payload !== "object") { toast("ملف النسخة غير صحيح.", "warning"); return; }
+    const sel = document.getElementById("setRestoreScope");
+    // لو الملف نسخة شركة واحدة (يحتوي org) نستعيد الشركة مباشرة بمعرّفها من الملف نفسه
+    // — فيعمل حتى لو كانت الشركة محذوفة من السحابة (تُعاد إنشاؤها بكل بياناتها)
+    const singleOrgId = (payload.org && payload.org.id) || null;
+    const orgId = singleOrgId || (sel ? sel.value : "");
+    const scopeName = singleOrgId
+      ? (payload.org.name || "شركة محذوفة") + " (من الملف)"
+      : (sel && sel.selectedOptions.length ? sel.selectedOptions[0].textContent.trim() : "الكل (كل العملاء)");
+    if (singleOrgId) {
+      const again = confirm("أعد استعادة شركة «" + scopeName + "»؟\nستُعاد كل بياناتها المخزنة من الملف إلى السحابة (نفس الشركة — تُنشأ مجددًا إن كانت محذوفة).\nملاحظة: حسابات أعضاء الشركة لا تُستعاد من الملف — ستعيد إنشاء حساب دخولها من شاشة الإدارة بعد الاستعادة.\nهل أنت متأكد؟");
+      if (!again) { toast("تم إلغاء الاستعادة.", "info"); return; }
+      if (!DATA) { toast("وضع السحابة غير متاح.", "error"); return; }
+      toast("جارٍ استعادة الشركة من الملف...", "info");
+      DATA.adminRestoreOne(singleOrgId, payload).then(() => {
+        addActivity("نسخ احتياطي شامل", "استعادة شركة واحدة من الملف (" + scopeName + ")");
+        toast("تمت استعادة الشركة بنجاح.", "success");
+        setTimeout(() => window.location.reload(), 1600);
+      }).catch((e) => {
+        const msg = e && e.message ? e.message : String(e);
+        toast("خطأ في الاستعادة: " + (msg.length > 140 ? msg.slice(0, 140) : msg), "error");
+      });
+      return;
+    }
+    const w = confirm("تحذير شديد ⚠️⚠️⚠️\n\nستُستبدل بيانات: «" + scopeName + "»\nببيانات هذا الملف نهائيًا. لا يمكن التراجع.\n\nهل أنت متأكد تمامًا؟");
+    if (!w) { toast("تم إلغاء الاستعادة.", "info"); return; }
+    if (!DATA) { toast("وضع السحابة غير متاح.", "error"); return; }
+    toast("جارٍ استعادة النسخة...", "info");
+    const prom = orgId ? DATA.adminRestoreOne(orgId, payload) : DATA.adminRestoreAll(payload);
+    prom.then(() => {
+      toast("تمت الاستعادة بنجاح.", "success");
+      addActivity("نسخ احتياطي شامل", "استعادة نسخة (" + scopeName + ")");
+      setTimeout(() => window.location.reload(), 1600);
+    }).catch((e) => {
+      const msg = e && e.message ? e.message : String(e);
+      toast("خطأ في الاستعادة: " + (msg.length > 140 ? msg.slice(0, 140) : msg), "error");
+    });
   }
 
   function restoreData(jsonStr) {
@@ -3092,6 +4192,12 @@
   }
 
   function resetData() {
+    // محذوفة/معطّلة في السحابة: الأداة قديمة من عصر التخزين المحلي التجريبي ولا يجوز تشغيلها
+    // لأنها تمسح localStorage ثم قد تدفع بيانات تجريبية إلى السحابة وتستبدل بيانات الشركات الحقيقية.
+    if (A.online) {
+      toast("محذوف العمليات في وضع السحابة حفاظًا على بيانات الشركات.", "warning");
+      return;
+    }
     if (!confirm("سيتم مسح جميع البيانات المحفوظة في المتصفح والعودة للبيانات التجريبية. هل أنت متأكد؟")) return;
     [
       LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_SALES, LS_PURCHASES, LS_TREASURY,
@@ -3114,8 +4220,9 @@
   }
 
   /* ================== الربط ================== */
-  function init() {
-    loadData();
+  function initApp() {
+    applyFeatureGating();
+    updatePosTaxUI();
     tickClock();
     setInterval(tickClock, 1000);
     const d30 = new Date();
@@ -3189,12 +4296,22 @@
 
     $("#btnAddProduct").addEventListener("click", () => openProductDialog(null));
     $("#btnStockTake").addEventListener("click", openStockTake);
+    $("#btnTransferStock").addEventListener("click", openTransferModal);
     $("#btnRefreshProducts").addEventListener("click", renderProducts);
     $("#txtProductSearch").addEventListener("input", renderProducts);
     $("#cmbProductCategory").addEventListener("change", renderProducts);
 
     $("#btnSaveProduct").addEventListener("click", saveProduct);
     $("#btnCancelProduct").addEventListener("click", () => hideModal("mProduct"));
+
+    $("#trFrom").addEventListener("change", () => { fillTransferTarget(); fillTransferProducts(); });
+    $("#trProduct").addEventListener("change", () => {
+      const p = products.find((x) => x.id === parseInt($("#trProduct").value, 10));
+      const hint = $("#trAvailHint");
+      if (hint && p) hint.textContent = "المتوفر في " + $("#trFrom").value + ": " + Number(stockAt(p, $("#trFrom").value)).toLocaleString("en-US") + " " + p.unit;
+    });
+    $("#btnDoTransfer").addEventListener("click", doStockTransfer);
+    $("#btnCancelTransfer").addEventListener("click", () => hideModal("mTransfer"));
 
     $("#stkWarehouse").addEventListener("change", renderStockTake);
     $("#btnStkReload").addEventListener("click", renderStockTake);
@@ -3214,21 +4331,28 @@
     $("#btnCancelQuickCustomer").addEventListener("click", () => hideModal("mQuickCustomer"));
 
     $("#cmbPaymentMethod").addEventListener("change", posPaymentVisibility);
-    $("#cmbPosPicker").addEventListener("change", posPickFromList);
+    $("#txtPosCode").addEventListener("input", posOnCode);
+    $("#txtPosCode").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); posAddSource = "code"; posAddItem(); }
+    });
     $("#txtPosSearch").addEventListener("input", posOnSearch);
     $("#txtPosSearch").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); posAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); posAddSource = "search"; posAddItem(); }
     });
     $("#numPosQty").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); posAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); posAddSource = "search"; posAddItem(); }
     });
     $("#txtPosPrice").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); posAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); posAddSource = "search"; posAddItem(); }
     });
     $("#btnPosAdd").addEventListener("click", posAddItem);
     $("#btnPosNew").addEventListener("click", posNewInvoice);
     $("#btnPosSave").addEventListener("click", savePosInvoice);
     $("#txtPosDiscount").addEventListener("input", posRecalc);
+    $("#cmbPosWarehouse").addEventListener("change", () => {
+      const firstProd = products.find((p) => p.id === (posItems[0] && posItems[0].productId));
+      posUpdateBadge(firstProd || null);
+    });
 
     $("#dgvItems tbody").addEventListener("input", (e) => {
       const inp = e.target.closest(".cell-input");
@@ -3259,16 +4383,23 @@
     $("#btnCancelQuickSupplier").addEventListener("click", () => hideModal("mQuickSupplier"));
 
     $("#cmbPPaymentMethod").addEventListener("change", ppPaymentVisibility);
-    $("#cmbPPPicker").addEventListener("change", ppPickFromList);
+    $("#cmbPPWarehouse").addEventListener("change", () => {
+      const firstProd = products.find((p) => p.id === (ppItems[0] && ppItems[0].productId));
+      ppUpdateBadge(firstProd || null);
+    });
+    $("#txtPPCode").addEventListener("input", ppOnCode);
+    $("#txtPPCode").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); ppAddSource = "code"; ppAddItem(); }
+    });
     $("#txtPPSearch").addEventListener("input", ppOnSearch);
     $("#txtPPSearch").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); ppAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); ppAddSource = "search"; ppAddItem(); }
     });
     $("#numPPQty").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); ppAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); ppAddSource = "search"; ppAddItem(); }
     });
     $("#txtPPPrice").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); ppAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); ppAddSource = "search"; ppAddItem(); }
     });
     $("#btnPPAdd").addEventListener("click", ppAddItem);
     $("#btnPPNew").addEventListener("click", ppNewInvoice);
@@ -3397,15 +4528,8 @@
     $("#btnAddJournal").addEventListener("click", openJournal);
     $("#txtJournalSearch").addEventListener("input", renderJournal);
     $("#btnAddJLine").addEventListener("click", () => {
-      jrnLines.push({ accountId: "0", debit: "", credit: "" });
+      jrnLines.push({ accountId: "0", accountText: "", debit: "", credit: "" });
       renderJrnLines();
-    });
-    $("#jrnLines").addEventListener("input", (e) => {
-      const el = e.target;
-      if (el.dataset.i == null) return;
-      const idx = parseInt(el.dataset.i, 10);
-      jrnLines[idx][el.dataset.f] = el.dataset.f === "accountId" ? el.value : String(el.value);
-      $("#jrnSum").textContent = jrnSummary();
     });
     $("#btnSaveJournal").addEventListener("click", saveJournal);
     $("#btnCancelJournal").addEventListener("click", () => hideModal("mJournal"));
@@ -3424,22 +4548,11 @@
     $("#dtpRepFrom").addEventListener("input", renderReports);
     $("#dtpRepTo").addEventListener("input", renderReports);
 
-    /* ---- المستخدمون ---- */
-    $("#btnAddUser").addEventListener("click", () => openUserDialog(null));
-    $("#txtUserSearch").addEventListener("input", renderUsers);
-    $("#btnSaveUser").addEventListener("click", saveUser);
-    $("#btnCancelUser").addEventListener("click", () => hideModal("mUser"));
-    $("#dgvUsers tbody").addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-act]");
-      if (!btn) return;
-      const id = parseInt(btn.closest("tr").dataset.uid, 10);
-      if (btn.dataset.act === "edit") {
-        const u = users.find((x) => x.id === id);
-        if (u) openUserDialog(u);
-      } else {
-        toggleUser(id);
-      }
-    });
+    /* ---- المستخدمون (حسابات الشركة الحقيقية) ---- */
+    const btnAddUser = $("#btnAddUser");
+    if (btnAddUser) btnAddUser.addEventListener("click", () => window.__memberAddOpen());
+    const usrSearch = $("#txtUserSearch");
+    if (usrSearch) usrSearch.addEventListener("input", renderUsers);
 
     /* ---- سجل العمليات ---- */
     $("#txtAuditSearch").addEventListener("input", renderAudit);
@@ -3447,16 +4560,103 @@
 
     /* ---- الإعدادات ---- */
     $("#btnSaveSettings").addEventListener("click", saveSettingsForm);
-    $("#btnBackup").addEventListener("click", backupData);
-    $("#btnResetData").addEventListener("click", resetData);
+    $("#btnBackupAll").addEventListener("click", backupAllData);
+    const btnBackupAll2 = document.getElementById("btnBackupAll2");
+    if (btnBackupAll2) btnBackupAll2.addEventListener("click", backupAllData);
+    const btnResetDataEl = document.getElementById("btnResetData");
+    if (btnResetDataEl) btnResetDataEl.addEventListener("click", resetData);
     $("#btnRestore").addEventListener("click", () => $("#fileRestore").click());
     $("#fileRestore").addEventListener("change", (e) => {
       const f = e.target.files && e.target.files[0];
       if (!f) return;
       const reader = new FileReader();
-      reader.onload = (ev) => restoreData(String(ev.target.result));
+      reader.onload = (ev) => ownerRestoreFile(String(ev.target.result));
       reader.readAsText(f);
       e.target.value = "";
+    });
+
+    /* ---- إعدادات العميل ---- */
+    $("#btnSaveClientSettings").addEventListener("click", saveClientSettingsForm);
+    $("#btnClientBackup").addEventListener("click", backupData);
+    $("#btnClientRestore").addEventListener("click", () => $("#fileClientRestore").click());
+    $("#fileClientRestore").addEventListener("change", (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => clientRestoreFile(String(ev.target.result));
+      reader.readAsText(f);
+      e.target.value = "";
+    });
+
+    /* ---- محدد الشركة للمالك (يحمل تبويبات الشركة المختارة) ---- */
+    const setOrgPicker = document.getElementById("setOrgPicker");
+    if (setOrgPicker) {
+      setOrgPicker.addEventListener("change", () => loadSettForOrg(setOrgPicker.value));
+    }
+
+    /* ---- تبديل التبويبات في شاشتي الإعدادات (المالك / العميل) ---- */
+    function bindSettTabs(tabsId) {
+      const tabs = document.getElementById(tabsId);
+      if (!tabs) return;
+      tabs.querySelectorAll(".tab-btn").forEach((b) => {
+        b.addEventListener("click", () => {
+          const view = b.closest(".view");
+          if (!view) return;
+          if (b.classList.contains("locked")) {
+            toast("الميزة غير مفعلة في اشتراك شركتك — تواصل مع المالك.", "warning");
+            return;
+          }
+          view.querySelectorAll(".tab-btn").forEach((x) => x.classList.remove("active"));
+          b.classList.add("active");
+          view.querySelectorAll(".sett-pane").forEach((p) => {
+            p.hidden = p.dataset.pane !== b.dataset.tab;
+          });
+        });
+      });
+    }
+    bindSettTabs("setTabs");
+    bindSettTabs("csettTabs");
+
+    /* ---- أزرار جداول الإعدادات: العميل (c) والمالك (s) ---- */
+    function bindSettGridBtns(viewId) {
+      const view = document.getElementById(viewId);
+      if (!view) return;
+      const prefix = viewId === "viewClientSettings" ? "c" : "s";
+      view.querySelectorAll("[data-" + prefix + "add], [data-" + prefix + "edit], [data-" + prefix + "del], [data-" + prefix + "ref]").forEach((btn) => {
+        const action = btn.hasAttribute("data-" + prefix + "add") ? "add"
+          : btn.hasAttribute("data-" + prefix + "edit") ? "edit"
+          : btn.hasAttribute("data-" + prefix + "del") ? "del" : "ref";
+        const type = btn.getAttribute("data-" + prefix + action) || "cat";
+        btn.addEventListener("click", () => {
+          const list = settList(prefix, type);
+          if (action === "ref") renderSettGrid(prefix, type);
+          else if (action === "add") settOpenEditor(prefix, type, null);
+          else if (action === "edit") {
+            if (!list.length) { toast("لا توجد بيانات للتعديل.", "info"); return; }
+            settOpenEditor(prefix, type, 0);
+          } else {
+            if (!list.length) { toast("لا توجد بيانات للحذف.", "info"); return; }
+            const nm = (list[0] && list[0].name) || "هذا السجل";
+            if (!confirm("حذف «" + nm + "» من هذه القائمة؟")) return;
+            list.splice(0, 1);
+            const p = settPayload(prefix);
+            p[SETT_TYPES[type].key] = list;
+            renderSettGrid(prefix, type);
+            toast("تم الحذف محليًا. اضغط «حفظ جميع تبويبات» لحفظه.", "info");
+          }
+        });
+      });
+    }
+    bindSettGridBtns("viewSettings");
+    bindSettGridBtns("viewClientSettings");
+
+    // أزرار الحفظ المنفصلة لكل تبويب (data-ssave / data-csave)
+    [["viewSettings", "s"], ["viewClientSettings", "c"]].forEach(([viewId, prefix]) => {
+      const view = document.getElementById(viewId);
+      if (!view) return;
+      view.querySelectorAll("[data-" + prefix + "save]").forEach((btn) => {
+        btn.addEventListener("click", () => saveSettPane(prefix, btn.getAttribute("data-" + prefix + "save")));
+      });
     });
 
     document.querySelectorAll(".modal-overlay").forEach((ov) => {
@@ -3469,6 +4669,10 @@
       btn.addEventListener("click", () => {
         const name = btn.dataset.view;
         if (BUILT_VIEWS.includes(name)) {
+      if (!canUseView(name)) {
+        toast("هذه الشاشة غير مفعّلة في اشتراك شركتك.", "warning");
+        return;
+      }
           showView(name);
         } else {
           toast("شاشة «" + btn.textContent.trim() + "» قيد التطوير 🚧 - ستصل قريبًا.", "info");
@@ -3480,6 +4684,1496 @@
       const tr = e.target.closest("tr.dgv-row") || e.target.closest("#dgvCustomers tbody tr");
       // (التحديد يتم داخل renderTable نفسه)
     });
+  }
+
+  /* ================== شاشات الدخول (النظام الأونلاين) ================== */
+  function showLogin() {
+    $("#loginScreen").hidden = false;
+    $("#orgScreen").hidden = true;
+    $("#memberScreen").hidden = true;
+  }
+  function showOrgScreen() {
+    $("#loginScreen").hidden = true;
+    $("#orgScreen").hidden = false;
+    $("#memberScreen").hidden = true;
+  }
+  function hideScreens() {
+    $("#loginScreen").hidden = true;
+    $("#orgScreen").hidden = true;
+    $("#memberScreen").hidden = true;
+    $("#denyScreen").hidden = true;
+  }
+
+  function setAuthMsg(el, txt, kind) {
+    el.textContent = txt;
+    el.className = "login-msg " + (kind || "");
+  }
+
+  function setupAuth() {
+    const activeLt = () => {
+      const b = document.querySelector(".ltab[data-lt].active");
+      return b ? b.dataset.lt : "in";
+    };
+    document.querySelectorAll(".ltab[data-lt]").forEach((b) => {
+      b.addEventListener("click", () => {
+        document.querySelectorAll(".ltab").forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+        $("#btnAuthGo").textContent = "دخول";
+      });
+    });
+    document.querySelectorAll(".ltab[data-ot]").forEach((b) => {
+      b.addEventListener("click", () => {
+        document.querySelectorAll(".ltab").forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+        $("#orgJoin").hidden = b.dataset.ot !== "join";
+        $("#orgNew").hidden = b.dataset.ot === "join";
+      });
+    });
+
+const pwEye = document.getElementById("btnShowPass");
+    if (pwEye) {
+      pwEye.addEventListener("click", () => {
+        const f = document.getElementById("authPass");
+        if (!f) return;
+        const on = f.type === "password";
+        f.type = on ? "text" : "password";
+        pwEye.textContent = on ? "🙈" : "👁";
+      });
+    }
+
+    window.addEventListener("pageshow", (e) => {
+      if (e.persisted || (window.performance && performance.getEntriesByType && performance.getEntriesByType("navigation").length && performance.getEntriesByType("navigation")[0].type === "back_forward")) {
+        window.location.reload();
+      }
+    });
+
+    // نفتح دائمًا على «تسجيل دخول مستخدم». لا يوجد تسجيل ذاتي —
+    // حسابات الشركات تُنشأ من شاشة إدارة الشركات (المالك فقط).
+    const defTab = document.querySelector('.ltab[data-lt="in"]');
+    if (defTab) {
+      defTab.click();
+    }
+
+    $("#authForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const username = $("#authUser").value.trim();
+      const pass = $("#authPass").value;
+      const m = $("#authMsg");
+      const asCompany = activeLt() === "up";
+      if (!username || !pass) { setAuthMsg(m, "اكتب اسم المستخدم وكلمة المرور.", "err"); return; }
+      setAuthMsg(m, "جارٍ الاتصال...", "");
+
+      // كلا التبويبين دخول فقط — لا يوجد تسجيل ذاتي.
+      // التبويب يحدد الشاشة فقط: «شركة» ← شاشة حسابات الشركة، «مستخدم» ← البرنامج.
+      DATA.login(username, pass).then(() => {
+        const p = DATA.getProfile();
+        if (!p) {
+          setAuthMsg(m, "هذا الحساب غير مرتبط بأي شركة. تواصل مع إدارة البرنامج.", "err");
+          return;
+        }
+        if (asCompany) {
+          if (!isOrgAdmin(p)) {
+            DATA.logout().catch(() => { });
+            setAuthMsg(m, "هذا ليس حساب شركة. استخدم تبويب «تسجيل دخول مستخدم».", "err");
+            return;
+          }
+          showMembersScreen();
+          return;
+        }
+        proceedOnline(m, username);
+      }).catch((err) => setAuthMsg(m, "خطأ في الدخول: " + (err.message || err), "err"));
+    });
+
+    $("#btnWipe").addEventListener("click", () => {
+      try {
+        Object.keys(localStorage).forEach((k) => {
+          if (k.indexOf("sb-") === 0) localStorage.removeItem(k);
+        });
+      } catch (e) { }
+      A.online = false;
+      $("#btnLogout").hidden = true;
+      $("#orgScreen").hidden = true;
+      setAuthMsg($("#authMsg"), "تم مسح الجلسة القديمة. اكتب اسم المستخدم وكلمة المرور ثم اضغط دخول.", "ok");
+    });
+
+    // أزرار شاشة «حسابات شركتك»
+   const btnMAdd = document.getElementById("btnMemberAdd");
+   if (btnMAdd) btnMAdd.addEventListener("click", () => window.__memberAddOpen());
+   // 🔑 صاحب الشركة يغيّر رقمه السري من هنا (قبل الدخول للبرنامج)
+   const btnMSelfPw = document.getElementById("btnMemberSelfPw");
+    if (btnMSelfPw) {
+    btnMSelfPw.addEventListener("click", () => {
+     if (!(isOrgAdmin(DATA.getProfile()) || isSuperAcct())) { toast("هذا الزر لصاحب الشركة فقط", "error"); return; }
+   const me = (DATA.me && DATA.me()) ? DATA.me() : null;
+   const uname = (me && (me.email || "").split("@")[0]) || "حسابك";
+   openMyPasswordDialog(uname);
+   });
+   }
+    const btnMLogout = document.getElementById("btnMemberLogout");
+    if (btnMLogout) btnMLogout.addEventListener("click", () => {
+      stopPlanWatch();
+      DATA.logout().then(() => {
+        A.online = false;
+        $("#btnLogout").hidden = true;
+        $("#btnChangePw").hidden = true;
+        $("#memberScreen").hidden = true;
+        showLogin();
+        setAuthMsg($("#authMsg"), "تم تسجيل الخروج.", "ok");
+      });
+    });
+
+    $("#btnOrgNew").addEventListener("click", () => {
+      const name = $("#orgNewName").value.trim();
+      const full = $("#orgNewFull").value.trim();
+      const m = $("#orgMsg");
+      if (!name) { setAuthMsg(m, "اكتب اسم الشركة.", "err"); return; }
+      setAuthMsg(m, "جارٍ إنشاء شركتك...", "");
+      DATA.createOrg(name, full).then(() => proceedOnline()).catch((err) => setAuthMsg(m, "خطأ: " + (err.message || err), "err"));
+    });
+
+    $("#btnOrgJoin").addEventListener("click", () => {
+      const code = $("#orgJoinCode").value.trim();
+      const name = $("#orgJoinName").value.trim();
+      const m = $("#orgMsg");
+      if (!code) { setAuthMsg(m, "اكتب رمز الدعوة.", "err"); return; }
+      setAuthMsg(m, "جارٍ الانضمام...", "");
+      DATA.joinOrg(code, name).then(() => proceedOnline()).catch((err) => setAuthMsg(m, "خطأ: " + (err.message || err), "err"));
+    });
+
+    const btnOrgLogout = document.getElementById("btnOrgLogout");
+    if (btnOrgLogout) {
+      btnOrgLogout.addEventListener("click", () => {
+        stopPlanWatch();
+        DATA.logout().then(() => {
+          A.online = false;
+          $("#btnLogout").hidden = true;
+          $("#btnChangePw").hidden = true;
+          $("#orgScreen").hidden = true;
+          showLogin();
+        });
+      });
+    }
+
+    $("#btnLogout").addEventListener("click", () => {
+      stopPlanWatch();
+      stopPresence();
+      DATA.logout().then(() => {
+        A.online = false;
+        $("#btnLogout").hidden = true;
+        $("#btnChangePw").hidden = true;
+        showLogin();
+      });
+    });
+  }
+
+  /* ================== بعد الدخول ================== */
+  function seedPushFromLocal() {
+    // لو السحابة فاضية والتطبيق لسه فيه بيانات تجريبية محلية → نرفعها للشركة الجديدة
+    const S = window.MIZAN_STATE;
+    const checks = [
+      ["customers", customers], ["suppliers", suppliers], ["products", products],
+      ["treasury", treasury], ["accounts", accounts]
+    ];
+    checks.forEach(([name, arr]) => {
+      if (arr && arr.length && (!S[name] || !S[name].length)) pushTable(name);
+    });
+  }
+
+  function proceedOnline(stageEl, stageUser, bypassMembers) {
+    const stage = (t) => { if (stageEl) setAuthMsg(stageEl, t, ""); };
+    // مدير الشركة (غير المالك) حقه يدخل شاشة «حسابات شركتك» قبل البرنامج
+    // (bypassMembers = true فقط عند الضغط على زر «دخول البرنامج» من شاشة حسابات الشركة)
+    const p0 = DATA.getProfile();
+    if (!bypassMembers && isOrgAdmin(p0)) { showMembersScreen(); return; }
+    A.online = true;
+    A.adopting = true;
+    stage("جاري التحميل: فتح الاتصال بالسحابة...");
+    window.CLOUD.loadAll().then(() => {
+      adoptCloud();
+      A.adopting = false;
+      persistLocalFromCloud();
+      seedPushFromLocal();
+      $("#btnLogout").hidden = false;
+      // لا نُظهره هنا: يُتحكم فيه داخل proceedOnline
+      // (لصاحب الشركة والسوبر أدمن فقط، لا للموظفين العاديين)
+      $("#btnChangePw").hidden = true;
+      const p = DATA.getProfile();
+      setUserInfo("👤 " + (p && p.full_name ? p.full_name : DATA.email()) + " | " + (p && p.role ? p.role : ""));
+      setDbStatus("🟢 متصل بالسحابة");
+      stage("جاري التحميل: فتح لوحة البيانات...");
+      hideScreens();
+      DATA.requestAccess().then((acc) => {
+        // اسم الشركة من القاعدة → يظهر تلقائيًا في الفواتير والمطبوعات
+        if (acc && acc.org_name) settings.orgName = acc.org_name;
+        const org = DATA && DATA.org ? DATA.org() : null;
+        if (org) {
+          if (org.tax_enabled !== undefined && org.tax_enabled !== null) {
+            applyTaxSettings(org.tax_enabled, org.tax_rate);
+          }
+        }
+        saveSettings();
+        setSubInfo(acc);
+        startPlanWatch();
+        startPresence();
+        // هل المالك (سوبر أدمن)؟ → زرار الإدارة + شاشة إعدادات المالك
+        const isAdmin = !!(acc && acc.is_superadmin);
+        window.__isOwner = isAdmin;
+        $("#btnAdmin").hidden = !isAdmin;
+        $("#viewAdmin").hidden = !isAdmin;
+        $("#viewSettings").hidden = !isAdmin;
+        // 🔑 زر تغيير الرقم السري: لصاحب الشركة (admin) وللسوبر أدمن فقط.
+        enforceChangePwBtn();
+        // شاشة «إعدادات مؤسستك»: يُفتح فقط لو صاحب الشركة فعّلها لهذا الحساب
+        // (أو المالك العام / صاحب الشركة نفسه).
+        const csAllowed = canUseView("clientSettings");
+        $("#viewClientSettings").hidden = !csAllowed;
+        const svO = document.querySelector('.sidebar .nav-btn[data-view="settings"]');
+        const svC = document.querySelector('.sidebar .nav-btn[data-view="clientSettings"]');
+        // تبويب «إعدادات ونسخ احتياطي المالك» للمالك وحده.
+        // بنحذفه من الـ DOM تمامًا (مش hidden بس) عشان ما يظهرش لحد ولا ينكشف بالفحص.
+        // ولو محذوف وكان داخل المالك، بنرجّعه تاني (بعد تبديل الحساب مثلًا).
+        if (svO) {
+          if (isAdmin) {
+            svO.hidden = false;
+            if (!svO.parentNode) {
+              const sb = document.querySelector(".sidebar");
+              if (sb) sb.appendChild(svO);
+            }
+          } else if (svO.parentNode) {
+            svO.parentNode.removeChild(svO);
+          }
+        }
+        // «إعدادات مؤسستك» تختفي تمامًا لو صاحب الشركة قفلها لهذا الحساب
+        if (svC) {
+          if (csAllowed) {
+            svC.hidden = false;
+          } else if (svC.parentNode) {
+            svC.parentNode.removeChild(svC);
+          }
+        }
+        // هل يسمح له الوقت/القفل/العضوية؟
+        if (acc && acc.allowed) {
+          ensureSettData().finally(() => {
+            initApp();
+            enforceChangePwBtn();
+            if (!A.online || !csetData) return;
+            // أعد ملء قوائم الضبط بعد التحميل حتى تتوفر الوحدات/التصنيفات/المستودعات فورًا
+            try {
+              if (!document.getElementById("viewClientSettings").hidden || !document.getElementById("viewSettings").hidden) renderAllSettPanes("c");
+            } catch (e) {}
+          });
+        } else {
+          showDeny(acc);
+        }
+      }).catch(() => initApp());
+    }).catch((e) => {
+      A.adopting = false;
+      setDbStatus("🟠 مشكلة اتصال");
+      toast("تعذّر تحميل بيانات السحابة: " + e.message, "error");
+      initApp();
+    });
+  }
+
+  // مؤشر: هل الحساب الحالي مدير شركة (مش مالك النظام)؟ → شاشة الحسابات
+  // لو مُرِّر profile ناقص/فارغ نرجع لـ mizan_access (المصدر الموثوق).
+  function isOrgAdmin(p) {
+    var r = (p && p.role) ? p : currentAcct();
+    return !!(r && r.role === "admin" && !r.is_superadmin);
+  }
+  // بعد الدخول بحساب الشركة نفتح شاشة «حسابات شركتك» بدل فتح البرنامج مباشرة
+  function showMembersScreen() {
+    hideScreens();
+    $("#memberScreen").hidden = false;
+    const info = $("#memberOrgName");
+    const cnt = $("#memberCount");
+    const lst = $("#memberList");
+    info.textContent = "جارٍ تحميل بيانات الشركة...";
+    cnt.textContent = "";
+    lst.innerHTML = "<p class=\"login-sub\">جارٍ التحميل...</p>";
+    DATA.orgInfo().then((o) => {
+      if (!o) { info.textContent = ""; return; }
+      info.textContent = "🏢 " + (o.org_name || "");
+      const used = o.members_count || 0;
+      const max = o.max_members || 5;
+      cnt.textContent = "عدد الحسابات: " + used + " من " + max;
+      const canManage = !!(o.is_org_admin || o.is_superadmin);
+      return Promise.all([Promise.resolve(o), DATA.orgMembers(o.org_id), Promise.resolve(canManage)]);
+    }).then(([o, members, canManage]) => {
+      renderMemberList(members, canManage);
+    }).catch((e) => {
+      lst.innerHTML = "<p class=\"login-msg err\">" + (e.message || e) + "</p>";
+    });
+  }
+  // بعد أي تعديل على حسابات الشركة: حدّث الشاشة المعروضة حاليًا
+  // (شاشة «حسابات شركتك» أو تبويب «المستخدمون» داخل البرنامج).
+  function refreshMemberViews() {
+    const ms = document.getElementById("memberScreen");
+    if (ms && !ms.hidden) { showMembersScreen(); return; }
+    lastOrgMembers = null;
+    if (typeof renderUsers === "function") renderUsers();
+  }
+
+  function renderMemberList(members, canManage, mount) {
+    const lst = mount || $("#memberList");
+    if (!lst) return;
+    const myUid = (DATA.me && DATA.me()) ? DATA.me().id : null;
+    if (!members || !members.length) {
+      lst.innerHTML = "<p class=\"login-sub\">لا يوجد حسابات بعد — اضغط «إضافة حساب» لإنشاء أول موظف.</p>";
+    } else {
+      let h = "<table class=\"data-table\"><thead><tr><th>الحساب</th><th>الاسم</th><th>الصلاحية</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>";
+      members.forEach((u) => {
+        const isMe = myUid && u.user_id === myUid;
+        const feats = summarizeFeats(u.features);
+   let actions = "";
+   if (canManage && !isMe) {
+   actions += "<button class=\"btn small red\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberDel('" + u.user_id + "')\">🗑️ حذف</button>";
+   }
+   // 🔑 تغيير الرقم السري — لكل حسابات الشركة بما فيها حساب صاحبها
+   actions += "<button class=\"btn small orange\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberResetPw('" + u.user_id + "','" + (u.username || "") + "')\">🔑 تغيير الرقم السري</button>";
+   actions += "<button class=\"btn small sky\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberFeats('" + u.user_id + "')\">⚙️ الصلاحيات</button>";
+        // زرار دخول البرنامج — يظهر قدام حساب صاحب الشركة هو فقط
+        if (isMe) {
+          actions += "<button class=\"btn small green\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberEnterProgram()\">▶ دخول البرنامج</button>";
+        }
+        h += "<tr>" +
+          "<td><code>" + (u.username || "—") + "</code>" + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
+          "<td>" + (u.full_name || "—") + "</td>" +
+          "<td>" + feats + "</td>" +
+          "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
+          "<td>" + actions + "</td></tr>";
+      });
+      h += "</tbody></table>";
+      lst.innerHTML = h;
+    }
+  }
+  // ملخص الصلاحيات: إن كانت كلها مفعلة → «كل الصلاحيات»، وإلا المعطل فقط
+  // 🔑 نافذة تغيير الرقم السري للحساب الحالي (صاحب شركة / مالك البرنامج)
+  // جديد + تأكيد، بدون طلب الرقم القديم — والكلمة الجديدة تظهر عند مالك البرنامج.
+  function openMyPasswordDialog(label) {
+    const dlg = document.createElement("div");
+    dlg.className = "modal-overlay";
+    dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🔑 تغيير الرقم السري — ' +
+      (label || "حسابك") + "</div>" +
+      '<label class="feat-line" style="margin:6px 0">الرقم السري الجديد ' +
+      '<input id="myNew" class="inp" type="text" placeholder="اكتب الرقم السري الجديد" style="flex:1" /></label>' +
+      '<label class="feat-line" style="margin:6px 0">تأكيد الرقم السري ' +
+      '<input id="myCon" class="inp" type="text" placeholder="أعد كتابة الرقم السري" style="flex:1" /></label>' +
+      '<div class="feat-btns">' +
+      '<button class="btn gray small" type="button" id="myGen">🎲 توليد</button>' +
+      '<button class="btn green" type="button" id="myOk">حفظ</button>' +
+      '<button class="btn gray" type="button" id="myCancel">إلغاء</button></div></div>';
+    document.body.appendChild(dlg);
+    dlg.querySelector("#myCancel").onclick = () => dlg.remove();
+    dlg.querySelector("#myGen").onclick = () => {
+      const v = Math.random().toString(36).slice(2, 8) +
+                Math.random().toString(36).slice(2, 5).toUpperCase() + "1";
+      dlg.querySelector("#myNew").value = v;
+      dlg.querySelector("#myCon").value = v;
+    };
+    dlg.querySelector("#myOk").onclick = () => {
+      const np = dlg.querySelector("#myNew").value.trim();
+      const cp = dlg.querySelector("#myCon").value.trim();
+      if (!np) { toast("اكتب الرقم السري الجديد", "error"); return; }
+      if (np !== cp) { toast("رقمان غير متطابقين", "error"); return; }
+      if (np.length < 6) { toast("الرقم السري لازم 6 حروف على الأقل", "warning"); return; }
+      // p_old = null → الدالة تتخطى التحقق وتخزّن الجديدة ليقرأها مالك البرنامج
+      DATA.changeMyPassword(null, np).then(() => {
+        toast("تم تغيير الرقم السري للحساب ✅", "ok");
+        dlg.remove();
+      }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+    };
+  }
+
+  // 🔑 تغيير الرقم السري لحساب من حسابات الشركة (صاحب الشركة فقط)
+  window.__memberResetPw = function (userId, username) {
+    if (!(isOrgAdmin(DATA.getProfile()) || isSuperAcct())) { toast("هذا الزر لصاحب الشركة فقط", "error"); return; }
+    const dlg = document.createElement("div");
+    dlg.className = "modal-overlay";
+    dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🔑 تغيير الرقم السري — ' +
+      (username || "") + "</div>" +
+      '<label class="feat-line" style="margin:6px 0">الرقم السري الجديد ' +
+      '<input id="mrNew" class="inp" type="text" placeholder="اكتب الرقم السري الجديد" style="flex:1" /></label>' +
+      '<label class="feat-line" style="margin:6px 0">تأكيد الرقم السري ' +
+      '<input id="mrCon" class="inp" type="text" placeholder="أعد كتابة الرقم السري" style="flex:1" /></label>' +
+      '<div class="feat-btns">' +
+      '<button class="btn gray small" type="button" id="mrGen">🎲 توليد</button>' +
+      '<button class="btn green" type="button" id="mrOk">حفظ</button>' +
+      '<button class="btn gray" type="button" id="mrCancel">إلغاء</button></div></div>';
+    document.body.appendChild(dlg);
+    dlg.querySelector("#mrCancel").onclick = () => dlg.remove();
+    dlg.querySelector("#mrGen").onclick = () => {
+      const v = Math.random().toString(36).slice(2, 8) +
+                Math.random().toString(36).slice(2, 5).toUpperCase() + "1";
+      dlg.querySelector("#mrNew").value = v;
+      dlg.querySelector("#mrCon").value = v;
+    };
+    dlg.querySelector("#mrOk").onclick = () => {
+      const np = dlg.querySelector("#mrNew").value.trim();
+      const cp = dlg.querySelector("#mrCon").value.trim();
+      if (!np) { toast("اكتب الرقم السري الجديد", "error"); return; }
+      if (np !== cp) { toast("رقمان غير متطابقين", "error"); return; }
+      if (np.length < 6) { toast("الرقم السري لازم 6 حروف على الأقل", "warning"); return; }
+      if (!confirm("سيتم إنهاء جلسات «" + (username || "") + "» الحالية. متابعة؟")) return;
+      DATA.orgResetMemberPassword(userId, np).then(() => {
+        toast("تم تغيير الرقم السري لـ " + (username || "") + " → " + np, "ok");
+        dlg.remove();
+        showMembersScreen();
+      }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+    };
+  };
+
+  function summarizeFeats(feats) {
+    const f = feats || {};
+    const off = Object.keys(f).filter((k) => f[k] === false);
+    if (!off.length) return "✅ كل الصلاحيات";
+    let s = off.length > 3 ? off.length + " صلاحيات مغلقة" : off.map((k) => {
+      const found = ADMIN_FEATURES.find((x) => x[0] === k);
+      return found ? found[1] : k;
+    }).join("، ");
+    return "🔒 " + s;
+  }
+  // ملخص بسيط للصلاحيات داخل لوحة المالك (نفس الأداة)
+  function featsSummary(feats, adminFeats) {
+    const f = feats || {};
+    const off = Object.keys(f).filter((k) => f[k] === false);
+    if (!off.length) return "✅ كل الصلاحيات";
+    const offLabels = off.map((k) => {
+      const found = (adminFeats || ADMIN_FEATURES).find((x) => x[0] === k);
+      return found ? found[1] : k;
+    });
+    return offLabels.length > 2 ? offLabels.length + " صلاحيات مغلقة" : "🔒 " + offLabels.join("، ");
+  }
+  // نافذة لتعديل صلاحيات حساب تابع لشركتي
+  window.__memberFeats = function (userId) {
+    DATA.orgMembers(DATA.orgId()).then((members) => {
+      const u = members.find((x) => x.user_id === userId);
+      if (!u) { toast("الحساب غير موجود", "error"); return; }
+      let opts = "";
+      ADMIN_FEATURES.forEach(([k, label]) => {
+        const on = !(u.features && u.features[k] === false);
+        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-feat\" value=\"" + k + "\" " + (on ? "checked" : "") + " /> " + label + "</label>";
+      });
+      const body = "<div class=\"feat-grid\">" + opts + "</div>" +
+        "<div class=\"feat-btns\"><button class=\"btn green\" type=\"button\" id=\"memberFeatSave\">حفظ الصلاحيات</button>" +
+        "<button class=\"btn gray\" type=\"button\" id=\"memberFeatCancel\">إلغاء</button></div>";
+      const dlg = document.createElement("div");
+      dlg.className = "modal-overlay";
+      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">صلاحيات — ' + (u.full_name || u.username) + "</div>" + body + "</div>";
+      document.body.appendChild(dlg);
+      dlg.querySelector("#memberFeatCancel").onclick = () => dlg.remove();
+      dlg.querySelector("#memberFeatSave").onclick = () => {
+        const on = {};
+        dlg.querySelectorAll(".member-feat").forEach((c) => { on[c.value] = c.checked; });
+        DATA.orgSetFeatures(userId, on).then(() => {
+          toast("تم حفظ الصلاحيات", "ok");
+          dlg.remove();
+          refreshMemberViews();
+        }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+      };
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+  // نافذة إضافة حساب فرعي
+  window.__memberAddOpen = function () {
+    DATA.orgInfo().then((o) => {
+      const used = o.members_count || 0;
+      const max = o.max_members || 5;
+      if (used >= max) {
+        toast("وصلت الحد الأقصى للحسابات (" + used + "/" + max + ")", "warning");
+        return;
+      }
+      let opts = "";
+      ADMIN_FEATURES.forEach(([k, label]) => {
+        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-newfeat\" value=\"" + k + "\" checked /> " + label + "</label>";
+      });
+      const body = "<div class=\"feat-grid\" style=\"grid-template-columns:repeat(3,1fr)\">" +
+        "<input id=\"memberNewUser\" class=\"inp\" placeholder=\"يوزر نيم (إنجليزي)\" />" +
+        "<input id=\"memberNewPass\" class=\"inp\" type=\"password\" placeholder=\"كلمة المرور\" />" +
+        "<input id=\"memberNewName\" class=\"inp\" placeholder=\"اسم الموظف\" />" +
+        "</div>" +
+        "<div class=\"panel-title\" style=\"margin-top:12px\">صلاحيات هذا الحساب</div>" +
+        "<div class=\"feat-grid\">" + opts + "</div>" +
+        "<div class=\"feat-btns\"><button class=\"btn green\" type=\"button\" id=\"memberAddSave\">إضافة الحساب</button>" +
+        "<button class=\"btn gray\" type=\"button\" id=\"memberAddCancel\">إلغاء</button></div>";
+      const dlg = document.createElement("div");
+      dlg.className = "modal-overlay";
+      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">➕ حساب جديد — ' + (o.org_name || "") + " (" + used + "/" + max + ")" + "</div>" + body + "</div>";
+      document.body.appendChild(dlg);
+      dlg.querySelector("#memberAddCancel").onclick = () => dlg.remove();
+      dlg.querySelector("#memberAddSave").onclick = () => {
+        const nu = dlg.querySelector("#memberNewUser").value.trim();
+        const np = dlg.querySelector("#memberNewPass").value;
+        const nn = dlg.querySelector("#memberNewName").value.trim() || null;
+        const on = {};
+        dlg.querySelectorAll(".member-newfeat").forEach((c) => { on[c.value] = c.checked; });
+        if (!nu || !np) { toast("اكتب يوزر نيم وكلمة مرور للحساب", "error"); return; }
+        DATA.orgAddMember(nu, np, nn, "member", on).then(() => {
+          // أرسل بيانات الحساب للمالك (سوبر أدمن) حتى تظهر في شاشته
+          return DATA.logCreatedAccount(DATA.orgId(), nu, np, nn, on)
+            .catch(() => null);
+        }).then(() => {
+          toast("تمت إضافة الحساب", "ok");
+          dlg.remove();
+          refreshMemberViews();
+        }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+      };
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+  // حذف حساب تابع
+  // زرار «دخول البرنامج» — لصاحب الشركة (حسابه هو) من شاشة حسابات شركته
+  window.__memberEnterProgram = function () {
+    const p0 = DATA.getProfile();
+    if (!isOrgAdmin(p0)) { toast("هذا الزر لصاحب الشركة فقط", "error"); return; }
+    if (!confirm("ادخل البرنامج الآن بحسابك؟\nتقدر ترجع لشاشة حسابات شركتك في أي وقت.")) return;
+    proceedOnline(null, null, true);
+  };
+  window.__memberDel = function (userId) {
+    if (!confirm("هل تريد حذف هذا الحساب نهائيًا؟")) return;
+    DATA.orgDeleteMember(userId).then((orgName) => {
+      toast("تم حذف الحساب" + (orgName ? " من شركة «" + orgName + "»" : ""), "ok");
+      refreshMemberViews();
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+
+  function adoptCloud() {
+    const S = window.MIZAN_STATE;
+    if (S.customers && S.customers.length) customers = S.customers;
+    if (S.products && S.products.length) products = S.products;
+    if (S.suppliers && S.suppliers.length) suppliers = S.suppliers;
+    if (S.treasury && S.treasury.length) treasury = S.treasury;
+    if (S.accounts && S.accounts.length) accounts = S.accounts;
+    if (S.sales && S.sales.length) sales = S.sales;
+    if (S.purchases && S.purchases.length) purchases = S.purchases;
+    if (S.supplier_txs && S.supplier_txs.length) supplierTxs = S.supplier_txs;
+    if (S.customer_txs && S.customer_txs.length) txs = S.customer_txs;
+    if (S.vouchers && S.vouchers.length) vouchers = S.vouchers;
+    if (S.journalEntries && S.journalEntries.length) journalEntries = S.journalEntries;
+  }
+
+  function persistLocalFromCloud() {
+    localStorage.setItem(LS_CUSTOMERS, JSON.stringify(customers));
+    localStorage.setItem(LS_TXS, JSON.stringify(txs));
+    localStorage.setItem(LS_PRODUCTS, JSON.stringify(products));
+    localStorage.setItem(LS_SALES, JSON.stringify(sales));
+    localStorage.setItem(LS_TREASURY, JSON.stringify(treasury));
+    localStorage.setItem(LS_SUPPLIERS, JSON.stringify(suppliers));
+    localStorage.setItem(LS_SUP_TXS, JSON.stringify(supplierTxs));
+    localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
+    localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
+    localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
+    localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
+  }
+
+  /* ================== شاشة "غير متاح" (وقت/قفل/حجب) ================== */
+  function showDeny(acc) {
+    const reasons = {
+      plan: "انتهت مدة اشتراك شركتك. تواصل مع المالك لتجديدها.",
+      locked: "شركتك مقفلة حاليًا من المالك. حاول لاحقًا.",
+      blocked: "عضوك حديثًا محظور. تواصل مع مالك الشركة.",
+      noprofile: "لا يوجد حساب مرتبط بشركة.",
+      noorganization: "لا توجد شركة مرتبطة بحسابك."
+    };
+    $("#loginScreen").hidden = true;
+    $("#orgScreen").hidden = true;
+    $("#denyScreen").hidden = false;
+    const a = DATA.accessInfo();
+    const msgEl = $("#denyMsg");
+    if (!acc) {
+      msgEl.textContent = "تعذّر التحقق من اشتراكك.";
+    } else if (acc.reason === "plan" && acc.plan_end) {
+      msgEl.textContent = "أشتراك شركتك منتهي بتاريخ " + acc.plan_end + ". تواصل مع المالك للتفعيل.";
+    } else {
+      msgEl.textContent = reasons[acc.reason] || "لا يمكنك الدخول حاليًا.";
+    }
+    msgEl.className = "login-msg err";
+  }
+
+  /* ================== لوحة إدارة المالك ================== */
+  const ADMIN_FEATURES = [
+    ["sales", "المبيعات (POS)"], ["purchases", "المشتريات"], ["returns", "الاستعلام عن الفواتير"],
+    ["products", "الأصناف والمخزون"], ["customers", "دليل العملاء"], ["suppliers", "دليل الموردين"],
+    ["treasury", "الخزينة والمصروفات"], ["accounts", "دليل الحسابات"], ["journal", "القيود اليومية"],
+    ["balance", "قائمة المركز المالي"], ["treasuryStatements", "كشف الخزائن"], ["reports", "التقارير"],
+        ["users", "المستخدمون"], ["audit", "سجل العمليات"],
+        ["clientSettings", "إعدادات مؤسستك"], ["settings", "الإعدادات (المالك)"],
+        ["catTab", "تبويب التصنيفات"], ["unitTab", "تبويب وحدات القياس"], ["whTab", "تبويب المستودعات"],
+        ["walletTab", "تبويب المحافظ الإلكترونية"], ["bankTab", "تبويب حسابات البنوك"], ["ownerTab", "تبويب أصحاب المنشأة"]
+        ];
+
+  function fmtDate(d) { return d ? String(d).slice(0, 10) : ""; }
+
+  function daysUntil(dateStr) {
+    if (!dateStr) return null;
+    const end = new Date(String(dateStr).slice(0, 10) + "T00:00:00");
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return Math.round((end - today) / 86400000);
+  }
+
+  // لوحة إحصائية للمالك: بطاقات ملخصة (مضغوطة) فوق جدول الشركات
+  var onlineUsers = [];
+  var onlineModal = null;
+
+  function renderAdminStats(orgs) {
+    const box = $("#adminStats");
+    if (!box) return;
+    let total = orgs.length, active = 0, locked = 0, expired = 0, expiringSoon = 0, members = 0, noEnd = 0;
+    orgs.forEach((o) => {
+      members += o.members || 0;
+      const until = daysUntil(o.plan_end);
+      if (o.locked) { locked++; }
+      else if ((o.plan_status === "expired" || (until !== null && until < 0)) && o.plan_end) { expired++; }
+      else if (until !== null && until >= 0 && until <= 7 && o.plan_end) { expiringSoon++; }
+      else if (o.plan_end) { active++; }
+      else { noEnd++; }
+    });
+    box.innerHTML =
+      '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الشركات" onclick="window.__admCat(\'all\')"><span class="kpi-title">🏢 الشركات</span><span class="kpi-value">' + total + "</span></div>" +
+      '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الأعضاء" onclick="window.__admCat(\'members\')"><span class="kpi-title">👥 الأعضاء</span><span class="kpi-value">' + members + "</span></div>" +
+      '<div class="kpi-card kpi-mini clk" title="اضغط لعرض النشطة" onclick="window.__admCat(\'active\')"><span class="kpi-title">🟢 نشطة</span><span class="kpi-value">' + active + "</span></div>" +
+      '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الشركات المنتهية اشتراكاتها قريبًا" onclick="window.__admCat(\'soon\')"><span class="kpi-title">🟠 خلال أسبوع</span><span class="kpi-value">' + expiringSoon + "</span></div>" +
+      '<div class="kpi-card kpi-mini clk" title="اضغط لعرض المنتهية/المقفلة" onclick="window.__admCat(\'expired\')"><span class="kpi-title">🔴 منتهية/مقفلة</span><span class="kpi-value">' + (expired + locked) + "</span></div>" +
+      '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الشركات بلا تاريخ" onclick="window.__admCat(\'noend\')"><span class="kpi-title">🚫 بلا تاريخ</span><span class="kpi-value">' + noEnd + "</span></div>" +
+      '<div class="kpi-card kpi-mini online-card clk" id="kpiOnline" title="اضغط لعرض المتصلين الآن" onclick="window.__admPresence()"><span class="kpi-title">🟢 متصلون الآن</span><span class="kpi-value">…</span></div>';
+    refreshPresenceCard();
+  }
+
+  // تحديث بطاقة المتصلين + محتوى النافذة (تستدعى كل 15 ثانية أثناء فتح لوحة الإدارة)
+  function refreshPresenceCard() {
+    if (!window.DATA || !DATA.presenceOnline) return;
+    DATA.presenceOnline().then((rows) => {
+      onlineUsers = rows || [];
+      const card = document.getElementById("kpiOnline");
+      if (card) {
+        card.querySelector(".kpi-value").textContent = onlineUsers.length;
+        card.style.borderRightColor = onlineUsers.length ? "var(--success)" : "var(--border)";
+      }
+      if (onlineModal && onlineModal.__render) onlineModal.__render();
+    }).catch(() => {});
+  }
+
+  // نافذة المتصلين الآن: أسماء الشركات واليوزرات الفاتحين
+  window.__admPresence = function () {
+    if (!onlineModal || !onlineModal.isConnected) {
+      onlineModal = document.createElement("div");
+      onlineModal.className = "modal-overlay";
+      onlineModal.id = "presenceModal";
+      onlineModal.__render = () => {
+        if (!onlineModal) return;
+        const byOrg = {};
+        (onlineUsers || []).forEach((u) => {
+          const k = u.org_name || "بدون اسم";
+          if (!byOrg[k]) byOrg[k] = [];
+          byOrg[k].push(u);
+        });
+        const names = Object.keys(byOrg);
+        let rows = "";
+        if (!names.length) {
+          rows = '<tr><td colspan="2" style="text-align:center"><span class="login-sub">لا يوجد أحد متصل حاليًا.</span></td></tr>';
+        }
+        names.forEach((n) => {
+          const list = byOrg[n];
+          rows += "<tr><td rowspan=\"" + list.length + "\"><b>" + n + "</b></td>" +
+            list.map((u) => "<td><code>" + (u.username || "—") + "</code> " + (u.role === "admin" ? "🧑‍💼" : "👤") + " <span class=\"login-sub\">" + (u.full_name || "") + "</span></td></tr>").join("");
+        });
+        onlineModal.innerHTML = '<div class="modal-box">' +
+          '<div class="panel-title">🟢 المتصلون الآن — ' + (onlineUsers ? onlineUsers.length : 0) + " مستخدم</div>" +
+          '<div class="tbl-wrap" style="max-height:60vh;overflow:auto"><table class="data-table"><thead><tr><th>الشركة</th><th>المستخدم الفاتح</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
+          '<div class="feat-btns"><button class="btn gray" type="button" onclick="window.__admPClose()">إغلاق</button></div>' +
+          "</div>";
+      };
+      document.body.appendChild(onlineModal);
+      onlineModal.addEventListener("click", (ev) => { if (ev.target === onlineModal) { onlineModal.remove(); onlineModal = null; } });
+    }
+    onlineModal.__render();
+    refreshPresenceCard();
+  };
+  window.__admPClose = function () {
+    if (onlineModal) { onlineModal.remove(); onlineModal = null; }
+  };
+
+  // نافذة فئة من بطاقات الإحصاء: تعرض الشركات + عدد أفرادها + فتح تعديل الشركة بالضغط
+  var catModal = null;
+  var catOrgsList = [];
+  var catKind = "";
+  window.__admCat = function (kind) {
+    catKind = kind;
+    DATA.adminOrgs().then((orgs) => {
+      const map = {
+        all: () => orgs,
+        members: () => orgs.filter((o) => (o.members || 0) > 0),
+        active: () => orgs.filter((o) => !o.locked && o.plan_end && ((o.plan_status === "active") || (daysUntil(o.plan_end) !== null && daysUntil(o.plan_end) > 7))),
+        soon: () => orgs.filter((o) => !o.locked && o.plan_end && daysUntil(o.plan_end) !== null && daysUntil(o.plan_end) >= 0 && daysUntil(o.plan_end) <= 7),
+        expired: () => orgs.filter((o) => o.locked || (o.plan_end && (o.plan_status === "expired" || daysUntil(o.plan_end) < 0))),
+        noend: () => orgs.filter((o) => !o.plan_end)
+      };
+      const list = (map[kind] || map.all)();
+      catOrgsList = list;
+      _renderCatModal();
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+
+  function _renderCatModal() {
+    const titles = {
+      all: "🏢 جميع الشركات", members: "👥 الشركات التي بها أعضاء", active: "🟢 الشركات النشطة",
+      soon: "🟠 شركات اشتراكاتها تنتهي خلال أسبوع", expired: "🔴 الشركات المنتهية / المقفلة", noend: "🚫 الشركات بدون تاريخ اشتراك"
+    };
+    const title = titles[catKind] || "الشركات";
+    const totalMembers = catOrgsList.reduce((s, o) => s + (o.members || 0), 0);
+    if (!catModal || !catModal.isConnected) {
+      catModal = document.createElement("div");
+      catModal.className = "modal-overlay";
+      catModal.id = "catModal";
+      document.body.appendChild(catModal);
+      catModal.addEventListener("click", (ev) => { if (ev.target === catModal) _closeCatModal(); });
+    }
+    let rows = "";
+    if (!catOrgsList.length) {
+      rows = '<div class="adm-alert orange" style="margin:10px 0">لا توجد شركات في هذه الفئة حاليًا.</div>';
+    } else {
+      let h = '<table class="data-table"><thead><tr><th>الشركة</th><th>يوزر نيم</th><th>الأفراد (الأعضاء)</th><th>إلى تاريخ</th><th>الحالة</th></tr></thead><tbody>';
+      catOrgsList.forEach((o) => {
+        const locked = !!o.locked;
+        const until = daysUntil(o.plan_end);
+        let st;
+        if (locked) st = '<span class="badge-no">🔴 مقفلة</span>';
+        else if (o.plan_end && (o.plan_status === "expired" || until < 0)) st = '<span class="badge-no">🔴 منتهية</span>';
+        else if (o.plan_end && until >= 0 && until <= 7) st = '<span class="badge-warn">🟠 تنتهي خلال ' + until + " يوم</span>";
+        else st = '<span class="badge-ok">🟢 نشطة</span>';
+        h += '<tr data-cat="' + o.org_id + '" style="cursor:pointer" title="اضغط لفتح بيانات الشركة وتعديلها">' +
+          "<td><b>" + (o.org_name || "بدون اسم") + "</b></td>" +
+          "<td><code>" + (o.admin_username || "—") + "</code></td>" +
+          "<td>" + (o.members || 0) + "</td>" +
+          "<td>" + fmtDate(o.plan_end) + "</td>" +
+          "<td>" + st + "</td></tr>";
+      });
+      h += "</tbody></table>";
+      rows = h;
+    }
+    catModal.innerHTML = '<div class="modal-box">' +
+      '<div class="panel-title">' + title + " <span class=\"login-sub\">(" + catOrgsList.length + " شركة • " + totalMembers + " فرد)</span></div>" +
+      '<p class="login-sub" style="margin-bottom:8px">👇 اضغط على أي شركة لفتح بياناتها وتعديلها.</p>' +
+      '<div class="tbl-wrap" style="max-height:55vh;overflow:auto">' + rows + "</div>" +
+      '<div class="feat-btns"><button class="btn gray" type="button" onclick="window.__admCatClose()">إغلاق</button></div>' +
+      "</div>";
+    catModal.querySelectorAll("tr[data-cat]").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        const orgId = tr.getAttribute("data-cat");
+        _closeCatModal();
+        if (orgId) window.__admDbl(orgId);
+      });
+    });
+  }
+
+  window.__admCatClose = function () { _closeCatModal(); };
+  function _closeCatModal() {
+    if (catModal) { catModal.remove(); catModal = null; }
+  }
+
+  // شريط تنبيهات انتهاء اشتراك الشركات
+  function renderAdminAlerts(orgs) {
+    const box = $("#adminAlerts");
+    if (!box) return;
+    const urgent = [];
+    const soon = [];
+    orgs.forEach((o) => {
+      const until = daysUntil(o.plan_end);
+      if (o.locked) return;
+      if ((o.plan_status === "expired" || (until !== null && until < 0)) && o.plan_end) {
+        urgent.push("<div class=\"adm-alert red\">🔴 شركة <code>" + (o.org_name || "بدون اسم") + "</code> اشتراكها انتهى بتاريخ <b>" + fmtDate(o.plan_end) + "</b> — تحدّثه أو قفّلها.</div>");
+      } else if (until !== null && until >= 0 && until <= 7 && o.plan_end) {
+        const tag = until === 0 ? "اليوم" : "خلال " + until + " يوم";
+        soon.push("<div class=\"adm-alert orange\">🟠 شركة <code>" + (o.org_name || "بدون اسم") + "</code> اشتراكها ينتهي <b>" + tag + "</b> بتاريخ <b>" + fmtDate(o.plan_end) + "</b>.</div>");
+      }
+    });
+    if (urgent.length || soon.length) {
+      box.innerHTML = urgent.join("") + soon.join("");
+    } else if (orgs.length) {
+      box.innerHTML = '<div class="adm-alert green">✅ كل الاشتراكات سليمة — لا توجد تنبيهات حاليًا.</div>';
+    } else {
+      box.innerHTML = "";
+    }
+  }
+
+  function renderAdminOrgs() {
+    const box = $("#adminList");
+    box.innerHTML = '<p class="login-sub">جارٍ تحميل الشركات...</p>';
+    DATA.adminOrgs().then((orgs) => {
+      if (!orgs || !orgs.length) {
+        box.innerHTML = '<p class="login-sub">لا توجد شركات بعد.</p>';
+        renderAdminStats(orgs || []);
+        return;
+      }
+      renderAdminStats(orgs);
+      renderAdminAlerts(orgs);
+      let h = '<p class="login-sub" style="margin-bottom:8px">💡 اضغط على أي شركة <b>ضغطتين</b> (دبل كليك) لفتح شاشة بياناتها وتعديلها في أي وقت.</p>' +
+        '<table class="data-table"><thead><tr>' +
+        '<th>الشركة</th><th>يوزر نيم</th><th>تليفون المسئول</th><th>المالك</th><th>الأعضاء</th><th>من تاريخ</th><th>إلى تاريخ</th>' +
+        '<th>الحالة</th><th>المزايا</th><th>إجراءات</th></tr></thead><tbody>';
+      orgs.forEach((o) => {
+        const locked = !!o.locked;
+        const until = daysUntil(o.plan_end);
+        let status;
+        if (locked) {
+          status = '<span class="badge-no">🔴 مقفلة</span>';
+        } else if ((o.plan_status === "expired" || until < 0) && o.plan_end) {
+          status = '<span class="badge-no">🔴 منتهية</span>';
+        } else if (until !== null && until >= 0 && until <= 7 && o.plan_end) {
+          status = '<span class="badge-warn">🟠 تنتهي خلال ' + until + " يوم</span>";
+        } else if (o.plan_status === "active" || until === null) {
+          status = '<span class="badge-ok">🟢 نشطة</span>';
+        } else {
+          status = '<span class="badge-no">🔴 ' + (o.plan_status || "متوقفة") + "</span>";
+        }
+        h += "<tr data-org=\"" + o.org_id + "\" onclick=\"window.__admDbl('" + o.org_id + "')\" style=\"cursor:pointer\" title=\"اضغط ضغطتين لتعديل بيانات الشركة\">" +
+          "<td><b>" + (o.org_name || "بدون اسم") + (o.protected ? ' <span class="badge-ok" title="شركة المالك — محمية من الحذف">🔒</span>' : "") + "</b></td>" +
+          "<td><code>" + (o.admin_username || "—") + "</code></td>" +
+          "<td>" + (o.org_phone || "—") + "</td>" +
+          "<td>" + (o.owner_name || "—") + "</td>" +
+          "<td>" + (o.members || 0) + " / " + (o.max_members || 5) + "</td>" +
+          "<td>" + fmtDate(o.plan_start) + "</td>" +
+          "<td>" + fmtDate(o.plan_end) + "</td>" +
+          "<td>" + status + "</td>" +
+          "<td><button class=\"btn small teal\" type=\"button\" onclick=\"event.stopPropagation();window.__admFeats('" + o.org_id + "')\">⚙️ المزايا</button></td>" +
+          "<td><button class=\"btn small blue\" type=\"button\" onclick=\"event.stopPropagation();window.__admDbl('" + o.org_id + "')\">✏️ بيانات الشركة</button> " +
+          (o.protected
+            ? '<span class="login-sub" title="شركة رئيسية تخص المالك">🔒 لا تُحذف</span>'
+            : "<button class=\"btn small red\" type=\"button\" onclick=\"event.stopPropagation();window.__admDel('" + o.org_id + "')\">🗑 حذف</button>") +
+          "</td>" +
+          "</tr>";
+      });
+      h += "</tbody></table>";
+      box.innerHTML = h;
+    }).catch((e) => {
+      box.innerHTML = '<p class="login-msg err">تعذّر تحميل الشركات: ' + (e.message || e) + "</p>";
+    });
+  }
+
+  window.__admMembers = function (orgId) {
+    const box = $("#adminDetail");
+    $("#adminDetail").hidden = false;
+    $("#adminDetailTitle").textContent = orgId;
+    box.scrollIntoView({ behavior: "smooth", block: "center" });
+    const cont = $("#adminMembers");
+    cont.innerHTML = '<p class="login-sub">جارٍ تحميل الأعضاء...</p>';
+    DATA.adminMembers(orgId).then((users) => {
+      if (!users || !users.length) { cont.innerHTML = '<p class="login-sub">لا يوجد أعضاء.</p>'; return; }
+      let h = '<table class="data-table"><thead><tr><th>العضو</th><th>الصلاحية</th><th>الحالة</th><th></th></tr></thead><tbody>';
+      const myUid = (DATA.me && DATA.me()) ? DATA.me().id : null;
+      users.forEach((u) => {
+        const isMe = myUid && u.user_id === myUid;
+        h += "<tr><td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td><td>" + (u.role || "member") + "</td>" +
+          "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
+          (isMe ? "<td><span class=\"login-sub\">لا يمكنك حظر نفسك</span></td>"
+            : "<td><button class=\"btn small " + (u.blocked ? "green" : "red") + "\" type=\"button\" onclick=\"window.__admUser('" + u.user_id + "'," + (u.blocked ? "false" : "true") + ")\">" + (u.blocked ? "إلغاء الحظر" : "حظر") + "</button></td>") + "</tr>";
+      });
+      h += "</tbody></table>";
+      cont.innerHTML = h;
+    }).catch((e) => { cont.innerHTML = '<p class="login-msg err">' + (e.message || e) + "</p>"; });
+  };
+
+  window.__admUser = function (userId, blocked) {
+    DATA.adminSetUser(userId, blocked).then(() => {
+      toast(blocked ? "تم حظر العضو" : "تم إلغاء الحظر", "ok");
+      renderAdminOrgs();
+      const om = document.getElementById("orgModal");
+      if (om && om.__orgId) loadOrgMembers(om.__orgId, "#omMembers", om);
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+
+  window.__admSave = function (orgId) {
+    const tr = document.querySelector('#adminList tr[data-org="' + orgId + '"]');
+    if (!tr) return;
+    const start = tr.querySelector(".adm-plan-start").value || null;
+    const end = tr.querySelector(".adm-plan-end").value || null;
+    const locked = tr.querySelector(".adm-status").value === "locked";
+    DATA.adminSetOrg(orgId, start, end, locked, null).then(() => {
+      toast("تم حفظ إعدادات الشركة", "ok");
+      renderAdminOrgs();
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+
+  // حذف شركة من الإدارة بخيارين: حذف اليوزرات فقط أو الشركة كاملة ببياناتها
+  window.__admDel = function (orgId) {
+    DATA.adminOrgs().then((orgs) => {
+      const o = orgs.find((x) => x.org_id === orgId);
+      const name = (o && o.org_name) || "بدون اسم";
+      const dlg = document.createElement("div");
+      dlg.className = "modal-overlay";
+      dlg.id = "delOrgModal";
+      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🗑 حذف شركة: <b>' + name + "</b></div>" +
+        '<p class="login-sub" style="margin-bottom:10px">اختر نوع الحذف:</p>' +
+        '<div class="feat-btns" style="flex-direction:column;gap:8px;align-items:stretch">' +
+        '<button class="btn orange" type="button" id="delUsersBtn">👤 حذف يوزرات الشركة فقط (تبقى البيانات محفوظة)</button>' +
+        '<button class="btn red" type="button" id="delFullBtn">💥 حذف الشركة كاملة بكل بياناتها المخزنة</button>' +
+        '<button class="btn gray" type="button" id="delCancel">إلغاء</button>' +
+        "</div></div>";
+      document.body.appendChild(dlg);
+      dlg.querySelector("#delUsersBtn").addEventListener("click", () => {
+        dlg.remove();
+        if (!confirm("حذف يوزرات/حسابات شركة «" + name + "»؟\nستبقى بيانات الشركة محفوظة ولكن لن يستطيع أحد الدخول إليها.")) return;
+        DATA.adminDeleteOrg(orgId, "users").then((res) => {
+          toast("تم حذف يوزرات الشركة", "ok");
+          renderAdminOrgs();
+        }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+      });
+      dlg.querySelector("#delFullBtn").addEventListener("click", () => {
+        dlg.remove();
+        if (!confirm("حذف شركة «" + name + "» نهائيًا بكل بياناتها المخزنة (عملاء، مبيعات، حسابات...)?\nسيتم أولًا حفظ نسخة احتياطية كاملة على جهازك لتستعيدها في أي وقت.\nملاحظة: الملف يحفظ بيانات الشركة (وليس حسابات أعضائها) — لو رجّعتها لاحقًا ستعيد إنشاء حساب الدخول من الإدارة.\nلا يمكن التراجع عن الحذف من السحابة.")) return;
+        toast("جارٍ تجهيز النسخة الاحتياطية قبل الحذف...", "info");
+        DATA.adminExportOne(orgId).then((pack) => {
+          if (!pack) throw new Error("لا توجد بيانات قابلة للنسخ الاحتياطي");
+          const jsonStr = JSON.stringify(pack, null, 2);
+          const blob = new Blob([jsonStr], { type: "application/json" });
+          const safeName = (name || "شركة").replace(/[\\/:*?"<>|]/g, "_").trim() || "شركة";
+          const fname = "mizan-company-backup-" + safeName + "-" + (todayISO ? todayISO() : new Date().toISOString().slice(0, 10)) + ".json";
+          const saveFile = (resolve) => {
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = fname;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+            resolve(true);
+          };
+          const finishSave = () => (DATA.adminDeleteOrg(orgId, "full")
+            .then(() => { toast("تم حفظ النسخة الاحتياطية على جهازك، وحُذفت الشركة نهائيًا من السحابة.", "ok"); })
+            .catch((e) => { toast("خُزّنت النسخة الاحتياطية، لكن تعذّر حذف الشركة: " + (e.message || e), "error"); })
+            .then(() => renderAdminOrgs()));
+          if (window.showSaveFilePicker) {
+            window.showSaveFilePicker({
+              suggestedName: fname,
+              types: [{ description: "JSON", accept: { "application/json": [".json"] } }]
+            }).then((handle) => {
+              return handle.createWritable().then((w) => w.write(blob).then(() => w.close()));
+            }).then(() => {
+              finishSave();
+            }).catch((e) => {
+              if (e && e.name === "AbortError") { toast("تم إلغاء الحفظ — لم تُحذف الشركة.", "warning"); return; }
+              saveFile(() => finishSave());
+            });
+          } else {
+            finishSave();
+          }
+        }).catch((e) => toast("خطأ في تجهيز النسخة الاحتياطية: " + (e.message || e), "error"));
+      });
+      dlg.querySelector("#delCancel").addEventListener("click", () => dlg.remove());
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+
+  // نافذة منبثقة لاختيار المزايا لكل شركة
+  window.__admFeats = function (orgId) {
+    DATA.adminOrgs().then((orgs) => {
+      const o = orgs.find((x) => x.org_id === orgId);
+      const feats = {};
+      DATA.requestAccess().catch(() => {});
+      // نبني الخريطة من البيانات المتوفرة داخل mizan_admin_orgs ننقصها — نعتمد على القيم الافتراضية
+      let opts = "";
+      ADMIN_FEATURES.forEach(([k, label]) => {
+        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"adm-feat\" value=\"" + k + "\" checked /> " + label + "</label>";
+      });
+      const body = "<div class=\"feat-grid\">" + opts + "</div>" +
+        "<div class=\"feat-btns\"><button class=\"btn green\" type=\"button\" id=\"admFeatSave\">حفظ المزايا</button>" +
+        "<button class=\"btn gray\" type=\"button\" id=\"admFeatCancel\">إلغاء</button></div>";
+      const dlg = document.createElement("div");
+      dlg.className = "modal-overlay";
+      dlg.id = "featModal";
+      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">المزايا المفتوحة — ' + (o.org_name || "") + "</div>" + body + "</div>";
+      document.body.appendChild(dlg);
+      dlg.querySelector("#admFeatCancel").onclick = () => dlg.remove();
+      dlg.querySelector("#admFeatSave").onclick = () => {
+        const on = {};
+        dlg.querySelectorAll(".adm-feat").forEach((c) => { on[c.value] = c.checked; });
+        DATA.adminSetOrg(orgId, null, null, null, on).then(() => {
+          toast("تم حفظ المزايا", "ok");
+          dlg.remove();
+          renderAdminOrgs();
+        }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+      };
+    });
+  };
+
+  function openAdmin() {
+    hideScreens();
+    $("#denyScreen").hidden = true;
+    renderAdminOrgs();
+    showView("admin");
+    startPresenceView();
+    const p = DATA.getProfile();
+    setUserInfo("👤 " + (p && p.full_name ? p.full_name : DATA.email()) + " | المالك");
+  }
+
+  // شاشة بيانات الشركة (ضغط مزدوج)
+  function loadOrgMembers(orgId, boxSel, dlg) {
+    const box = document.querySelector(boxSel);
+    if (!box) return;
+    box.innerHTML = '<p class="login-sub">جارٍ تحميل الأعضاء...</p>';
+    DATA.adminMembers(orgId).then((users) => {
+      if (!users || !users.length) { box.innerHTML = '<p class="login-sub">لا يوجد أعضاء.</p>'; return; }
+      const adminUser = users.find((u) => u.role === "admin");
+      if (dlg) dlg.__adminId = adminUser ? adminUser.user_id : null;
+      let h = '<table class="data-table"><thead><tr><th>العضو</th><th>يوزر نيم</th><th>الصلاحية</th><th>المزايا</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>';
+      const myUid = (DATA.me && DATA.me()) ? DATA.me().id : null;
+      users.forEach((u) => {
+        const isMe = myUid && u.user_id === myUid;
+        h += "<tr>" +
+          "<td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
+          "<td><code>" + (u.username || "—") + "</code></td>" +
+          "<td>" + (u.role || "member") + "</td>" +
+          "<td>" + featsSummary(u.features, ADMIN_FEATURES) + "</td>" +
+          "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
+          "<td>" +
+          "<button class=\"btn small sky\" style=\"margin:2px\" type=\"button\" onclick=\"window.__admResetPw('" + u.user_id + "')\">🔑 تغيير كلمة المرور</button>" +
+          "<button class=\"btn small blue\" style=\"margin:2px\" type=\"button\" onclick=\"window.__admRenameUser('" + u.user_id + "')\">✏️ تغيير اليوزر نيم</button>" +
+          (isMe ? "<span class=\"login-sub\" style=\"margin:2px\">لا يمكنك حظر نفسك</span>"
+            : "<button class=\"btn small " + (u.blocked ? "green" : "red") + "\" style=\"margin:2px\" type=\"button\" onclick=\"window.__admUser('" + u.user_id + "'," + (u.blocked ? "false" : "true") + ");\">" + (u.blocked ? "✅ إلغاء الحظر" : "⛔ حظر") + "</button>") +
+          "<button class=\"btn small red\" style=\"margin:2px\" type=\"button\" onclick=\"window.__admDelMember('" + u.user_id + "')\">🗑️ حذف</button>" +
+          "</td></tr>";
+      });
+      h += "</tbody></table>";
+      box.innerHTML = h;
+    }).catch((e) => { box.innerHTML = '<p class="login-msg err">' + (e.message || e) + "</p>"; });
+  }
+
+  /* ================== شاشة بيانات الشركة (ضغط مزدوج) ================== */
+  window.__admDbl = function (orgId) {
+    // لا نُكوّم النوافذ: إن كانت النافذة مفتوحة نشكّل بياناتها للشركة الجديدة في نفس مكانها
+    DATA.adminOrgs().then((orgs) => {
+      const o = orgs.find((x) => x.org_id === orgId);
+      if (!o) { toast("الشركة غير موجودة", "error"); return; }
+      let dlg = document.getElementById("orgModal");
+      const reusable = !!dlg;
+      if (!dlg) {
+        dlg = document.createElement("div");
+        dlg.className = "modal-overlay";
+        dlg.id = "orgModal";
+        dlg.__orgId = orgId;
+        dlg.innerHTML = '<div class="modal-box">' +
+          '<div class="panel-title">🏢 بيانات الشركة: <b id="omNameTitle"></b></div>' +
+          '<div class="feat-grid" style="grid-template-columns:1fr 1fr">' +
+          '<label class="feat-line">اسم الشركة <input id="omName" class="inp" style="flex:1" /></label>' +
+          '<label class="feat-line">الحد الأقصى للأعضاء <input id="omMax" class="inp" type="number" min="1" max="500" style="flex:1;width:60px" /></label>' +
+          '<label class="feat-line">رقم تليفون المسئول <input id="omPhone" class="inp" type="tel" placeholder="01xxxxxxxxx" style="flex:1" /></label>' +
+          '<label class="feat-line">يوزر نيم (حساب الشركة) <code id="omUser" style="font-size:13px"></code> <button class="btn small sky" type="button" id="omUserEdit">✏️ تغيير اليوزر نيم</button></label>' +
+          '<label class="feat-line">كلمة المرور <button class="btn small orange" type="button" id="omAdminReset">🔑 تغيير كلمة مرور المدير</button></label>' +
+          '<label class="feat-line">الاشتراك من <input id="omStart" class="inp" type="date" style="flex:1" /></label>' +
+          '<label class="feat-line">الاشتراك إلى <input id="omEnd" class="inp" type="date" style="flex:1" /></label>' +
+          '<label class="feat-line">حالة الشركة <select id="omStatus" class="inp" style="flex:1"><option value="active">نشطة</option><option value="locked">مقفلة</option></select></label>' +
+          '<label class="feat-line"><button class="btn green" type="button" id="omSave">💾 حفظ بيانات الشركة</button></label>' +
+          '</div>' +
+          '<div class="panel-title" style="margin-top:14px">👥 أعضاء الشركة</div>' +
+          '<div id="omMembers" class="tbl-wrap" style="max-height:40vh;overflow:auto"></div>' +
+          '<div class="panel-title" style="margin-top:14px">➕ إضافة عضو جديد</div>' +
+          '<div class="feat-grid" style="grid-template-columns:repeat(4,1fr)">' +
+          '<input id="omNewUser" class="inp" placeholder="يوزر نيم (latin)" />' +
+          '<input id="omNewPass" class="inp" type="password" placeholder="كلمة المرور" />' +
+          '<input id="omNewName" class="inp" placeholder="الاسم المعروض (اختياري)" />' +
+          '<button class="btn green" type="button" id="omNewAdd">إضافة العضو</button>' +
+          '</div>' +
+          '<div class="feat-btns"><button class="btn gray" type="button" id="omClose">إغلاق</button></div>' +
+          '</div>';
+        document.body.appendChild(dlg);
+      }
+      dlg.__orgId = orgId;
+
+      const q = (sel) => dlg.querySelector(sel);
+      q("#omNameTitle").textContent = o.org_name || "";
+      q("#omName").value = o.org_name || "";
+      q("#omMax").value = o.max_members || 5;
+      q("#omPhone").value = o.org_phone || "";
+      q("#omUser").textContent = o.admin_username || "—";
+      q("#omStart").value = fmtDate(o.plan_start);
+      q("#omEnd").value = fmtDate(o.plan_end);
+      q("#omStatus").value = o.locked ? "locked" : "active";
+
+      const loadMembers = () => loadOrgMembers(orgId, "#omMembers", dlg);
+      loadMembers();
+
+      if (!reusable) {
+        q("#omSave").onclick = () => {
+          const curOrg = dlg.__orgId;
+          const name = q("#omName").value.trim();
+          const max = parseInt(q("#omMax").value, 10);
+          const phone = q("#omPhone").value.trim();
+          const start = q("#omStart").value || null;
+          const end = q("#omEnd").value || null;
+          const locked = q("#omStatus").value === "locked";
+          Promise.all([
+            DATA.adminEditOrg(curOrg, name || null, max || null, phone || null),
+            DATA.adminSetOrg(curOrg, start, end, locked, null)
+          ]).then(() => {
+            toast("تم حفظ بيانات الشركة", "ok");
+            dlg.remove();
+            renderAdminOrgs();
+          }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+        };
+        q("#omAdminReset").onclick = () => {
+          const curOrg = dlg.__orgId;
+          const curName = dlg.querySelector("#omNameTitle") ? dlg.querySelector("#omNameTitle").textContent : "الشركة";
+          DATA.adminMembers(curOrg).then((users) => {
+            const admin = users.find((u) => u.role === "admin");
+            if (!admin) { createAdminPrompt(curOrg, curName); return; }
+            resetPwPrompt(admin.user_id, "كلمة مرور مدير الشركة", true);
+          }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+        };
+        q("#omUserEdit").onclick = () => {
+          const curOrg = dlg.__orgId;
+          DATA.adminMembers(curOrg).then((users) => {
+            const admin = users.find((u) => u.role === "admin");
+            if (!admin) { createAdminPrompt(curOrg, dlg.querySelector("#omNameTitle") ? dlg.querySelector("#omNameTitle").textContent : "الشركة"); return; }
+            renameUserPrompt(admin.user_id, admin.username);
+          }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+        };
+        q("#omNewAdd").onclick = () => {
+          const curOrg = dlg.__orgId;
+          const nu = q("#omNewUser").value.trim();
+          const np = q("#omNewPass").value;
+          const nn = q("#omNewName").value.trim() || null;
+          if (!nu || !np) { toast("اكتب يوزر نيم وكلمة مرور للعضو", "error"); return; }
+          DATA.adminCreateUser(curOrg, nu, np, nn, "member").then(() => {
+            toast("تمت إضافة العضو", "ok");
+            q("#omNewUser").value = "";
+            q("#omNewPass").value = "";
+            q("#omNewName").value = "";
+            loadMembers();
+          }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+        };
+        q("#omClose").onclick = () => dlg.remove();
+        dlg.addEventListener("click", (ev) => { if (ev.target === dlg) dlg.remove(); });
+      }
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+
+  // حذف عضو واحد نهائيًا من القاعدة (يتحرر اسمه بعد الحذف ويمكن إعادة استخدامه)
+  window.__admDelMember = function (userId) {
+    if (!userId) return;
+    if (!confirm("حذف هذا العضو نهائيًا من قاعدة النظام؟\nبعد الحذف يمكنك إضافة حساب جديد بنفس اليوزر نيم أو كلمة المرور.\nلا يمكن التراجع عن هذه العملية.")) return;
+    DATA.adminDeleteMember(userId).then(() => {
+      toast("تم حذف العضو نهائيًا", "ok");
+      const om = document.getElementById("orgModal");
+      if (om && om.__orgId) loadOrgMembers(om.__orgId, "#omMembers", om);
+      renderAdminOrgs();
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+
+  // نافذة تغيير كلمة مرور أي مستخدم (من المالك) — 3 خانات: الحالية معبأة تلقائيًا، الجديدة، التأكيد
+  window.__admResetPw = function (userId) {
+    resetPwPrompt(userId, "تغيير كلمة المرور");
+  };
+
+  function resetPwPrompt(userId, title, prefill) {
+    // 🔑 الهدف = حسابك انت؟ → ده غير مسموح في الدالة نفسها (بتمسح جلساتك)،
+    // فنفتح نافذة «تغيير كلمة مرورك» بدل ما نستقبل خطأ من القاعدة.
+    const myUid = (DATA.me && DATA.me()) ? DATA.me().id : null;
+    if (userId && myUid && userId === myUid) { openChangePwModal(); return; }
+    const dlg = document.createElement("div");
+    dlg.className = "modal-overlay";
+    dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🔑 ' + title + '</div>' +
+      '<div class="feat-line" style="margin:6px 0">كلمة المرور الحالية: <code id="rpCur" style="flex:1">جارٍ الجلب...</code></div>' +
+      '<label class="feat-line" style="margin:6px 0">كلمة المرور الجديدة <input id="rpPass" class="inp" type="text" placeholder="اكتب الكلمة الجديدة" style="flex:1" /></label>' +
+      '<label class="feat-line" style="margin:6px 0">تأكيد كلمة المرور <input id="rpConfirm" class="inp" type="text" placeholder="أعد كتابة الكلمة الجديدة" style="flex:1" /></label>' +
+      '<div class="feat-btns">' +
+      '<button class="btn gray small" type="button" id="rpGen">🎲 توليد</button>' +
+      '<button class="btn green" type="button" id="rpOk">حفظ</button>' +
+      '<button class="btn gray" type="button" id="rpCancel">إلغاء</button></div></div>';
+    document.body.appendChild(dlg);
+    // عرض الكلمة الحالية للعلم فقط — لا تُكتب ولا تُطلب
+    const curEl = dlg.querySelector("#rpCur");
+    const cur = DATA.adminGetPassword(userId);
+    if (cur && typeof cur.then === "function") {
+      cur.then(function (pw) {
+        curEl.textContent = pw ? pw : "لا توجد كلمة محفوظة";
+      }).catch(function () { curEl.textContent = "—"; });
+    } else if (typeof cur === "string") {
+      curEl.textContent = cur || "لا توجد كلمة محفوظة";
+    } else {
+      curEl.textContent = "—";
+    }
+    dlg.querySelector("#rpGen").onclick = () => {
+      const v = Math.random().toString(36).slice(2, 8) +
+                Math.random().toString(36).slice(2, 5).toUpperCase() + "1";
+      dlg.querySelector("#rpPass").value = v;
+      dlg.querySelector("#rpConfirm").value = v;
+    };
+    dlg.querySelector("#rpOk").onclick = () => {
+      const pw = dlg.querySelector("#rpPass").value.trim();
+      const cf = dlg.querySelector("#rpConfirm").value.trim();
+      if (!pw) { toast("اكتب كلمة المرور الجديدة", "error"); return; }
+      if (pw !== cf) { toast("كلمتا المرور غير متطابقتين", "error"); return; }
+      if (pw.length < 6) { toast("كلمة المرور لازم 6 حروف على الأقل", "warning"); return; }
+      if (!confirm("سيتم إنهاء جلسات هذا الحساب الحالية. متابعة؟")) return;
+      DATA.adminResetPassword(userId, pw).then(() => {
+        toast("تمت إعادة التعيين — الكلمة الجديدة: " + pw, "ok");
+        dlg.remove();
+        const box = document.getElementById("adminPwBox");
+        if (box && !box.hidden) { toggleAdminPw(); toggleAdminPw(); }
+      }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+    };
+    dlg.querySelector("#rpCancel").onclick = () => dlg.remove();
+  }
+
+  // نافذة تغيير يوزر نيم أي مستخدم
+  window.__admRenameUser = function (userId) {
+    renameUserPrompt(userId, null);
+  };
+
+  function renameUserPrompt(userId, current) {
+    const val = current || "";
+    const dlg = document.createElement("div");
+    dlg.className = "modal-overlay";
+    dlg.innerHTML = '<div class="modal-box"><div class="panel-title">✏️ تغيير اليوزر نيم</div>' +
+      '<input id="ruName" class="inp" placeholder="اليوزر نيم الجديد (latin فقط)" value="' + val + '" style="width:100%;margin:10px 0" />' +
+      '<div class="feat-btns"><button class="btn green" type="button" id="ruOk">حفظ</button>' +
+      '<button class="btn gray" type="button" id="ruCancel">إلغاء</button></div></div>';
+    document.body.appendChild(dlg);
+    dlg.querySelector("#ruOk").onclick = () => {
+      const nm = dlg.querySelector("#ruName").value.trim();
+      if (!nm) { toast("اكتب اليوزر نيم", "error"); return; }
+      DATA.adminSetUsername(userId, nm).then(() => {
+        toast("تم تغيير اليوزر نيم", "ok");
+        dlg.remove();
+        const om = document.getElementById("orgModal");
+        if (om && om.__orgId) {
+          loadOrgMembers(om.__orgId, "#omMembers", om);
+          if (om.__adminId === userId) {
+            const u = om.querySelector("#omUser");
+            if (u) u.textContent = nm;
+          }
+        }
+        renderAdminOrgs();
+      }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+    };
+    dlg.querySelector("#ruCancel").onclick = () => dlg.remove();
+  }
+
+  // إنشاء حساب مدير لشركة ليس بها حساب (المالك) — يُستخدم عند غياب مدير
+  function createAdminPrompt(orgId, orgName) {
+    const dlg = document.createElement("div");
+    dlg.className = "modal-overlay";
+    dlg.innerHTML = '<div class="modal-box"><div class="panel-title">👤 إنشاء حساب مدير لشركة «' + orgName + '»</div>' +
+      '<p class="login-sub" style="margin-bottom:8px">هذه الشركة لا تملك حساب مدير حاليًا — أنشئ حسابًا ليتمكن مسئولها من الدخول.</p>' +
+      '<label class="feat-line" style="margin:6px 0">يوزر نيم <input id="caUser" class="inp" placeholder="الاسم بلاتيني (latin)" style="flex:1" /></label>' +
+      '<label class="feat-line" style="margin:6px 0">كلمة المرور <input id="caPass" class="inp" type="password" placeholder="كلمة المرور" style="flex:1" /></label>' +
+      '<label class="feat-line" style="margin:6px 0">اسم المدير <input id="caName" class="inp" placeholder="الاسم المعروض (اختياري)" style="flex:1" /></label>' +
+      '<div class="feat-btns"><button class="btn green" type="button" id="caOk">إنشاء الحساب</button>' +
+      '<button class="btn gray" type="button" id="caCancel">إلغاء</button></div></div>';
+    document.body.appendChild(dlg);
+    dlg.querySelector("#caOk").onclick = () => {
+      const un = dlg.querySelector("#caUser").value.trim();
+      const pw = dlg.querySelector("#caPass").value;
+      const nm = dlg.querySelector("#caName").value.trim() || null;
+      if (!un || !pw) { toast("اكتب اليوزر نيم وكلمة المرور", "error"); return; }
+      DATA.adminCreateUser(orgId, un, pw, nm, "admin").then(() => {
+        toast("تم إنشاء حساب مدير الشركة", "ok");
+        dlg.remove();
+        const om = document.getElementById("orgModal");
+        if (om && om.__orgId) {
+          loadOrgMembers(om.__orgId, "#omMembers", om);
+          const u = om.querySelector("#omUser");
+          if (u) u.textContent = un;
+        }
+        renderAdminOrgs();
+      }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+    };
+    dlg.querySelector("#caCancel").onclick = () => dlg.remove();
+  }
+
+  /* ================== إضافة شركة جديدة ================== */
+  function openOrgModal() {
+    const dlg = document.createElement("div");
+    dlg.className = "modal-overlay";
+    dlg.innerHTML = '<div class="modal-box">' +
+      '<div class="panel-title">➕ إضافة شركة جديدة</div>' +
+      '<div class="feat-grid" style="grid-template-columns:1fr 1fr">' +
+      '<input id="aoName" class="inp" placeholder="اسم الشركة" />' +
+      '<input id="aoMax" class="inp" type="number" placeholder="الحد الأقصى للأعضاء" value="5" />' +
+      '<input id="aoUser" class="inp" placeholder="يوزر نيم مدير الشركة (latin)" />' +
+      '<input id="aoPass" class="inp" type="password" placeholder="كلمة مرور مدير الشركة" />' +
+      '</div>' +
+      '<div class="feat-btns"><button class="btn green" type="button" id="aoOk">إنشاء الشركة</button>' +
+      '<button class="btn gray" type="button" id="aoCancel">إلغاء</button></div></div>';
+    document.body.appendChild(dlg);
+    dlg.querySelector("#aoOk").onclick = () => {
+      const name = dlg.querySelector("#aoName").value.trim();
+      const user = dlg.querySelector("#aoUser").value.trim();
+      const pass = dlg.querySelector("#aoPass").value;
+      const max = parseInt(dlg.querySelector("#aoMax").value, 10) || 5;
+      if (!name || !user || !pass) { toast("اكتب اسم الشركة ويوزر نيم وكلمة مرور المدير", "error"); return; }
+      DATA.adminCreateOrg(name, user, pass, max).then((orgId) => {
+        toast("تم إنشاء الشركة بيوزر نيم: " + user, "ok");
+        dlg.remove();
+        renderAdminOrgs();
+      }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+    };
+    dlg.querySelector("#aoCancel").onclick = () => dlg.remove();
+    dlg.addEventListener("click", (ev) => { if (ev.target === dlg) dlg.remove(); });
+  }
+
+  /* ================== سجل تغييرات كلمات المرور ================== */
+  function openLogModal() {
+    const dlg = document.createElement("div");
+    dlg.className = "modal-overlay";
+    dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🔒 سجل تغييرات كلمات المرور</div>' +
+      '<div id="pwLogBody" class="tbl-wrap" style="max-height:60vh;overflow:auto"><p class="login-sub">جارٍ التحميل...</p></div>' +
+      '<div class="feat-btns"><button class="btn gray" type="button" id="pwLogClose">إغلاق</button></div></div>';
+    document.body.appendChild(dlg);
+    dlg.querySelector("#pwLogClose").onclick = () => dlg.remove();
+    const body = dlg.querySelector("#pwLogBody");
+    DATA.passwordLog().then((rows) => {
+      if (!rows || !rows.length) { body.innerHTML = '<p class="login-sub">لا توجد تغييرات حتى الآن.</p>'; return; }
+      let h = '<table class="data-table"><thead><tr><th>اليوزر نيم</th><th>الشركة</th><th>وقت التغيير</th></tr></thead><tbody>';
+      rows.forEach((r) => {
+        h += "<tr><td><code>" + (r.username || "—") + "</code></td><td>" + (r.org_name || "—") + "</td><td>" + (r.changed_at || "") + "</td></tr>";
+      });
+      h += "</tbody></table>";
+      body.innerHTML = h;
+    }).catch((e) => { body.innerHTML = '<p class="login-msg err">' + (e.message || e) + "</p>"; });
+  }
+
+  /* ================== تغيير الرقم السري للحساب الحالي ================== */
+  // تستخدم نفس نافذة ownerCommon (جديد + تأكيد، بدون طلب القديم).
+  function openChangePwModal() {
+    var me = (DATA.me && DATA.me()) ? DATA.me() : null;
+    var uname = (me && (me.email || "").split("@")[0]) || "حسابك";
+    openMyPasswordDialog(uname);
+  }
+
+  // ===== كلمة المرور الحالية + إعادة التعيين (للمالك العام) =====
+  function toggleAdminPw() {
+    const box = $("#adminPwBox");
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false;
+    const lst = $("#adminPwList");
+    lst.innerHTML = "<p class=\"login-sub\">جارٍ التحميل...</p>";
+    DATA.adminPwStore().then((rows) => {
+      if (!rows || !rows.length) {
+        lst.innerHTML = "<p class=\"login-sub\">لا توجد حسابات مسجّلة بعد.</p>";
+        return;
+      }
+      let h = "<table class=\"data-table\"><thead><tr><th>الشركة</th><th>اسم المستخدم</th>" +
+        "<th>كلمة المرور الحالية</th><th>آخر تحديث</th><th></th></tr></thead><tbody>";
+      rows.forEach((r) => {
+        const d = r.updated_at ? new Date(r.updated_at).toLocaleString("ar-EG") : "—";
+        h += "<tr>" +
+          "<td>" + (r.org_name || "—") + "</td>" +
+          "<td><code>" + (r.username || "—") + "</code></td>" +
+          "<td><code style=\"font-size:15px;color:#1d7a46\">" + (r.password_plain || "—") + "</code></td>" +
+          "<td>" + d + "</td>" +
+          "<td><button class=\"btn small orange\" type=\"button\" onclick=\"window.__admResetPw('" +
+            r.user_id + "')\">🔑 إعادة تعيين</button></td>" +
+          "</tr>";
+      });
+      h += "</tbody></table>";
+      lst.innerHTML = h;
+    }).catch((e) => {
+      lst.innerHTML = "<p class=\"login-msg err\">" + (e.message || e) + "</p>";
+    });
+  }
+
+  // ===== سجل حسابات الموظفين المُنشأة (للمالك) =====
+  function toggleAdminAccounts() {
+    const box = $("#adminAccounts");
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false;
+    const lst = $("#adminAccountsList");
+    lst.innerHTML = "<p class=\"login-sub\">جارٍ التحميل...</p>";
+    DATA.adminCreatedAccounts(null).then((rows) => {
+      if (!rows || !rows.length) {
+        lst.innerHTML = "<p class=\"login-sub\">لا توجد حسابات مُنشأة بعد. عندما ينشئ صاحب شركة حسابًا لموظف من شاشة «تسجيل دخول شركة» سيظهر هنا.</p>";
+        return;
+      }
+      // نفس الحساب ممكن يتكرّر (إنشاء ثم تغيير كلمة المرور)
+      // → نرتّب من الأحدث، ونعلّم newest one «الحالية» وما قبلها «سابقة».
+      const sorted = (rows || []).slice().sort((a, b) =>
+        String(b.created_at || "").localeCompare(String(a.created_at || "")));
+      const latest = {};
+      sorted.forEach((r) => {
+        const k = (r.org_id || "") + "|" + (r.username || "");
+        if (!(k in latest)) latest[k] = true;
+      });
+
+      let h = "<p class=\"login-sub\" style=\"margin:4px 0 8px\">🔑 كلمة المرور <b>الحالية</b> لكل حساب. الصفوف الرمادية «سابقة» بعد تغيير كلمة المرور.</p>" +
+        "<table class=\"data-table\"><thead><tr><th>الحالة</th><th>الشركة</th><th>اسم المستخدم</th><th>كلمة المرور</th><th>الاسم</th><th>التاريخ</th><th></th></tr></thead><tbody>";
+      sorted.forEach((r) => {
+        const k = (r.org_id || "") + "|" + (r.username || "");
+        const isCurrent = !!latest[k];
+        if (isCurrent) latest[k] = false;
+        const d = r.created_at ? new Date(r.created_at).toLocaleString("ar-EG") : "—";
+        const style = isCurrent ? "" : " style=\"opacity:.55\"";
+        const tag = isCurrent
+          ? '<span class="badge-ok">🔑 الحالية</span>'
+          : '<span class="badge-none">سابقة</span>';
+        h += "<tr" + style + ">" +
+          "<td>" + tag + "</td>" +
+          "<td>" + (r.org_name || "—") + "</td>" +
+          "<td><code>" + (r.username || "—") + "</code></td>" +
+          "<td><code>" + (r.password_plain || "—") + "</code></td>" +
+          "<td>" + (r.full_name || "—") + "</td>" +
+          "<td>" + d + "</td>" +
+          "<td><button class=\"btn small red\" type=\"button\" onclick=\"window.__delCreatedAccount(" + r.id + ")\">🗑️</button></td>" +
+          "</tr>";
+      });
+      h += "</tbody></table>";
+      lst.innerHTML = h;
+    }).catch((e) => {
+      lst.innerHTML = "<p class=\"login-msg err\">" + (e.message || e) + "</p>";
+    });
+  }
+  window.__delCreatedAccount = function (id) {
+    if (!confirm("حذف هذا السجل؟ (لن يُحذف الحساب نفسه)")) return;
+    DATA.adminDeleteCreatedAccount(id).then(() => {
+      toast("تم حذف السجل", "ok");
+      toggleAdminAccounts();
+      toggleAdminAccounts();
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+
+  function setupAdmin() {
+    $("#btnAdmin").addEventListener("click", openAdmin);
+    $("#btnAdminRefresh").addEventListener("click", renderAdminOrgs);
+    const btnAddOrg = $("#btnAdminAddOrg");
+    if (btnAddOrg) btnAddOrg.addEventListener("click", () => openOrgModal());
+    const btnLog = $("#btnAdminLog");
+    if (btnLog) btnLog.addEventListener("click", () => openLogModal());
+    const btnAcc = $("#btnAdminAccounts");
+    if (btnAcc) btnAcc.addEventListener("click", () => toggleAdminAccounts());
+    const btnPw = $("#btnAdminPw");
+    if (btnPw) btnPw.addEventListener("click", () => toggleAdminPw());
+    const btnChangePw = $("#btnChangePw");
+    if (btnChangePw) btnChangePw.addEventListener("click", () => openChangePwModal());
+    $("#btnDenyLogout").addEventListener("click", () => {
+      stopPlanWatch();
+      DATA.logout().then(() => {
+        A.online = false;
+        $("#btnLogout").hidden = true;
+        $("#btnChangePw").hidden = true;
+        $("#btnAdmin").hidden = true;
+        $("#denyScreen").hidden = true;
+        showLogin();
+      });
+    });
+  }
+
+  /* ================== البداية ================== */
+  function init() {
+    const fv = document.getElementById("ftrVer");
+    if (fv) fv.textContent = APP_VERSION;
+    const lv = document.getElementById("loginVer");
+    if (lv) lv.textContent = APP_VERSION;
+    loadData();
+    if (window.DATA && window.DATA.init) window.DATA.init();
+    setupAdmin();
+    const online = window.DATA && window.DATA.isOnline() && window.CLOUD;
+    if (online) {
+      A.online = true;
+      setDbStatus("🟡 أونلاين — سجّل الدخول");
+      setupAuth();
+      showLogin();
+    } else {
+      A.online = false;
+      setDbStatus("🟠 وضع محلي فقط (بدون سحابة)");
+      initApp();
+    }
   }
 
   document.addEventListener("DOMContentLoaded", init);

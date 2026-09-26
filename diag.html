@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-store">
+  <title>فحص الاتصال</title>
+  <style>
+    body { font-family: Tahoma, Arial, sans-serif; background: #0f2a43; color: #fff; padding: 20px; direction: rtl; }
+    .box { background: #fff; color: #222; border-radius: 12px; padding: 20px; max-width: 640px; margin: 20px auto; }
+    .step { padding: 8px 10px; margin: 6px 0; border-radius: 8px; background: #eef2f7; font-size: 14px; }
+    .ok { border-right: 4px solid #10B981; color: #1d7a46; font-weight: 700; }
+    .fail { border-right: 4px solid #EF4444; color: #b91c1c; font-weight: 700; }
+    .wait { border-right: 4px solid #F59E0B; color: #b45309; font-weight: 700; }
+    pre { white-space: pre-wrap; background: #f4f4f4; padding: 8px; border-radius: 6px; font-size: 12px; direction: ltr; text-align: left; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2 style="margin-top:0">🔍 فحص اتصال البرنامج بالسحابة</h2>
+    <div id="out"></div>
+  </div>
+  <script src="lib_supabase.js?v=19"></script>
+  <script src="supabase.config.js?v=19"></script>
+  <script>
+    var out = document.getElementById("out");
+    function step(kind, label, extra) {
+      var d = document.createElement("div");
+      d.className = "step " + kind;
+      d.innerHTML = (kind === "ok" ? "✅ " : kind === "fail" ? "❌ " : "⏳ ") + label + (extra ? "<pre>" + extra + "</pre>" : "");
+      out.appendChild(d);
+      return d;
+    }
+    function log(label) { step("wait", label); }
+
+    (async function () {
+      log("1/4 تحميل المكتبة المحلية (lib_supabase.js)...");
+      if (window.supabase) {
+        step("ok", "1/4 المكتبة معرّفة (window.supabase موجود)");
+      } else {
+        step("fail", "1/4 المكتبة غير معرّفة — السكريبت لم يشتغل");
+      }
+
+      log("2/4 إنشاء عميل الاتصال ببيانات الكونفيج...");
+      var cfg = window.MIZAN_CONFIG || null;
+      if (!cfg || !cfg.url || !cfg.anon) {
+        step("fail", "2/4 الكونفيج ناقص: " + JSON.stringify(cfg));
+        return;
+      }
+      step("ok", "2/4 الكونفيج موجود: url=" + cfg.url);
+
+      log("2.5/4 فحص اتصال خام (fetch مباشر للسحابة بدون مكتبة)...");
+      try {
+        var hp = await fetch(cfg.url + "/auth/v1/health", { method: "GET", headers: { apikey: cfg.anon }, mode: "cors" });
+        step("ok", "2.5/4 الطلب الخام وصل برقم: " + hp.status + " — داخل السحابة الحقيقية");
+      } catch (e) {
+        step("fail", "2.5/4 الطلب الخام لم يصل من المتصفح: " + e.message);
+      }
+
+      var sb;
+      try {
+        sb = window.supabase.createClient(cfg.url, cfg.anon, { auth: { persistSession: false, autoRefreshToken: true } });
+        step("ok", "2/4 العميل أُنشئ بنجاح (بدون قفل جلسة)");
+      }
+      catch (e) { step("fail", "2/4 خطأ في إنشاء عميل الاتصال: " + e.message); return; }
+
+      log("3/4 محاولة تسجيل دخول حقيقي على السحابة...");
+      try {
+        var r = await sb.auth.signInWithPassword({ email: "adel@mizan.app", password: "Ashsm@198778" });
+        if (r.error) { step("fail", "3/4 السحابة ردّت بخطأ دخول:", r.error.message); }
+        else {
+          step("ok", "3/4 تسجيل الدخول نجح من متصفحك! المستخدم: " + (r.data.user && r.data.user.email));
+          log("4/4 جلب الملف الشخصي والشركة...");
+          var u = r.data.user;
+          var pr = await sb.from("profiles").select("id, is_superadmin, org_id").eq("id", u.id).maybeSingle();
+          if (pr.error) { step("fail", "4/4 خطأ في جلب الملفات:", pr.error.message); }
+          else {
+            step("ok", "4/4 الملف الشخصي: " + JSON.stringify(pr.data));
+            if (pr.data && pr.data.org_id) {
+              var or = await sb.from("organizations").select("id, name").eq("id", pr.data.org_id).maybeSingle();
+              if (or.error) step("fail", "جلب الشركة:", or.error.message);
+              else step("ok", "الشركة: " + (or.data ? or.data.name : "غير معروفة"));
+            }
+          }
+        }
+      } catch (e) {
+        step("fail", "3/4 خطأ تقني أثناء الاتصال بالسحابة:", e.message);
+      }
+    })();
+  </script>
+</body>
+</html>

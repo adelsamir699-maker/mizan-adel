@@ -13,8 +13,12 @@ create table if not exists public.organizations (
   tax_number text,
   business_type text,
   plan text default 'free',
+  plan_start date,
   plan_end date,
   plan_status text default 'active',
+  locked boolean default false,
+  features jsonb default '{}'::jsonb,
+  owner_id uuid references auth.users on delete set null,
   publish_url text,
   tax_enabled boolean default false,
   tax_rate numeric default 0,
@@ -30,6 +34,8 @@ create table if not exists public.profiles (
   role text default 'member',
   branch text,
   is_active boolean default true,
+  blocked boolean default false,
+  is_superadmin boolean default false,
   created_at timestamptz default now()
 );
 
@@ -165,51 +171,146 @@ create index if not exists idx_audit_org on public.audit_logs (org_id);
 
 -- 5) دوال مساعدة
 -- الشركة الخاصة بالمستخدم الحالي (الأمان في كل الجداول)
+-- security definer لتفادي الدوران المتكرر داخل سياسات profiles
 create or replace function public.current_org()
-returns uuid language sql stable
+returns uuid language sql stable security definer set search_path = public
 as $$
   select org_id from public.profiles where id = auth.uid()
 $$;
 
--- إنشاء شركة جديدة لصاحب الحساب الجديد مع كود دعوة + بيانات أولية (حسابات + خزينة)
-create or replace function public.create_org_and_profile(p_org_name text, p_name text)
-returns uuid language plpgsql security definer set search_path = public
+-- حالة وصول المستخدم + بيانات الإدارة (الوقت/القفل/الأعضاء/المزايا) للتطبيق
+drop function if exists public.mizan_access();
+create or replace function public.mizan_access()
+returns table (
+  allowed boolean,
+  reason text,
+  role text,
+  org_id uuid,
+  org_name text,
+  plan_start date,
+  plan_end date,
+  locked boolean,
+  blocked boolean,
+  is_superadmin boolean,
+  features jsonb
+) language sql stable security definer set search_path = public
 as $$
-declare v_org uuid;
+  select
+    case when p.id is not null and p.blocked is not true
+           and o.id is not null and o.locked is not true
+           and o.plan_status = 'active'
+           and (o.plan_end is null or o.plan_end >= current_date)
+         then true else false end,
+    case when p.id is null then 'noprofile'
+         when p.blocked then 'blocked'
+         when o.id is null then 'noorganization'
+         when o.locked then 'locked'
+         when o.plan_status <> 'active' or (o.plan_end is not null and o.plan_end < current_date) then 'plan'
+         else 'ok' end,
+    p.role, o.id, o.name, o.plan_start, o.plan_end, o.locked, p.blocked, p.is_superadmin,
+    coalesce(o.features, '{}'::jsonb)
+  from auth.users u
+  left join public.profiles p on p.id = u.id
+  left join public.organizations o on o.id = p.org_id
+  where u.id = auth.uid();
+$$;
+
+-- ======== دوال المالك (سوبر أدمن) ========
+-- ضبط وقت الشركة وحالة قفلها
+drop function if exists public.mizan_admin_set_org(uuid, date, date, boolean, jsonb);
+create or replace function public.mizan_admin_set_org(
+  p_org_id uuid, p_plan_start date, p_plan_end date, p_locked boolean, p_features jsonb
+) returns void language plpgsql security definer set search_path = public
+as $$
 begin
-  insert into public.organizations (name, invite_code)
-  values (p_org_name, upper(substr(md5(random()::text), 1, 8)))
-  returning id into v_org;
-  insert into public.profiles (id, org_id, full_name, role)
-  values (auth.uid(), v_org, coalesce(nullif(p_name,''), split_part(auth.email(),'@',1)), 'admin');
+  if not exists (select 1 from public.profiles where id = auth.uid() and is_superadmin is true)
+  then raise exception 'غير مصرح'; end if;
+  update public.organizations set
+    plan_start = coalesce(p_plan_start, plan_start),
+    plan_end   = p_plan_end,
+    plan_status = case when p_plan_end is null then 'active'
+                       when p_plan_end < current_date then 'expired' else 'active' end,
+    locked     = coalesce(p_locked, locked),
+    features   = coalesce(p_features, features)
+  where id = p_org_id;
+end $$;
 
-  -- شجرة الحسابات الافتراضية
-  insert into public.accounts (org_id, code, name_ar, type, parent_id, is_active) values
-    (v_org, '1', 'الأصول', 'asset', 0, true),
-    (v_org, '2', 'الالتزامات', 'liability', 0, true),
-    (v_org, '3', 'حقوق الملكية', 'equity', 0, true),
-    (v_org, '4', 'الإيرادات', 'revenue', 0, true),
-    (v_org, '5', 'المصروفات', 'expense', 0, true),
-    (v_org, '11', 'الخزائن', 'asset', 1, true),
-    (v_org, '12', 'مديونيات العملاء', 'asset', 1, true),
-    (v_org, '13', 'المخزون', 'asset', 1, true),
-    (v_org, '14', 'المدفوعات المقدمة', 'asset', 1, true),
-    (v_org, '15', 'الأصول الثابتة', 'asset', 1, true),
-    (v_org, '21', 'الموردون', 'liability', 2, true),
-    (v_org, '22', 'بنوك', 'liability', 2, true),
-    (v_org, '23', 'ضريبة القيمة المضافة', 'liability', 2, true),
-    (v_org, '24', 'الضرائب والمستحقات', 'liability', 2, true),
-    (v_org, '31', 'رأس المال', 'equity', 3, true),
-    (v_org, '32', 'الأرباح المحتجزة', 'equity', 3, true),
-    (v_org, '41', 'مبيعات', 'revenue', 4, true),
-    (v_org, '42', 'إيرادات أخرى', 'revenue', 4, true),
-    (v_org, '51', 'مشتريات', 'expense', 5, true),
-    (v_org, '52', 'مصروفات تشغيلية', 'expense', 5, true),
-    (v_org, '53', 'رواتب وأجور', 'expense', 5, true);
+-- منع / إلغاء منع عضو داخل شركة معينة
+drop function if exists public.mizan_admin_set_user(uuid, boolean);
+create or replace function public.mizan_admin_set_user(p_user_id uuid, p_blocked boolean)
+returns void language plpgsql security definer set search_path = public
+as $$
+begin
+  if not exists (select 1 from public.profiles where id = auth.uid() and is_superadmin is true)
+  then raise exception 'غير مصرح'; end if;
+  update public.profiles set blocked = coalesce(p_blocked, blocked) where id = p_user_id;
+end $$;
 
-  -- خزينة نقدية افتراضية
-  insert into public.treasury (org_id, name, type, balance, is_active) values
-    (v_org, 'الخزينة الرئيسية', 'cash', 0, true);
+-- سحب ملف جميع الشركات + عدد أعضائها (لوحة التحكم)
+drop function if exists public.mizan_admin_orgs();
+create or replace function public.mizan_admin_orgs()
+returns table (org_id uuid, org_name text, plan_start date, plan_end date,
+               plan_status text, locked boolean, owner_name text, members bigint,
+               owner_id uuid, protected boolean)
+language sql security definer set search_path = public
+as $$
+  select o.id, o.name, o.plan_start, o.plan_end, o.plan_status, o.locked,
+         (select p.full_name from public.profiles p where p.org_id = o.id and p.role = 'admin' limit 1),
+         (select count(*) from public.profiles p where p.org_id = o.id),
+         o.owner_id,
+         (o.owner_id is not null
+           and exists (select 1 from public.profiles p where p.id = o.owner_id and p.is_superadmin is true))
+  from public.organizations o
+  where exists (select 1 from public.profiles where id = auth.uid() and is_superadmin is true)
+  order by o.created_at desc;
+$$;
+
+-- أعضاء شركة معينة (لوحة التحكم)
+drop function if exists public.mizan_admin_members(uuid);
+create or replace function public.mizan_admin_members(p_org_id uuid)
+returns table (user_id uuid, full_name text, role text, blocked boolean, created_at timestamptz)
+language sql security definer set search_path = public
+as $$
+  select p.id, p.full_name, p.role, p.blocked, p.created_at
+  from public.profiles p
+  where p.org_id = p_org_id
+    and exists (select 1 from public.profiles where id = auth.uid() and is_superadmin is true)
+  order by p.created_at;
+$$;
+
+-- إنشاء شركة جديدة لصاحب الحساب الجديد مع كود دعوة + بيانات أولية (حسابات + خزينة)
+-- (النسخة الكاملة الحديثة مطابقة لـ supabase-upgrade-2.sql وsupabase-upgrade-4.sql)
+
+  -- شجرة الحسابات الافتراضية (الـ local_id مطابقة لبيانات التطبيق التجريبية)
+  -- انظر supabase-upgrade-2.sql لتحديث هذه في قاعدة بيانات حية بدون إعادة إنشاء
+  insert into public.accounts (org_id, local_id, code, name_ar, type, parent_id, opening_debit, opening_credit, is_active) values
+    (v_org, 1, '1', 'الأصول', 'asset', 0, 0, 0, true),
+    (v_org, 2, '1.1', 'الأصول المتداولة', 'asset', 1, 0, 0, true),
+    (v_org, 3, '1.1.1', 'الصناديق النقدية', 'asset', 2, 25000, 0, true),
+    (v_org, 4, '1.1.2', 'البنوك والحسابات البنكية', 'asset', 2, 50000, 0, true),
+    (v_org, 5, '1.1.3', 'المحافظ الإلكترونية', 'asset', 2, 10000, 0, true),
+    (v_org, 6, '1.1.4', 'المخزون (بضاعة)', 'asset', 2, 0, 0, true),
+    (v_org, 7, '1.1.5', 'مديونيات العملاء', 'asset', 2, 0, 0, true),
+    (v_org, 8, '1.3', 'الأصول الثابتة', 'asset', 1, 0, 0, true),
+    (v_org, 9, '1.3.1', 'المباني والمعدات', 'asset', 8, 0, 0, true),
+    (v_org, 10, '2', 'الالتزامات', 'liability', 0, 0, 0, true),
+    (v_org, 11, '2.1', 'الالتزامات المتداولة', 'liability', 10, 0, 0, true),
+    (v_org, 12, '2.1.1', 'مستحقات الموردين', 'liability', 11, 0, 0, true),
+    (v_org, 13, '2.1.2', 'ضريبة المبيعات المستحقة', 'liability', 11, 0, 0, true),
+    (v_org, 14, '3', 'حقوق الملكية', 'equity', 0, 0, 0, true),
+    (v_org, 15, '3.1', 'رأس المال', 'equity', 14, 100000, 0, true),
+    (v_org, 16, '3.2', 'الأرباح المحتجزة', 'equity', 14, 0, 0, true),
+    (v_org, 17, '4', 'الإيرادات', 'revenue', 0, 0, 0, true),
+    (v_org, 18, '4.1', 'إيرادات المبيعات', 'revenue', 17, 0, 0, true),
+    (v_org, 19, '5', 'المصروفات', 'expense', 0, 0, 0, true),
+    (v_org, 20, '5.1', 'مصروفات عمومية وإدارية', 'expense', 19, 0, 0, true),
+    (v_org, 21, '5.2', 'إيجارات وما شابه', 'expense', 19, 0, 0, true);
+
+  -- الخزن الافتراضية (الـ local_id مطابقة لبيانات التطبيق التجريبية)
+  insert into public.treasury (org_id, local_id, name, type, opening_balance, balance, is_active) values
+    (v_org, 1, 'الصندوق الرئيسي (نقدي)', 'cash', 25000, 25000, true),
+    (v_org, 2, 'البنك الأهلي المصري (1234567890)', 'bank', 50000, 50000, true),
+    (v_org, 3, 'محفظة فودافون كاش (01002655282)', 'wallet', 10000, 10000, true);
 
   return v_org;
 end $$;
