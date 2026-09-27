@@ -90,7 +90,7 @@
   /* ================== البيانات التجريبية ================== */
   const seedCustomers = [
     {
-      id: 1, code: "CASH", nameAr: "العميل النقدي (كاش)",
+      id: 1, code: "1", nameAr: "العميل النقدي (كاش)",
       phone: "", secondaryPhone: "", walletPhone: "", address: "", notes: "عميل نقدي محمي بالنظام",
       openingBalance: 0, currentBalance: 0, protected: true
     },
@@ -148,7 +148,7 @@
 
   const seedSuppliers = [
     {
-      id: 1, code: "SUPP-001", nameAr: "المورد النقدي (كاش)", phone: "", walletPhone: "",
+      id: 1, code: "1", nameAr: "المورد النقدي (كاش)", phone: "", walletPhone: "",
       address: "", notes: "مورد نقدي محمي بالنظام", openingBalance: 0, currentBalance: 0, protected: true
     },
     {
@@ -238,7 +238,54 @@
   let presenceTimer = null;
 
   
+  function ensureCashEntities() {
+    if (Array.isArray(customers) && customers.length) {
+      let cashCust = customers.find((c) => c.id === 1 || c.code === "1" || c.code === "CASH" || c.protected === true || (c.nameAr && c.nameAr.includes("العميل النقدي")));
+      if (cashCust) {
+        cashCust.code = "1";
+        cashCust.protected = true;
+        if (!cashCust.nameAr || !cashCust.nameAr.includes("نقدي")) cashCust.nameAr = "العميل النقدي (كاش)";
+      } else {
+        customers.unshift({
+          id: 1,
+          code: "1",
+          nameAr: "العميل النقدي (كاش)",
+          phone: "",
+          secondaryPhone: "",
+          walletPhone: "",
+          address: "",
+          notes: "عميل نقدي محمي بالنظام",
+          openingBalance: 0,
+          currentBalance: 0,
+          protected: true
+        });
+      }
+    }
+    if (Array.isArray(suppliers) && suppliers.length) {
+      let cashSupp = suppliers.find((s) => s.id === 1 || s.code === "1" || s.code === "SUPP-001" || s.protected === true || (s.nameAr && s.nameAr.includes("المورد النقدي")));
+      if (cashSupp) {
+        cashSupp.code = "1";
+        cashSupp.protected = true;
+        if (!cashSupp.nameAr || !cashSupp.nameAr.includes("نقدي")) cashSupp.nameAr = "المورد النقدي (كاش)";
+      } else {
+        suppliers.unshift({
+          id: 1,
+          code: "1",
+          nameAr: "المورد النقدي (كاش)",
+          phone: "",
+          walletPhone: "",
+          address: "",
+          notes: "مورد نقدي محمي بالنظام",
+          openingBalance: 0,
+          currentBalance: 0,
+          protected: true
+        });
+      }
+    }
+  }
+
   function recalculateCustomerBalances() {
+    ensureCashEntities();
     if (!customers || !txs) return;
     customers.forEach((c) => {
       const custTxs = txs.filter((t) => Number(t.customerId) === Number(c.id));
@@ -1276,6 +1323,14 @@
     const bal = $("#actBalance");
     bal.textContent = "الرصيد الحالي (المديونية): " + fmt(cust.currentBalance) + " ج.م";
     bal.className = "act-bal " + (cust.currentBalance > 0 ? "balance-debit" : "balance-credit");
+    const isCash = cust.protected || cust.code === "1" || cust.id === 1;
+    const btnDel = $("#actDelete");
+    if (btnDel) {
+      btnDel.disabled = isCash;
+      btnDel.title = isCash ? "لا يمكن حذف العميل النقدي (كاش) - محمي بالنظام" : "";
+      btnDel.style.opacity = isCash ? "0.4" : "1";
+      btnDel.style.cursor = isCash ? "not-allowed" : "pointer";
+    }
     showModal("mActions");
   }
 
@@ -1941,7 +1996,11 @@
       opt.textContent = c.nameAr;
       custSel.appendChild(opt);
     });
-    if (prevCust) custSel.value = prevCust;
+    if (prevCust && custSel.querySelector('option[value="' + prevCust + '"]')) {
+      custSel.value = prevCust;
+    } else {
+      posSelectDefaultCustomer();
+    }
 
     const whSel = $("#cmbPosWarehouse");
     const prevWh = whSel.value;
@@ -1972,7 +2031,7 @@
 
   function posSelectDefaultCustomer() {
     const sel = $("#cmbPosCustomer");
-    const def = customers.find((c) => c.code === "CASH") || customers.find((c) => (c.nameAr || "").includes("نقدي")) || customers[0];
+    const def = customers.find((c) => c.code === "1") || customers.find((c) => c.id === 1) || customers.find((c) => c.protected) || customers.find((c) => (c.nameAr || "").includes("كاش") || (c.nameAr || "").includes("نقدي")) || customers[0];
     if (def) sel.value = String(def.id);
   }
 
@@ -2442,7 +2501,11 @@
       opt.textContent = s.nameAr;
       supSel.appendChild(opt);
     });
-    if (prevSup && supSel.querySelector('option[value="' + prevSup + '"]')) supSel.value = prevSup;
+    if (prevSup && supSel.querySelector('option[value="' + prevSup + '"]')) {
+      supSel.value = prevSup;
+    } else {
+      ppSelectDefaultSupplier();
+    }
 
     const whSel = $("#cmbPPWarehouse");
     const prevWh = whSel.value;
@@ -2473,7 +2536,7 @@
 
   function ppSelectDefaultSupplier() {
     const sel = $("#cmbPosSupplier");
-    const def = suppliers.find((s) => s.code === "SUPP-001") || suppliers.find((s) => (s.nameAr || "").includes("نقدي")) || suppliers[0];
+    const def = suppliers.find((s) => s.code === "1") || suppliers.find((s) => s.id === 1) || suppliers.find((s) => s.protected) || suppliers.find((s) => (s.nameAr || "").includes("كاش") || (s.nameAr || "").includes("نقدي")) || suppliers[0];
     if (def) sel.value = String(def.id);
   }
 
@@ -2996,6 +3059,14 @@
     const bal = $("#sactBalance");
     bal.textContent = "الرصيد الحالي (المستحق): " + fmt(s.currentBalance) + " ج.م";
     bal.className = "act-bal " + (s.currentBalance > 0 ? "balance-debit" : "balance-credit");
+    const isCash = s.protected || s.code === "1" || s.id === 1;
+    const btnDel = $("#sactDelete");
+    if (btnDel) {
+      btnDel.disabled = isCash;
+      btnDel.title = isCash ? "لا يمكن حذف المورد النقدي (كاش) - محمي بالنظام" : "";
+      btnDel.style.opacity = isCash ? "0.4" : "1";
+      btnDel.style.cursor = isCash ? "not-allowed" : "pointer";
+    }
     showModal("mSuppActions");
   }
 
@@ -4628,7 +4699,7 @@
     });
     $("#actDelete").addEventListener("click", () => {
       const cust = actionsCust;
-      if (cust.protected) {
+      if (cust.protected || cust.code === "1" || cust.code === "CASH" || cust.id === 1 || (cust.nameAr && cust.nameAr.includes("العميل النقدي"))) {
         toast("لا يمكن حذف العميل النقدي (كاش) - محمي بالنظام.", "warning");
         return;
       }
@@ -4810,7 +4881,7 @@
     });
     $("#sactDelete").addEventListener("click", () => {
       const s = actionsSupp;
-      if (s.protected) {
+      if (s.protected || s.code === "1" || s.code === "SUPP-001" || s.id === 1 || (s.nameAr && s.nameAr.includes("المورد النقدي"))) {
         toast("لا يمكن حذف المورد النقدي (كاش) - محمي بالنظام.", "warning");
         return;
       }
