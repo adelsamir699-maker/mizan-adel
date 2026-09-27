@@ -40,6 +40,7 @@
     </div>
 <div class="header-left">
       <span class="db-status" id="dbStatus">🟢 متصل</span>
+      <span class="db-status" id="syncPending" hidden></span>
       <span id="clock"></span>
       <span id="userInfo">👤 المستخدم: مدير النظام | الصلاحية: مدير | الفرع الرئيسي</span>
       <span class="db-status" id="subInfo" hidden></span>
@@ -1844,6 +1845,7 @@
   <script src="supabase.config.js?v=84"></script>
   <script src="data.js?v=84"></script>
   <script src="cloud.js?v=84"></script>
+  <script src="sync.js?v=84"></script>
   <script src="app.js?v=84"></script>
   <script>
     // كاشف أخطاء على الشاشة (بيحول أي خطأ JS لرسالة مرئية)

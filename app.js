@@ -549,7 +549,30 @@
     if (!A.online || A.adopting || A.cleaning) return;
     if (!window.CLOUD) return;
     mirror();
-    window.CLOUD.push(name).catch((e) => console.warn("push", name, e.message));
+    // 🔌 Offline-First: لو الاتصال مقطوع → نطاب الجدول لإعادة الدفع لاحقًا.
+    // (syncOne بيبتلع أخطاء الشبكة فبيرجع resolved، فالاعتماد على navigator.onLine.)
+    if (window.Sync && !window.Sync.isOnline()) { window.Sync.enqueue(name); return; }
+    window.CLOUD.push(name).then(() => {
+      if (window.Sync) window.Sync.resolve(name);
+    }).catch((e) => {
+      console.warn("push", name, e.message);
+      if (window.Sync) window.Sync.enqueue(name);
+    });
+  }
+
+  // 🔌 إعادة دفع الطابور لما الاتصال يرجع (أو بعد إعادة الدخول).
+  // مش بننفّذ إلا في جلسة أونلاين صالحة ومش أثناء التحميل/التنظيف.
+  function flushOutbox() {
+    if (!window.Sync || !window.CLOUD) return;
+    if (!A.online || A.adopting || A.cleaning) return;
+    if (!window.Sync.isOnline()) return;
+    if (!(DATA && DATA.isOnline && DATA.isOnline())) return;
+    window.Sync.flush((table) => {
+      // لو الاتصال انقطع أثناء إعادة الدفع → نرفض عشان يفضل الجدول متطاب
+      if (!window.Sync.isOnline()) return Promise.reject(new Error("offline"));
+      mirror();
+      return window.CLOUD.push(table);
+    }).catch((e) => console.warn("flushOutbox", e.message));
   }
 
   function setDbStatus(txt) {
@@ -5409,6 +5432,8 @@ const pwEye = document.getElementById("btnShowPass");
         A.adopting = false;
         persistLocalFromCloud();
         seedPushFromLocal();
+        // 🔌 إعادة دفع أي عمليات متطابة من جلسة سابقة (بعد تأكيد الجلسة)
+        flushOutbox();
         $("#btnLogout").hidden = false;
         // لا نُظهره هنا: يُتحكم فيه داخل proceedOnline
         // (لصاحب الشركة والسوبر أدمن فقط، لا للموظفين العاديين)
@@ -6694,6 +6719,12 @@ const pwEye = document.getElementById("btnShowPass");
     loadFromLocalDisk();
     if (window.DATA && window.DATA.init) window.DATA.init();
     setupAdmin();
+    // 🔌 Offline-First (المرحلة ١): تهيئة طابور المزامنة، وإعادة دفع المعلّق
+    // تلقائياً عند رجوع الاتصال.
+    if (window.Sync) {
+      window.Sync.init();
+      window.Sync.setOnline(() => { flushOutbox(); });
+    }
     const online = window.DATA && window.DATA.isOnline() && window.CLOUD;
     if (online) {
       A.online = true;
