@@ -1,0 +1,13 @@
+# بيانات محلية مؤقتة (بتتغيّر طول الوقت، مالهاش لازمة في git)
+db/mizan_local_data.json
+
+# ملفات إعدادات مجلدات الويندوز
+desktop.ini
+Thumbs.db
+
+# تبعيات
+node_modules/
+
+# سجلات
+*.log
+npm-debug.log*
