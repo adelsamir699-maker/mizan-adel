@@ -1068,6 +1068,7 @@
     const q = normalizeAr($("#txtCustomerSearch").value);
 
     customers
+      .filter((c) => !c.protected && c.code !== "1" && c.id !== 1 && !(c.nameAr && c.nameAr.includes("العميل النقدي")))
       .filter((c) => {
         if (!q) return true;
         return (
@@ -1196,12 +1197,14 @@
     payPreselected = customer || null;
     const sel = $("#pCust");
     sel.innerHTML = "";
-    customers.forEach((c) => {
-      const opt = document.createElement("option");
-      opt.value = c.id;
-      opt.textContent = c.nameAr + " (المديونية: " + fmt(c.currentBalance) + " ج.م)";
-      sel.appendChild(opt);
-    });
+    customers
+      .filter((c) => !c.protected && c.code !== "1" && c.id !== 1 && !(c.nameAr && c.nameAr.includes("العميل النقدي")))
+      .forEach((c) => {
+        const opt = document.createElement("option");
+        opt.value = c.id;
+        opt.textContent = c.nameAr + " (المديونية: " + fmt(c.currentBalance) + " ج.م)";
+        sel.appendChild(opt);
+      });
     if (payPreselected) {
       sel.value = String(payPreselected.id);
     }
@@ -2948,6 +2951,7 @@
     tbody.innerHTML = "";
     const q = normalizeAr($("#txtSupplierSearch").value);
     suppliers
+      .filter((s) => !s.protected && s.code !== "1" && s.id !== 1 && !(s.nameAr && s.nameAr.includes("المورد النقدي")))
       .filter((s) => {
         if (!q) return true;
         return (
@@ -3110,12 +3114,14 @@
     paySuppPreselected = supplier || null;
     const sel = $("#psSupplier");
     sel.innerHTML = "";
-    suppliers.forEach((s) => {
-      const opt = document.createElement("option");
-      opt.value = s.id;
-      opt.textContent = s.nameAr + " (المستحق: " + fmt(s.currentBalance) + " ج.م)";
-      sel.appendChild(opt);
-    });
+    suppliers
+      .filter((s) => !s.protected && s.code !== "1" && s.id !== 1 && !(s.nameAr && s.nameAr.includes("المورد النقدي")))
+      .forEach((s) => {
+        const opt = document.createElement("option");
+        opt.value = s.id;
+        opt.textContent = s.nameAr + " (المستحق: " + fmt(s.currentBalance) + " ج.م)";
+        sel.appendChild(opt);
+      });
     if (paySuppPreselected) sel.value = String(paySuppPreselected.id);
     $("#psMethod").value = "نقداً 💵";
     $("#psAmount").value = "";
