@@ -270,6 +270,134 @@
     });
   }
 
+  function syncTreasuryItemToSett(tr) {
+    if (!tr) return;
+    const norm = (s) => (s || "").replace(/[\s\-_()]/g, "").toLowerCase();
+    const trName = norm(tr.name);
+    [csetData, ssetData].forEach((src) => {
+      if (!src) return;
+      const list = tr.type === "bank" ? src.banks : tr.type === "wallet" ? src.wallets : null;
+      if (Array.isArray(list)) {
+        const item = list.find((x) => {
+          const xn = norm(x.name);
+          return xn === trName || (x.account_no && tr.accountNo && norm(x.account_no) === norm(tr.accountNo)) || (xn && trName && (xn.includes(trName) || trName.includes(xn)));
+        });
+        if (item) {
+          item.balance = tr.balance;
+        }
+      }
+    });
+  }
+
+  function reconcileTreasuryWithTxs() {
+    if (!Array.isArray(txs) || !Array.isArray(vouchers) || !Array.isArray(treasury)) return;
+    let changed = false;
+    txs.forEach((t) => {
+      if (Number(t.credit || 0) <= 0) return;
+      if ((t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة")) return;
+      const hasVoucher = vouchers.some((v) => (v.refType === "customer_tx" && v.refId === t.id) || (v.refId === t.id));
+      if (hasVoucher) return;
+
+      let targetTr = null;
+      if (t.treasuryId) {
+        targetTr = treasury.find((x) => Number(x.id) === Number(t.treasuryId));
+      }
+      if (!targetTr && t.desc) {
+        const d = normalizeAr(t.desc);
+        targetTr = treasury.find((x) => d.includes(normalizeAr(x.name)) || (x.accountNo && d.includes(x.accountNo)));
+      }
+      if (!targetTr && t.desc && (t.desc.includes("بنك") || t.desc.includes("أهلي") || t.desc.includes("اهلي"))) {
+        targetTr = treasury.find((x) => x.type === "bank");
+      }
+      if (!targetTr && t.desc && (t.desc.includes("نقدي") || t.desc.includes("كاش"))) {
+        targetTr = treasury.find((x) => x.type === "cash") || treasury[0];
+      }
+      if (!targetTr) return;
+
+      const cust = (customers || []).find((c) => Number(c.id) === Number(t.customerId));
+      vouchers.push({
+        id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+        type: "in",
+        treasuryId: targetTr.id,
+        date: t.date || todayISO(),
+        amount: Number(t.credit),
+        desc: "تحصيل من عميل: " + (cust ? cust.nameAr : "") + (t.desc ? " (" + t.desc + ")" : ""),
+        refType: "customer_tx",
+        refId: t.id
+      });
+      changed = true;
+    });
+
+    (supplierTxs || []).forEach((t) => {
+      if (Number(t.credit || 0) <= 0) return;
+      if ((t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة")) return;
+      const hasVoucher = vouchers.some((v) => (v.refType === "supplier_tx" && v.refId === t.id) || (v.refId === t.id));
+      if (hasVoucher) return;
+
+      let targetTr = null;
+      if (t.treasuryId) {
+        targetTr = treasury.find((x) => Number(x.id) === Number(t.treasuryId));
+      }
+      if (!targetTr && t.desc) {
+        const d = normalizeAr(t.desc);
+        targetTr = treasury.find((x) => d.includes(normalizeAr(x.name)) || (x.accountNo && d.includes(x.accountNo)));
+      }
+      if (!targetTr && t.desc && (t.desc.includes("بنك") || t.desc.includes("أهلي") || t.desc.includes("اهلي"))) {
+        targetTr = treasury.find((x) => x.type === "bank");
+      }
+      if (!targetTr && t.desc && (t.desc.includes("نقدي") || t.desc.includes("كاش"))) {
+        targetTr = treasury.find((x) => x.type === "cash") || treasury[0];
+      }
+      if (!targetTr) return;
+
+      const supp = (suppliers || []).find((s) => Number(s.id) === Number(t.supplierId));
+      vouchers.push({
+        id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+        type: "out",
+        treasuryId: targetTr.id,
+        date: t.date || todayISO(),
+        amount: Number(t.credit),
+        desc: "سداد لمورد: " + (supp ? supp.nameAr : "") + (t.desc ? " (" + t.desc + ")" : ""),
+        refType: "supplier_tx",
+        refId: t.id
+      });
+      changed = true;
+    });
+
+    if (changed) {
+      saveVouchers();
+    }
+  }
+
+  function recalculateTreasuryBalances() {
+    if (!Array.isArray(treasury)) return;
+    reconcileTreasuryWithTxs();
+    treasury.forEach((tr) => {
+      if (tr.openingBalance == null) {
+        tr.openingBalance = Number(tr.balance || 0);
+      }
+      const tid = Number(tr.id);
+      let bal = Number(tr.openingBalance || 0);
+
+      (sales || []).filter((s) => Number(s.treasuryId) === tid && s.paymentMethod !== "آجل").forEach((s) => {
+        bal += Number(s.grandTotal || 0);
+      });
+
+      (purchases || []).filter((p) => Number(p.treasuryId) === tid && p.paymentMethod !== "آجل").forEach((p) => {
+        bal -= Number(p.grandTotal || 0);
+      });
+
+      (vouchers || []).filter((v) => Number(v.treasuryId) === tid).forEach((v) => {
+        if (v.type === "in" || v.kind === "in") bal += Number(v.amount || 0);
+        else bal -= Number(v.amount || 0);
+      });
+
+      tr.balance = Math.round(bal * 100) / 100;
+      syncTreasuryItemToSett(tr);
+    });
+    saveTreasury();
+  }
+
   let diskSyncTimer = null;
   function syncToLocalDisk() {
     clearTimeout(diskSyncTimer);
@@ -321,6 +449,7 @@
           if (Array.isArray(data.vouchers) && data.vouchers.length && (!vouchers || !vouchers.length || vouchers === seedVouchers)) vouchers = data.vouchers;
           recalculateCustomerBalances();
           recalculateSupplierBalances();
+          recalculateTreasuryBalances();
           if (typeof renderTable === "function") renderTable();
           if (typeof renderTreasury === "function") renderTreasury();
           if (typeof renderInvoiceQuery === "function") renderInvoiceQuery();
@@ -825,11 +954,11 @@
     }
     if (name === "suppliers") renderSuppliers();
     if (name === "returns") renderInvoiceQuery();
-    if (name === "treasury") { syncTreasuryFromSett(); renderTreasury(); renderTreMoves(); }
+    if (name === "treasury") { syncTreasuryFromSett(); recalculateTreasuryBalances(); renderTreasury(); renderTreMoves(); }
     if (name === "accounts") renderAccounts();
     if (name === "journal") renderJournal();
     if (name === "balance") renderBalance();
-    if (name === "treasuryStatements") renderTreStmt();
+    if (name === "treasuryStatements") { recalculateTreasuryBalances(); renderTreStmt(); }
     if (name === "reports") renderReports();
     if (name === "users") renderUsers();
     if (name === "audit") renderAudit();
@@ -1094,20 +1223,38 @@
     if (tr) {
       tr.balance = Math.round((tr.balance + amount) * 100) / 100;
       saveTreasury();
+      syncTreasuryItemToSett(tr);
     }
+    const txId = nextTxId();
     txs.push({
-      id: nextTxId(),
+      id: txId,
       customerId: cid,
+      treasuryId: tr ? tr.id : (trId || null),
+      paymentMethod: $("#pMethod").value,
       date: todayISO(),
       desc: notes,
       debit: 0,
       credit: amount
     });
+    vouchers.push({
+      id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+      type: "in",
+      treasuryId: tr ? tr.id : trId,
+      date: todayISO(),
+      amount: amount,
+      desc: "تحصيل من عميل: " + (cust ? cust.nameAr : "") + (notes ? " (" + notes + ")" : ""),
+      refType: "customer_tx",
+      refId: txId
+    });
     saveCustomers();
     saveTxs();
+    saveVouchers();
     hideModal("mPayDebt");
-    toast("تم تسجيل السداد بنجاح.", "success");
+    addActivity("تحصيل مديونية", "تحصيل مبلغ " + fmt(amount) + " ج.م من " + (cust ? cust.nameAr : "") + (tr ? " (" + tr.name + ")" : ""));
+    toast("تم تسجيل السداد بنجاح وتحديث رصيد الحساب.", "success");
     renderTable();
+    if (typeof renderTreasury === "function") renderTreasury();
+    if (typeof renderTreMoves === "function") renderTreMoves();
   }
 
   function todayISO() {
@@ -2124,6 +2271,7 @@
         tr.balance = Math.round(((tr.balance || 0) + t.grand) * 100) / 100;
         invoice.treasuryId = tr.id;
         saveTreasury();
+        syncTreasuryItemToSett(tr);
       }
     }
 
@@ -2595,6 +2743,7 @@
         tr.balance = Math.round(((tr.balance || 0) - t.grand) * 100) / 100;
         invoice.treasuryId = tr.id;
         saveTreasury();
+        syncTreasuryItemToSett(tr);
       }
     }
 
@@ -2935,21 +3084,38 @@
     if (tr) {
       tr.balance = Math.round((tr.balance - amount) * 100) / 100;
       saveTreasury();
+      syncTreasuryItemToSett(tr);
     }
+    const txId = supplierTxs.reduce((m, x) => Math.max(m, x.id), 0) + 1;
     supplierTxs.push({
-      id: supplierTxs.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+      id: txId,
       supplierId: sid,
+      treasuryId: tr ? tr.id : (trId || null),
+      paymentMethod: $("#psMethod").value,
       date: todayISO(),
       desc: $("#psNotes").value.trim() || "سداد مستحقات مورد",
       debit: 0,
       credit: amount
     });
+    vouchers.push({
+      id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+      type: "out",
+      treasuryId: tr ? tr.id : trId,
+      date: todayISO(),
+      amount: amount,
+      desc: "سداد لمورد: " + (supp ? supp.nameAr : "") + " (" + ($("#psNotes").value.trim() || "سداد مستحقات") + ")",
+      refType: "supplier_tx",
+      refId: txId
+    });
     saveSuppliers();
     saveSupplierTxs();
+    saveVouchers();
     hideModal("mPaySuppDebt");
-    addActivity("سداد مورد", "سداد مستحقات " + supp.nameAr + " بمبلغ " + fmt(amount) + " ج.م");
-    toast("تم تسجيل السداد بنجاح.", "success");
+    addActivity("سداد مورد", "سداد مستحقات " + supp.nameAr + " بمبلغ " + fmt(amount) + " ج.م" + (tr ? " من " + tr.name : ""));
+    toast("تم تسجيل السداد بنجاح وتحديث رصيد الحساب.", "success");
     renderSuppliers();
+    if (typeof renderTreasury === "function") renderTreasury();
+    if (typeof renderTreMoves === "function") renderTreMoves();
   }
 
   /* ================== استعلام عن الفواتير ================== */
@@ -3009,55 +3175,60 @@
       const hasBankData = Array.isArray(banks) && banks.length;
       const hasWalletData = Array.isArray(wallets) && wallets.length;
       if (!hasBankData && !hasWalletData) {
-        // لا بنوك ولا محافظ في الضبط → لا نمسّ القائمة الحالية
         return false;
       }
       let nextId = treasury.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
       const built = [];
       const used = {};
-      const match = (type, name) => {
+      const norm = (s) => (s || "").replace(/[\s\-_()]/g, "").toLowerCase();
+      const match = (type, name, acct) => {
+        const nName = norm(name);
+        const nAcct = norm(acct);
         for (const t of treasury) {
           if (used[t.id]) continue;
-          if (t.type === type && t.name === name) { used[t.id] = true; return t; }
+          if (t.type !== type) continue;
+          const tnName = norm(t.name);
+          const tnAcct = norm(t.accountNo);
+          if (t.name === name || tnName === nName) { used[t.id] = true; return t; }
+          if (nAcct && tnAcct && (nAcct === tnAcct || tnName.includes(nAcct))) { used[t.id] = true; return t; }
+          if (tnName && nName && (tnName.includes(nName) || nName.includes(tnName))) { used[t.id] = true; return t; }
         }
         return null;
       };
       (banks || []).forEach((b) => {
         const name = (b.name || "").trim(); if (!name) return;
-        const prev = match("bank", name);
+        const prev = match("bank", name, b.account_no);
+        const liveBal = prev && prev.balance != null ? Number(prev.balance) : (b.balance != null ? Number(b.balance) : Number(b.opening_balance || 0));
+        b.balance = liveBal;
         built.push({
           id: prev ? prev.id : nextId++,
           name: name,
           type: "bank",
           accountNo: (b.account_no || "").trim(),
-          openingBalance: Number(b.opening_balance || 0),
-          balance: Number((b.balance != null ? b.balance : (prev ? prev.balance : b.opening_balance)) || 0),
+          openingBalance: Number(b.opening_balance || (prev ? prev.openingBalance : 0) || 0),
+          balance: liveBal,
           isActive: b.is_active !== false
         });
       });
       (wallets || []).forEach((w) => {
         const name = (w.name || "").trim(); if (!name) return;
-        const prev = match("wallet", name);
+        const prev = match("wallet", name, w.account_no);
+        const liveBal = prev && prev.balance != null ? Number(prev.balance) : (w.balance != null ? Number(w.balance) : Number(w.opening_balance || 0));
+        w.balance = liveBal;
         built.push({
           id: prev ? prev.id : nextId++,
           name: name,
           type: "wallet",
           accountNo: (w.account_no || "").trim(),
-          openingBalance: Number(w.opening_balance || 0),
-          balance: Number((w.balance != null ? w.balance : (prev ? prev.balance : w.opening_balance)) || 0),
+          openingBalance: Number(w.opening_balance || (prev ? prev.openingBalance : 0) || 0),
+          balance: liveBal,
           isActive: w.is_active !== false
         });
       });
-      // إبقاء الخزائن النقدية فقط؛ البنوك/المحافظ القديمة تُستبدل من الضبط
       treasury.forEach((t) => {
         if (used[t.id]) return;
-        if (t.type !== "cash") return;
         built.push(t);
       });
-      if (built.length === treasury.length &&
-          built.every((b, i) => b.id === treasury[i].id && b.name === treasury[i].name && b.balance === treasury[i].balance)) {
-        return false;
-      }
       treasury = built;
       return true;
     } catch (e) { return false; }
@@ -3076,14 +3247,15 @@
       .forEach((t) => {
         const tr = document.createElement("tr");
         const typeName = t.type === "cash" ? "صندوق نقدي 💵" : t.type === "bank" ? "حساب بنكي 🏛️" : "محفظة 📱";
+        const tTotals = totals[t.id] || { in: 0, out: 0 };
         tr.innerHTML =
           '<td hidden></td>' +
           '<td>' + esc(t.name) + '</td>' +
           '<td>' + typeName + '</td>' +
           '<td>' + esc(t.accountNo || (t.type === "bank" ? "—" : t.type === "wallet" ? (t.phone || "—") : "—")) + '</td>' +
           '<td class="' + (t.balance > 0 ? "balance-debit" : "balance-credit") + '">' + fmt(t.balance) + ' ج.م</td>' +
-          '<td>' + fmt(totals[t.id].in) + '</td>' +
-          '<td>' + fmt(totals[t.id].out) + '</td>' +
+          '<td>' + fmt(tTotals.in) + '</td>' +
+          '<td>' + fmt(tTotals.out) + '</td>' +
           '<td class="cell-actions"><button class="btn small blue" type="button" data-act="edit">✏️</button></td>';
         tr.dataset.tid = t.id;
         tbody.appendChild(tr);
@@ -3107,7 +3279,7 @@
       const k = Number(v.treasuryId);
       const target = map[k] || map[v.treasuryId];
       if (target) {
-        if (v.type === "in") target.in += Number(v.amount || 0);
+        if (v.type === "in" || v.kind === "in") target.in += Number(v.amount || 0);
         else target.out += Number(v.amount || 0);
       }
     });
@@ -3139,6 +3311,7 @@
       t.type = type;
       t.accountNo = $("#tAccountNo").value.trim();
       saveTreasury();
+      syncTreasuryItemToSett(t);
       addActivity("تعديل خزينة", "تعديل بيانات الخزينة: " + name);
       toast("تم حفظ التعديلات بنجاح.", "success");
     } else {
@@ -3152,6 +3325,7 @@
       };
       treasury.push(t);
       saveTreasury();
+      syncTreasuryItemToSett(t);
       addActivity("إضافة خزينة", "إضافة خزينة جديدة: " + name);
       toast("تمت إضافة الخزينة بنجاح.", "success");
     }
@@ -3200,6 +3374,7 @@
       desc: $("#vDesc").value.trim() || (voucherMode === "in" ? "إيراد" : "مصروف")
     });
     saveTreasury();
+    syncTreasuryItemToSett(t);
     saveVouchers();
     hideModal("mVoucher");
     addActivity(voucherMode === "in" ? "سند قبض" : "سند صرف", (voucherMode === "in" ? "قبض إيراد" : "صرف مصروف") + " بمبلغ " + fmt(amount) + " ج.م (" + t.name + ")");
@@ -3210,9 +3385,9 @@
 
   function renderTreMoves() {
     const moves = [];
-    sales.filter((s) => s.treasuryId).forEach((s) => moves.push({ date: s.invoiceDate || s.date || todayISO(), name: (treasury.find((t) => Number(t.id) === Number(s.treasuryId)) || {}).name || "-", desc: "فاتورة مبيعات " + (s.invoiceNumber || s.invoiceNo), in: s.grandTotal, out: 0 }));
-    purchases.filter((p) => p.treasuryId).forEach((p) => moves.push({ date: p.invoiceDate || p.date || todayISO(), name: (treasury.find((t) => Number(t.id) === Number(p.treasuryId)) || {}).name || "-", desc: "فاتورة مشتريات " + (p.invoiceNumber || p.invoiceNo), in: 0, out: p.grandTotal }));
-    vouchers.forEach((v) => moves.push({ date: v.date, name: (treasury.find((t) => t.id === v.treasuryId) || {}).name || "-", desc: v.desc, in: v.type === "in" ? v.amount : 0, out: v.type === "out" ? v.amount : 0 }));
+    sales.filter((s) => s.treasuryId && s.paymentMethod !== "آجل").forEach((s) => moves.push({ date: s.invoiceDate || s.date || todayISO(), name: (treasury.find((t) => Number(t.id) === Number(s.treasuryId)) || {}).name || "-", desc: "فاتورة مبيعات " + (s.invoiceNumber || s.invoiceNo), in: s.grandTotal, out: 0 }));
+    purchases.filter((p) => p.treasuryId && p.paymentMethod !== "آجل").forEach((p) => moves.push({ date: p.invoiceDate || p.date || todayISO(), name: (treasury.find((t) => Number(t.id) === Number(p.treasuryId)) || {}).name || "-", desc: "فاتورة مشتريات " + (p.invoiceNumber || p.invoiceNo), in: 0, out: p.grandTotal }));
+    vouchers.forEach((v) => moves.push({ date: v.date, name: (treasury.find((t) => Number(t.id) === Number(v.treasuryId)) || {}).name || "-", desc: v.desc || (v.type === "in" ? "إيراد (سند قبض)" : "مصروف (سند صرف)"), in: (v.type === "in" || v.kind === "in") ? v.amount : 0, out: (v.type === "out" || v.kind === "out") ? v.amount : 0 }));
     moves.sort((a, b) => new Date(b.date) - new Date(a.date));
     const tbody = $("#dgvTreMoves tbody");
     tbody.innerHTML = "";
@@ -3589,9 +3764,9 @@
 
     const moves = [];
     moves.push({ date: "بداية", desc: "الرصيد الافتتاحي", in: t.openingBalance > 0 ? t.openingBalance : 0, out: 0 });
-    sales.filter((s) => Number(s.treasuryId) === Number(tid)).forEach((s) => moves.push({ date: s.invoiceDate || s.date || "—", desc: "فاتورة مبيعات " + (s.invoiceNumber || s.invoiceNo), in: s.grandTotal, out: 0 }));
-    purchases.filter((p) => Number(p.treasuryId) === Number(tid)).forEach((p) => moves.push({ date: p.invoiceDate || p.date || "—", desc: "فاتورة مشتريات " + (p.invoiceNumber || p.invoiceNo), in: 0, out: p.grandTotal }));
-    vouchers.filter((v) => v.treasuryId === tid).forEach((v) => moves.push({ date: v.date, desc: v.desc, in: v.type === "in" ? v.amount : 0, out: v.type === "out" ? v.amount : 0 }));
+    sales.filter((s) => Number(s.treasuryId) === Number(tid) && s.paymentMethod !== "آجل").forEach((s) => moves.push({ date: s.invoiceDate || s.date || "—", desc: "فاتورة مبيعات " + (s.invoiceNumber || s.invoiceNo), in: s.grandTotal, out: 0 }));
+    purchases.filter((p) => Number(p.treasuryId) === Number(tid) && p.paymentMethod !== "آجل").forEach((p) => moves.push({ date: p.invoiceDate || p.date || "—", desc: "فاتورة مشتريات " + (p.invoiceNumber || p.invoiceNo), in: 0, out: p.grandTotal }));
+    vouchers.filter((v) => Number(v.treasuryId) === Number(tid)).forEach((v) => moves.push({ date: v.date, desc: v.desc || (v.type === "in" ? "سند قبض" : "سند صرف"), in: (v.type === "in" || v.kind === "in") ? v.amount : 0, out: (v.type === "out" || v.kind === "out") ? v.amount : 0 }));
     moves.sort((a, b) => (a.date === "بداية" ? -1 : b.date === "بداية" ? 1 : new Date(a.date) - new Date(b.date)));
 
     let run = 0;
@@ -5481,6 +5656,7 @@ const pwEye = document.getElementById("btnShowPass");
     if (S.journalEntries && S.journalEntries.length) journalEntries = S.journalEntries;
     recalculateCustomerBalances();
     recalculateSupplierBalances();
+    recalculateTreasuryBalances();
     syncToLocalDisk();
   }
 
@@ -6398,6 +6574,7 @@ const pwEye = document.getElementById("btnShowPass");
     loadData();
     recalculateCustomerBalances();
     recalculateSupplierBalances();
+    recalculateTreasuryBalances();
     loadFromLocalDisk();
     if (window.DATA && window.DATA.init) window.DATA.init();
     setupAdmin();

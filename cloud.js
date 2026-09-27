@@ -288,14 +288,15 @@
       local: function () { return W.vouchers; },
       toCloud: function (r) {
         return { id: detUuid("vouchers", r.id), org_id: DATA.orgId(), local_id: r.id,
-          no: r.no || r.id, doc_date: r.date || "", kind: r.kind || "",
+          no: r.no || r.id, doc_date: r.date || "", kind: r.kind || r.type || "in",
           treasury_id: (r.treasuryId || "").toString(), account_id: (r.accountId || "").toString(),
-          amount: r.amount || 0, notes: r.notes || "" };
+          amount: r.amount || 0, notes: r.notes || r.desc || "" };
       },
       fromCloud: function (r) {
-        return { id: r.local_id, no: r.no, date: r.doc_date, kind: r.kind || "",
+        var k = r.kind || "in";
+        return { id: r.local_id, no: r.no, date: r.doc_date, kind: k, type: k,
           treasuryId: Number(r.treasury_id || 0), accountId: Number(r.account_id || 0),
-          amount: Number(r.amount || 0), notes: r.notes || "" };
+          amount: Number(r.amount || 0), desc: r.notes || "", notes: r.notes || "" };
       }
     },
     journal_entries: {
