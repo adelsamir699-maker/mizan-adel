@@ -727,7 +727,7 @@
 
   function saveProducts() {
     localStorage.setItem(LS_PRODUCTS, JSON.stringify(products));
-    pushTable("products");
+    pushTable("products"); syncToLocalDisk();
   }
 
   function saveSales() {
@@ -757,12 +757,12 @@
 
   function saveAccounts() {
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
-    pushTable("accounts");
+    pushTable("accounts"); syncToLocalDisk();
   }
 
   function persistJournal() {
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
-    pushTable("journal_entries");
+    pushTable("journal_entries"); syncToLocalDisk();
   }
 
   function saveUsers() {
@@ -771,7 +771,7 @@
 
   function saveVouchers() {
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
-    pushTable("vouchers");
+    pushTable("vouchers"); syncToLocalDisk();
   }
 
   function saveSettings() {
