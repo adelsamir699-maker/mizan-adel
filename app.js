@@ -35,6 +35,12 @@
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
   const LS_SRC_ORG = "mizan_src_org";
 
+  // 🛡 حالة وجود مفاتيح localStorage لحظة بداية الإقلاع (قبل loadData).
+  // تُستخدم في loadFromLocalDisk للتمييز بين "origin جديد/كاش اتمسح"
+  // (المفتاح كان غايب → البيانات الحالية seed → يُفضَّل استرجاع الديسك)
+  // وبين "بيانات محلية حقيقية" (المفتاح كان موجود → لا ندهسها بديسك أقدم).
+  let bootLsPresent = {};
+
   const TAX = { enabled: true, rate: 0.14 };
   function getTaxPercent() {
     return Math.round((TAX.rate || 0) * 100);
@@ -490,25 +496,29 @@
           // وبعد الاسترجاع نُثبّت في localStorage حتى لا تُفقد عند إعادة الفتح
           // على نفس الـ origin. (pushTable داخل دوال الحفظ no-op في الوضع المحلي.)
           let restored = false;
-          const take = (diskArr, inMem, seedRef, assign, persist) => {
+          const take = (diskArr, key, inMem, seedRef, assign, persist) => {
             if (!Array.isArray(diskArr) || !diskArr.length) return;
-            const emptyOrSeed = !inMem || !inMem.length || (seedRef !== undefined && inMem === seedRef);
+            // لو المفتاح كان غايب لحظة الإقلاع → البيانات الحالية seed (مش شغل
+            // مستخدم حقيقي) → يُفضَّل استرجاع الديسك. ده أصلب من مقارنة المرجع
+            // لأن ensureCashEntities/الحفظ قد يعيد بناء المصفوفة فيفقد التطابق.
+            const wasAbsentAtBoot = !!(key && bootLsPresent[key] === false);
+            const emptyOrSeed = !inMem || !inMem.length || wasAbsentAtBoot || (seedRef !== undefined && inMem === seedRef);
             if (!emptyOrSeed) return;
             assign(diskArr);
             persist();
             restored = true;
           };
-          take(data.sales, sales, undefined, (v) => { sales = v; }, saveSales);
-          take(data.customers, customers, seedCustomers, (v) => { customers = v; }, saveCustomers);
-          take(data.txs, txs, seedTxs, (v) => { txs = v; }, saveTxs);
-          take(data.treasury, treasury, seedTreasury, (v) => { treasury = v; }, saveTreasury);
-          take(data.suppliers, suppliers, seedSuppliers, (v) => { suppliers = v; }, saveSuppliers);
-          take(data.supplierTxs, supplierTxs, seedSupplierTxs, (v) => { supplierTxs = v; }, saveSupplierTxs);
-          take(data.purchases, purchases, seedPurchases, (v) => { purchases = v; }, savePurchases);
-          take(data.products, products, seedProducts, (v) => { products = v; }, saveProducts);
-          take(data.accounts, accounts, seedAccounts, (v) => { accounts = v; }, saveAccounts);
-          take(data.vouchers, vouchers, seedVouchers, (v) => { vouchers = v; }, saveVouchers);
-          take(data.journalEntries, journalEntries, seedJournal, (v) => { journalEntries = v; }, persistJournal);
+          take(data.sales, LS_SALES, sales, undefined, (v) => { sales = v; }, saveSales);
+          take(data.customers, LS_CUSTOMERS, customers, seedCustomers, (v) => { customers = v; }, saveCustomers);
+          take(data.txs, LS_TXS, txs, seedTxs, (v) => { txs = v; }, saveTxs);
+          take(data.treasury, LS_TREASURY, treasury, seedTreasury, (v) => { treasury = v; }, saveTreasury);
+          take(data.suppliers, LS_SUPPLIERS, suppliers, seedSuppliers, (v) => { suppliers = v; }, saveSuppliers);
+          take(data.supplierTxs, LS_SUP_TXS, supplierTxs, seedSupplierTxs, (v) => { supplierTxs = v; }, saveSupplierTxs);
+          take(data.purchases, LS_PURCHASES, purchases, seedPurchases, (v) => { purchases = v; }, savePurchases);
+          take(data.products, LS_PRODUCTS, products, seedProducts, (v) => { products = v; }, saveProducts);
+          take(data.accounts, LS_ACCOUNTS, accounts, seedAccounts, (v) => { accounts = v; }, saveAccounts);
+          take(data.vouchers, LS_VOUCHERS, vouchers, seedVouchers, (v) => { vouchers = v; }, saveVouchers);
+          take(data.journalEntries, LS_JOURNAL, journalEntries, seedJournal, (v) => { journalEntries = v; }, persistJournal);
           if (!restored) return;
           recalculateCustomerBalances();
           recalculateSupplierBalances();
@@ -5341,14 +5351,21 @@ const pwEye = document.getElementById("btnShowPass");
     document.querySelectorAll(".view").forEach((v) => { v.hidden = true; });
   }
 
-  // 🛡 عزل الشركات: لو البيانات المحلية كتبها حساب من شركة أخرى
-  // (أو مافيش علامة أصل أصلاً) → نمسحها ونرجع لحالة جهاز جديد
+  // 🛡 عزل الشركات: لو البيانات المحلية كتبها حساب من شركة أخرى معروفة
+  // (علامة أصل موجودة ومختلفة) → نمسحها ونرجع لحالة جهاز جديد.
+  // أول دخول (بلا علامة أصل) لا يمسح شيئًا — انظر guardOrgSwitch بالأسفل.
   function guardOrgSwitch() {
     const org = DATA && DATA.org && DATA.org() ? DATA.org().id : null;
     if (!org) return;
     let src = null;
     try { src = localStorage.getItem(LS_SRC_ORG); } catch (e) { }
-    if (src !== org) {
+    // 🛡 نمسح بيانات المتصفح فقط عند "تبديل شركة حقيقي":
+    // src معروف (مش null) ومختلف عن الشركة الحالية.
+    // أول دخول على هذا المتصفح (src = null) مفيهوش بيانات شركة تانية
+    // لنحمي منها، فالمسح وقتها يدمّر بيانات محلية/كاش (وأي شيء لسه ما
+    // اتزامَنش للسحابة) بلا داعي — وعزل الشركة بيتحقّق أصلًا بتحميل
+    // بيانات السحابة واستبدال الكاش بعدها (adoptCloud + persistLocalFromCloud).
+    if (src && src !== org) {
       LS_ALL_KEYS.forEach((k) => { try { localStorage.removeItem(k); } catch (e) { } });
       loadData(); // يعيد البيانات التجريبية زي أي جهاز جديد
       toast("تم مسح بيانات الحساب السابق من هذا المتصفح", "ok");
@@ -6664,6 +6681,12 @@ const pwEye = document.getElementById("btnShowPass");
     if (fv) fv.textContent = APP_VERSION;
     const lv = document.getElementById("loginVer");
     if (lv) lv.textContent = APP_VERSION;
+    // 🛡 لقطة وجود مفاتيح localStorage قبل أي تحميل — تُستخدم للاسترجاع
+    // الموثوق من ملف الديسك عند فتح البرنامج على origin جديد أو بعد مسح الكاش.
+    try {
+      bootLsPresent = {};
+      LS_ALL_KEYS.forEach((k) => { bootLsPresent[k] = !!localStorage.getItem(k); });
+    } catch (e) { bootLsPresent = {}; }
     loadData();
     recalculateCustomerBalances();
     recalculateSupplierBalances();
