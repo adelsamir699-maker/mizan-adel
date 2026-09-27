@@ -1010,3 +1010,55 @@ td.c-tax.tax-hidden {
   display: none !important;
 }
 
+/* ============================================================
+   شاشة الدخول — ثيم "داكن فاخر" (Dark Premium)
+   محصور في #loginScreen فقط حتى لا يؤثر على الشاشات الأخرى
+   التي تستخدم .login-screen/.login-box (إنشاء الشركة / حسابات
+   الشركة / لا يمكنك الدخول).
+   ============================================================ */
+#loginScreen{
+  background: radial-gradient(circle at 50% 0%, #14342a, #0a1a15 70%);
+}
+#loginScreen, #loginScreen .login-box, #loginScreen input,
+#loginScreen button, #loginScreen h2, #loginScreen p, #loginScreen label{
+  font-family: "Cairo", "Segoe UI", Tahoma, Arial, sans-serif;
+}
+#loginScreen .login-box{
+  background:#0f1c17;
+  border:1px solid rgba(212,175,55,.28);
+  border-radius:20px;
+  padding:34px 30px;
+  max-width:420px;
+  box-shadow:0 24px 70px rgba(0,0,0,.6), inset 0 0 0 1px rgba(212,175,55,.06);
+}
+#loginScreen .login-logo{ filter:drop-shadow(0 4px 14px rgba(212,175,55,.45)); }
+#loginScreen .login-box h2{ color:#f4e9c8; }
+#loginScreen .login-tabs{ gap:8px; }
+#loginScreen .ltab{
+  background:#0a1512; border:1px solid #244034; color:#9fb3a8;
+  border-radius:10px; font-weight:700;
+}
+#loginScreen .ltab.active{
+  background:linear-gradient(135deg,#d4af37,#b8912c); border-color:#d4af37; color:#1a1405;
+}
+#loginScreen .filter-label{ color:#cdd9d1; font-weight:700; }
+#loginScreen .inp{
+  background:#0a1512; border:1px solid #244034; color:#eaf2ee; border-radius:10px;
+}
+#loginScreen .inp::placeholder{ color:#5f7268; }
+#loginScreen .inp:focus{ border-color:#d4af37; box-shadow:0 0 0 3px rgba(212,175,55,.15); }
+#loginScreen .pw-eye{ color:#9fb3a8; opacity:.85; }
+#loginScreen .pw-eye:hover{ opacity:1; }
+#loginScreen .btn.green.full{
+  background:linear-gradient(135deg,#d4af37,#c79a2e); color:#1a1405; border:none;
+  box-shadow:0 10px 26px rgba(212,175,55,.28); font-weight:800;
+}
+#loginScreen .btn.green.full:hover{ background:linear-gradient(135deg,#e2c04a,#d4af37); }
+#loginScreen .login-msg{ color:#9fb3a8; }
+#loginScreen .login-msg.err{ color:#e08b7a; }
+#loginScreen .login-msg.ok{ color:#7ef0b4; }
+#loginScreen #btnWipe{
+  background:#1b2b23 !important; color:#9fb3a8 !important; border:1px solid #244034;
+}
+#loginScreen #btnWipe:hover{ background:#22352c !important; }
+
