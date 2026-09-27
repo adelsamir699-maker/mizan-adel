@@ -484,16 +484,32 @@
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (!data) return;
-          if (Array.isArray(data.sales) && data.sales.length && (!sales || !sales.length)) sales = data.sales;
-          if (Array.isArray(data.customers) && data.customers.length && (!customers || !customers.length || customers === seedCustomers)) customers = data.customers;
-          if (Array.isArray(data.txs) && data.txs.length && (!txs || !txs.length || txs === seedTxs)) txs = data.txs;
-          if (Array.isArray(data.treasury) && data.treasury.length && (!treasury || !treasury.length || treasury === seedTreasury)) treasury = data.treasury;
-          if (Array.isArray(data.suppliers) && data.suppliers.length && (!suppliers || !suppliers.length || suppliers === seedSuppliers)) suppliers = data.suppliers;
-          if (Array.isArray(data.supplierTxs) && data.supplierTxs.length && (!supplierTxs || !supplierTxs.length || supplierTxs === seedSupplierTxs)) supplierTxs = data.supplierTxs;
-          if (Array.isArray(data.purchases) && data.purchases.length && (!purchases || !purchases.length)) purchases = data.purchases;
-          if (Array.isArray(data.products) && data.products.length && (!products || !products.length || products === seedProducts)) products = data.products;
-          if (Array.isArray(data.accounts) && data.accounts.length && (!accounts || !accounts.length || accounts === seedAccounts)) accounts = data.accounts;
-          if (Array.isArray(data.vouchers) && data.vouchers.length && (!vouchers || !vouchers.length || vouchers === seedVouchers)) vouchers = data.vouchers;
+          // 🛡 الاسترجاع من ملف الديسك (مخزن مستقل عن المتصفح/الـ origin):
+          // نُحمّل الجدول من الديسك فقط لو الحالة الحالية في الذاكرة فاضية
+          // أو لسه بيانات تجريبية (seed) — عشان ما ندهسش بيانات حقيقية أحدث.
+          // وبعد الاسترجاع نُثبّت في localStorage حتى لا تُفقد عند إعادة الفتح
+          // على نفس الـ origin. (pushTable داخل دوال الحفظ no-op في الوضع المحلي.)
+          let restored = false;
+          const take = (diskArr, inMem, seedRef, assign, persist) => {
+            if (!Array.isArray(diskArr) || !diskArr.length) return;
+            const emptyOrSeed = !inMem || !inMem.length || (seedRef !== undefined && inMem === seedRef);
+            if (!emptyOrSeed) return;
+            assign(diskArr);
+            persist();
+            restored = true;
+          };
+          take(data.sales, sales, undefined, (v) => { sales = v; }, saveSales);
+          take(data.customers, customers, seedCustomers, (v) => { customers = v; }, saveCustomers);
+          take(data.txs, txs, seedTxs, (v) => { txs = v; }, saveTxs);
+          take(data.treasury, treasury, seedTreasury, (v) => { treasury = v; }, saveTreasury);
+          take(data.suppliers, suppliers, seedSuppliers, (v) => { suppliers = v; }, saveSuppliers);
+          take(data.supplierTxs, supplierTxs, seedSupplierTxs, (v) => { supplierTxs = v; }, saveSupplierTxs);
+          take(data.purchases, purchases, seedPurchases, (v) => { purchases = v; }, savePurchases);
+          take(data.products, products, seedProducts, (v) => { products = v; }, saveProducts);
+          take(data.accounts, accounts, seedAccounts, (v) => { accounts = v; }, saveAccounts);
+          take(data.vouchers, vouchers, seedVouchers, (v) => { vouchers = v; }, saveVouchers);
+          take(data.journalEntries, journalEntries, seedJournal, (v) => { journalEntries = v; }, persistJournal);
+          if (!restored) return;
           recalculateCustomerBalances();
           recalculateSupplierBalances();
           recalculateTreasuryBalances();
