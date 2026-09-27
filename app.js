@@ -1,4 +1,4 @@
-﻿/* ================================================================
+/* ================================================================
    برنامج ميزان - نسخة الويب | صفحة دليل العملاء
    By Adel Samir - واتس: 01002655282
    نسخة تجريبية: البيانات محفوظة في متصفحك (localStorage)
@@ -237,6 +237,98 @@
   let planWatchTimer = null;
   let presenceTimer = null;
 
+  
+  function recalculateCustomerBalances() {
+    if (!customers || !txs) return;
+    customers.forEach((c) => {
+      const custTxs = txs.filter((t) => Number(t.customerId) === Number(c.id));
+      let bal = 0;
+      const hasOpeningTx = custTxs.some((t) => (t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة"));
+      if (!hasOpeningTx && Number(c.openingBalance || 0) > 0) {
+        bal += Number(c.openingBalance || 0);
+      }
+      custTxs.forEach((t) => {
+        bal += (Number(t.debit) || 0) - (Number(t.credit) || 0);
+      });
+      c.currentBalance = Math.round(bal * 100) / 100;
+    });
+  }
+
+  function recalculateSupplierBalances() {
+    if (!suppliers || !supplierTxs) return;
+    suppliers.forEach((s) => {
+      const sTxs = supplierTxs.filter((t) => Number(t.supplierId) === Number(s.id));
+      let bal = 0;
+      const hasOpeningTx = sTxs.some((t) => (t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة"));
+      if (!hasOpeningTx && Number(s.openingBalance || 0) > 0) {
+        bal += Number(s.openingBalance || 0);
+      }
+      sTxs.forEach((t) => {
+        bal += (Number(t.debit) || 0) - (Number(t.credit) || 0);
+      });
+      s.currentBalance = Math.round(bal * 100) / 100;
+    });
+  }
+
+  let diskSyncTimer = null;
+  function syncToLocalDisk() {
+    clearTimeout(diskSyncTimer);
+    diskSyncTimer = setTimeout(() => {
+      try {
+        if (!window.location.origin.includes("localhost") && !window.location.origin.includes("127.0.0.1") && !window.location.origin.includes("0.0.0.0")) return;
+        const payload = {
+          customers,
+          txs,
+          products,
+          activity,
+          sales,
+          treasury,
+          suppliers,
+          supplierTxs,
+          purchases,
+          accounts,
+          journalEntries,
+          users,
+          vouchers,
+          settings,
+          savedAt: new Date().toISOString()
+        };
+        fetch("/api/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        }).catch(() => { });
+      } catch (e) { }
+    }, 500);
+  }
+
+  function loadFromLocalDisk() {
+    try {
+      if (!window.location.origin.includes("localhost") && !window.location.origin.includes("127.0.0.1") && !window.location.origin.includes("0.0.0.0")) return;
+      fetch("/api/load")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data) return;
+          if (Array.isArray(data.sales) && data.sales.length && (!sales || !sales.length)) sales = data.sales;
+          if (Array.isArray(data.customers) && data.customers.length && (!customers || !customers.length || customers === seedCustomers)) customers = data.customers;
+          if (Array.isArray(data.txs) && data.txs.length && (!txs || !txs.length || txs === seedTxs)) txs = data.txs;
+          if (Array.isArray(data.treasury) && data.treasury.length && (!treasury || !treasury.length || treasury === seedTreasury)) treasury = data.treasury;
+          if (Array.isArray(data.suppliers) && data.suppliers.length && (!suppliers || !suppliers.length || suppliers === seedSuppliers)) suppliers = data.suppliers;
+          if (Array.isArray(data.supplierTxs) && data.supplierTxs.length && (!supplierTxs || !supplierTxs.length || supplierTxs === seedSupplierTxs)) supplierTxs = data.supplierTxs;
+          if (Array.isArray(data.purchases) && data.purchases.length && (!purchases || !purchases.length)) purchases = data.purchases;
+          if (Array.isArray(data.products) && data.products.length && (!products || !products.length || products === seedProducts)) products = data.products;
+          if (Array.isArray(data.accounts) && data.accounts.length && (!accounts || !accounts.length || accounts === seedAccounts)) accounts = data.accounts;
+          if (Array.isArray(data.vouchers) && data.vouchers.length && (!vouchers || !vouchers.length || vouchers === seedVouchers)) vouchers = data.vouchers;
+          recalculateCustomerBalances();
+          recalculateSupplierBalances();
+          if (typeof renderTable === "function") renderTable();
+          if (typeof renderTreasury === "function") renderTreasury();
+          if (typeof renderInvoiceQuery === "function") renderInvoiceQuery();
+        })
+        .catch(() => { });
+    } catch (e) { }
+  }
+
   function mirror() {
     DB.customers = customers;
     DB.products = products;
@@ -464,27 +556,27 @@
 
   function saveSales() {
     localStorage.setItem(LS_SALES, JSON.stringify(sales));
-    pushTable("sales");
+    pushTable("sales"); syncToLocalDisk();
   }
 
   function saveTreasury() {
     localStorage.setItem(LS_TREASURY, JSON.stringify(treasury));
-    pushTable("treasury");
+    pushTable("treasury"); syncToLocalDisk();
   }
 
   function saveSuppliers() {
     localStorage.setItem(LS_SUPPLIERS, JSON.stringify(suppliers));
-    pushTable("suppliers");
+    pushTable("suppliers"); syncToLocalDisk();
   }
 
   function saveSupplierTxs() {
     localStorage.setItem(LS_SUP_TXS, JSON.stringify(supplierTxs));
-    pushTable("supplier_txs");
+    pushTable("supplier_txs"); syncToLocalDisk();
   }
 
   function savePurchases() {
     localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
-    pushTable("purchases");
+    pushTable("purchases"); syncToLocalDisk();
   }
 
   function saveAccounts() {
@@ -529,12 +621,12 @@
 
   function saveCustomers() {
     localStorage.setItem(LS_CUSTOMERS, JSON.stringify(customers));
-    pushTable("customers");
+    pushTable("customers"); syncToLocalDisk();
   }
 
   function saveTxs() {
     localStorage.setItem(LS_TXS, JSON.stringify(txs));
-    pushTable("customer_txs");
+    pushTable("customer_txs"); syncToLocalDisk();
   }
 
   function fmt(n) {
@@ -794,6 +886,7 @@
 
   /* ================== الجدول ================== */
   function renderTable() {
+    recalculateCustomerBalances();
     const tbody = $("#dgvCustomers tbody");
     tbody.innerHTML = "";
     const q = normalizeAr($("#txtCustomerSearch").value);
@@ -1690,6 +1783,7 @@
   }
 
   function renderSalesLookups() {
+    recalculateCustomerBalances();
     const custSel = $("#cmbPosCustomer");
     const prevCust = custSel.value;
     custSel.innerHTML = "";
@@ -1767,7 +1861,7 @@
   function posPaymentVisibility() {
     const m = $("#cmbPaymentMethod").value;
     const isBank = m.includes("بنكي");
-    const isWallet = m.includes("محفظة");
+    const isWallet = m.includes("محفظة") || m.includes("محافظ");
     $("#fldPosBank").hidden = !isBank;
     $("#fldPosWallet").hidden = !isWallet;
     const fill = (sel, type) => {
@@ -1962,36 +2056,71 @@
     }
 
     const t = posRecalc();
+    const invNo = $("#txtInvoiceNo").value || nextInvoiceNumber();
+    const invDate = $("#dtpDate").value || todayISO();
     const invoice = {
-      id: sales.reduce((m, x) => Math.max(m, x.id), 0) + 1,
-      invoiceNumber: $("#txtInvoiceNo").value,
-      invoiceDate: $("#dtpDate").value || todayISO(),
+      id: sales.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1,
+      invoiceNumber: invNo,
+      invoiceNo: invNo,
+      invoiceDate: invDate,
+      date: invDate,
       customerId: cust.id,
       customerName: cust.nameAr,
+      customer: cust.nameAr,
       warehouse: warehouse,
+      store: warehouse,
       paymentMethod: payment,
       treasuryId: null,
       discountAmount: t.extra,
+      discount: t.extra,
       taxAmount: t.tax,
+      tax: t.tax,
       subTotal: t.sub,
       grandTotal: t.grand,
-      items: posItems.map((it) => ({ productId: it.productId, code: it.code, nameAr: it.nameAr, unit: it.unit, qty: it.qty, price: it.price, discount: it.discount, tax: it.tax, total: it.total })),
+      items: posItems.map((it, idx) => ({
+        id: idx + 1,
+        productId: it.productId,
+        code: it.code,
+        nameAr: it.nameAr,
+        unit: it.unit,
+        qty: it.qty,
+        price: it.price,
+        discount: it.discount,
+        tax: it.tax,
+        total: it.total
+      })),
       status: "posted"
     };
 
     if (payment === "آجل") {
-      cust.currentBalance = Math.round((cust.currentBalance + t.grand) * 100) / 100;
-      txs.push({ id: nextTxId(), customerId: cust.id, date: invoice.invoiceDate, desc: "فاتورة مبيعات آجلة رقم " + invoice.invoiceNumber, debit: t.grand, credit: 0 });
+      cust.currentBalance = Math.round(((cust.currentBalance || 0) + t.grand) * 100) / 100;
+      txs.push({
+        id: nextTxId(),
+        customerId: cust.id,
+        date: invoice.invoiceDate,
+        desc: "فاتورة مبيعات آجلة رقم " + invoice.invoiceNumber,
+        debit: t.grand,
+        credit: 0
+      });
+      recalculateCustomerBalances();
       saveCustomers();
       saveTxs();
     } else {
-      const type = payment === "تحويل بنكي" ? "bank" : payment === "محافظ إلكترونية" ? "wallet" : "cash";
-      const selId = payment === "تحويل بنكي" ? parseInt($("#cmbPosBank").value, 10)
-        : payment === "محافظ إلكترونية" ? parseInt($("#cmbPosWallet").value, 10)
-        : treasury.find((x) => x.type === "cash") ? treasury.find((x) => x.type === "cash").id : null;
-      const tr = treasury.find((x) => x.id === selId && x.type === type) || treasury.find((x) => x.type === type);
+      const isBank = payment === "تحويل بنكي" || payment.includes("بنك");
+      const isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
+      const type = isBank ? "bank" : isWallet ? "wallet" : "cash";
+      let selId = null;
+      if (isBank) {
+        selId = parseInt($("#cmbPosBank").value, 10);
+      } else if (isWallet) {
+        selId = parseInt($("#cmbPosWallet").value, 10);
+      }
+      const tr = (selId && treasury.find((x) => x.id === selId))
+        || treasury.find((x) => x.type === type)
+        || treasury.find((x) => x.type === "cash")
+        || treasury[0];
       if (tr) {
-        tr.balance = Math.round((tr.balance + t.grand) * 100) / 100;
+        tr.balance = Math.round(((tr.balance || 0) + t.grand) * 100) / 100;
         invoice.treasuryId = tr.id;
         saveTreasury();
       }
@@ -2232,7 +2361,7 @@
   function ppPaymentVisibility() {
     const m = $("#cmbPPaymentMethod").value;
     const isBank = m.includes("بنكي");
-    const isWallet = m.includes("محفظة");
+    const isWallet = m.includes("محفظة") || m.includes("محافظ");
     $("#fldPPBank").hidden = !isBank;
     $("#fldPPWallet").hidden = !isWallet;
     const fill = (sel, type) => {
@@ -2398,36 +2527,71 @@
     }
 
     const t = ppRecalc();
+    const invNo = $("#txtPInvNo").value || nextPurchaseInvoiceNumber();
+    const invDate = $("#dtpPDate").value || todayISO();
     const invoice = {
-      id: purchases.reduce((m, x) => Math.max(m, x.id), 0) + 1,
-      invoiceNumber: $("#txtPInvNo").value,
-      invoiceDate: $("#dtpPDate").value || todayISO(),
+      id: purchases.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1,
+      invoiceNumber: invNo,
+      invoiceNo: invNo,
+      invoiceDate: invDate,
+      date: invDate,
       supplierId: supplier.id,
       supplierName: supplier.nameAr,
+      supplier: supplier.nameAr,
       warehouse: warehouse,
+      store: warehouse,
       paymentMethod: payment,
       treasuryId: null,
       discountAmount: t.extra,
+      discount: t.extra,
       taxAmount: t.tax,
+      tax: t.tax,
       subTotal: t.sub,
       grandTotal: t.grand,
-      items: ppItems.map((it) => ({ productId: it.productId, code: it.code, nameAr: it.nameAr, unit: it.unit, qty: it.qty, price: it.price, discount: it.discount, tax: it.tax, total: it.total })),
+      items: ppItems.map((it, idx) => ({
+        id: idx + 1,
+        productId: it.productId,
+        code: it.code,
+        nameAr: it.nameAr,
+        unit: it.unit,
+        qty: it.qty,
+        price: it.price,
+        discount: it.discount,
+        tax: it.tax,
+        total: it.total
+      })),
       status: "posted"
     };
 
     if (payment === "آجل") {
-      supplier.currentBalance = Math.round((supplier.currentBalance + t.grand) * 100) / 100;
-      supplierTxs.push({ id: supplierTxs.reduce((m, x) => Math.max(m, x.id), 0) + 1, supplierId: supplier.id, date: invoice.invoiceDate, desc: "فاتورة مشتريات آجلة رقم " + invoice.invoiceNumber, debit: t.grand, credit: 0 });
+      supplier.currentBalance = Math.round(((supplier.currentBalance || 0) + t.grand) * 100) / 100;
+      supplierTxs.push({
+        id: supplierTxs.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1,
+        supplierId: supplier.id,
+        date: invoice.invoiceDate,
+        desc: "فاتورة مشتريات آجلة رقم " + invoice.invoiceNumber,
+        debit: t.grand,
+        credit: 0
+      });
+      recalculateSupplierBalances();
       saveSuppliers();
       saveSupplierTxs();
     } else {
-      const type = payment === "تحويل بنكي" ? "bank" : payment === "محافظ إلكترونية" ? "wallet" : "cash";
-      const selId = payment === "تحويل بنكي" ? parseInt($("#cmbPPBank").value, 10)
-        : payment === "محافظ إلكترونية" ? parseInt($("#cmbPPWallet").value, 10)
-        : treasury.find((x) => x.type === "cash") ? treasury.find((x) => x.type === "cash").id : null;
-      const tr = treasury.find((x) => x.id === selId && x.type === type) || treasury.find((x) => x.type === type);
+      const isBank = payment === "تحويل بنكي" || payment.includes("بنك");
+      const isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
+      const type = isBank ? "bank" : isWallet ? "wallet" : "cash";
+      let selId = null;
+      if (isBank) {
+        selId = parseInt($("#cmbPPBank").value, 10);
+      } else if (isWallet) {
+        selId = parseInt($("#cmbPPWallet").value, 10);
+      }
+      const tr = (selId && treasury.find((x) => x.id === selId))
+        || treasury.find((x) => x.type === type)
+        || treasury.find((x) => x.type === "cash")
+        || treasury[0];
       if (tr) {
-        tr.balance = Math.round((tr.balance - t.grand) * 100) / 100;
+        tr.balance = Math.round(((tr.balance || 0) - t.grand) * 100) / 100;
         invoice.treasuryId = tr.id;
         saveTreasury();
       }
@@ -2806,9 +2970,9 @@
         const tr = document.createElement("tr");
         tr.innerHTML =
           '<td hidden></td>' +
-          '<td>' + esc(inv.invoiceNumber) + '</td>' +
-          '<td>' + esc(inv.invoiceDate) + '</td>' +
-          '<td>' + esc(isSales ? inv.customerName : inv.supplierName) + '</td>' +
+          '<td>' + esc(inv.invoiceNumber || inv.invoiceNo || "-") + '</td>' +
+          '<td>' + esc(inv.invoiceDate || inv.date || "-") + '</td>' +
+          '<td>' + esc(isSales ? (inv.customerName || inv.customer || "-") : (inv.supplierName || inv.supplier || "-")) + '</td>' +
           '<td>' + fmt(inv.grandTotal) + ' ج.م</td>' +
           '<td>' + esc(inv.paymentMethod) + '</td>' +
           '<td class="cell-actions"><button class="btn small sky" type="button" data-act="print">🖨️ طباعة</button></td>';
@@ -2825,8 +2989,8 @@
       return normalizeAr(inv.invoiceNumber).includes(q) || normalizeAr(name).includes(q) || normalizeAr(inv.paymentMethod).includes(q) || fmt(inv.grandTotal).includes(q);
     };
 
-    fill($("#dgvInvS tbody"), sales.filter((i) => inRange(i.invoiceDate, fromS, toS)).filter((i) => match(i, qs, i.customerName)), true);
-    fill($("#dgvInvP tbody"), purchases.filter((i) => inRange(i.invoiceDate, fromP, toP)).filter((i) => match(i, qp, i.supplierName)), false);
+    fill($("#dgvInvS tbody"), sales.filter((i) => inRange(i.invoiceDate || i.date, fromS, toS)).filter((i) => match(i, qs, i.customerName || i.customer)), true);
+    fill($("#dgvInvP tbody"), purchases.filter((i) => inRange(i.invoiceDate || i.date, fromP, toP)).filter((i) => match(i, qp, i.supplierName || i.supplier)), false);
   }
 
   /* ================== الخزينة والمصروفات ================== */
@@ -2847,7 +3011,7 @@
         // لا بنوك ولا محافظ في الضبط → لا نمسّ القائمة الحالية
         return false;
       }
-      const nextId = treasury.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
+      let nextId = treasury.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
       const built = [];
       const used = {};
       const match = (type, name) => {
@@ -2866,7 +3030,7 @@
           type: "bank",
           accountNo: (b.account_no || "").trim(),
           openingBalance: Number(b.opening_balance || 0),
-          balance: Number((b.balance != null ? b.balance : b.opening_balance) || 0),
+          balance: Number((b.balance != null ? b.balance : (prev ? prev.balance : b.opening_balance)) || 0),
           isActive: b.is_active !== false
         });
       });
@@ -2879,7 +3043,7 @@
           type: "wallet",
           accountNo: (w.account_no || "").trim(),
           openingBalance: Number(w.opening_balance || 0),
-          balance: Number((w.balance != null ? w.balance : w.opening_balance) || 0),
+          balance: Number((w.balance != null ? w.balance : (prev ? prev.balance : w.opening_balance)) || 0),
           isActive: w.is_active !== false
         });
       });
@@ -2928,9 +3092,24 @@
   function treasuryAmounts() {
     const map = {};
     treasury.forEach((t) => (map[t.id] = { in: 0, out: 0 }));
-    sales.filter((s) => s.treasuryId && s.paymentMethod !== "آجل").forEach((s) => { if (map[s.treasuryId]) map[s.treasuryId].in += s.grandTotal; });
-    purchases.filter((p) => p.treasuryId && p.paymentMethod !== "آجل").forEach((p) => { if (map[p.treasuryId]) map[p.treasuryId].out += p.grandTotal; });
-    vouchers.forEach((v) => { if (map[v.treasuryId]) { if (v.type === "in") map[v.treasuryId].in += v.amount; else map[v.treasuryId].out += v.amount; } });
+    sales.filter((s) => s.treasuryId && s.paymentMethod !== "آجل").forEach((s) => {
+      const k = Number(s.treasuryId);
+      if (map[k]) map[k].in += Number(s.grandTotal || 0);
+      else if (map[s.treasuryId]) map[s.treasuryId].in += Number(s.grandTotal || 0);
+    });
+    purchases.filter((p) => p.treasuryId && p.paymentMethod !== "آجل").forEach((p) => {
+      const k = Number(p.treasuryId);
+      if (map[k]) map[k].out += Number(p.grandTotal || 0);
+      else if (map[p.treasuryId]) map[p.treasuryId].out += Number(p.grandTotal || 0);
+    });
+    vouchers.forEach((v) => {
+      const k = Number(v.treasuryId);
+      const target = map[k] || map[v.treasuryId];
+      if (target) {
+        if (v.type === "in") target.in += Number(v.amount || 0);
+        else target.out += Number(v.amount || 0);
+      }
+    });
     Object.keys(map).forEach((k) => { map[k].in = Math.round(map[k].in * 100) / 100; map[k].out = Math.round(map[k].out * 100) / 100; });
     return map;
   }
@@ -3030,8 +3209,8 @@
 
   function renderTreMoves() {
     const moves = [];
-    sales.filter((s) => s.treasuryId).forEach((s) => moves.push({ date: s.invoiceDate, name: (treasury.find((t) => t.id === s.treasuryId) || {}).name || "-", desc: "فاتورة مبيعات " + s.invoiceNumber, in: s.grandTotal, out: 0 }));
-    purchases.filter((p) => p.treasuryId).forEach((p) => moves.push({ date: p.invoiceDate, name: (treasury.find((t) => t.id === p.treasuryId) || {}).name || "-", desc: "فاتورة مشتريات " + p.invoiceNumber, in: 0, out: p.grandTotal }));
+    sales.filter((s) => s.treasuryId).forEach((s) => moves.push({ date: s.invoiceDate || s.date || todayISO(), name: (treasury.find((t) => Number(t.id) === Number(s.treasuryId)) || {}).name || "-", desc: "فاتورة مبيعات " + (s.invoiceNumber || s.invoiceNo), in: s.grandTotal, out: 0 }));
+    purchases.filter((p) => p.treasuryId).forEach((p) => moves.push({ date: p.invoiceDate || p.date || todayISO(), name: (treasury.find((t) => Number(t.id) === Number(p.treasuryId)) || {}).name || "-", desc: "فاتورة مشتريات " + (p.invoiceNumber || p.invoiceNo), in: 0, out: p.grandTotal }));
     vouchers.forEach((v) => moves.push({ date: v.date, name: (treasury.find((t) => t.id === v.treasuryId) || {}).name || "-", desc: v.desc, in: v.type === "in" ? v.amount : 0, out: v.type === "out" ? v.amount : 0 }));
     moves.sort((a, b) => new Date(b.date) - new Date(a.date));
     const tbody = $("#dgvTreMoves tbody");
@@ -3409,8 +3588,8 @@
 
     const moves = [];
     moves.push({ date: "بداية", desc: "الرصيد الافتتاحي", in: t.openingBalance > 0 ? t.openingBalance : 0, out: 0 });
-    sales.filter((s) => s.treasuryId === tid).forEach((s) => moves.push({ date: s.invoiceDate, desc: "فاتورة مبيعات " + s.invoiceNumber, in: s.grandTotal, out: 0 }));
-    purchases.filter((p) => p.treasuryId === tid).forEach((p) => moves.push({ date: p.invoiceDate, desc: "فاتورة مشتريات " + p.invoiceNumber, in: 0, out: p.grandTotal }));
+    sales.filter((s) => Number(s.treasuryId) === Number(tid)).forEach((s) => moves.push({ date: s.invoiceDate || s.date || "—", desc: "فاتورة مبيعات " + (s.invoiceNumber || s.invoiceNo), in: s.grandTotal, out: 0 }));
+    purchases.filter((p) => Number(p.treasuryId) === Number(tid)).forEach((p) => moves.push({ date: p.invoiceDate || p.date || "—", desc: "فاتورة مشتريات " + (p.invoiceNumber || p.invoiceNo), in: 0, out: p.grandTotal }));
     vouchers.filter((v) => v.treasuryId === tid).forEach((v) => moves.push({ date: v.date, desc: v.desc, in: v.type === "in" ? v.amount : 0, out: v.type === "out" ? v.amount : 0 }));
     moves.sort((a, b) => (a.date === "بداية" ? -1 : b.date === "بداية" ? 1 : new Date(a.date) - new Date(b.date)));
 
@@ -5299,6 +5478,9 @@ const pwEye = document.getElementById("btnShowPass");
     if (S.customer_txs && S.customer_txs.length) txs = S.customer_txs;
     if (S.vouchers && S.vouchers.length) vouchers = S.vouchers;
     if (S.journalEntries && S.journalEntries.length) journalEntries = S.journalEntries;
+    recalculateCustomerBalances();
+    recalculateSupplierBalances();
+    syncToLocalDisk();
   }
 
   function persistLocalFromCloud() {
@@ -6213,6 +6395,9 @@ const pwEye = document.getElementById("btnShowPass");
     const lv = document.getElementById("loginVer");
     if (lv) lv.textContent = APP_VERSION;
     loadData();
+    recalculateCustomerBalances();
+    recalculateSupplierBalances();
+    loadFromLocalDisk();
     if (window.DATA && window.DATA.init) window.DATA.init();
     setupAdmin();
     const online = window.DATA && window.DATA.isOnline() && window.CLOUD;

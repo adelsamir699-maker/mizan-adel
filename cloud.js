@@ -34,7 +34,7 @@
         return { id: r.local_id, code: r.code, nameAr: r.name_ar, nameEn: r.name_en || "",
           phone: r.phone || "", secondaryPhone: "", walletPhone: "", address: r.address || "",
           notes: "", openingBalance: Number(r.opening_balance || 0),
-          currentBalance: 0, creditLimit: Number(r.credit_limit || 0),
+          currentBalance: Number(r.opening_balance || 0), creditLimit: Number(r.credit_limit || 0),
           isActive: r.is_active !== false, protected: false };
       }
     },
@@ -111,56 +111,152 @@
     sales: {
       local: function () { return W.sales; },
       toCloud: function (r) {
-        return { id: detUuid("sales", r.id), org_id: DATA.orgId(), local_id: r.id,
-          invoice_no: r.invoiceNo || r.id, doc_date: r.date, customer: r.customer || "",
-          payment_method: r.paymentMethod || "", treasury_id: r.treasuryId || "",
-          store: r.store || "", notes: r.notes || "", discount: r.discount || 0,
-          tax: r.tax || 0, grand_total: r.grandTotal || 0 };
+        return {
+          id: detUuid("sales", r.id),
+          org_id: DATA.orgId(),
+          local_id: r.id,
+          invoice_no: r.invoiceNumber || r.invoiceNo || String(r.id),
+          doc_date: r.invoiceDate || r.date || "",
+          customer: r.customerName || r.customer || "",
+          payment_method: r.paymentMethod || "",
+          treasury_id: (r.treasuryId != null ? String(r.treasuryId) : ""),
+          store: r.warehouse || r.store || "",
+          notes: r.notes || "",
+          discount: r.discountAmount || r.discount || 0,
+          tax: r.taxAmount || r.tax || 0,
+          grand_total: r.grandTotal || 0
+        };
       },
       fromCloud: function (r) {
-        return { id: r.local_id, invoiceNo: r.invoice_no, date: r.doc_date, customer: r.customer || "",
-          paymentMethod: r.payment_method || "", treasuryId: r.treasury_id || "",
-          store: r.store || "", notes: r.notes || "", discount: Number(r.discount || 0),
-          tax: Number(r.tax || 0), grandTotal: Number(r.grand_total || 0), items: [] };
+        return {
+          id: r.local_id,
+          invoiceNo: r.invoice_no,
+          invoiceNumber: r.invoice_no,
+          date: r.doc_date,
+          invoiceDate: r.doc_date,
+          customer: r.customer || "",
+          customerName: r.customer || "",
+          paymentMethod: r.payment_method || "",
+          treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
+          store: r.store || "",
+          warehouse: r.store || "",
+          notes: r.notes || "",
+          discount: Number(r.discount || 0),
+          discountAmount: Number(r.discount || 0),
+          tax: Number(r.tax || 0),
+          taxAmount: Number(r.tax || 0),
+          grandTotal: Number(r.grand_total || 0),
+          subTotal: Number(r.grand_total || 0) + Number(r.discount || 0) - Number(r.tax || 0),
+          status: "posted",
+          items: []
+        };
       },
       itemsTable: "sale_items",
       itemFromCloud: function (r) {
-        return { id: r.local_id, productId: r.product_id || "", nameAr: r.product_name,
-          qty: Number(r.qty || 0), price: Number(r.price || 0), total: Number(r.total || 0) };
+        return {
+          id: r.local_id,
+          productId: r.product_id || "",
+          nameAr: r.product_name || "",
+          code: r.code || "",
+          unit: r.unit || "",
+          qty: Number(r.qty || 0),
+          price: Number(r.price || 0),
+          discount: Number(r.discount || 0),
+          tax: Number(r.tax || 0),
+          total: Number(r.total || 0)
+        };
       },
       itemToCloud: function (sale) {
-        return (sale.items || []).map(function (it) {
-          return { id: detUuid("sale_items", it.id), org_id: DATA.orgId(), local_id: it.id,
-            sale_id: detUuid("sales", sale.id), product_id: (it.productId || "").toString(),
-            product_name: it.nameAr || "", qty: it.qty || 0, price: it.price || 0, total: it.total || 0 };
+        return (sale.items || []).map(function (it, idx) {
+          var itemId = it.id || (idx + 1);
+          var uniqueLocalId = Number(sale.id) * 1000 + Number(itemId);
+          return {
+            id: detUuid("sale_items", uniqueLocalId),
+            org_id: DATA.orgId(),
+            local_id: uniqueLocalId,
+            sale_id: detUuid("sales", sale.id),
+            product_id: (it.productId || "").toString(),
+            product_name: it.nameAr || "",
+            qty: Number(it.qty || 0),
+            price: Number(it.price || 0),
+            total: Number(it.total || 0)
+          };
         });
       }
     },
     purchases: {
       local: function () { return W.purchases; },
       toCloud: function (r) {
-        return { id: detUuid("purchases", r.id), org_id: DATA.orgId(), local_id: r.id,
-          invoice_no: r.invoiceNo || r.id, doc_date: r.date, supplier: r.supplier || "",
-          payment_method: r.paymentMethod || "", treasury_id: r.treasuryId || "",
-          store: r.store || "", notes: r.notes || "", discount: r.discount || 0,
-          tax: r.tax || 0, grand_total: r.grandTotal || 0 };
+        return {
+          id: detUuid("purchases", r.id),
+          org_id: DATA.orgId(),
+          local_id: r.id,
+          invoice_no: r.invoiceNumber || r.invoiceNo || String(r.id),
+          doc_date: r.invoiceDate || r.date || "",
+          supplier: r.supplierName || r.supplier || "",
+          payment_method: r.paymentMethod || "",
+          treasury_id: (r.treasuryId != null ? String(r.treasuryId) : ""),
+          store: r.warehouse || r.store || "",
+          notes: r.notes || "",
+          discount: r.discountAmount || r.discount || 0,
+          tax: r.taxAmount || r.tax || 0,
+          grand_total: r.grandTotal || 0
+        };
       },
       fromCloud: function (r) {
-        return { id: r.local_id, invoiceNo: r.invoice_no, date: r.doc_date, supplier: r.supplier || "",
-          paymentMethod: r.payment_method || "", treasuryId: r.treasury_id || "",
-          store: r.store || "", notes: r.notes || "", discount: Number(r.discount || 0),
-          tax: Number(r.tax || 0), grandTotal: Number(r.grand_total || 0), items: [] };
+        return {
+          id: r.local_id,
+          invoiceNo: r.invoice_no,
+          invoiceNumber: r.invoice_no,
+          date: r.doc_date,
+          invoiceDate: r.doc_date,
+          supplier: r.supplier || "",
+          supplierName: r.supplier || "",
+          paymentMethod: r.payment_method || "",
+          treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
+          store: r.store || "",
+          warehouse: r.store || "",
+          notes: r.notes || "",
+          discount: Number(r.discount || 0),
+          discountAmount: Number(r.discount || 0),
+          tax: Number(r.tax || 0),
+          taxAmount: Number(r.tax || 0),
+          grandTotal: Number(r.grand_total || 0),
+          subTotal: Number(r.grand_total || 0) + Number(r.discount || 0) - Number(r.tax || 0),
+          status: "posted",
+          items: []
+        };
       },
       itemsTable: "purchase_items",
       itemFromCloud: function (r) {
-        return { id: r.local_id, productId: r.product_id || "", nameAr: r.product_name,
-          qty: Number(r.qty || 0), price: Number(r.price || 0), total: Number(r.total || 0) };
+        return {
+          id: r.local_id,
+          productId: r.product_id || "",
+          nameAr: r.product_name || "",
+          code: r.code || "",
+          unit: r.unit || "",
+          qty: Number(r.qty || 0),
+          price: Number(r.price || 0),
+          discount: Number(r.discount || 0),
+          tax: Number(r.tax || 0),
+          total: Number(r.total || 0)
+        };
       },
       itemToCloud: function (pur) {
-        return (pur.items || []).map(function (it) {
-          return { id: detUuid("purchase_items", it.id), org_id: DATA.orgId(), local_id: it.id,
-            purchase_id: detUuid("purchases", pur.id), product_id: (it.productId || "").toString(),
-            product_name: it.nameAr || "", qty: it.qty || 0, price: it.price || 0, total: it.total || 0 };
+        return (pur.items || []).map(function (it, idx) {
+          var itemId = it.id || (idx + 1);
+          var uniqueLocalId = Number(pur.id) * 1000 + Number(itemId);
+          return {
+            id: detUuid("purchase_items", uniqueLocalId),
+            org_id: DATA.orgId(),
+            local_id: uniqueLocalId,
+            purchase_id: detUuid("purchases", pur.id),
+            product_id: (it.productId || "").toString(),
+            product_name: it.nameAr || "",
+            qty: Number(it.qty || 0),
+            price: Number(it.price || 0),
+            total: Number(it.total || 0)
+          };
         });
       }
     },
@@ -278,7 +374,8 @@
     var parent = meta.local();
     var items = [];
     parent.forEach(function (p) {
-      (p.items || []).forEach(function (it) { items.push(meta.itemToCloud(p).filter(function (c) { return c.local_id === it.id; })[0] || null); });
+      var mapped = meta.itemToCloud(p);
+      if (Array.isArray(mapped)) items = items.concat(mapped);
     });
     items = items.filter(Boolean);
     return client.from(itemsTable).select("local_id").then(function (res) {
