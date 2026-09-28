@@ -41,115 +41,6 @@
   // وبين "بيانات محلية حقيقية" (المفتاح كان موجود → لا ندهسها بديسك أقدم).
   let bootLsPresent = {};
 
-  /* 🔌 Offline-First (المرحلة ٣A): هوية الجهاز + ختم السجلات
-     ---------------------------------------------------------
-     deviceId: معرّف فريد ثابت لكل جهاز/متصفح (يُخزَّن في localStorage
-     وصورته في IndexedDB حتى يصمد بعد مسح الكاش). هدفه لاحقًا (٣B/٣C)
-     منع تصادم local_id بين الأجهزة وحل التعارض بـ last-write-wins.
-
-     stampTable: تختم كل سجل بـ uid/updated_at/device_id/rev عبر مقارنة
-     السجل بنسخته السابقة المحفوظة في localStorage. سجل جديد → rev=1،
-     سجل اتعدّل → rev يزيد وupdated_at يتحدّث، سجل ما اتغيرش → ما يتلمسش
-     (عشان recalculate* ما يعملش churn في updated_at). الحقول المشتقة
-     (currentBalance/balance/...) مستثناة من المقارنة لنفس السبب.
-
-     ملاحظة أمان (٣A): الختم محلي فقط — cloud.js لسه ما بيقرأش الحقول دي،
-     فمفيش أي تغيير في payload السحابة ولا في هوية السجل هناك. */
-  const LS_DEVICE_ID = "mizan_device_id";
-  let DEVICE_ID = null;
-  // هل كان deviceId موجود في localStorage لحظة الإقلاع؟ (false = اتمسح → رجّعه من الكاش)
-  let bootDeviceIdPresent = null;
-  // حقول وسائطية للمزامنة (ما تدخلش مقارنة المحتوى)
-  const SYNC_META_FIELDS = ["uid", "updated_at", "rev", "device_id", "deleted", "deleted_at"];
-  // حقول مشتقة بتتعيد حسابها محليًا (تغييرها مش "تعديل حقيقي" للسجل)
-  const DERIVED_FIELDS = ["currentBalance", "currentDebit", "currentCredit", "balance"];
-
-  function newUid() {
-    try {
-      if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
-    } catch (e) { }
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
-      const r = Math.random() * 16 | 0;
-      const v = c === "x" ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
-  }
-
-  function getDeviceId() {
-    if (DEVICE_ID) return DEVICE_ID;
-    try { DEVICE_ID = localStorage.getItem(LS_DEVICE_ID); } catch (e) { }
-    if (!DEVICE_ID) {
-      DEVICE_ID = newUid();
-      try { localStorage.setItem(LS_DEVICE_ID, DEVICE_ID); } catch (e) { }
-    }
-    // مرآة غير متزامنة في IndexedDB (تصمد بعد مسح localStorage)
-    if (window.Sync && window.Sync.cacheSet) {
-      try { window.Sync.cacheSet("deviceId", { id: DEVICE_ID, at: Date.now() }); } catch (e) { }
-    }
-    return DEVICE_ID;
-  }
-
-  // استرجاع deviceId الثابت من الكاش لو localStorage اتمسح، وضمان انعكاس
-  // الهوية الحالية في IndexedDB. يُستدعى بعد Sync.init() (لما IDB تبقى جاهزة)،
-  // لأن وقت الإقلاع (loadData) كانت IDB لسه مش جاهزة فالمرآة راحت لـ
-  // localStorage fallback — هنا نعيد كتابتها في IDB عشان تصمد بعد مسح الكاش.
-  function restoreDeviceIdFromCache() {
-    if (!window.Sync || !window.Sync.cacheGet) return Promise.resolve();
-    return window.Sync.cacheGet("deviceId").then(function (rec) {
-      const cached = rec && rec.id;
-      // لو deviceId كان غايب وقت الإقلاع (localStorage اتمسح) وفي الكاش هوية
-      // قديمة → رجّعها بدل المؤقتة اللي تولّدت أثناء الإقلاع.
-      if (cached && bootDeviceIdPresent === false && cached !== DEVICE_ID) {
-        DEVICE_ID = cached;
-        try { localStorage.setItem(LS_DEVICE_ID, cached); } catch (e) { }
-      }
-      // دايمًا اكفل أن الهوية الحالية معكوسة في IDB (الآن جاهزة).
-      const id = getDeviceId();
-      if (window.Sync.cacheSet) {
-        try { window.Sync.cacheSet("deviceId", { id: id, at: Date.now() }); } catch (e) { }
-      }
-    }).catch(function () { });
-  }
-
-  // بصمة محتوى السجل (بدون الحقول الوسيطية/المشتقة) للمقارنة
-  function diffKey(rec) {
-    const o = {};
-    try {
-      Object.keys(rec).forEach(function (k) {
-        if (SYNC_META_FIELDS.indexOf(k) !== -1) return;
-        if (DERIVED_FIELDS.indexOf(k) !== -1) return;
-        o[k] = rec[k];
-      });
-      return JSON.stringify(o);
-    } catch (e) { return ""; }
-  }
-
-  // ختم مصفوفة سجلات قبل حفظها في localStorage
-  function stampTable(arr, lsKey) {
-    if (!Array.isArray(arr)) return;
-    const dev = getDeviceId();
-    const now = new Date().toISOString();
-    const prev = {};
-    try {
-      const old = JSON.parse(localStorage.getItem(lsKey) || "[]");
-      if (Array.isArray(old)) {
-        old.forEach(function (r) { if (r && r.uid) prev[r.uid] = diffKey(r); });
-      }
-    } catch (e) { }
-    arr.forEach(function (r) {
-      if (!r || typeof r !== "object") return;
-      if (!r.uid) r.uid = newUid();
-      const k = diffKey(r);
-      if (prev[r.uid] === undefined || prev[r.uid] !== k) {
-        // جديد على الجهاز ده أو اتعدّل → حدّث البصمة الزمنية
-        r.device_id = dev;
-        r.updated_at = now;
-        r.rev = (Number(r.rev) || 0) + 1;
-      }
-      prev[r.uid] = k;
-    });
-  }
-
   const TAX = { enabled: true, rate: 0.14 };
   function getTaxPercent() {
     return Math.round((TAX.rate || 0) * 100);
@@ -655,54 +546,11 @@
   }
 
   function pushTable(name) {
-    if (A.adopting || A.cleaning) return;
-    // 🔌 وضع أوفلاين بعد إعادة الفتح: التعديل اتحفظ محليًا بالفعل؛ نطابور الجدول
-    // عشان يترفع تلقائيًا أول ما المستخدم يدخل أونلاين تاني.
-    if (!A.online) {
-      if (A.offlineQueuing && window.Sync) window.Sync.enqueue(name);
-      return;
-    }
+    // الحفظ محلي أولًا دائمًا؛ الرفع للسحابة بيتم بس لو متصل (من غير طابور أوفلاين).
+    if (!A.online || A.adopting || A.cleaning) return;
     if (!window.CLOUD) return;
     mirror();
-    // 🔌 Offline-First: لو الاتصال مقطوع → نطاب الجدول لإعادة الدفع لاحقًا.
-    // (syncOne بيبتلع أخطاء الشبكة فبيرجع resolved، فالاعتماد على navigator.onLine.)
-    if (window.Sync && !window.Sync.isOnline()) { window.Sync.enqueue(name); return; }
-    window.CLOUD.push(name).then(() => {
-      if (window.Sync) window.Sync.resolve(name);
-    }).catch((e) => {
-      console.warn("push", name, e.message);
-      if (window.Sync) window.Sync.enqueue(name);
-    });
-  }
-
-  // 🔌 إعادة دفع الطابور لما الاتصال يرجع (أو بعد إعادة الدخول).
-  // مش بننفّذ إلا في جلسة أونلاين صالحة ومش أثناء التحميل/التنظيف.
-  function flushOutbox() {
-    if (!window.Sync || !window.CLOUD) return;
-    if (!A.online || A.adopting || A.cleaning) return;
-    if (!window.Sync.isOnline()) return;
-    if (!(DATA && DATA.isOnline && DATA.isOnline())) return;
-    window.Sync.flush((table) => {
-      // لو الاتصال انقطع أثناء إعادة الدفع → نرفض عشان يفضل الجدول متطاب
-      if (!window.Sync.isOnline()) return Promise.reject(new Error("offline"));
-      mirror();
-      return window.CLOUD.push(table);
-    }).catch((e) => console.warn("flushOutbox", e.message));
-  }
-
-  // 🔌 دفع المعلّق دلوقتي (من غير شرط adopting) — بيستدعى في proceedOnline
-  // قبل loadAll/adoptCloud عشان تعديلات وضع الأوفلاين تترفع للسحابة قبل ما
-  // نستبدل الذاكرة ببيانات السحابة (وبكده ماتتمسحش).
-  function pushPendingNow() {
-    if (!window.Sync || !window.CLOUD || !window.Sync.count) return Promise.resolve();
-    if (!window.Sync.count()) return Promise.resolve();
-    if (!window.Sync.isOnline()) return Promise.resolve();
-    if (!(DATA && DATA.isOnline && DATA.isOnline())) return Promise.resolve();
-    return window.Sync.flush((table) => {
-      if (!window.Sync.isOnline()) return Promise.reject(new Error("offline"));
-      mirror();
-      return window.CLOUD.push(table);
-    }).catch((e) => console.warn("pushPendingNow", e.message));
+    window.CLOUD.push(name).catch((e) => console.warn("push", name, e.message));
   }
 
   function setDbStatus(txt) {
@@ -905,49 +753,41 @@
   }
 
   function saveProducts() {
-    stampTable(products, LS_PRODUCTS);
     localStorage.setItem(LS_PRODUCTS, JSON.stringify(products));
     pushTable("products"); syncToLocalDisk();
   }
 
   function saveSales() {
-    stampTable(sales, LS_SALES);
     localStorage.setItem(LS_SALES, JSON.stringify(sales));
     pushTable("sales"); syncToLocalDisk();
   }
 
   function saveTreasury() {
-    stampTable(treasury, LS_TREASURY);
     localStorage.setItem(LS_TREASURY, JSON.stringify(treasury));
     pushTable("treasury"); syncToLocalDisk();
   }
 
   function saveSuppliers() {
-    stampTable(suppliers, LS_SUPPLIERS);
     localStorage.setItem(LS_SUPPLIERS, JSON.stringify(suppliers));
     pushTable("suppliers"); syncToLocalDisk();
   }
 
   function saveSupplierTxs() {
-    stampTable(supplierTxs, LS_SUP_TXS);
     localStorage.setItem(LS_SUP_TXS, JSON.stringify(supplierTxs));
     pushTable("supplier_txs"); syncToLocalDisk();
   }
 
   function savePurchases() {
-    stampTable(purchases, LS_PURCHASES);
     localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
     pushTable("purchases"); syncToLocalDisk();
   }
 
   function saveAccounts() {
-    stampTable(accounts, LS_ACCOUNTS);
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
     pushTable("accounts"); syncToLocalDisk();
   }
 
   function persistJournal() {
-    stampTable(journalEntries, LS_JOURNAL);
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
     pushTable("journal_entries"); syncToLocalDisk();
   }
@@ -957,7 +797,6 @@
   }
 
   function saveVouchers() {
-    stampTable(vouchers, LS_VOUCHERS);
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
     pushTable("vouchers"); syncToLocalDisk();
   }
@@ -984,13 +823,11 @@
   }
 
   function saveCustomers() {
-    stampTable(customers, LS_CUSTOMERS);
     localStorage.setItem(LS_CUSTOMERS, JSON.stringify(customers));
     pushTable("customers"); syncToLocalDisk();
   }
 
   function saveTxs() {
-    stampTable(txs, LS_TXS);
     localStorage.setItem(LS_TXS, JSON.stringify(txs));
     pushTable("customer_txs"); syncToLocalDisk();
   }
@@ -2152,10 +1989,52 @@
   let ppItems = [];
   let ppInitialized = false;
 
+  // 🔢 ترقيم الفواتير: عدد صحيح لكل شركة يبدأ من ١ بلا حروف ولا يتكرر.
+  // الأساس = أعلى رقم مستخدم فعليًا في بيانات الشركة الحالية (sales/purchases)،
+  // مدموجًا مع عدّاد محفوظ في settings.invSeq (مرآته على السحابة لكل شركة عشان
+  // الأجهزة المتعددة). عند الحفظ بنثبّت الرقم ونرفع الحد الأعلى للسحابة.
+  function parseInvNo(r) {
+    if (!r) return 0;
+    const s = String(r.invoiceNumber != null ? r.invoiceNumber : (r.invoiceNo != null ? r.invoiceNo : ""));
+    const m = s.match(/\d+/g);
+    if (!m || !m.length) return 0;
+    // آخر مجموعة أرقام هي رقم الفاتورة (يتجاهل الأرقام داخل أي بادئة تاريخ)
+    return parseInt(m[m.length - 1], 10) || 0;
+  }
+  function seqBase(kind) {
+    const arr = (kind === "purchase" ? purchases : sales) || [];
+    let localMax = 0;
+    arr.forEach(function (r) { const n = parseInvNo(r); if (n > localMax) localMax = n; });
+    const stored = Number((settings && settings.invSeq && settings.invSeq[kind])) || 0;
+    return Math.max(localMax, stored);
+  }
+  function commitInvoiceSeq(kind, n) {
+    n = Number(n) || 0;
+    if (!settings.invSeq || typeof settings.invSeq !== "object") settings.invSeq = {};
+    if (n > (Number(settings.invSeq[kind]) || 0)) settings.invSeq[kind] = n;
+    saveSettings();
+    syncToLocalDisk();
+    // مرآة الحد الأعلى على السحابة (لكل شركة) — عشان جهاز تاني ما يعيدش نفس الرقم
+    if (A.online && window.CLOUD && window.CLOUD.bumpInvoiceSeq) {
+      try { Promise.resolve(window.CLOUD.bumpInvoiceSeq(kind, n)).catch(function () { }); } catch (e) { }
+    }
+  }
+  // عند الدخول: ارجع الحد الأعلى من السحابة وارفع العدّاد المحلي عليه
+  function syncInvoiceSeqFromCloud() {
+    if (!(A.online && window.CLOUD && window.CLOUD.getInvoiceSeq)) return;
+    Promise.resolve(window.CLOUD.getInvoiceSeq()).then(function (map) {
+      if (!map) return;
+      if (!settings.invSeq || typeof settings.invSeq !== "object") settings.invSeq = {};
+      let dirty = false;
+      ["sale", "purchase"].forEach(function (k) {
+        const c = Number(map[k]) || 0;
+        if (c > (Number(settings.invSeq[k]) || 0)) { settings.invSeq[k] = c; dirty = true; }
+      });
+      if (dirty) { saveSettings(); syncToLocalDisk(); }
+    }).catch(function () { });
+  }
   function nextInvoiceNumber() {
-    const d = new Date();
-    const p = (x) => String(x).padStart(2, "0");
-    return "INV-" + String(d.getFullYear()).slice(2) + p(d.getMonth() + 1) + p(d.getDate()) + "-" + String(sales.length + 1).padStart(4, "0");
+    return String(seqBase("sale") + 1);
   }
 
   function activeDiscountPct(p) {
@@ -2535,6 +2414,7 @@
 
     sales.push(invoice);
     saveSales();
+    commitInvoiceSeq("sale", parseInvNo(invoice));
     addActivity("فاتورة مبيعات", "فاتورة " + invoice.invoiceNumber + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")");
 
     toast("تم حفظ وتأكيد فاتورة المبيعات بنجاح برقم (" + invoice.invoiceNumber + ").", "success");
@@ -2679,9 +2559,7 @@
 
   /* ================== فواتير المشتريات (التوريد) ================== */
   function nextPurchaseInvoiceNumber() {
-    const d = new Date();
-    const p = (x) => String(x).padStart(2, "0");
-    return "PINV-" + String(d.getFullYear()).slice(2) + p(d.getMonth() + 1) + p(d.getDate()) + "-" + String(purchases.length + 1).padStart(4, "0");
+    return String(seqBase("purchase") + 1);
   }
 
   function renderPurchasesLookups() {
@@ -3017,6 +2895,7 @@
 
     purchases.push(invoice);
     savePurchases();
+    commitInvoiceSeq("purchase", parseInvNo(invoice));
     addActivity("فاتورة مشتريات", "فاتورة " + invoice.invoiceNumber + " - " + supplier.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")");
 
     toast("تم حفظ وتأكيد فاتورة المشتريات بنجاح برقم (" + invoice.invoiceNumber + ").", "success");
@@ -5334,82 +5213,6 @@
     $("#denyScreen").hidden = true;
   }
 
-  /* 🔌 Offline-First (المرحلة ٢): وضع الأوفلاين بعد إعادة الفتح
-     ----------------------------------------------------------
-     لو الاتصال مقطوع وفيه بيانات محلية/لقطة كاش على الجهاز، بنخلي
-     المستخدم يدخل ويشتغل من غير سحابة. التعديلات بتتطاب في الطابور
-     (offlineQueuing) وبتترفع تلقائيًا أول ما يدخل أونلاين تاني. */
-  function hasLocalData() {
-    try {
-      return LS_ALL_KEYS.some((k) => {
-        const v = localStorage.getItem(k);
-        return v && v !== "[]" && v !== "null";
-      });
-    } catch (e) { return false; }
-  }
-  function showOfflineBanner(show) {
-    const el = $("#offlineBanner");
-    if (el) el.hidden = !show;
-  }
-  function isNavigatorOffline() {
-    return !(typeof navigator !== "undefined" && navigator.onLine);
-  }
-  function updateOfflineEntryButton() {
-    const b = $("#btnOfflineEntry");
-    if (b) b.hidden = !isNavigatorOffline();
-  }
-  function enterOfflineMode() {
-    const msg = $("#authMsgOffline");
-    const finish = () => {
-      A.online = false;
-      A.offlineQueuing = true;
-      loadData();
-      recalculateCustomerBalances();
-      recalculateSupplierBalances();
-      recalculateTreasuryBalances();
-      hideScreens();
-      showOfflineBanner(true);
-      setDbStatus("🔴 وضع أوفلاين — تغييراتك محفوظة وهتترفع لما النت يرجع");
-      initApp();
-      // لما النت يرجع وأنا لسه في وضع الأوفلاين → نبّه المستخدم يدخل للمزامنة
-      window.addEventListener("online", function onBack() {
-        window.removeEventListener("online", onBack);
-        const lb = $("#btnOfflineLogin");
-        if (lb) lb.hidden = false;
-        setDbStatus("🟡 الاتصال رجع — سجّل الدخول للمزامنة");
-      });
-    };
-    if (hasLocalData()) { finish(); return; }
-    // مفيش بيانات محلية → جرّب نسترجع لقطة الكاش من IndexedDB
-    restoreCacheToLocalStorage().then((ok) => {
-      if (!ok && !hasLocalData()) {
-        if (msg) { msg.textContent = "مفيش بيانات مخزّنة على الجهاز — لازم الاتصال للدخول أول مرة."; msg.className = "login-msg err"; }
-        return;
-      }
-      finish();
-    });
-  }
-
-  // 🔌 ربط أزرار الدخول الأوفلاين بشاشة تسجيل الدخول (مرة واحدة).
-  // #btnOfflineEntry يظهر فقط لما navigator.onLine = false → يدخل وضع أوفلاين.
-  // #btnOfflineLogin يظهر لما النت يرجع وأنت لسه في وضع الأوفلاين → يرجع
-  // لشاشة الدخول عشان تزامِن.
-  function wireOfflineEntry() {
-    if (wireOfflineEntry._done) { updateOfflineEntryButton(); return; }
-    wireOfflineEntry._done = true;
-    const be = $("#btnOfflineEntry");
-    if (be) be.addEventListener("click", () => { enterOfflineMode(); });
-    const bl = $("#btnOfflineLogin");
-    if (bl) bl.addEventListener("click", () => {
-      bl.hidden = true;
-      showOfflineBanner(false);
-      showLogin();
-    });
-    updateOfflineEntryButton();
-    window.addEventListener("online", updateOfflineEntryButton);
-    window.addEventListener("offline", updateOfflineEntryButton);
-  }
-
   function setAuthMsg(el, txt, kind) {
     el.textContent = txt;
     el.className = "login-msg " + (kind || "");
@@ -5607,10 +5410,6 @@ const pwEye = document.getElementById("btnShowPass");
     // بيانات السحابة واستبدال الكاش بعدها (adoptCloud + persistLocalFromCloud).
     if (src && src !== org) {
       LS_ALL_KEYS.forEach((k) => { try { localStorage.removeItem(k); } catch (e) { } });
-      // 🔌 عزل الشركات: الطابور (outbox) مفهرس باسم الجدول فقط بلا org_id،
-      // فأي تعديلات معلّقة من الشركة السابقة لازم تترمي عشان ما تتدفعش
-      // بالغلط للشركة الحالية.
-      if (window.Sync && window.Sync.clear) { try { window.Sync.clear(); } catch (e) { } }
       loadData(); // يعيد البيانات التجريبية زي أي جهاز جديد
       toast("تم مسح بيانات الحساب السابق من هذا المتصفح", "ok");
     }
@@ -5640,8 +5439,6 @@ const pwEye = document.getElementById("btnShowPass");
     const p0 = DATA.getProfile();
     if (!bypassMembers && isOrgAdmin(p0)) { showMembersScreen(); return; }
     A.online = true;
-    A.offlineQueuing = false;
-    showOfflineBanner(false);
     A.adopting = true;
     // 🛡 عزل الشركات: مانبقاش ببيانات أي حساب سابق قبل ما نبدأ التحميل
     guardOrgSwitch();
@@ -5649,17 +5446,15 @@ const pwEye = document.getElementById("btnShowPass");
     stage("جاري التحميل: فحص الصلاحيات...");
     DATA.requestAccess().then((acc) => {
       if (!(acc && acc.allowed)) { A.adopting = false; showDeny(acc); return; }
-      stage("جاري التحميل: رفع التغييرات المعلّقة...");
-      // 🔌 نرفع تعديلات وضع الأوفلاين (الطابور) قبل سحب السحابة،
-      // حتى لا تستبدلها adoptCloud وتمسح شغل المستخدم الأوفلاين.
-      return pushPendingNow().then(() => window.CLOUD.loadAll()).then(() => {
-        adoptCloud();
+      stage("جاري التحميل: سحب بيانات السحابة...");
+      return window.CLOUD.loadAll().then(() => {
+        const changed = adoptCloud();
         A.adopting = false;
         persistLocalFromCloud();
-        snapshotCache();
         seedPushFromLocal();
-        // 🔌 إعادة دفع أي عمليات متطابة من جلسة سابقة (بعد تأكيد الجلسة)
-        flushOutbox();
+        // ارفع الجداول اللي فيها سجلات محلية لسه مش في السحابة (عشان ما تضلش معلّقة للأبد)
+        if (changed && changed.length) changed.forEach((t) => pushTable(t));
+        syncInvoiceSeqFromCloud();
         $("#btnLogout").hidden = false;
         // لا نُظهره هنا: يُتحكم فيه داخل proceedOnline
         // (لصاحب الشركة والسوبر أدمن فقط، لا للموظفين العاديين)
@@ -6002,23 +5797,43 @@ const pwEye = document.getElementById("btnShowPass");
     }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
   };
 
+  // 🔒 دمج غير مدمّر: ياخد سجلات السحابة كأساس، ويزيد عليها أي سجل محلي
+  // لسه ما وصلش للسحابة (معرّفه id مش موجود عند السحابة)، بدل ما يستبدل
+  // الكل ويمسح شغل المستخدم (ده كان سبب اختفاء الفواتير عند القفل).
+  function mergeCloudLocal(cloudArr, localArr) {
+    cloudArr = Array.isArray(cloudArr) ? cloudArr : [];
+    localArr = Array.isArray(localArr) ? localArr : [];
+    if (!cloudArr.length) return { merged: localArr.slice(), extras: 0 };
+    const seen = {};
+    cloudArr.forEach(function (r) { if (r && r.id != null) seen[String(r.id)] = 1; });
+    const extras = localArr.filter(function (r) { return r && r.id != null && !seen[String(r.id)]; });
+    return { merged: cloudArr.concat(extras), extras: extras.length };
+  }
+
   function adoptCloud() {
     const S = window.MIZAN_STATE;
-    if (S.customers && S.customers.length) customers = S.customers;
-    if (S.products && S.products.length) products = S.products;
-    if (S.suppliers && S.suppliers.length) suppliers = S.suppliers;
-    if (S.treasury && S.treasury.length) treasury = S.treasury;
-    if (S.accounts && S.accounts.length) accounts = S.accounts;
-    if (S.sales && S.sales.length) sales = S.sales;
-    if (S.purchases && S.purchases.length) purchases = S.purchases;
-    if (S.supplier_txs && S.supplier_txs.length) supplierTxs = S.supplier_txs;
-    if (S.customer_txs && S.customer_txs.length) txs = S.customer_txs;
-    if (S.vouchers && S.vouchers.length) vouchers = S.vouchers;
-    if (S.journalEntries && S.journalEntries.length) journalEntries = S.journalEntries;
+    const changed = [];
+    function step(name, cloudArr, localArr, apply) {
+      const m = mergeCloudLocal(cloudArr, localArr);
+      apply(m.merged);
+      if (m.extras > 0) changed.push(name);
+    }
+    step("customers", S.customers, customers, function (v) { customers = v; });
+    step("products", S.products, products, function (v) { products = v; });
+    step("suppliers", S.suppliers, suppliers, function (v) { suppliers = v; });
+    step("treasury", S.treasury, treasury, function (v) { treasury = v; });
+    step("accounts", S.accounts, accounts, function (v) { accounts = v; });
+    step("sales", S.sales, sales, function (v) { sales = v; });
+    step("purchases", S.purchases, purchases, function (v) { purchases = v; });
+    step("supplier_txs", S.supplier_txs, supplierTxs, function (v) { supplierTxs = v; });
+    step("customer_txs", S.customer_txs, txs, function (v) { txs = v; });
+    step("vouchers", S.vouchers, vouchers, function (v) { vouchers = v; });
+    step("journal_entries", S.journalEntries, journalEntries, function (v) { journalEntries = v; });
     recalculateCustomerBalances();
     recalculateSupplierBalances();
     recalculateTreasuryBalances();
     syncToLocalDisk();
+    return changed;
   }
 
   function persistLocalFromCloud() {
@@ -6033,54 +5848,6 @@ const pwEye = document.getElementById("btnShowPass");
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
-  }
-
-  /* 🔌 Offline-First (المرحلة ٢): لقطة كاش على الجهاز + استرجاعها
-     ------------------------------------------------------------
-     بعد كل تحميل ناجح من السحابة بنخزن لقطة من كل الجداول في
-     IndexedDB (مخزن cache) عشان نقدر نفتح ونشتغل أوفلاين حتى بعد
-     قفل البرنامج وفتحه تاني. الاسترجاع بيكتب اللقطة في مفاتيح
-     localStorage بنفس شكل الوضع المحلي، فبنعيد استخدام كل مسار
-     التحميل المحلي الموجود من غير ما نكرر كود. */
-  function snapshotCache() {
-    if (!window.Sync || !window.Sync.cacheSet) return;
-    try {
-      const orgId = (window.DATA && DATA.orgId) ? DATA.orgId() : null;
-      window.Sync.cacheSet("snap", {
-        org: orgId,
-        at: Date.now(),
-        tables: {
-          customers: customers, suppliers: suppliers, products: products,
-          treasury: treasury, accounts: accounts, sales: sales,
-          purchases: purchases, supplier_txs: supplierTxs, customer_txs: txs,
-          vouchers: vouchers, journalEntries: journalEntries
-        }
-      });
-    } catch (e) { }
-  }
-
-  // بيكتب لقطة الكاش في localStorage ويرجع true لو فيه لقطة اتسترجعت
-  function restoreCacheToLocalStorage() {
-    if (!window.Sync || !window.Sync.cacheGet) return Promise.resolve(false);
-    return window.Sync.cacheGet("snap").then((snap) => {
-      if (!snap || !snap.tables) return false;
-      try {
-        const t = snap.tables;
-        if (t.customers) localStorage.setItem(LS_CUSTOMERS, JSON.stringify(t.customers));
-        if (t.customer_txs) localStorage.setItem(LS_TXS, JSON.stringify(t.customer_txs));
-        if (t.products) localStorage.setItem(LS_PRODUCTS, JSON.stringify(t.products));
-        if (t.sales) localStorage.setItem(LS_SALES, JSON.stringify(t.sales));
-        if (t.treasury) localStorage.setItem(LS_TREASURY, JSON.stringify(t.treasury));
-        if (t.suppliers) localStorage.setItem(LS_SUPPLIERS, JSON.stringify(t.suppliers));
-        if (t.supplier_txs) localStorage.setItem(LS_SUP_TXS, JSON.stringify(t.supplier_txs));
-        if (t.purchases) localStorage.setItem(LS_PURCHASES, JSON.stringify(t.purchases));
-        if (t.accounts) localStorage.setItem(LS_ACCOUNTS, JSON.stringify(t.accounts));
-        if (t.journalEntries) localStorage.setItem(LS_JOURNAL, JSON.stringify(t.journalEntries));
-        if (t.vouchers) localStorage.setItem(LS_VOUCHERS, JSON.stringify(t.vouchers));
-        if (snap.org) localStorage.setItem(LS_SRC_ORG, snap.org);
-        return true;
-      } catch (e) { return false; }
-    }).catch(() => false);
   }
 
   /* ================== شاشة "غير متاح" (وقت/قفل/حجب) ================== */
@@ -6985,7 +6752,6 @@ const pwEye = document.getElementById("btnShowPass");
     try {
       bootLsPresent = {};
       LS_ALL_KEYS.forEach((k) => { bootLsPresent[k] = !!localStorage.getItem(k); });
-      bootDeviceIdPresent = !!localStorage.getItem(LS_DEVICE_ID);
     } catch (e) { bootLsPresent = {}; }
     loadData();
     recalculateCustomerBalances();
@@ -6994,22 +6760,11 @@ const pwEye = document.getElementById("btnShowPass");
     loadFromLocalDisk();
     if (window.DATA && window.DATA.init) window.DATA.init();
     setupAdmin();
-    // 🔌 Offline-First (المرحلة ١): تهيئة طابور المزامنة، وإعادة دفع المعلّق
-    // تلقائياً عند رجوع الاتصال.
-    if (window.Sync) {
-      // 🔌 ٣A: رجّع/اعكس deviceId في IndexedDB بعد ما تفتح (وإلا المرآة بتروح
-      // لـ localStorage fallback لأن IDB مش جاهزة وقت loadData).
-      Promise.resolve(window.Sync.init())
-        .then(function () { return restoreDeviceIdFromCache(); })
-        .catch(function () { });
-      window.Sync.setOnline(() => { flushOutbox(); });
-    }
     const online = window.DATA && window.DATA.isOnline() && window.CLOUD;
     if (online) {
       A.online = true;
       setDbStatus("🟡 أونلاين — سجّل الدخول");
       setupAuth();
-      wireOfflineEntry();
       showLogin();
     } else {
       A.online = false;

@@ -488,10 +488,41 @@
     });
   }
 
+  // 🔢 تسلسل أرقام الفواتير لكل شركة (على السحابة) — الدوال مشتقة org من التوكن (current_org())
+  function _sb() { return (DATA.client && DATA.client()) || null; }
+  function _online() { return !!(DATA.isOnline && DATA.isOnline()) && !!_sb(); }
+
+  function bumpInvoiceSeq(kind, value) {
+    if (!_online()) return Promise.resolve();
+    return Promise.resolve(_sb().rpc("mizan_bump_invoice_seq", { p_kind: String(kind), p_value: Number(value) || 0 }))
+      .then(function (r) { if (r && r.error) console.warn("bumpInvoiceSeq", r.error.message); })
+      .catch(function (e) { console.warn("bumpInvoiceSeq", e && e.message); });
+  }
+  function getInvoiceSeq() {
+    if (!_online()) return Promise.resolve(null);
+    return Promise.resolve(_sb().rpc("mizan_get_invoice_seq"))
+      .then(function (r) {
+        if (r && r.error) { console.warn("getInvoiceSeq", r.error.message); return null; }
+        var out = {}; (r.data || []).forEach(function (row) { out[row.kind] = Number(row.last_value) || 0; });
+        return out;
+      }).catch(function () { return null; });
+  }
+  function nextInvoiceNo(kind) {
+    if (!_online()) return Promise.resolve(null);
+    return Promise.resolve(_sb().rpc("mizan_next_invoice_no", { p_kind: String(kind) }))
+      .then(function (r) {
+        if (r && r.error) { console.warn("nextInvoiceNo", r.error.message); return null; }
+        return Number(r.data) || null;
+      }).catch(function () { return null; });
+  }
+
   window.CLOUD = {
     push: push,
     loadAll: loadAll,
     detUuid: detUuid,
+    bumpInvoiceSeq: bumpInvoiceSeq,
+    getInvoiceSeq: getInvoiceSeq,
+    nextInvoiceNo: nextInvoiceNo,
     state: W,
     META: META,
     needsSeed: function () {

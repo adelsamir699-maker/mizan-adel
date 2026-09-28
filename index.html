@@ -51,7 +51,6 @@
     </div>
 <div class="header-left">
       <span class="db-status" id="dbStatus">🟢 متصل</span>
-      <span class="db-status" id="syncPending" hidden></span>
       <span id="clock"></span>
       <span id="userInfo">👤 المستخدم: مدير النظام | الصلاحية: مدير | الفرع الرئيسي</span>
       <span class="db-status" id="subInfo" hidden></span>
@@ -60,12 +59,6 @@
       <button id="btnLogout" class="btn small red" type="button" hidden>الخروج ↩</button>
     </div>
   </header>
-
-  <!-- ===== شريط وضع الأوفلاين (يظهر لما تشتغل من غير سحابة) ===== -->
-  <div id="offlineBanner" class="offline-banner" hidden>
-    <span class="offline-banner-txt">🔴 وضع أوفلاين — شغالك محفوظ على الجهاز وهيتزامن تلقائيًا لما تسجّل الدخول والنت متاح</span>
-    <button type="button" id="btnOfflineLogin" class="btn small green" hidden>🔄 سجّل الدخول للمزامنة</button>
-  </div>
 
   <div class="app-body">
     <!-- ===== القائمة الجانبية ===== -->
@@ -1811,9 +1804,6 @@
       </form>
       <button type="button" id="btnInstallApp" class="btn install-app full" hidden>⬇️ تنزيل أيقونة البرنامج على الجهاز</button>
       <div id="installHint" class="login-msg" hidden></div>
-      <!-- 🔌 دخول أوفلاين: يظهر فقط لما الاتصال مقطوع وفيه بيانات محفوظة على الجهاز -->
-      <button type="button" id="btnOfflineEntry" class="btn orange full" style="margin-top:8px" hidden>📴 الدخول بدون نت (بياناتك المحفوظة)</button>
-      <div id="authMsgOffline" class="login-msg"></div>
     </div>
   </div>
 
@@ -1867,7 +1857,6 @@
   <script src="supabase.config.js?v=85"></script>
   <script src="data.js?v=85"></script>
   <script src="cloud.js?v=85"></script>
-  <script src="sync.js?v=85"></script>
   <script src="install.js?v=85"></script>
   <script src="app.js?v=85"></script>
   <script>
