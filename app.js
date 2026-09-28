@@ -7160,12 +7160,23 @@ const pwEye = document.getElementById("btnShowPass");
     }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
   };
 
-  // ===== شاشة الاشتراكات والأسعار (للمالك) — build 102 =====
-  const SUB_PLANS = {
-    m: { label: "شهري",      price: 200,  months: 1 },
-    h: { label: "نصف سنوي",  price: 1000, months: 6 },
-    y: { label: "سنوي",      price: 1800, months: 12 }
+  // ===== شاشة الاشتراكات والأسعار (للمالك) — build 103 =====
+  // تغييرات 103: الخطة تُحفظ باسمها + السعر يدوي لكل شركة + خطة «تجربة مجانية»
+  // + أسعار كروت الباقات قابلة للتعديل ومحفوظة على السحاب (subs_plans_cfg).
+  const SUB_PLANS_BASE = {
+    f: { label: "تجربة مجانية", price: 0,    months: 1 },
+    m: { label: "شهري",         price: 200,  months: 1 },
+    h: { label: "نصف سنوي",     price: 1000, months: 6 },
+    y: { label: "سنوي",         price: 1800, months: 12 }
   };
+  let subPlansCfg = null; // من mizan_get_subs_plans
+  function SUB_PLANS() {
+    const P = JSON.parse(JSON.stringify(SUB_PLANS_BASE));
+    if (subPlansCfg) Object.keys(P).forEach((k) => {
+      if (subPlansCfg[k] && subPlansCfg[k].price != null) P[k].price = Number(subPlansCfg[k].price) || 0;
+    });
+    return P;
+  }
   function subsIso(d) {
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
@@ -7177,13 +7188,46 @@ const pwEye = document.getElementById("btnShowPass");
     return subsIso(d);
   }
   function subsInferPlan(o) {
+    const P = SUB_PLANS();
+    // 1) الخطة المحفوظة باسمها على الشركة أولًا
+    if (o.plan) {
+      const k = Object.keys(P).find((kk) => P[kk].label === o.plan);
+      if (k) return k;
+    }
+    // 2) ثم استنتاج من مدة التواريخ الموجودة
     if (!o.plan_start || !o.plan_end) return "y";
     const s = new Date(String(o.plan_start).slice(0, 10) + "T00:00:00");
     const e = new Date(String(o.plan_end).slice(0, 10) + "T00:00:00");
     const months = Math.max(1, Math.round((e - s) / (1000 * 60 * 60 * 24 * 30.44)));
+    if (e <= new Date() && months <= 1) return "m";
     if (months <= 2) return "m";
     if (months <= 7) return "h";
     return "y";
+  }
+  function subsRenderPlansCards(box) {
+    const P = SUB_PLANS();
+    box.innerHTML = Object.keys(P).map((k) => {
+      const p = P[k];
+      const per = k === "m" || p.months === 1 ? p.price : Math.round((p.price / p.months) * 10) / 10;
+      return '<div class="kpi-card" style="border:1px solid rgba(212,175,55,.45);border-radius:10px;padding:8px 12px;margin:4px">' +
+        '<div style="font-weight:800;color:#d4af37">' + (k === "f" ? "🎁 " : "") + p.label + '</div>' +
+        '<div style="margin:4px 0"><input type="number" min="0" class="inp cfg-price" data-ck="' + k + '" value="' + p.price + '" style="width:100px;display:inline-block;text-align:center"> <b>ج.م</b></div>' +
+        (k === "f" ? '<div class="login-sub">مجانًا للتعرف على البرنامج</div>'
+          : k === "m" ? '<div class="login-sub">من غير التزام</div>'
+          : '<div class="login-sub">يعني ' + per.toLocaleString("en") + ' ج.م/شهر</div>') +
+        '</div>';
+    }).join("") +
+    '<button id="btnSavePlansCfg" class="btn small green" type="button" style="margin:6px 4px">💾 حفظ أسعار الباقات</button>';
+    const btnSave = box.querySelector("#btnSavePlansCfg");
+    btnSave.addEventListener("click", () => {
+      const cfg = {};
+      box.querySelectorAll(".cfg-price").forEach((i) => { cfg[i.dataset.ck] = { price: Number(i.value) || 0 }; });
+      DATA.setSubPlans(cfg).then(() => {
+        subPlansCfg = cfg;
+        toast("تم حفظ أسعار الباقات الافتراضية", "ok");
+        addActivity("تعديل أسعار الباقات", Object.keys(cfg).map((k) => SUB_PLANS_BASE[k].label + " " + cfg[k].price + " ج.م").join(" | "));
+      }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+    });
   }
   function toggleAdminSubs() {
     const box = $("#adminSubs");
@@ -7191,73 +7235,77 @@ const pwEye = document.getElementById("btnShowPass");
     if (!box.hidden) { box.hidden = true; return; }
     box.hidden = false;
     const plans = $("#adminSubsPlans");
-    if (plans) {
-      plans.innerHTML = Object.keys(SUB_PLANS).map((k) => {
-        const p = SUB_PLANS[k];
-        const per = k === "m" ? p.price : Math.round((p.price / p.months) * 10) / 10;
-        return '<div class="kpi-card" style="border:1px solid rgba(212,175,55,.45);border-radius:10px;padding:8px 12px;margin:4px">' +
-          '<div style="font-weight:800;color:#d4af37">' + p.label + '</div>' +
-          '<div style="font-size:18px;font-weight:900">' + p.price.toLocaleString("en") + ' ج.م</div>' +
-          (k !== "m" ? '<div class="login-sub">يعني ' + per.toLocaleString("en") + ' ج.م/شهر</div>' : '<div class="login-sub">من غير التزام</div>') +
-          '</div>';
-      }).join("");
-    }
     const lst = $("#adminSubsList");
-    lst.innerHTML = '<p class="login-sub">جارٍ تحميل الشركات...</p>';
-    DATA.adminOrgs().then((orgs) => {
+    lst.innerHTML = '<p class="login-sub">جارٍ التحميل من السحابة...</p>';
+    Promise.all([
+      DATA.getSubPlans().catch(() => null),
+      DATA.adminOrgs().catch((e) => { throw e; })
+    ]).then((res) => {
+      subPlansCfg = res[0] || null;
+      if (plans) subsRenderPlansCards(plans);
+      const orgs = res[1];
+      const P = SUB_PLANS();
       if (!orgs || !orgs.length) { lst.innerHTML = '<p class="login-sub">لا توجد شركات بعد.</p>'; return; }
-      let h = '<table class="data-table"><thead><tr><th>الشركة</th><th>الخطة</th><th>من تاريخ</th><th>إلى تاريخ</th><th>المبلغ</th><th>الانتهاء الحالي</th><th>تفعيل</th></tr></thead><tbody>';
+      let h = '<table class="data-table"><thead><tr><th>الشركة</th><th>الخطة</th><th>من تاريخ</th><th>إلى تاريخ</th><th>السعر المتفق عليه (ج.م)</th><th>الانتهاء الحالي</th><th>تفعيل</th></tr></thead><tbody>';
       orgs.forEach((o) => {
         const oid = o.org_id;
+        // يسمع بالتاريخ الموجود في شاشة الشركة: البداية من plan_start، والنهاية من plan_end (لو موجودة)
         const start = String(o.plan_start || "").slice(0, 10) || subsToday();
+        const end = String(o.plan_end || "").slice(0, 10);
+        const pk = subsInferPlan(o);
+        const price = (o.sub_price != null && o.sub_price !== "") ? Number(o.sub_price) : P[pk].price;
         h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '">' +
           '<td><b>' + (o.org_name || "بدون اسم") + '</b></td>' +
           '<td><select class="inp subs-plan">' +
-            '<option value="m">شهري — 200 ج.م</option>' +
-            '<option value="h">نصف سنوي — 1,000 ج.م</option>' +
-            '<option value="y">سنوي — 1,800 ج.م</option>' +
+            '<option value="f">🎁 تجربة مجانية</option>' +
+            '<option value="m">شهري</option>' +
+            '<option value="h">نصف سنوي</option>' +
+            '<option value="y">سنوي</option>' +
           '</select></td>' +
           '<td><input type="date" class="inp subs-start" value="' + start + '"></td>' +
-          '<td><input type="date" class="inp subs-end"></td>' +
-          '<td class="subs-amt" style="font-weight:800;color:#d4af37;white-space:nowrap"></td>' +
+          '<td><input type="date" class="inp subs-end" value="' + (end || subsEnd(start, P[pk].months)) + '"></td>' +
+          '<td><input type="number" min="0" class="inp subs-price" value="' + price + '" style="width:110px;text-align:center"></td>' +
           '<td>' + (o.plan_end ? fmtDate(o.plan_end) : "—") + (o.locked ? ' <span class="badge-no">🔴 مقفلة</span>' : "") + '</td>' +
           '<td><button class="btn small green" type="button">✅ تفعيل/تجديد</button></td>' +
           '</tr>';
       });
-      h += '</tbody></table><p class="login-sub" style="margin-top:8px">💡 التجديد بيفكّ قفل الشركة أوتوماتيك ولو كانت مقفلة بسبب انتهاء المدة.</p>';
+      h += '</tbody></table><p class="login-sub" style="margin-top:8px">💡 التاريخ معروض زي ما هو في «بيانات الشركة» — غير الخطة أو البداية يتعاد حساب النهاية، والسعر يدوي لكل شركة حسب الاتفاق. والتجديد بيفكّ قفل الشركة أوتوماتيك.</p>';
       lst.innerHTML = h;
       orgs.forEach((o) => {
         const tr = lst.querySelector('[data-subs="' + o.org_id + '"]');
         if (!tr) return;
         tr.querySelector(".subs-plan").value = subsInferPlan(o);
-        tr.querySelector(".subs-plan").addEventListener("change", () => subsCalc(tr));
-        tr.querySelector(".subs-start").addEventListener("change", () => subsCalc(tr));
+        tr.querySelector(".subs-plan").addEventListener("change", () => subsCalc(tr, true));
+        tr.querySelector(".subs-start").addEventListener("change", () => subsCalc(tr, false));
         tr.querySelector("button").addEventListener("click", () => subsApply(o, tr));
-        subsCalc(tr);
       });
       box.scrollIntoView({ behavior: "smooth", block: "start" });
     }).catch((e) => {
-      lst.innerHTML = '<p class="login-msg err">تعذّر تحميل الشركات: ' + (e.message || e) + "</p>";
+      lst.innerHTML = '<p class="login-msg err">تعذّر التحميل: ' + (e.message || e) + "</p>";
     });
   }
-  function subsCalc(tr) {
-    const p = SUB_PLANS[tr.querySelector(".subs-plan").value] || SUB_PLANS.y;
+  function subsCalc(tr, refreshPrice) {
+    const P = SUB_PLANS();
+    const p = P[tr.querySelector(".subs-plan").value] || P.y;
     const start = tr.querySelector(".subs-start").value || subsToday();
     tr.querySelector(".subs-end").value = subsEnd(start, p.months);
-    tr.querySelector(".subs-amt").textContent = p.price.toLocaleString("en") + " ج.م";
+    if (refreshPrice) tr.querySelector(".subs-price").value = p.price;
   }
   function subsApply(o, tr) {
-    const p = SUB_PLANS[tr.querySelector(".subs-plan").value] || SUB_PLANS.y;
+    const P = SUB_PLANS();
+    const p = P[tr.querySelector(".subs-plan").value] || P.y;
     const start = tr.querySelector(".subs-start").value;
     const end = tr.querySelector(".subs-end").value;
+    const price = Number(tr.querySelector(".subs-price").value) || 0;
     if (!start || !end) { toast("حدّد تاريخ البداية الأول", "error"); return; }
     const msg = "تأكيد تفعيل اشتراك «" + p.label + "» لشركة " + (o.org_name || "بدون اسم") +
-      "\nمن " + start + " إلى " + end + "\nالمبلغ: " + p.price.toLocaleString("en") + " ج.م" +
+      "\nمن " + start + " إلى " + end +
+      "\nالسعر المتفق عليه: " + price.toLocaleString("en") + " ج.م" +
       (o.locked ? "\n(الشركة مقفلة حاليًا — هيتم فتحها مع التجديد)" : "");
     if (!confirm(msg)) return;
-    DATA.adminSetOrg(o.org_id, start, end, o.locked ? false : null, null).then(() => {
-      toast("تم تفعيل اشتراك " + p.label + " — إلى " + end, "ok");
-      addActivity("تجديد اشتراك", "تفعيل اشتراك " + p.label + " لشركة " + (o.org_name || "") + " إلى " + end + " بمبلغ " + p.price + " ج.م");
+    DATA.adminSetSub(o.org_id, start, end, p.label, price, !!o.locked).then(() => {
+      toast("تم تفعيل «" + p.label + "» إلى " + end + " — " + price.toLocaleString("en") + " ج.م", "ok");
+      addActivity("تجديد اشتراك", "تفعيل " + p.label + " لشركة " + (o.org_name || "") + " من " + start + " إلى " + end + " بمبلغ " + price + " ج.م");
       toggleAdminSubs(); toggleAdminSubs();
       renderAdminOrgs();
     }).catch((e) => toast("خطأ: " + (e.message || e), "error"));

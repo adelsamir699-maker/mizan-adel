@@ -425,6 +425,32 @@
       return true;
     });
   }
+  // build 103: حفظ اشتراك شركة (خطة/تواريخ/سعر يدوي/فك قفل) للمالك فقط
+  function adminSetSub(orgId, planStart, planEnd, planLabel, price, unlock) {
+    return sb.rpc("mizan_admin_set_sub", {
+      p_org_id: orgId,
+      p_plan_start: planStart || null,
+      p_plan_end: planEnd || null,
+      p_plan: planLabel || null,
+      p_price: (price === "" || price == null) ? null : Number(price),
+      p_unlock: unlock ? true : null
+    }).then(function (r) {
+      if (r.error) throw r.error;
+      return true;
+    });
+  }
+  function getSubPlans() {
+    return sb.rpc("mizan_get_subs_plans").then(function (r) {
+      if (r.error) throw r.error;
+      return r.data || null;
+    });
+  }
+  function setSubPlans(plans) {
+    return sb.rpc("mizan_set_subs_plans", { p_plans: plans }).then(function (r) {
+      if (r.error) throw r.error;
+      return true;
+    });
+  }
   function adminSetUser(userId, blocked) {
     return sb.rpc("mizan_admin_set_user", { p_user_id: userId, p_blocked: blocked }).then(function (r) {
       if (r.error) throw r.error;
@@ -753,6 +779,9 @@ function changeMyPassword(oldPass, newPass) {
     adminOrgs: adminOrgs,
     adminMembers: adminMembers,
     adminSetOrg: adminSetOrg,
+    adminSetSub: adminSetSub,
+    getSubPlans: getSubPlans,
+    setSubPlans: setSubPlans,
     adminSetUser: adminSetUser,
     adminCreateOrg: adminCreateOrg,
     adminCreateUser: adminCreateUser,
