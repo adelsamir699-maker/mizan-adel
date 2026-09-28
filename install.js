@@ -98,16 +98,40 @@
     if (b) b.addEventListener("click", onClick);
 
     // سجّل الـ Service Worker (شرط لازم للتثبيت)
+    let swState = "مش مدعوم";
     if ("serviceWorker" in navigator) {
       const secure = location.protocol === "https:" ||
                      location.hostname === "localhost" ||
                      location.hostname === "127.0.0.1";
       if (secure) {
-        navigator.serviceWorker.register("sw.js").catch((e) => {
-          console.warn("SW register failed:", e && e.message);
-        });
+        navigator.serviceWorker.register("sw.js").then(() => { swState = "مسجّل"; diag(); })
+          .catch((e) => { swState = "فشل: " + (e && e.message ? e.message : String(e)); diag(); });
+      } else {
+        swState = "محجوب (الاتصال مش آمن)";
       }
     }
+
+    // تشخيص مؤقت: بيكتب حالة التثبيت تحت الزرار عشان نشوف فين المشكلة بالظبط
+    function diag() {
+      const h = hint();
+      if (!h) return;
+      const secure = location.protocol === "https:" ||
+                     location.hostname === "localhost" ||
+                     location.hostname === "127.0.0.1";
+      fetch("manifest.webmanifest", { cache: "no-store" }).then((r) => {
+        const manifestOk = r.ok ? "تمام" : ("فشل " + r.status);
+        return r.ok ? r.json().then((m) => ({ manifestOk, m })) : { manifestOk, m: null };
+      }).catch(() => ({ manifestOk: "فشل شبكة", m: null })).then((res) => {
+        const icons = res.m && Array.isArray(res.m.icons) ? res.m.icons.length : 0;
+        h.hidden = false;
+        h.textContent = "تشخيص مؤقت — اتصال آمن: " + (secure ? "أيوه" : "لأ (" + location.origin + ")") +
+          " | SW: " + swState +
+          " | manifest: " + res.manifestOk +
+          " | أيقونات: " + icons +
+          " | نافذة تثبيت: " + (deferredPrompt ? "جاهزة" : "لسه مجتش");
+      });
+    }
+    setTimeout(diag, 1200);
 
     // قرّر الإظهار/الإخفاء: مخفي بس لو مثبّت أو standalone، غير كده ظاهر
     if (isStandalone()) { hideBtn(); return; }
