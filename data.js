@@ -68,10 +68,47 @@
     // persistSession:false = الجلسة تفضل في ذاكرة الصفحة فقط.
     // ده بيحل مشكلة معلّقة الدخول في المتصفح (قفل التخزين/الجلسة
     // كان بيعلّق لحين forever لما بيتحفظ في localStorage عبر مكتبة supabase-js).
+    // الاستمرار بعد التحديث بيتعمل بتوكنات بنحفظها بنفسنا (autoLogin بالأسفل).
     sb = window.supabase.createClient(CFG.url, CFG.anon, {
       auth: { persistSession: false, autoRefreshToken: true }
     });
     return true;
+  }
+
+  // ---------- جلسة مستمرة عبر التحديث/إعادة الفتح (الموبايل) ----------
+  // بنحفظ توكنات Supabase في localStorage بنفسنا (بعيدًا عن قفل المكتبة)،
+  // وعند الفتح بنسترجع الجلسة بيهم — ولو انتهت صلاحية access بنجدده بـ refresh.
+  var SES_KEY = "mizan_session_v1";
+  function saveSessionTokens(session) {
+    try {
+      if (session && session.access_token && session.refresh_token) {
+        localStorage.setItem(SES_KEY, JSON.stringify({
+          a: session.access_token, r: session.refresh_token
+        }));
+      }
+    } catch (e) { }
+  }
+  function clearSessionTokens() {
+    try { localStorage.removeItem(SES_KEY); } catch (e) { }
+  }
+  function autoLogin() {
+    var raw = null;
+    try { raw = localStorage.getItem(SES_KEY); } catch (e) { }
+    if (!raw) return Promise.resolve(false);
+    var tok = null;
+    try { tok = JSON.parse(raw); } catch (e) { }
+    if (!tok || !tok.a || !tok.r) { clearSessionTokens(); return Promise.resolve(false); }
+    return ensureLib().then(function () {
+      if (!sb) init();
+      if (!sb) return false;
+      return sb.auth.setSession({ access_token: tok.a, refresh_token: tok.r }).then(function (r) {
+        if (r.error || !r.data || !r.data.session) { clearSessionTokens(); return false; }
+        saveSessionTokens(r.data.session); // التوكنات بتتجدد — نخزن أحدث نسخة
+        lastCreds = null; // مش محتاجين باسورد مخزن في الذاكرة
+        return loadProfile().then(function () { return true; })
+          .catch(function () { clearSessionTokens(); return false; });
+      }).catch(function () { clearSessionTokens(); return false; });
+    });
   }
 
   // ---------- الدخول (باسم المستخدم، وSupabase بيشوف إيميل وهمي ورا الكواليس) ----------
@@ -86,6 +123,7 @@
       return sb.auth.signInWithPassword({ email: toEmail(username), password: pass }).then(function (r) {
         if (r.error) throw r.error;
         lastCreds = { username: username, pass: pass };
+        saveSessionTokens(r.data.session); // للاسترجاع التلقائي بعد التحديث/إعادة الفتح
         return loadProfile().then(function () { return true; });
       });
     });
@@ -98,6 +136,7 @@
       return sb.auth.signUp({ email: toEmail(username), password: pass }).then(function (r) {
         if (r.error) throw r.error;
         lastCreds = { username: username, pass: pass };
+        saveSessionTokens(r.data.session);
         return r.data;
       });
     });
@@ -163,6 +202,7 @@
         if (!e.noSession || !lastCreds) { fail(e); return; }
         sb.auth.signInWithPassword({ email: toEmail(lastCreds.username), password: lastCreds.pass }).then(function (r) {
           if (r.error) { fail(r.error); return; }
+          saveSessionTokens(r.data.session);
           finish(fn());
         }).catch(fail);
       });
@@ -195,6 +235,7 @@
       // من حساب سابق تُستخدم لو دخل حساب تاني في نفس المتصفح
       profile = null; orgRow = null;
       access = null; lastCreds = null; lastEmail = "";
+      clearSessionTokens(); // خروج = نهاية الجلسة المستمرة
     });
   }
 
@@ -670,6 +711,7 @@ function changeMyPassword(oldPass, newPass) {
     orgId: orgId,
     login: login,
     signup: signup,
+    autoLogin: autoLogin,
     createOrg: createOrg,
     joinOrg: joinOrg,
     loadProfile: loadProfile,

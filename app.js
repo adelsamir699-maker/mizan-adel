@@ -8,7 +8,7 @@
   "use strict";
 
   // رقم الإصدار المعروض للمستخدم — يُحدَّث مع كل مراجعة
-  const APP_VERSION = "84";
+  const APP_VERSION = "1.4";
 
   /* ================== التخزين ================== */
   const LS_CUSTOMERS = "mizan_customers_v1";
@@ -5298,6 +5298,7 @@ const pwEye = document.getElementById("btnShowPass");
         Object.keys(localStorage).forEach((k) => {
           if (k.indexOf("sb-") === 0) localStorage.removeItem(k);
         });
+        localStorage.removeItem("mizan_session_v1"); // توكن الجلسة المستمرة
       } catch (e) { }
       A.online = false;
       $("#btnLogout").hidden = true;
@@ -6766,6 +6767,13 @@ const pwEye = document.getElementById("btnShowPass");
       setDbStatus("🟡 أونلاين — سجّل الدخول");
       setupAuth();
       showLogin();
+      // 🔄 استرجاع الجلسة بعد التحديث/إعادة الفتح (خاصة الموبايل):
+      // لو في توكن محفوظ بنحاول دخول تلقائي — لو فشل الصفحة تفضل على الدخول عادي.
+      if (window.DATA.autoLogin) {
+        window.DATA.autoLogin().then(function (ok) {
+          if (ok && DATA.getProfile()) proceedOnline(null, null);
+        }).catch(function () { });
+      }
     } else {
       A.online = false;
       setDbStatus("🟠 وضع محلي فقط (بدون سحابة)");
