@@ -5207,6 +5207,7 @@
     $("#memberScreen").hidden = true;
   }
   function hideScreens() {
+    $("#bootSplash").hidden = true;
     $("#loginScreen").hidden = true;
     $("#orgScreen").hidden = true;
     $("#memberScreen").hidden = true;
@@ -6764,15 +6765,26 @@ const pwEye = document.getElementById("btnShowPass");
     const online = window.DATA && window.DATA.isOnline() && window.CLOUD;
     if (online) {
       A.online = true;
-      setDbStatus("🟡 أونلاين — سجّل الدخول");
       setupAuth();
-      showLogin();
-      // 🔄 استرجاع الجلسة بعد التحديث/إعادة الفتح (خاصة الموبايل):
-      // لو في توكن محفوظ بنحاول دخول تلقائي — لو فشل الصفحة تفضل على الدخول عادي.
-      if (window.DATA.autoLogin) {
+      // 🔄 جلسة محفوظة؟ → شاشة تحميل صغيرة ودخول مباشر من غير شاشة الدخول
+      var savedSession = false;
+      try { savedSession = !!localStorage.getItem("mizan_session_v1"); } catch (e) { }
+      if (savedSession && window.DATA.autoLogin) {
+        setDbStatus("🟡 جارٍ استرجاع الجلسة...");
+        $("#bootSplash").hidden = false;
         window.DATA.autoLogin().then(function (ok) {
-          if (ok && DATA.getProfile()) proceedOnline(null, null);
-        }).catch(function () { });
+          $("#bootSplash").hidden = true;
+          if (ok && DATA.getProfile()) { proceedOnline(null, null); return; }
+          setDbStatus("🟡 أونلاين — سجّل الدخول");
+          showLogin();
+        }).catch(function () {
+          $("#bootSplash").hidden = true;
+          setDbStatus("🟡 أونلاين — سجّل الدخول");
+          showLogin();
+        });
+      } else {
+        setDbStatus("🟡 أونلاين — سجّل الدخول");
+        showLogin();
       }
     } else {
       A.online = false;
