@@ -6743,8 +6743,32 @@ const pwEye = document.getElementById("btnShowPass");
     });
   }
 
+  /* ================== طي شريط القوائم (توفير مساحة) ================== */
+  function wireMenuToggle() {
+    const bar = document.getElementById("sidebar");
+    const btn = document.getElementById("btnMenuToggle");
+    if (!bar || !btn) return;
+    const KEY = "mizan_menu_collapsed_v1";
+    function setCollapsed(on) {
+      bar.classList.toggle("menu-collapsed", on);
+      btn.textContent = on ? "☰ إظهار القوائم" : "☰ إخفاء القوائم";
+      try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (e) { }
+    }
+    let saved = null;
+    try { saved = localStorage.getItem(KEY); } catch (e) { }
+    setCollapsed(saved === "1");
+    btn.addEventListener("click", () => setCollapsed(!bar.classList.contains("menu-collapsed")));
+    // على الموبايل: اختيار قسم من القائمة يقفلها تلقائيًا لتوفير المساحة
+    bar.addEventListener("click", (e) => {
+      if (e.target.closest(".nav-btn") && window.innerWidth <= 860) {
+        setTimeout(() => setCollapsed(true), 150);
+      }
+    });
+  }
+
   /* ================== البداية ================== */
   function init() {
+    wireMenuToggle();
     const fv = document.getElementById("ftrVer");
     if (fv) fv.textContent = APP_VERSION;
     const lv = document.getElementById("loginVer");

@@ -87,6 +87,30 @@ body {
 .nav-btn:hover { background: var(--sidebar-hover); }
 .nav-btn.active { background: var(--sidebar-active); color: #fff; }
 
+/* ===== شريط القوائم القابل للطي (توفير مساحة — خاصة الموبايل) ===== */
+.menu-toggle {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 0 8px 6px;
+  text-align: right;
+  padding: 10px 16px;
+  background: rgba(212, 175, 55, 0.12);
+  color: #d4af37;
+  border: none;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: bold;
+  cursor: pointer;
+  border-radius: 8px;
+}
+.menu-toggle:hover { background: rgba(212, 175, 55, 0.22); }
+.sidebar.menu-collapsed .nav-btn { display: none; }
+.sidebar.menu-collapsed .nav-btn.active { display: block; width: auto; flex: 1; }
+@media (max-width: 860px) {
+  .menu-toggle { width: auto; padding: 8px 12px; margin: 0; }
+  .sidebar.menu-collapsed .nav-btn.active { display: inline-flex; }
+}
+
 /* ===== منطقة العرض ===== */
 .content {
   flex: 1;
