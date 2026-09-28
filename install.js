@@ -126,10 +126,11 @@
       }
     }
 
-    // تشخيص مؤقت: بيكتب حالة التثبيت تحت الزرار عشان نشوف فين المشكلة بالظبط
+    // تشخيص مؤقت: بيكتب حالة التثبيت في سطر مستقل (#installDiag)
+    // عشان ميمسحوش سطر الإرشاد (#installHint) والعكس
     function diag() {
-      const h = hint();
-      if (!h) return;
+      const d = document.getElementById("installDiag");
+      if (!d) return;
       const secure = location.protocol === "https:" ||
                      location.hostname === "localhost" ||
                      location.hostname === "127.0.0.1";
@@ -138,8 +139,8 @@
         return r.ok ? r.json().then((m) => ({ manifestOk, m })) : { manifestOk, m: null };
       }).catch(() => ({ manifestOk: "فشل شبكة", m: null })).then((res) => {
         const icons = res.m && Array.isArray(res.m.icons) ? res.m.icons.length : 0;
-        h.hidden = false;
-        h.textContent = "تشخيص مؤقت — اتصال آمن: " + (secure ? "أيوه" : "لأ (" + location.origin + ")") +
+        d.hidden = false;
+        d.textContent = "تشخيص مؤقت — اتصال آمن: " + (secure ? "أيوه" : "لأ (" + location.origin + ")") +
           " | SW: " + swState +
           " | manifest: " + res.manifestOk +
           " | أيقونات: " + icons +
