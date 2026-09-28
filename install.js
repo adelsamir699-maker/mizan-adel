@@ -46,6 +46,21 @@
     h.hidden = false;
   }
 
+  // إرشاد مركّب حسب نوع الجهاز عشان يكون واضح للمستخدم
+  function platformHint() {
+    const ua = (navigator.userAgent || "") + " " + (navigator.platform || "");
+    const isIOS = /iphone|ipod/i.test(ua) || (/ipad/i.test(ua)) ||
+                  (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
+    const isAndroid = /android/i.test(ua);
+    if (isIOS) {
+      return "على الآيفون/الآيباد: دوس زرار المشاركة (⬆ Share) في سفاري، واختار «إضافة إلى الشاشة الرئيسية / Add to Home Screen» — وهتلاقي أيقونة ميزان على شاشة الموبايل تفتح البرنامج بملء الشاشة.";
+    }
+    if (isAndroid) {
+      return "على أندرويد: افتح قائمة المتصفح (⋮) واختار «تثبيت التطبيق / Install app» أو «إضافة إلى الشاشة الرئيسية» — وهتلاقي أيقونة ميزان على شاشة الموبايل.";
+    }
+    return "متصفحك مبيفتحش نافذة تثبيت تلقائية. افتح قائمة المتصفح (علامة ⋮ أو ... فوق) واختار: «تثبيت ميزان…» أو «Install ميزان / Install app» — وهيتم عمل اختصار بأيقونة البرنامج على سطح المكتب.";
+  }
+
   // هل التطبيق مثبّت بالفعل من نفس الأصل؟ (Chrome/Edge)
   function isInstalled() {
     return new Promise((resolve) => {
@@ -89,8 +104,8 @@
       } catch (e) { deferredPrompt = null; }
     }
 
-    // مفيش نافذة أصلية → إرشاد بالعربي لتركيب الاختصار من قائمة المتصفح
-    showHint("متصفحك مبيفتحش نافذة تثبيت تلقائية. افتح قائمة المتصفح (علامة ⋮ أو ... فوق) واختار: «تثبيت ميزان…» أو «Install ميزان / Install app» — وهيتم عمل اختصار بأيقونة البرنامج على سطح المكتب.");
+    // مفيش نافذة أصلية → إرشاد بالعربي مركّب حسب نوع الجهاز
+    showHint(platformHint());
   }
 
   function init() {
