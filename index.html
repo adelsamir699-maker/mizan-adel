@@ -61,6 +61,12 @@
     </div>
   </header>
 
+  <!-- ===== شريط وضع الأوفلاين (يظهر لما تشتغل من غير سحابة) ===== -->
+  <div id="offlineBanner" class="offline-banner" hidden>
+    <span class="offline-banner-txt">🔴 وضع أوفلاين — شغالك محفوظ على الجهاز وهيتزامن تلقائيًا لما تسجّل الدخول والنت متاح</span>
+    <button type="button" id="btnOfflineLogin" class="btn small green" hidden>🔄 سجّل الدخول للمزامنة</button>
+  </div>
+
   <div class="app-body">
     <!-- ===== القائمة الجانبية ===== -->
 <aside class="sidebar" id="sidebar">
@@ -1805,6 +1811,9 @@
       </form>
       <button type="button" id="btnInstallApp" class="btn install-app full" hidden>⬇️ تنزيل أيقونة البرنامج على الجهاز</button>
       <div id="installHint" class="login-msg" hidden></div>
+      <!-- 🔌 دخول أوفلاين: يظهر فقط لما الاتصال مقطوع وفيه بيانات محفوظة على الجهاز -->
+      <button type="button" id="btnOfflineEntry" class="btn orange full" style="margin-top:8px" hidden>📴 الدخول بدون نت (بياناتك المحفوظة)</button>
+      <div id="authMsgOffline" class="login-msg"></div>
     </div>
   </div>
 

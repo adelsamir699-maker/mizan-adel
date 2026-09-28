@@ -546,7 +546,13 @@
   }
 
   function pushTable(name) {
-    if (!A.online || A.adopting || A.cleaning) return;
+    if (A.adopting || A.cleaning) return;
+    // 🔌 وضع أوفلاين بعد إعادة الفتح: التعديل اتحفظ محليًا بالفعل؛ نطابور الجدول
+    // عشان يترفع تلقائيًا أول ما المستخدم يدخل أونلاين تاني.
+    if (!A.online) {
+      if (A.offlineQueuing && window.Sync) window.Sync.enqueue(name);
+      return;
+    }
     if (!window.CLOUD) return;
     mirror();
     // 🔌 Offline-First: لو الاتصال مقطوع → نطاب الجدول لإعادة الدفع لاحقًا.
@@ -573,6 +579,21 @@
       mirror();
       return window.CLOUD.push(table);
     }).catch((e) => console.warn("flushOutbox", e.message));
+  }
+
+  // 🔌 دفع المعلّق دلوقتي (من غير شرط adopting) — بيستدعى في proceedOnline
+  // قبل loadAll/adoptCloud عشان تعديلات وضع الأوفلاين تترفع للسحابة قبل ما
+  // نستبدل الذاكرة ببيانات السحابة (وبكده ماتتمسحش).
+  function pushPendingNow() {
+    if (!window.Sync || !window.CLOUD || !window.Sync.count) return Promise.resolve();
+    if (!window.Sync.count()) return Promise.resolve();
+    if (!window.Sync.isOnline()) return Promise.resolve();
+    if (!(DATA && DATA.isOnline && DATA.isOnline())) return Promise.resolve();
+    return window.Sync.flush((table) => {
+      if (!window.Sync.isOnline()) return Promise.reject(new Error("offline"));
+      mirror();
+      return window.CLOUD.push(table);
+    }).catch((e) => console.warn("pushPendingNow", e.message));
   }
 
   function setDbStatus(txt) {
@@ -5193,6 +5214,82 @@
     $("#denyScreen").hidden = true;
   }
 
+  /* 🔌 Offline-First (المرحلة ٢): وضع الأوفلاين بعد إعادة الفتح
+     ----------------------------------------------------------
+     لو الاتصال مقطوع وفيه بيانات محلية/لقطة كاش على الجهاز، بنخلي
+     المستخدم يدخل ويشتغل من غير سحابة. التعديلات بتتطاب في الطابور
+     (offlineQueuing) وبتترفع تلقائيًا أول ما يدخل أونلاين تاني. */
+  function hasLocalData() {
+    try {
+      return LS_ALL_KEYS.some((k) => {
+        const v = localStorage.getItem(k);
+        return v && v !== "[]" && v !== "null";
+      });
+    } catch (e) { return false; }
+  }
+  function showOfflineBanner(show) {
+    const el = $("#offlineBanner");
+    if (el) el.hidden = !show;
+  }
+  function isNavigatorOffline() {
+    return !(typeof navigator !== "undefined" && navigator.onLine);
+  }
+  function updateOfflineEntryButton() {
+    const b = $("#btnOfflineEntry");
+    if (b) b.hidden = !isNavigatorOffline();
+  }
+  function enterOfflineMode() {
+    const msg = $("#authMsgOffline");
+    const finish = () => {
+      A.online = false;
+      A.offlineQueuing = true;
+      loadData();
+      recalculateCustomerBalances();
+      recalculateSupplierBalances();
+      recalculateTreasuryBalances();
+      hideScreens();
+      showOfflineBanner(true);
+      setDbStatus("🔴 وضع أوفلاين — تغييراتك محفوظة وهتترفع لما النت يرجع");
+      initApp();
+      // لما النت يرجع وأنا لسه في وضع الأوفلاين → نبّه المستخدم يدخل للمزامنة
+      window.addEventListener("online", function onBack() {
+        window.removeEventListener("online", onBack);
+        const lb = $("#btnOfflineLogin");
+        if (lb) lb.hidden = false;
+        setDbStatus("🟡 الاتصال رجع — سجّل الدخول للمزامنة");
+      });
+    };
+    if (hasLocalData()) { finish(); return; }
+    // مفيش بيانات محلية → جرّب نسترجع لقطة الكاش من IndexedDB
+    restoreCacheToLocalStorage().then((ok) => {
+      if (!ok && !hasLocalData()) {
+        if (msg) { msg.textContent = "مفيش بيانات مخزّنة على الجهاز — لازم الاتصال للدخول أول مرة."; msg.className = "login-msg err"; }
+        return;
+      }
+      finish();
+    });
+  }
+
+  // 🔌 ربط أزرار الدخول الأوفلاين بشاشة تسجيل الدخول (مرة واحدة).
+  // #btnOfflineEntry يظهر فقط لما navigator.onLine = false → يدخل وضع أوفلاين.
+  // #btnOfflineLogin يظهر لما النت يرجع وأنت لسه في وضع الأوفلاين → يرجع
+  // لشاشة الدخول عشان تزامِن.
+  function wireOfflineEntry() {
+    if (wireOfflineEntry._done) { updateOfflineEntryButton(); return; }
+    wireOfflineEntry._done = true;
+    const be = $("#btnOfflineEntry");
+    if (be) be.addEventListener("click", () => { enterOfflineMode(); });
+    const bl = $("#btnOfflineLogin");
+    if (bl) bl.addEventListener("click", () => {
+      bl.hidden = true;
+      showOfflineBanner(false);
+      showLogin();
+    });
+    updateOfflineEntryButton();
+    window.addEventListener("online", updateOfflineEntryButton);
+    window.addEventListener("offline", updateOfflineEntryButton);
+  }
+
   function setAuthMsg(el, txt, kind) {
     el.textContent = txt;
     el.className = "login-msg " + (kind || "");
@@ -5390,6 +5487,10 @@ const pwEye = document.getElementById("btnShowPass");
     // بيانات السحابة واستبدال الكاش بعدها (adoptCloud + persistLocalFromCloud).
     if (src && src !== org) {
       LS_ALL_KEYS.forEach((k) => { try { localStorage.removeItem(k); } catch (e) { } });
+      // 🔌 عزل الشركات: الطابور (outbox) مفهرس باسم الجدول فقط بلا org_id،
+      // فأي تعديلات معلّقة من الشركة السابقة لازم تترمي عشان ما تتدفعش
+      // بالغلط للشركة الحالية.
+      if (window.Sync && window.Sync.clear) { try { window.Sync.clear(); } catch (e) { } }
       loadData(); // يعيد البيانات التجريبية زي أي جهاز جديد
       toast("تم مسح بيانات الحساب السابق من هذا المتصفح", "ok");
     }
@@ -5419,6 +5520,8 @@ const pwEye = document.getElementById("btnShowPass");
     const p0 = DATA.getProfile();
     if (!bypassMembers && isOrgAdmin(p0)) { showMembersScreen(); return; }
     A.online = true;
+    A.offlineQueuing = false;
+    showOfflineBanner(false);
     A.adopting = true;
     // 🛡 عزل الشركات: مانبقاش ببيانات أي حساب سابق قبل ما نبدأ التحميل
     guardOrgSwitch();
@@ -5426,11 +5529,14 @@ const pwEye = document.getElementById("btnShowPass");
     stage("جاري التحميل: فحص الصلاحيات...");
     DATA.requestAccess().then((acc) => {
       if (!(acc && acc.allowed)) { A.adopting = false; showDeny(acc); return; }
-      stage("جاري التحميل: فتح الاتصال بالسحابة...");
-      return window.CLOUD.loadAll().then(() => {
+      stage("جاري التحميل: رفع التغييرات المعلّقة...");
+      // 🔌 نرفع تعديلات وضع الأوفلاين (الطابور) قبل سحب السحابة،
+      // حتى لا تستبدلها adoptCloud وتمسح شغل المستخدم الأوفلاين.
+      return pushPendingNow().then(() => window.CLOUD.loadAll()).then(() => {
         adoptCloud();
         A.adopting = false;
         persistLocalFromCloud();
+        snapshotCache();
         seedPushFromLocal();
         // 🔌 إعادة دفع أي عمليات متطابة من جلسة سابقة (بعد تأكيد الجلسة)
         flushOutbox();
@@ -5807,6 +5913,54 @@ const pwEye = document.getElementById("btnShowPass");
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
+  }
+
+  /* 🔌 Offline-First (المرحلة ٢): لقطة كاش على الجهاز + استرجاعها
+     ------------------------------------------------------------
+     بعد كل تحميل ناجح من السحابة بنخزن لقطة من كل الجداول في
+     IndexedDB (مخزن cache) عشان نقدر نفتح ونشتغل أوفلاين حتى بعد
+     قفل البرنامج وفتحه تاني. الاسترجاع بيكتب اللقطة في مفاتيح
+     localStorage بنفس شكل الوضع المحلي، فبنعيد استخدام كل مسار
+     التحميل المحلي الموجود من غير ما نكرر كود. */
+  function snapshotCache() {
+    if (!window.Sync || !window.Sync.cacheSet) return;
+    try {
+      const orgId = (window.DATA && DATA.orgId) ? DATA.orgId() : null;
+      window.Sync.cacheSet("snap", {
+        org: orgId,
+        at: Date.now(),
+        tables: {
+          customers: customers, suppliers: suppliers, products: products,
+          treasury: treasury, accounts: accounts, sales: sales,
+          purchases: purchases, supplier_txs: supplierTxs, customer_txs: txs,
+          vouchers: vouchers, journalEntries: journalEntries
+        }
+      });
+    } catch (e) { }
+  }
+
+  // بيكتب لقطة الكاش في localStorage ويرجع true لو فيه لقطة اتسترجعت
+  function restoreCacheToLocalStorage() {
+    if (!window.Sync || !window.Sync.cacheGet) return Promise.resolve(false);
+    return window.Sync.cacheGet("snap").then((snap) => {
+      if (!snap || !snap.tables) return false;
+      try {
+        const t = snap.tables;
+        if (t.customers) localStorage.setItem(LS_CUSTOMERS, JSON.stringify(t.customers));
+        if (t.customer_txs) localStorage.setItem(LS_TXS, JSON.stringify(t.customer_txs));
+        if (t.products) localStorage.setItem(LS_PRODUCTS, JSON.stringify(t.products));
+        if (t.sales) localStorage.setItem(LS_SALES, JSON.stringify(t.sales));
+        if (t.treasury) localStorage.setItem(LS_TREASURY, JSON.stringify(t.treasury));
+        if (t.suppliers) localStorage.setItem(LS_SUPPLIERS, JSON.stringify(t.suppliers));
+        if (t.supplier_txs) localStorage.setItem(LS_SUP_TXS, JSON.stringify(t.supplier_txs));
+        if (t.purchases) localStorage.setItem(LS_PURCHASES, JSON.stringify(t.purchases));
+        if (t.accounts) localStorage.setItem(LS_ACCOUNTS, JSON.stringify(t.accounts));
+        if (t.journalEntries) localStorage.setItem(LS_JOURNAL, JSON.stringify(t.journalEntries));
+        if (t.vouchers) localStorage.setItem(LS_VOUCHERS, JSON.stringify(t.vouchers));
+        if (snap.org) localStorage.setItem(LS_SRC_ORG, snap.org);
+        return true;
+      } catch (e) { return false; }
+    }).catch(() => false);
   }
 
   /* ================== شاشة "غير متاح" (وقت/قفل/حجب) ================== */
@@ -6730,6 +6884,7 @@ const pwEye = document.getElementById("btnShowPass");
       A.online = true;
       setDbStatus("🟡 أونلاين — سجّل الدخول");
       setupAuth();
+      wireOfflineEntry();
       showLogin();
     } else {
       A.online = false;

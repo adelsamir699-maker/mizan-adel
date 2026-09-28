@@ -14,9 +14,11 @@
   "use strict";
 
   var DB_NAME = "mizan_sync";
-  var DB_VERSION = 1;
+  var DB_VERSION = 2;
   var STORE = "outbox";
+  var CACHE = "cache";
   var LS_KEY = "mizan_outbox_v1";
+  var CACHE_LS_KEY = "mizan_cache_v1";
 
   var idb = null;
   var useIDB = false;
@@ -47,6 +49,9 @@
             var db = req.result;
             if (!db.objectStoreNames.contains(STORE)) {
               db.createObjectStore(STORE, { keyPath: "table" });
+            }
+            if (!db.objectStoreNames.contains(CACHE)) {
+              db.createObjectStore(CACHE, { keyPath: "key" });
             }
           } catch (e) { }
         };
@@ -104,6 +109,61 @@
       pending = lsRead();
       loaded = true;
       emitStatus();
+    });
+  }
+
+  // ---------- الكاش (لقطة بيانات للقراءة أوفلاين بعد إعادة الفتح) ----------
+  function cacheSet(key, obj) {
+    if (!useIDB || !idb) {
+      try {
+        var map = JSON.parse(localStorage.getItem(CACHE_LS_KEY) || "{}") || {};
+        map[key] = { value: obj, at: Date.now() };
+        localStorage.setItem(CACHE_LS_KEY, JSON.stringify(map));
+      } catch (e) { }
+      return Promise.resolve();
+    }
+    return new Promise(function (resolve) {
+      try {
+        var tx = idb.transaction(CACHE, "readwrite");
+        tx.objectStore(CACHE).put({ key: key, value: obj, at: Date.now() });
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { resolve(); };
+        tx.onabort = function () { resolve(); };
+      } catch (e) { resolve(); }
+    });
+  }
+  function cacheGet(key) {
+    if (!useIDB || !idb) {
+      try {
+        var map = JSON.parse(localStorage.getItem(CACHE_LS_KEY) || "{}") || {};
+        return Promise.resolve(map[key] ? map[key].value : null);
+      } catch (e) { return Promise.resolve(null); }
+    }
+    return new Promise(function (resolve) {
+      try {
+        var tx = idb.transaction(CACHE, "readonly");
+        var req = tx.objectStore(CACHE).get(key);
+        req.onsuccess = function () { resolve(req.result ? req.result.value : null); };
+        req.onerror = function () { resolve(null); };
+      } catch (e) { resolve(null); }
+    });
+  }
+  function cacheDel(key) {
+    if (!useIDB || !idb) {
+      try {
+        var map = JSON.parse(localStorage.getItem(CACHE_LS_KEY) || "{}") || {};
+        delete map[key];
+        localStorage.setItem(CACHE_LS_KEY, JSON.stringify(map));
+      } catch (e) { }
+      return Promise.resolve();
+    }
+    return new Promise(function (resolve) {
+      try {
+        var tx = idb.transaction(CACHE, "readwrite");
+        tx.objectStore(CACHE).delete(key);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { resolve(); };
+      } catch (e) { resolve(); }
     });
   }
 
@@ -213,7 +273,10 @@
     usingIndexedDB: function () { return useIDB; },
     onStatus: onStatus,
     setOnline: setOnline,
-    setOffline: setOffline
+    setOffline: setOffline,
+    cacheSet: cacheSet,
+    cacheGet: cacheGet,
+    cacheDel: cacheDel
   };
 
   // رسم أولي للشارة بمجرد جهوزية الـ DOM

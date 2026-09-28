@@ -54,6 +54,23 @@ body {
 .app-header .header-left { display: flex; gap: 16px; align-items: center; font-size: 12px; flex-wrap: wrap; }
 .app-header .db-status { color: #4ADE80; }
 
+/* ===== شريط وضع الأوفلاين ===== */
+.offline-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  background: #7f1d1d;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  border-bottom: 2px solid #b91c1c;
+}
+.offline-banner[hidden] { display: none; }
+.offline-banner .offline-banner-txt { flex: 1 1 auto; }
+
 /* ===== الهيكل العام ===== */
 .app-body {
   flex: 1;
@@ -430,7 +447,7 @@ body {
 /* ===== الطباعة ===== */
 @media print {
   body { background: #fff; }
-  .app-header, .sidebar, .app-footer, .modal-overlay, .toast { display: none !important; }
+  .app-header, .sidebar, .app-footer, .modal-overlay, .toast, .offline-banner { display: none !important; }
   .content { padding: 0; overflow: visible; }
   .print-only { display: none !important; }
   .print-only.print-target { display: block !important; }
