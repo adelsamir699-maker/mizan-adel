@@ -1025,6 +1025,9 @@ body {
 .feat-line input{accent-color:#1d7a46}
 .feat-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
 .modal-box{background:#fff;border-radius:12px;padding:20px;width:min(760px,94vw);box-shadow:0 20px 50px rgba(15,23,42,.35)}
+/* شاشة «بيانات الشركة» في لوحة الإدارة: أعرض عشان أزرار الإجراءات تفضل على سطر واحد */
+#orgModal .modal-box{width:min(1180px,97vw)}
+#omMembers td:last-child, #adminList td:last-child{white-space:nowrap}
 @media (max-width:640px){.feat-grid{grid-template-columns:1fr 1fr}}
 
 /* إخفاء عمود وخانات الضريبة عند تعطيلها */

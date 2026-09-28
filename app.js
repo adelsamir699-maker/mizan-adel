@@ -5590,7 +5590,7 @@ const pwEye = document.getElementById("btnShowPass");
         const isMe = myUid && u.user_id === myUid;
         const feats = summarizeFeats(u.features);
    let actions = "";
-   if (canManage && !isMe) {
+   if (canManage && !isMe && !u.is_superadmin) {
    actions += "<button class=\"btn small red\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberDel('" + u.user_id + "')\">🗑️ حذف</button>";
    }
    // 🔑 تغيير الرقم السري — لكل حسابات الشركة بما فيها حساب صاحبها
@@ -5889,6 +5889,14 @@ const pwEye = document.getElementById("btnShowPass");
         ];
 
   function fmtDate(d) { return d ? String(d).slice(0, 10) : ""; }
+  // تاريخ وساعة محليان (لآخر الاتصال وغيرها) — بصيغة YYYY-MM-DD HH:MM
+  function fmtDateTime(d) {
+    if (!d) return "";
+    const x = new Date(d);
+    if (isNaN(x.getTime())) return "";
+    const p = (n) => String(n).padStart(2, "0");
+    return x.getFullYear() + "-" + p(x.getMonth() + 1) + "-" + p(x.getDate()) + " " + p(x.getHours()) + ":" + p(x.getMinutes());
+  }
 
   function daysUntil(dateStr) {
     if (!dateStr) return null;
@@ -5901,8 +5909,10 @@ const pwEye = document.getElementById("btnShowPass");
   // لوحة إحصائية للمالك: بطاقات ملخصة (مضغوطة) فوق جدول الشركات
   var onlineUsers = [];
   var onlineModal = null;
+  var adminOrgsCache = [];
 
   function renderAdminStats(orgs) {
+    adminOrgsCache = orgs || [];
     const box = $("#adminStats");
     if (!box) return;
     let total = orgs.length, active = 0, locked = 0, expired = 0, expiringSoon = 0, members = 0, noEnd = 0;
@@ -5915,6 +5925,9 @@ const pwEye = document.getElementById("btnShowPass");
       else if (o.plan_end) { active++; }
       else { noEnd++; }
     });
+    // آخر اتصال عام: أحدث last_seen بين كل الشركات
+    let latest = null;
+    orgs.forEach((o) => { if (o.last_seen && (!latest || new Date(o.last_seen) > new Date(latest))) latest = o.last_seen; });
     box.innerHTML =
       '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الشركات" onclick="window.__admCat(\'all\')"><span class="kpi-title">🏢 الشركات</span><span class="kpi-value">' + total + "</span></div>" +
       '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الأعضاء" onclick="window.__admCat(\'members\')"><span class="kpi-title">👥 الأعضاء</span><span class="kpi-value">' + members + "</span></div>" +
@@ -5922,9 +5935,38 @@ const pwEye = document.getElementById("btnShowPass");
       '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الشركات المنتهية اشتراكاتها قريبًا" onclick="window.__admCat(\'soon\')"><span class="kpi-title">🟠 خلال أسبوع</span><span class="kpi-value">' + expiringSoon + "</span></div>" +
       '<div class="kpi-card kpi-mini clk" title="اضغط لعرض المنتهية/المقفلة" onclick="window.__admCat(\'expired\')"><span class="kpi-title">🔴 منتهية/مقفلة</span><span class="kpi-value">' + (expired + locked) + "</span></div>" +
       '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الشركات بلا تاريخ" onclick="window.__admCat(\'noend\')"><span class="kpi-title">🚫 بلا تاريخ</span><span class="kpi-value">' + noEnd + "</span></div>" +
+      '<div class="kpi-card kpi-mini clk" title="اضغط لعرض آخر اتصال لكل شركة" onclick="window.__admLastSeen()"><span class="kpi-title">🕒 آخر اتصال</span><span class="kpi-value" style="font-size:12px;color:#ff5b5b;font-weight:800">' + (latest ? fmtDateTime(latest) : "—") + "</span></div>" +
       '<div class="kpi-card kpi-mini online-card clk" id="kpiOnline" title="اضغط لعرض المتصلين الآن" onclick="window.__admPresence()"><span class="kpi-title">🟢 متصلون الآن</span><span class="kpi-value">…</span></div>';
     refreshPresenceCard();
   }
+
+  // نافذة «آخر اتصال»: كل الشركات وتاريخ وساعة آخر دخول لكل شركة بالأحمر
+  var seenModal = null;
+  window.__admLastSeen = function () {
+    if (!seenModal || !seenModal.isConnected) {
+      seenModal = document.createElement("div");
+      seenModal.className = "modal-overlay";
+      seenModal.id = "lastSeenModal";
+      document.body.appendChild(seenModal);
+      seenModal.addEventListener("click", (ev) => { if (ev.target === seenModal) { seenModal.remove(); seenModal = null; } });
+    }
+    const list = (adminOrgsCache || []).slice().sort((a, b) =>
+      new Date(b.last_seen || 0) - new Date(a.last_seen || 0));
+    let rows = "";
+    if (!list.length) {
+      rows = '<tr><td colspan="2" style="text-align:center"><span class="login-sub">لا توجد شركات.</span></td></tr>';
+    }
+    list.forEach((o) => {
+      rows += "<tr><td><b>" + (o.org_name || "بدون اسم") + "</b> <span class=\"login-sub\">(" + (o.members || 0) + " عضو)</span></td>" +
+        '<td style="color:#ff5b5b;font-weight:800">' + (o.last_seen ? fmtDateTime(o.last_seen) : "لم يتصل بعد") + "</td></tr>";
+    });
+    seenModal.innerHTML = '<div class="modal-box">' +
+      '<div class="panel-title">🕒 آخر اتصال بالبرنامج — لكل شركة</div>' +
+      '<div class="tbl-wrap" style="max-height:60vh;overflow:auto"><table class="data-table"><thead><tr><th>الشركة</th><th>تاريخ وساعة آخر اتصال</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
+      '<div class="feat-btns"><button class="btn gray" type="button" onclick="window.__admLSClose()">إغلاق</button></div>' +
+      "</div>";
+  };
+  window.__admLSClose = function () { if (seenModal) { seenModal.remove(); seenModal = null; } };
 
   // تحديث بطاقة المتصلين + محتوى النافذة (تستدعى كل 15 ثانية أثناء فتح لوحة الإدارة)
   function refreshPresenceCard() {
@@ -6097,7 +6139,7 @@ const pwEye = document.getElementById("btnShowPass");
       let h = '<p class="login-sub" style="margin-bottom:8px">💡 اضغط على أي شركة <b>ضغطتين</b> (دبل كليك) لفتح شاشة بياناتها وتعديلها في أي وقت.</p>' +
         '<table class="data-table"><thead><tr>' +
         '<th>الشركة</th><th>يوزر نيم</th><th>تليفون المسئول</th><th>المالك</th><th>الأعضاء</th><th>من تاريخ</th><th>إلى تاريخ</th>' +
-        '<th>الحالة</th><th>المزايا</th><th>إجراءات</th></tr></thead><tbody>';
+        '<th>الحالة</th><th>آخر اتصال</th><th>المزايا</th><th>إجراءات</th></tr></thead><tbody>';
       orgs.forEach((o) => {
         const locked = !!o.locked;
         const until = daysUntil(o.plan_end);
@@ -6122,6 +6164,7 @@ const pwEye = document.getElementById("btnShowPass");
           "<td>" + fmtDate(o.plan_start) + "</td>" +
           "<td>" + fmtDate(o.plan_end) + "</td>" +
           "<td>" + status + "</td>" +
+          '<td style="color:#ff5b5b;font-weight:800;white-space:nowrap">' + (o.last_seen ? fmtDateTime(o.last_seen) : "لم يتصل بعد") + "</td>" +
           "<td><button class=\"btn small teal\" type=\"button\" onclick=\"event.stopPropagation();window.__admFeats('" + o.org_id + "')\">⚙️ المزايا</button></td>" +
           "<td><button class=\"btn small blue\" type=\"button\" onclick=\"event.stopPropagation();window.__admDbl('" + o.org_id + "')\">✏️ بيانات الشركة</button> " +
           (o.protected
@@ -6303,10 +6346,12 @@ const pwEye = document.getElementById("btnShowPass");
       const myUid = (DATA.me && DATA.me()) ? DATA.me().id : null;
       users.forEach((u) => {
         const isMe = myUid && u.user_id === myUid;
+        // 🛡 حساب المالك (سوبر أدمن) أو حسابي: بلا زرار حذف نهائيًا
+        const canDel = !isMe && !u.is_superadmin;
         h += "<tr>" +
           "<td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
           "<td><code>" + (u.username || "—") + "</code></td>" +
-          "<td>" + (u.role || "member") + "</td>" +
+          "<td>" + (u.role || "member") + (u.is_superadmin ? " 🔑" : "") + "</td>" +
           "<td>" + featsSummary(u.features, ADMIN_FEATURES) + "</td>" +
           "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
           "<td>" +
@@ -6314,7 +6359,7 @@ const pwEye = document.getElementById("btnShowPass");
           "<button class=\"btn small blue\" style=\"margin:2px\" type=\"button\" onclick=\"window.__admRenameUser('" + u.user_id + "')\">✏️ تغيير اليوزر نيم</button>" +
           (isMe ? "<span class=\"login-sub\" style=\"margin:2px\">لا يمكنك حظر نفسك</span>"
             : "<button class=\"btn small " + (u.blocked ? "green" : "red") + "\" style=\"margin:2px\" type=\"button\" onclick=\"window.__admUser('" + u.user_id + "'," + (u.blocked ? "false" : "true") + ");\">" + (u.blocked ? "✅ إلغاء الحظر" : "⛔ حظر") + "</button>") +
-          "<button class=\"btn small red\" style=\"margin:2px\" type=\"button\" onclick=\"window.__admDelMember('" + u.user_id + "')\">🗑️ حذف</button>" +
+          (canDel ? "<button class=\"btn small red\" style=\"margin:2px\" type=\"button\" onclick=\"window.__admDelMember('" + u.user_id + "')\">🗑️ حذف</button>" : "") +
           "</td></tr>";
       });
       h += "</tbody></table>";
