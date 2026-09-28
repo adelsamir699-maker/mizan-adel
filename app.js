@@ -7160,9 +7160,10 @@ const pwEye = document.getElementById("btnShowPass");
     }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
   };
 
-  // ===== شاشة الاشتراكات والأسعار (للمالك) — build 103 =====
-  // تغييرات 103: الخطة تُحفظ باسمها + السعر يدوي لكل شركة + خطة «تجربة مجانية»
-  // + أسعار كروت الباقات قابلة للتعديل ومحفوظة على السحاب (subs_plans_cfg).
+  // ===== شاشة الاشتراكات والأسعار (للمالك) — build 104 =====
+  // 103: الخطة تُحفظ باسمها + السعر يدوي لكل شركة + «تجربة مجانية» + أسعار الكروت على السحاب.
+  // 104: تنسيق ذهبي احترافي + فحص ذاتي يطمّن المالك إن قاعدة البيانات مجهّزة للترحيل
+  //      (upgrade-24) أو تنبيه ودّي مع زرار «إعادة فحص» لو لسه.
   const SUB_PLANS_BASE = {
     f: { label: "تجربة مجانية", price: 0,    months: 1 },
     m: { label: "شهري",         price: 200,  months: 1 },
@@ -7209,15 +7210,17 @@ const pwEye = document.getElementById("btnShowPass");
     box.innerHTML = Object.keys(P).map((k) => {
       const p = P[k];
       const per = k === "m" || p.months === 1 ? p.price : Math.round((p.price / p.months) * 10) / 10;
-      return '<div class="kpi-card" style="border:1px solid rgba(212,175,55,.45);border-radius:10px;padding:8px 12px;margin:4px">' +
-        '<div style="font-weight:800;color:#d4af37">' + (k === "f" ? "🎁 " : "") + p.label + '</div>' +
-        '<div style="margin:4px 0"><input type="number" min="0" class="inp cfg-price" data-ck="' + k + '" value="' + p.price + '" style="width:100px;display:inline-block;text-align:center"> <b>ج.م</b></div>' +
-        (k === "f" ? '<div class="login-sub">مجانًا للتعرف على البرنامج</div>'
-          : k === "m" ? '<div class="login-sub">من غير التزام</div>'
-          : '<div class="login-sub">يعني ' + per.toLocaleString("en") + ' ج.م/شهر</div>') +
+      return '<div class="kpi-card">' +
+        '<div class="subs-plan-name">' + (k === "f" ? "🎁 " : "💎 ") + p.label + '</div>' +
+        '<div class="subs-plan-price-row"><input type="number" min="0" class="cfg-price" data-ck="' + k + '" value="' + p.price + '"><span class="subs-plan-cur">ج.م</span></div>' +
+        '<div class="subs-plan-note">' +
+          (k === "f" ? "مجانًا للتعرف على البرنامج"
+            : k === "m" ? "من غير التزام"
+            : "يعني " + per.toLocaleString("en") + " ج.م/شهر") +
+        '</div>' +
         '</div>';
     }).join("") +
-    '<button id="btnSavePlansCfg" class="btn small green" type="button" style="margin:6px 4px">💾 حفظ أسعار الباقات</button>';
+    '<div style="width:100%;text-align:center"><button id="btnSavePlansCfg" type="button">💾 حفظ أسعار الباقات</button></div>';
     const btnSave = box.querySelector("#btnSavePlansCfg");
     btnSave.addEventListener("click", () => {
       const cfg = {};
@@ -7229,6 +7232,24 @@ const pwEye = document.getElementById("btnShowPass");
       }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
     });
   }
+  // فحص ذاتي: هل قاعدة البيانات هذه مجهّزة بترحيل الاشتراكات (upgrade-24)؟
+  function subsRenderStatus(state) {
+    const st = $("#subsCfgStatus");
+    if (!st) return;
+    st.className = "login-sub";
+    if (state && state.ok) {
+      st.classList.add("ok");
+      st.innerHTML = "✅ كل حاجة تمام — أسعار الباقات محفوظة على السحابة وبتترجّع أوتوماتيك لكل الأجهزة.";
+      return;
+    }
+    st.classList.add("warn");
+    st.innerHTML = "⚠️ قاعدة البيانات دي لسه مش مجهّزة لخدمات الاشتراكات (الأسعار السحابية). " +
+      "المطلوب تشغيل ملف الترحيل <b>db/supabase-upgrade-24-subs.sql</b> — اطلب من المبرمج يشغّله، وبعدها دوس «إعادة فحص». " +
+      '<button id="btnSubsRecheck" class="btn small" type="button">🔄 إعادة فحص</button>' +
+      '<span style="color:#b45309">(الجدول والتواريخ شغالين عادة — التقصير بيكون في أسعار الكروت السحابية بس.)</span>';
+    const b = $("#btnSubsRecheck");
+    if (b) b.addEventListener("click", () => { toggleAdminSubs(); toggleAdminSubs(); });
+  }
   function toggleAdminSubs() {
     const box = $("#adminSubs");
     if (!box) return;
@@ -7238,10 +7259,13 @@ const pwEye = document.getElementById("btnShowPass");
     const lst = $("#adminSubsList");
     lst.innerHTML = '<p class="login-sub">جارٍ التحميل من السحابة...</p>';
     Promise.all([
-      DATA.getSubPlans().catch(() => null),
+      // فحص ذاتي: لو الـ RPC مش موجود (ترحيل upgrade-24 لسه) هنبيّه تنبيه ودّي بدل الخطأ التقني
+      DATA.getSubPlans().then((v) => ({ ok: true, v: v })).catch((e) => ({ ok: false, err: e.message || String(e) })),
       DATA.adminOrgs().catch((e) => { throw e; })
     ]).then((res) => {
-      subPlansCfg = res[0] || null;
+      const cfgState = res[0];
+      subPlansCfg = cfgState.ok ? (cfgState.v || null) : null;
+      subsRenderStatus(cfgState);
       if (plans) subsRenderPlansCards(plans);
       const orgs = res[1];
       const P = SUB_PLANS();
@@ -7310,6 +7334,31 @@ const pwEye = document.getElementById("btnShowPass");
       renderAdminOrgs();
     }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
   }
+  // تصدير جدول الاشتراكات الحالي إلى ملف يفتح في Excel (CSV بترميز عربي سليم)
+  function subsExport() {
+    const tbody = document.querySelector("#adminSubsList tbody");
+    if (!tbody || !tbody.querySelectorAll("tr[data-subs]").length) {
+      toast("افتح تبويب الاشتراكات أولًا عشان الجدول يكون معروضًا", "warning");
+      return;
+    }
+    const P = SUB_PLANS();
+    const rows = [["الشركة", "الخطة", "من تاريخ", "إلى تاريخ", "السعر المتفق عليه (ج.م)", "الانتهاء المسجل حاليًا", "الحالة"]];
+    tbody.querySelectorAll("tr[data-subs]").forEach((tr) => {
+      const pk = tr.querySelector(".subs-plan").value;
+      rows.push([
+        tr.children[0].textContent.trim(),
+        (P[pk] || {}).label || pk,
+        tr.querySelector(".subs-start").value,
+        tr.querySelector(".subs-end").value,
+        Number(tr.querySelector(".subs-price").value) || 0,
+        tr.children[5].textContent.trim(),
+        tr.dataset.locked === "1" ? "مقفلة" : "مفتوحة"
+      ]);
+    });
+    downloadCSV("اشتراكات_ميزان_" + subsToday() + ".csv", rows);
+    toast("تم حفظ جدول الاشتراكات — بيتفتح في Excel", "ok");
+    addActivity("تصدير اشتراكات", "تصدير جدول الاشتراكات إلى Excel (" + (rows.length - 1) + " شركة)");
+  }
 
   function setupAdmin() {
     $("#btnAdmin").addEventListener("click", openAdmin);
@@ -7319,6 +7368,8 @@ const pwEye = document.getElementById("btnShowPass");
     const btnLog = $("#btnAdminLog");
     const btnSubs = $("#btnAdminSubs");
     if (btnSubs) btnSubs.addEventListener("click", toggleAdminSubs);
+    const btnSubsExp = $("#btnSubsExport");
+    if (btnSubsExp) btnSubsExp.addEventListener("click", subsExport);
     if (btnLog) btnLog.addEventListener("click", () => openLogModal());
     const btnAcc = $("#btnAdminAccounts");
     if (btnAcc) btnAcc.addEventListener("click", () => toggleAdminAccounts());

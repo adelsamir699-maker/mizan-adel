@@ -1120,3 +1120,89 @@ td.c-tax.tax-hidden {
   #loginScreen .btn.install-app{ margin-top:8px; padding:8px 10px; }
 }
 
+/* ============================================================
+   لوحة الاشتراكات — تنسيق ذهبي احترافي (build 104)
+   محصور في #adminSubs فقط حتى لا يؤثر على بقية لوحة المالك
+   ============================================================ */
+#adminSubs.subs-gold{
+  border:1.5px solid rgba(212,175,55,.6);
+  border-radius:16px;
+  background:linear-gradient(160deg,#fffdf4 0%,#ffffff 40%,#fdf8e7 100%);
+  box-shadow:0 10px 30px rgba(184,145,44,.12);
+  padding:18px 20px;
+}
+#adminSubs.subs-gold > .panel-title{
+  color:#8a6d1c;
+  font-size:17px;
+  font-weight:900;
+  border-bottom:2px solid rgba(212,175,55,.5);
+  padding-bottom:8px;
+  margin-bottom:8px;
+  text-shadow:0 1px 0 rgba(255,255,255,.8);
+}
+#adminSubs .subs-gold-title-ico{ color:#d4af37; }
+#subsCfgStatus{ margin:2px 0 10px; font-size:13px; font-weight:700; }
+#subsCfgStatus.ok{ color:#15803d; }
+#subsCfgStatus.warn{ color:#b45309; }
+#subsCfgStatus .btn{ margin-right:8px; }
+
+/* كروت الباقات الذهبية */
+#adminSubsPlans{ display:flex; flex-wrap:wrap; gap:12px; margin-bottom:14px; }
+#adminSubsPlans .kpi-card{
+  flex:1 1 180px;
+  min-height:0;
+  background:linear-gradient(150deg,#fffef9,#fdf6df);
+  border:1.5px solid #d4af37;
+  border-right:1.5px solid #d4af37;
+  border-radius:14px;
+  padding:12px 14px;
+  box-shadow:0 4px 14px rgba(184,145,44,.15);
+  transition:transform .12s ease, box-shadow .12s ease;
+  text-align:center;
+}
+#adminSubsPlans .kpi-card:hover{
+  transform:translateY(-3px);
+  box-shadow:0 10px 24px rgba(184,145,44,.25);
+}
+#adminSubsPlans .subs-plan-name{
+  color:#8a6d1c; font-weight:900; font-size:14px; margin-bottom:2px;
+}
+#adminSubsPlans .subs-plan-price-row{
+  display:flex; align-items:center; justify-content:center; gap:6px; margin:4px 0;
+}
+#adminSubsPlans .cfg-price{
+  width:110px; text-align:center; font-size:18px; font-weight:900;
+  color:#8a6d1c; background:#fff;
+  border:1.5px solid #d4af37; border-radius:9px; padding:5px 8px;
+}
+#adminSubsPlans .cfg-price:focus{
+  outline:none; border-color:#b8912c; box-shadow:0 0 0 3px rgba(212,175,55,.22);
+}
+#adminSubsPlans .subs-plan-cur{ color:#8a6d1c; font-weight:800; font-size:13px; }
+#adminSubsPlans .subs-plan-note{ color:#a08b3a; font-size:11.5px; font-weight:700; }
+#btnSavePlansCfg, #btnSubsExport{
+  background:linear-gradient(135deg,#d4af37,#b8912c);
+  color:#fffdf4; border:none; font-weight:800; border-radius:10px; padding:8px 16px;
+  box-shadow:0 6px 16px rgba(184,145,44,.3); font-size:13px; cursor:pointer;
+}
+#btnSavePlansCfg:hover, #btnSubsExport:hover{ background:linear-gradient(135deg,#e2c04a,#c79a2e); }
+
+/* جدول الشركات في اللوحة الذهبية */
+#adminSubsList table.data-table{
+  width:100%; border-collapse:separate; border-spacing:0; font-size:13px; min-width:900px;
+}
+#adminSubsList thead th{
+  background:linear-gradient(135deg,#f7ecc6,#efdc9a);
+  color:#6b5410; font-weight:900; padding:9px 8px; text-align:right;
+  border-bottom:2px solid #d4af37; white-space:nowrap;
+}
+#adminSubsList tbody tr:nth-child(even){ background:rgba(212,175,55,.055); }
+#adminSubsList tbody tr:hover{ background:rgba(212,175,55,.12); }
+#adminSubsList td{ padding:7px 8px; border-bottom:1px solid rgba(212,175,55,.25); vertical-align:middle; white-space:nowrap; }
+#adminSubsList .inp{ border:1px solid rgba(184,145,44,.45); border-radius:8px; }
+#adminSubsList .inp:focus{ border-color:#d4af37; box-shadow:0 0 0 3px rgba(212,175,55,.18); }
+#adminSubsList .subs-plan{ min-width:150px; font-weight:700; color:#6b5410; }
+#adminSubsList .subs-price{ width:120px; text-align:center; font-weight:800; color:#8a6d1c; }
+#adminSubsList .subs-amt{ font-weight:900; color:#b8912c; }
+#adminSubsList tr[data-locked="1"] td:first-child{ border-right:3px solid #c0392b; padding-right:10px; }
+
