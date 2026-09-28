@@ -7160,12 +7160,117 @@ const pwEye = document.getElementById("btnShowPass");
     }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
   };
 
+  // ===== شاشة الاشتراكات والأسعار (للمالك) — build 102 =====
+  const SUB_PLANS = {
+    m: { label: "شهري",      price: 200,  months: 1 },
+    h: { label: "نصف سنوي",  price: 1000, months: 6 },
+    y: { label: "سنوي",      price: 1800, months: 12 }
+  };
+  function subsIso(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  function subsToday() { return subsIso(new Date()); }
+  function subsEnd(startIso, months) {
+    const d = new Date(startIso + "T00:00:00");
+    d.setMonth(d.getMonth() + months);
+    d.setDate(d.getDate() - 1);
+    return subsIso(d);
+  }
+  function subsInferPlan(o) {
+    if (!o.plan_start || !o.plan_end) return "y";
+    const s = new Date(String(o.plan_start).slice(0, 10) + "T00:00:00");
+    const e = new Date(String(o.plan_end).slice(0, 10) + "T00:00:00");
+    const months = Math.max(1, Math.round((e - s) / (1000 * 60 * 60 * 24 * 30.44)));
+    if (months <= 2) return "m";
+    if (months <= 7) return "h";
+    return "y";
+  }
+  function toggleAdminSubs() {
+    const box = $("#adminSubs");
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false;
+    const plans = $("#adminSubsPlans");
+    if (plans) {
+      plans.innerHTML = Object.keys(SUB_PLANS).map((k) => {
+        const p = SUB_PLANS[k];
+        const per = k === "m" ? p.price : Math.round((p.price / p.months) * 10) / 10;
+        return '<div class="kpi-card" style="border:1px solid rgba(212,175,55,.45);border-radius:10px;padding:8px 12px;margin:4px">' +
+          '<div style="font-weight:800;color:#d4af37">' + p.label + '</div>' +
+          '<div style="font-size:18px;font-weight:900">' + p.price.toLocaleString("en") + ' ج.م</div>' +
+          (k !== "m" ? '<div class="login-sub">يعني ' + per.toLocaleString("en") + ' ج.م/شهر</div>' : '<div class="login-sub">من غير التزام</div>') +
+          '</div>';
+      }).join("");
+    }
+    const lst = $("#adminSubsList");
+    lst.innerHTML = '<p class="login-sub">جارٍ تحميل الشركات...</p>';
+    DATA.adminOrgs().then((orgs) => {
+      if (!orgs || !orgs.length) { lst.innerHTML = '<p class="login-sub">لا توجد شركات بعد.</p>'; return; }
+      let h = '<table class="data-table"><thead><tr><th>الشركة</th><th>الخطة</th><th>من تاريخ</th><th>إلى تاريخ</th><th>المبلغ</th><th>الانتهاء الحالي</th><th>تفعيل</th></tr></thead><tbody>';
+      orgs.forEach((o) => {
+        const oid = o.org_id;
+        const start = String(o.plan_start || "").slice(0, 10) || subsToday();
+        h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '">' +
+          '<td><b>' + (o.org_name || "بدون اسم") + '</b></td>' +
+          '<td><select class="inp subs-plan">' +
+            '<option value="m">شهري — 200 ج.م</option>' +
+            '<option value="h">نصف سنوي — 1,000 ج.م</option>' +
+            '<option value="y">سنوي — 1,800 ج.م</option>' +
+          '</select></td>' +
+          '<td><input type="date" class="inp subs-start" value="' + start + '"></td>' +
+          '<td><input type="date" class="inp subs-end"></td>' +
+          '<td class="subs-amt" style="font-weight:800;color:#d4af37;white-space:nowrap"></td>' +
+          '<td>' + (o.plan_end ? fmtDate(o.plan_end) : "—") + (o.locked ? ' <span class="badge-no">🔴 مقفلة</span>' : "") + '</td>' +
+          '<td><button class="btn small green" type="button">✅ تفعيل/تجديد</button></td>' +
+          '</tr>';
+      });
+      h += '</tbody></table><p class="login-sub" style="margin-top:8px">💡 التجديد بيفكّ قفل الشركة أوتوماتيك ولو كانت مقفلة بسبب انتهاء المدة.</p>';
+      lst.innerHTML = h;
+      orgs.forEach((o) => {
+        const tr = lst.querySelector('[data-subs="' + o.org_id + '"]');
+        if (!tr) return;
+        tr.querySelector(".subs-plan").value = subsInferPlan(o);
+        tr.querySelector(".subs-plan").addEventListener("change", () => subsCalc(tr));
+        tr.querySelector(".subs-start").addEventListener("change", () => subsCalc(tr));
+        tr.querySelector("button").addEventListener("click", () => subsApply(o, tr));
+        subsCalc(tr);
+      });
+      box.scrollIntoView({ behavior: "smooth", block: "start" });
+    }).catch((e) => {
+      lst.innerHTML = '<p class="login-msg err">تعذّر تحميل الشركات: ' + (e.message || e) + "</p>";
+    });
+  }
+  function subsCalc(tr) {
+    const p = SUB_PLANS[tr.querySelector(".subs-plan").value] || SUB_PLANS.y;
+    const start = tr.querySelector(".subs-start").value || subsToday();
+    tr.querySelector(".subs-end").value = subsEnd(start, p.months);
+    tr.querySelector(".subs-amt").textContent = p.price.toLocaleString("en") + " ج.م";
+  }
+  function subsApply(o, tr) {
+    const p = SUB_PLANS[tr.querySelector(".subs-plan").value] || SUB_PLANS.y;
+    const start = tr.querySelector(".subs-start").value;
+    const end = tr.querySelector(".subs-end").value;
+    if (!start || !end) { toast("حدّد تاريخ البداية الأول", "error"); return; }
+    const msg = "تأكيد تفعيل اشتراك «" + p.label + "» لشركة " + (o.org_name || "بدون اسم") +
+      "\nمن " + start + " إلى " + end + "\nالمبلغ: " + p.price.toLocaleString("en") + " ج.م" +
+      (o.locked ? "\n(الشركة مقفلة حاليًا — هيتم فتحها مع التجديد)" : "");
+    if (!confirm(msg)) return;
+    DATA.adminSetOrg(o.org_id, start, end, o.locked ? false : null, null).then(() => {
+      toast("تم تفعيل اشتراك " + p.label + " — إلى " + end, "ok");
+      addActivity("تجديد اشتراك", "تفعيل اشتراك " + p.label + " لشركة " + (o.org_name || "") + " إلى " + end + " بمبلغ " + p.price + " ج.م");
+      toggleAdminSubs(); toggleAdminSubs();
+      renderAdminOrgs();
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  }
+
   function setupAdmin() {
     $("#btnAdmin").addEventListener("click", openAdmin);
     $("#btnAdminRefresh").addEventListener("click", renderAdminOrgs);
     const btnAddOrg = $("#btnAdminAddOrg");
     if (btnAddOrg) btnAddOrg.addEventListener("click", () => openOrgModal());
     const btnLog = $("#btnAdminLog");
+    const btnSubs = $("#btnAdminSubs");
+    if (btnSubs) btnSubs.addEventListener("click", toggleAdminSubs);
     if (btnLog) btnLog.addEventListener("click", () => openLogModal());
     const btnAcc = $("#btnAdminAccounts");
     if (btnAcc) btnAcc.addEventListener("click", () => toggleAdminAccounts());
