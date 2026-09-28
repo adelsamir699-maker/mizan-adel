@@ -41,6 +41,115 @@
   // وبين "بيانات محلية حقيقية" (المفتاح كان موجود → لا ندهسها بديسك أقدم).
   let bootLsPresent = {};
 
+  /* 🔌 Offline-First (المرحلة ٣A): هوية الجهاز + ختم السجلات
+     ---------------------------------------------------------
+     deviceId: معرّف فريد ثابت لكل جهاز/متصفح (يُخزَّن في localStorage
+     وصورته في IndexedDB حتى يصمد بعد مسح الكاش). هدفه لاحقًا (٣B/٣C)
+     منع تصادم local_id بين الأجهزة وحل التعارض بـ last-write-wins.
+
+     stampTable: تختم كل سجل بـ uid/updated_at/device_id/rev عبر مقارنة
+     السجل بنسخته السابقة المحفوظة في localStorage. سجل جديد → rev=1،
+     سجل اتعدّل → rev يزيد وupdated_at يتحدّث، سجل ما اتغيرش → ما يتلمسش
+     (عشان recalculate* ما يعملش churn في updated_at). الحقول المشتقة
+     (currentBalance/balance/...) مستثناة من المقارنة لنفس السبب.
+
+     ملاحظة أمان (٣A): الختم محلي فقط — cloud.js لسه ما بيقرأش الحقول دي،
+     فمفيش أي تغيير في payload السحابة ولا في هوية السجل هناك. */
+  const LS_DEVICE_ID = "mizan_device_id";
+  let DEVICE_ID = null;
+  // هل كان deviceId موجود في localStorage لحظة الإقلاع؟ (false = اتمسح → رجّعه من الكاش)
+  let bootDeviceIdPresent = null;
+  // حقول وسائطية للمزامنة (ما تدخلش مقارنة المحتوى)
+  const SYNC_META_FIELDS = ["uid", "updated_at", "rev", "device_id", "deleted", "deleted_at"];
+  // حقول مشتقة بتتعيد حسابها محليًا (تغييرها مش "تعديل حقيقي" للسجل)
+  const DERIVED_FIELDS = ["currentBalance", "currentDebit", "currentCredit", "balance"];
+
+  function newUid() {
+    try {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+    } catch (e) { }
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === "x" ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  function getDeviceId() {
+    if (DEVICE_ID) return DEVICE_ID;
+    try { DEVICE_ID = localStorage.getItem(LS_DEVICE_ID); } catch (e) { }
+    if (!DEVICE_ID) {
+      DEVICE_ID = newUid();
+      try { localStorage.setItem(LS_DEVICE_ID, DEVICE_ID); } catch (e) { }
+    }
+    // مرآة غير متزامنة في IndexedDB (تصمد بعد مسح localStorage)
+    if (window.Sync && window.Sync.cacheSet) {
+      try { window.Sync.cacheSet("deviceId", { id: DEVICE_ID, at: Date.now() }); } catch (e) { }
+    }
+    return DEVICE_ID;
+  }
+
+  // استرجاع deviceId الثابت من الكاش لو localStorage اتمسح، وضمان انعكاس
+  // الهوية الحالية في IndexedDB. يُستدعى بعد Sync.init() (لما IDB تبقى جاهزة)،
+  // لأن وقت الإقلاع (loadData) كانت IDB لسه مش جاهزة فالمرآة راحت لـ
+  // localStorage fallback — هنا نعيد كتابتها في IDB عشان تصمد بعد مسح الكاش.
+  function restoreDeviceIdFromCache() {
+    if (!window.Sync || !window.Sync.cacheGet) return Promise.resolve();
+    return window.Sync.cacheGet("deviceId").then(function (rec) {
+      const cached = rec && rec.id;
+      // لو deviceId كان غايب وقت الإقلاع (localStorage اتمسح) وفي الكاش هوية
+      // قديمة → رجّعها بدل المؤقتة اللي تولّدت أثناء الإقلاع.
+      if (cached && bootDeviceIdPresent === false && cached !== DEVICE_ID) {
+        DEVICE_ID = cached;
+        try { localStorage.setItem(LS_DEVICE_ID, cached); } catch (e) { }
+      }
+      // دايمًا اكفل أن الهوية الحالية معكوسة في IDB (الآن جاهزة).
+      const id = getDeviceId();
+      if (window.Sync.cacheSet) {
+        try { window.Sync.cacheSet("deviceId", { id: id, at: Date.now() }); } catch (e) { }
+      }
+    }).catch(function () { });
+  }
+
+  // بصمة محتوى السجل (بدون الحقول الوسيطية/المشتقة) للمقارنة
+  function diffKey(rec) {
+    const o = {};
+    try {
+      Object.keys(rec).forEach(function (k) {
+        if (SYNC_META_FIELDS.indexOf(k) !== -1) return;
+        if (DERIVED_FIELDS.indexOf(k) !== -1) return;
+        o[k] = rec[k];
+      });
+      return JSON.stringify(o);
+    } catch (e) { return ""; }
+  }
+
+  // ختم مصفوفة سجلات قبل حفظها في localStorage
+  function stampTable(arr, lsKey) {
+    if (!Array.isArray(arr)) return;
+    const dev = getDeviceId();
+    const now = new Date().toISOString();
+    const prev = {};
+    try {
+      const old = JSON.parse(localStorage.getItem(lsKey) || "[]");
+      if (Array.isArray(old)) {
+        old.forEach(function (r) { if (r && r.uid) prev[r.uid] = diffKey(r); });
+      }
+    } catch (e) { }
+    arr.forEach(function (r) {
+      if (!r || typeof r !== "object") return;
+      if (!r.uid) r.uid = newUid();
+      const k = diffKey(r);
+      if (prev[r.uid] === undefined || prev[r.uid] !== k) {
+        // جديد على الجهاز ده أو اتعدّل → حدّث البصمة الزمنية
+        r.device_id = dev;
+        r.updated_at = now;
+        r.rev = (Number(r.rev) || 0) + 1;
+      }
+      prev[r.uid] = k;
+    });
+  }
+
   const TAX = { enabled: true, rate: 0.14 };
   function getTaxPercent() {
     return Math.round((TAX.rate || 0) * 100);
@@ -796,41 +905,49 @@
   }
 
   function saveProducts() {
+    stampTable(products, LS_PRODUCTS);
     localStorage.setItem(LS_PRODUCTS, JSON.stringify(products));
     pushTable("products"); syncToLocalDisk();
   }
 
   function saveSales() {
+    stampTable(sales, LS_SALES);
     localStorage.setItem(LS_SALES, JSON.stringify(sales));
     pushTable("sales"); syncToLocalDisk();
   }
 
   function saveTreasury() {
+    stampTable(treasury, LS_TREASURY);
     localStorage.setItem(LS_TREASURY, JSON.stringify(treasury));
     pushTable("treasury"); syncToLocalDisk();
   }
 
   function saveSuppliers() {
+    stampTable(suppliers, LS_SUPPLIERS);
     localStorage.setItem(LS_SUPPLIERS, JSON.stringify(suppliers));
     pushTable("suppliers"); syncToLocalDisk();
   }
 
   function saveSupplierTxs() {
+    stampTable(supplierTxs, LS_SUP_TXS);
     localStorage.setItem(LS_SUP_TXS, JSON.stringify(supplierTxs));
     pushTable("supplier_txs"); syncToLocalDisk();
   }
 
   function savePurchases() {
+    stampTable(purchases, LS_PURCHASES);
     localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
     pushTable("purchases"); syncToLocalDisk();
   }
 
   function saveAccounts() {
+    stampTable(accounts, LS_ACCOUNTS);
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
     pushTable("accounts"); syncToLocalDisk();
   }
 
   function persistJournal() {
+    stampTable(journalEntries, LS_JOURNAL);
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
     pushTable("journal_entries"); syncToLocalDisk();
   }
@@ -840,6 +957,7 @@
   }
 
   function saveVouchers() {
+    stampTable(vouchers, LS_VOUCHERS);
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
     pushTable("vouchers"); syncToLocalDisk();
   }
@@ -866,11 +984,13 @@
   }
 
   function saveCustomers() {
+    stampTable(customers, LS_CUSTOMERS);
     localStorage.setItem(LS_CUSTOMERS, JSON.stringify(customers));
     pushTable("customers"); syncToLocalDisk();
   }
 
   function saveTxs() {
+    stampTable(txs, LS_TXS);
     localStorage.setItem(LS_TXS, JSON.stringify(txs));
     pushTable("customer_txs"); syncToLocalDisk();
   }
@@ -6865,6 +6985,7 @@ const pwEye = document.getElementById("btnShowPass");
     try {
       bootLsPresent = {};
       LS_ALL_KEYS.forEach((k) => { bootLsPresent[k] = !!localStorage.getItem(k); });
+      bootDeviceIdPresent = !!localStorage.getItem(LS_DEVICE_ID);
     } catch (e) { bootLsPresent = {}; }
     loadData();
     recalculateCustomerBalances();
@@ -6876,7 +6997,11 @@ const pwEye = document.getElementById("btnShowPass");
     // 🔌 Offline-First (المرحلة ١): تهيئة طابور المزامنة، وإعادة دفع المعلّق
     // تلقائياً عند رجوع الاتصال.
     if (window.Sync) {
-      window.Sync.init();
+      // 🔌 ٣A: رجّع/اعكس deviceId في IndexedDB بعد ما تفتح (وإلا المرآة بتروح
+      // لـ localStorage fallback لأن IDB مش جاهزة وقت loadData).
+      Promise.resolve(window.Sync.init())
+        .then(function () { return restoreDeviceIdFromCache(); })
+        .catch(function () { });
       window.Sync.setOnline(() => { flushOutbox(); });
     }
     const online = window.DATA && window.DATA.isOnline() && window.CLOUD;
