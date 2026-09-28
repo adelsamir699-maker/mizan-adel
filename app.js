@@ -1058,7 +1058,7 @@
     // صافي ربح اليوم = مجموع (سعر البيع − سعر الشراء) × الكمية لأصناف فواتير اليوم
     const profitToday = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => {
       return m + (s.items || []).reduce((mm, it) => {
-        const pr = products.find((x) => x.id === it.productId);
+        const pr = products.find((x) => Number(x.id) === Number(it.productId));
         const cost = pr ? (Number(pr.purchasePrice) || Number(pr.weightedAvgCost) || 0) : 0;
         return mm + (Number(it.qty) || 0) * ((Number(it.price) || 0) - cost);
       }, 0);
@@ -2327,7 +2327,7 @@
         '<td class="c-tax' + (TAX.enabled ? '' : ' tax-hidden') + '"' + (TAX.enabled ? '' : ' style="display:none"') + '>' + fmt(it.tax) + '</td>' +
         '<td class="c-total">' + fmt(it.total) + '</td>' +
         '<td class="cell-actions"><button class="btn small red" type="button" data-f="del">❌</button></td>';
-      tr.addEventListener("mouseenter", () => posUpdateBadge(products.find((p) => p.id === it.productId) || null));
+      tr.addEventListener("mouseenter", () => posUpdateBadge(products.find((p) => Number(p.id) === Number(it.productId)) || null));
       tbody.appendChild(tr);
     });
   }
@@ -2357,7 +2357,7 @@
 
     const shortages = posItems
       .map((it) => {
-        const p = products.find((x) => x.id === it.productId);
+        const p = products.find((x) => Number(x.id) === Number(it.productId));
         const avail = p ? stockAt(p, warehouse) : 0;
         return p && avail >= it.qty ? null : it.nameAr + " (المتاح: " + Number(avail).toLocaleString("en-US") + ")";
       })
@@ -2440,7 +2440,7 @@
     }
 
     posItems.forEach((it) => {
-      const p = products.find((x) => x.id === it.productId);
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
       if (p) addStockAt(p, warehouse, -it.qty);
     });
     saveProducts();
@@ -2814,7 +2814,7 @@
         '<td class="c-tax' + (TAX.enabled ? '' : ' tax-hidden') + '"' + (TAX.enabled ? '' : ' style="display:none"') + '>' + fmt(it.tax) + '</td>' +
         '<td class="c-total">' + fmt(it.total) + '</td>' +
         '<td class="cell-actions"><button class="btn small red" type="button" data-f="del">❌</button></td>';
-      tr.addEventListener("mouseenter", () => ppUpdateBadge(products.find((p) => p.id === it.productId) || null));
+      tr.addEventListener("mouseenter", () => ppUpdateBadge(products.find((p) => Number(p.id) === Number(it.productId)) || null));
       tbody.appendChild(tr);
     });
   }
@@ -2915,7 +2915,7 @@
     }
 
     ppItems.forEach((it) => {
-      const p = products.find((x) => x.id === it.productId);
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
       if (!p) return;
       const oldQty = Number(p.qty) || 0;
       const oldCost = Number(p.weightedAvgCost) || 0;
@@ -3357,7 +3357,7 @@
     // حذف فاتورة شراء بيرجع كميتها من المخزن — ممنوع لو المخزن هيطلع أقل من صفر
     if (!isSales) {
       const negs = items.filter((it) => {
-        const p = products.find((x) => x.id === it.productId);
+        const p = products.find((x) => Number(x.id) === Number(it.productId));
         return p && stockAt(p, wh) - (Number(it.qty) || 0) < 0;
       });
       if (negs.length) {
@@ -3374,7 +3374,7 @@
     }
     // 1) المخزون: فاتورة بيع → الكميات ترجع، فاتورة شراء → الكميات تتنقص
     items.forEach((it) => {
-      const p = products.find((x) => x.id === it.productId);
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
       if (p) addStockAt(p, wh, isSales ? (Number(it.qty) || 0) : -(Number(it.qty) || 0));
     });
     saveProducts();
