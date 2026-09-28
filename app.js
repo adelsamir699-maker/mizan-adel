@@ -5925,9 +5925,9 @@ const pwEye = document.getElementById("btnShowPass");
       else if (o.plan_end) { active++; }
       else { noEnd++; }
     });
-    // آخر اتصال عام: أحدث last_seen بين كل الشركات
+    // آخر اتصال عام: أحدث last_seen بين الشركات غير المتصلة (المتصلة ظهرت في «متصلون الآن»)
     let latest = null;
-    orgs.forEach((o) => { if (o.last_seen && (!latest || new Date(o.last_seen) > new Date(latest))) latest = o.last_seen; });
+    orgs.forEach((o) => { if (!o.online && o.last_seen && (!latest || new Date(o.last_seen) > new Date(latest))) latest = o.last_seen; });
     box.innerHTML =
       '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الشركات" onclick="window.__admCat(\'all\')"><span class="kpi-title">🏢 الشركات</span><span class="kpi-value">' + total + "</span></div>" +
       '<div class="kpi-card kpi-mini clk" title="اضغط لعرض الأعضاء" onclick="window.__admCat(\'members\')"><span class="kpi-title">👥 الأعضاء</span><span class="kpi-value">' + members + "</span></div>" +
@@ -5950,11 +5950,12 @@ const pwEye = document.getElementById("btnShowPass");
       document.body.appendChild(seenModal);
       seenModal.addEventListener("click", (ev) => { if (ev.target === seenModal) { seenModal.remove(); seenModal = null; } });
     }
-    const list = (adminOrgsCache || []).slice().sort((a, b) =>
+    // الشركات المتصلة الآن تتشال من القائمة (بتظهر في «متصلون الآن»)
+    const list = (adminOrgsCache || []).filter((o) => !o.online).slice().sort((a, b) =>
       new Date(b.last_seen || 0) - new Date(a.last_seen || 0));
     let rows = "";
     if (!list.length) {
-      rows = '<tr><td colspan="2" style="text-align:center"><span class="login-sub">لا توجد شركات.</span></td></tr>';
+      rows = '<tr><td colspan="2" style="text-align:center"><span class="login-sub">كل الشركات متصلة الآن — لا توجد شركات منقطعة.</span></td></tr>';
     }
     list.forEach((o) => {
       rows += "<tr><td><b>" + (o.org_name || "بدون اسم") + "</b> <span class=\"login-sub\">(" + (o.members || 0) + " عضو)</span></td>" +
@@ -5962,6 +5963,7 @@ const pwEye = document.getElementById("btnShowPass");
     });
     seenModal.innerHTML = '<div class="modal-box">' +
       '<div class="panel-title">🕒 آخر اتصال بالبرنامج — لكل شركة</div>' +
+      '<p class="login-sub">الشركات المتصلة الآن لا تظهر هنا؛ تجدها في بطاقة «🟢 متصلون الآن».</p>' +
       '<div class="tbl-wrap" style="max-height:60vh;overflow:auto"><table class="data-table"><thead><tr><th>الشركة</th><th>تاريخ وساعة آخر اتصال</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
       '<div class="feat-btns"><button class="btn gray" type="button" onclick="window.__admLSClose()">إغلاق</button></div>' +
       "</div>";
@@ -6164,7 +6166,9 @@ const pwEye = document.getElementById("btnShowPass");
           "<td>" + fmtDate(o.plan_start) + "</td>" +
           "<td>" + fmtDate(o.plan_end) + "</td>" +
           "<td>" + status + "</td>" +
-          '<td style="color:#ff5b5b;font-weight:800;white-space:nowrap">' + (o.last_seen ? fmtDateTime(o.last_seen) : "لم يتصل بعد") + "</td>" +
+          '<td style="white-space:nowrap">' + (o.online
+            ? '<span style="color:var(--success);font-weight:800">🟢 متصل الآن</span>'
+            : '<span style="color:#ff5b5b;font-weight:800">' + (o.last_seen ? fmtDateTime(o.last_seen) : "لم يتصل بعد") + "</span>") + "</td>" +
           "<td><button class=\"btn small teal\" type=\"button\" onclick=\"event.stopPropagation();window.__admFeats('" + o.org_id + "')\">⚙️ المزايا</button></td>" +
           "<td><button class=\"btn small blue\" type=\"button\" onclick=\"event.stopPropagation();window.__admDbl('" + o.org_id + "')\">✏️ بيانات الشركة</button> " +
           (o.protected
