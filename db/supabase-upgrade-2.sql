@@ -40,7 +40,7 @@ begin
   insert into public.treasury (org_id, local_id, name, type, opening_balance, balance, is_active) values
     (v_org, 1, 'الصندوق الرئيسي (نقدي)', 'cash', 25000, 25000, true),
     (v_org, 2, 'البنك الأهلي المصري (1234567890)', 'bank', 50000, 50000, true),
-    (v_org, 3, 'محفظة فودافون كاش (01002655282)', 'wallet', 10000, 10000, true);
+    (v_org, 3, 'محفظة فودافون كاش (01555304378)', 'wallet', 10000, 10000, true);
 
   return v_org;
 end $$;

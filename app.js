@@ -1,6 +1,6 @@
 /* ================================================================
    برنامج ميزان - نسخة الويب | صفحة دليل العملاء
-   By Adel Samir - واتس: 01002655282
+   By Adel Samir - واتس: 01555304378
    نسخة تجريبية: البيانات محفوظة في متصفحك (localStorage)
    ================================================================ */
 
@@ -1271,7 +1271,7 @@
     $("#lblWalletTo").hidden = !isWallet;
     $("#pWalletTo").hidden = !isWallet;
     if (isWallet) {
-      $("#pWalletFrom").value = "01002655282";
+      $("#pWalletFrom").value = "01555304378";
       const cid = parseInt($("#pCust").value, 10);
       const c = customers.find((x) => x.id === cid);
       $("#pWalletTo").value = (c && c.walletPhone) ? c.walletPhone : "";
@@ -1354,7 +1354,7 @@
 
   function openActions(cust) {
     actionsCust = cust;
-    $("#actTitle").textContent = "👤 إدارة العميل: " + cust.nameAr + " (" + cust.code + ") - By Adel Samir - واتس: 01002655282";
+    $("#actTitle").textContent = "👤 إدارة العميل: " + cust.nameAr + " (" + cust.code + ") - By Adel Samir - واتس: 01555304378";
     $("#actName").textContent = "👤 العميل: " + cust.nameAr;
     $("#actDetails1").textContent = "الكود: " + cust.code + " | الهاتف: " + (cust.phone || "-") + " | هاتف آخر: " + (cust.secondaryPhone || "-");
     $("#actDetails2").textContent = "العنوان: " + (cust.address || "-") + " | ملاحظات: " + (cust.notes || "-");
