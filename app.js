@@ -5378,16 +5378,24 @@
 
     /* ---- إعدادات العميل ---- */
     $("#btnSaveClientSettings").addEventListener("click", saveClientSettingsForm);
-    $("#btnClientBackup").addEventListener("click", backupData);
-    $("#btnClientRestore").addEventListener("click", () => $("#fileClientRestore").click());
-    $("#fileClientRestore").addEventListener("change", (e) => {
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      const reader = new FileReader();
-      reader.onload = (ev) => clientRestoreFile(String(ev.target.result));
-      reader.readAsText(f);
-      e.target.value = "";
-    });
+    /* تبويب النسخ الاحتياطي الخاص بالعميل أُزيل (النسخ صار للمالك فقط) — ربط اختياري آمن */
+    (function () {
+      const bb = document.getElementById("btnClientBackup");
+      const br = document.getElementById("btnClientRestore");
+      const fr = document.getElementById("fileClientRestore");
+      if (bb) bb.addEventListener("click", backupData);
+      if (br && fr) {
+        br.addEventListener("click", () => fr.click());
+        fr.addEventListener("change", (e) => {
+          const f = e.target.files && e.target.files[0];
+          if (!f) return;
+          const reader = new FileReader();
+          reader.onload = (ev) => clientRestoreFile(String(ev.target.result));
+          reader.readAsText(f);
+          e.target.value = "";
+        });
+      }
+    })();
 
     /* ---- محدد الشركة للمالك (يحمل تبويبات الشركة المختارة) ---- */
     const setOrgPicker = document.getElementById("setOrgPicker");
