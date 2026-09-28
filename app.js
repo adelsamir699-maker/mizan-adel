@@ -146,10 +146,10 @@
     { ts: "12:15:48", user: "admin", action: "فاتورة مشتريات", desc: "فاتورة مشتريات #PINV-2001" }
   ];
 
+  // الشركات الجديدة تبدأ "بيور": صندوق نقدي واحد برصيد صفر — لا بنوك ولا محافظ ولا أرصدة.
+  // صاحب الشركة يضيف حساباته بنفسه من إعدادات مؤسسته.
   const seedTreasury = [
-    { id: 1, name: "الصندوق الرئيسي (نقدي)", type: "cash", balance: 25000 },
-    { id: 2, name: "البنك الأهلي المصري (1234567890)", type: "bank", balance: 50000 },
-    { id: 3, name: "محفظة فودافون كاش (01002655282)", type: "wallet", balance: 10000 }
+    { id: 1, name: "الصندوق الرئيسي (نقدي)", type: "cash", balance: 0 }
   ];
 
   const seedSuppliers = [
@@ -174,9 +174,9 @@
   const seedAccounts = [
     { id: 1, code: "1", nameAr: "الأصول", type: "asset", parentId: 0, openingBalance: 0, isActive: true },
     { id: 2, code: "1.1", nameAr: "الأصول المتداولة", type: "asset", parentId: 1, openingBalance: 0, isActive: true },
-    { id: 3, code: "1.1.1", nameAr: "الصناديق النقدية", type: "asset", parentId: 2, openingBalance: 25000, isActive: true },
-    { id: 4, code: "1.1.2", nameAr: "البنوك والحسابات البنكية", type: "asset", parentId: 2, openingBalance: 50000, isActive: true },
-    { id: 5, code: "1.1.3", nameAr: "المحافظ الإلكترونية", type: "asset", parentId: 2, openingBalance: 10000, isActive: true },
+    { id: 3, code: "1.1.1", nameAr: "الصناديق النقدية", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
+    { id: 4, code: "1.1.2", nameAr: "البنوك والحسابات البنكية", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
+    { id: 5, code: "1.1.3", nameAr: "المحافظ الإلكترونية", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
     { id: 6, code: "1.1.4", nameAr: "المخزون (بضاعة)", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
     { id: 7, code: "1.1.5", nameAr: "مديونيات العملاء", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
     { id: 8, code: "1.3", nameAr: "الأصول الثابتة", type: "asset", parentId: 1, openingBalance: 0, isActive: true },
@@ -186,7 +186,7 @@
     { id: 12, code: "2.1.1", nameAr: "مستحقات الموردين", type: "liability", parentId: 11, openingBalance: 0, isActive: true },
     { id: 13, code: "2.1.2", nameAr: "ضريبة المبيعات المستحقة", type: "liability", parentId: 11, openingBalance: 0, isActive: true },
     { id: 14, code: "3", nameAr: "حقوق الملكية", type: "equity", parentId: 0, openingBalance: 0, isActive: true },
-    { id: 15, code: "3.1", nameAr: "رأس المال", type: "equity", parentId: 14, openingBalance: 100000, isActive: true },
+    { id: 15, code: "3.1", nameAr: "رأس المال", type: "equity", parentId: 14, openingBalance: 0, isActive: true },
     { id: 16, code: "3.2", nameAr: "الأرباح المحتجزة", type: "equity", parentId: 14, openingBalance: 0, isActive: true },
     { id: 17, code: "4", nameAr: "الإيرادات", type: "revenue", parentId: 0, openingBalance: 0, isActive: true },
     { id: 18, code: "4.1", nameAr: "إيرادات المبيعات", type: "revenue", parentId: 17, openingBalance: 0, isActive: true },
@@ -1055,7 +1055,15 @@
     $("#kSales").textContent = fmt(salesToday) + " ج.م";
     $("#kPurchases").textContent = fmt(purToday) + " ج.م";
     $("#kExpenses").textContent = fmt(expToday) + " ج.م";
-    $("#kProfit").textContent = fmt(Math.round((salesToday + revToday - purToday - expToday) * 100) / 100) + " ج.م";
+    // صافي ربح اليوم = مجموع (سعر البيع − سعر الشراء) × الكمية لأصناف فواتير اليوم
+    const profitToday = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => {
+      return m + (s.items || []).reduce((mm, it) => {
+        const pr = products.find((x) => x.id === it.productId);
+        const cost = pr ? (Number(pr.purchasePrice) || Number(pr.weightedAvgCost) || 0) : 0;
+        return mm + (Number(it.qty) || 0) * ((Number(it.price) || 0) - cost);
+      }, 0);
+    }, 0);
+    $("#kProfit").textContent = fmt(Math.round(profitToday * 100) / 100) + " ج.م";
     $("#kTreasury").textContent = fmt(treTotal) + " ج.م";
 
     const low = products.filter((pr) => pr.qty <= pr.reorder);
@@ -1654,12 +1662,37 @@
         '<td>' + fmt(p.salePrice) + '</td>' +
         '<td>' + discBadge + '</td>' +
         '<td>' + stBadge + '</td>' +
-        '<td class="cell-actions"><button class="btn small blue" type="button" data-action="edit">✏️ تعديل</button></td>';
+        '<td class="cell-actions"><button class="btn small blue" type="button" data-action="edit">✏️ تعديل</button>' +
+        ' <button class="btn small red" type="button" data-action="del">🗑️ حذف</button></td>';
       tr.dataset.id = p.id;
       tr.querySelector('[data-action="edit"]').addEventListener("click", () => openProductDialog(p));
+      tr.querySelector('[data-action="del"]').addEventListener("click", () => deleteProduct(p));
       tr.addEventListener("dblclick", () => openProductDialog(p));
       tbody.appendChild(tr);
     });
+  }
+
+  /* ---- حذف صنف: مسموح فقط إذا كان رصيده صفر في كل المستودعات ---- */
+  function deleteProduct(p) {
+    if (!p) return;
+    let total = 0;
+    if (p.stock && typeof p.stock === "object") {
+      Object.keys(p.stock).forEach((k) => { total += Number(p.stock[k]) || 0; });
+    } else {
+      total = Number(p.qty) || 0;
+    }
+    total = Math.round(total * 100) / 100;
+    if (total !== 0) {
+      toast("لا يمكن حذف صنف له رصيد بالمخزن", "warning");
+      return;
+    }
+    const ok = confirm('هل تريد حذف الصنف "' + (p.nameAr || p.code) + '" نهائيًا؟\nالرصيد صفر والحذف لا يمكن التراجع عنه.');
+    if (!ok) return;
+    products = products.filter((x) => x.id !== p.id);
+    saveProducts();
+    renderProducts();
+    addActivity("حذف صنف", "تم حذف الصنف: " + (p.nameAr || p.code) + " (الكود " + p.code + ")");
+    toast("تم حذف الصنف بنجاح", "success");
   }
 
   /* ---- نافذة إضافة / تعديل صنف ---- */
@@ -4242,7 +4275,40 @@
     const data = settPayload(prefix);
     const key = SETT_TYPES[type].key;
     const list = data[key] || [];
-    const nm = list[idx] ? (list[idx].name || "هذا السجل") : "هذا السجل";
+    const rec = list[idx];
+    const nm = rec ? (rec.name || "هذا السجل") : "هذا السجل";
+    if (type === "wallet" || type === "bank") {
+      // الرصيد المرجعي: سجل الخزينة المرتبط (المحسوب فعليًا من الحركات) إن وجد،
+      // وإلا الرصيد المكتوب في الإعدادات.
+      let bal = Number(rec && (rec.balance != null ? rec.balance : rec.opening_balance) || 0) || 0;
+      let linked = null;
+      if (prefix === "c" && rec) {
+        const norm = (s) => (s || "").replace(/[\s\-_()]/g, "").toLowerCase();
+        const nName = norm(rec.name), nAcct = norm(rec.account_no);
+        linked = (treasury || []).find((t) => t.type === type && (
+          (t.name === rec.name) ||
+          (nName && norm(t.name) === nName) ||
+          (nAcct && norm(t.accountNo || "") === nAcct) ||
+          (nAcct && norm(t.name || "").includes(nAcct))
+        )) || null;
+        if (linked) bal = Number(linked.balance || 0) || 0;
+      }
+      if (Math.round(Math.abs(bal) * 100) / 100 > 0) {
+        toast("لا يمكن حذف الحساب لوجود رصيد به", "warning");
+        return;
+      }
+      if (!confirm("حذف «" + nm + "»؟ رصيده صفر وسيُحذف نهائيًا بعد الحفظ.")) return;
+      list.splice(idx, 1);
+      data[key] = list;
+      if (prefix === "c" && linked) {
+        treasury = (treasury || []).filter((t) => t !== linked);
+        saveTreasury();
+        if (typeof renderTreasury === "function") { try { renderTreasury(); } catch (e) { } }
+      }
+      renderSettGrid(prefix, type);
+      toast("تم الحذف محليًا. اضغط «حفظ جميع تبويبات» لحفظه.", "info");
+      return;
+    }
     if (!confirm("حذف «" + nm + "»؟")) return;
     list.splice(idx, 1);
     data[key] = list;
