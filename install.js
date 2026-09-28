@@ -46,8 +46,12 @@
     h.hidden = false;
   }
 
-  // إرشاد مركّب حسب نوع الجهاز عشان يكون واضح للمستخدم
+  // إرشاد مركّب حسب نوع الجهاز وطريقة الفتح عشان يكون واضح للمستخدم
   function platformHint() {
+    // فاتح من الملف مباشرة (file://) → المتصفح بيمنع التثبيت هناك
+    if (location.protocol === "file:") {
+      return "عايز تثبّت اختصار البرنامج بأيقونته؟ افتح البرنامج من السيرفر المحلي (دبل كليك على «تشغيل ميزان.bat») أو من الرابط الرسمي على الإنترنت، وبعدين دوس زرار التنزيل تاني — المتصفح مبيدعمش التثبيت من الملف مباشرة.";
+    }
     const ua = (navigator.userAgent || "") + " " + (navigator.platform || "");
     const isIOS = /iphone|ipod/i.test(ua) || (/ipad/i.test(ua)) ||
                   (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
