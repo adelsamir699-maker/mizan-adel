@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4"; // نسخة المنتج (اللي يشوفه العميل)
-    window.MIZAN_BUILD = 90;       // عدّاد البناء والكاش (للتطوير فقط)
+    window.MIZAN_BUILD = 91;       // عدّاد البناء والكاش (للتطوير فقط)
 
     (function () {
       var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
@@ -39,7 +39,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=90" />
+  <link rel="stylesheet" href="styles.css?v=91" />
 </head>
 <body>
 
@@ -976,6 +976,24 @@
             </div>
             <p class="stk-hint">اختر أولًا من القائمة: «الكل (كل العملاء)» أو شركة بعينها. النسخة الشاملة بتضم كل الشركات: العملاء والموردين والأصناف والفواتير والخزائن والحسابات والقيود والتصنيفات والوحدات والمستودعات وأصحاب المنشأة. بتختار أنت مكان الحفظ على جهازك. <b>الاستعادة لك أنت المالك فقط، دون طلب كلمة مرور — بصلاحية الإدارة الكاملة.</b></p>
             <input type="file" id="fileRestore" accept=".json,application/json" hidden />
+
+            <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)" />
+
+            <div class="panel-title">🚀 نسخة نشر كاملة — تشتغل على أي سيرفر من غير أي تعديل</div>
+            <div class="sett-btns" style="gap:8px">
+              <button id="btnDeployFull" class="btn green" type="button">📦 نسخة كاملة (ببيانات الشركات)</button>
+              <button id="btnDeployEmpty" class="btn blue" type="button">📦 نسخة فارغة (بدون بيانات الشركات)</button>
+            </div>
+            <p class="stk-hint">النسخة دي بتنزل في مجلد بتختار أنت مكانه وباسم فيه التاريخ والساعة، ويضم: ملفات البرنامج نفسها + ملف database.sql (البنية + كل شيء) + data.json للبيانات + README خطوات التشغيل على أي Supabase/استضافة جدد. <b>النسخة الكاملة تحتوي كلمات مرور حسابات الدخول — خزّنها في مكان آمن ولا تشاركها مع أحد.</b></p>
+
+            <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)" />
+
+            <div class="panel-title">♻️ استعادة نسخة نشر كاملة على هذا السيرفر</div>
+            <div class="sett-btns">
+              <button id="btnDeployRestore" class="btn orange" type="button">♻️ استعادة من ملف data.json (يرجّع القاعدة لحالة الملف)</button>
+            </div>
+            <p class="stk-hint">دي أخطر عملية: <b>تمسح كل البيانات الحالية على السيرفر ده</b> وتحط اللي في الملف (شركات وأعضاء وحسابات دخول وفواتير). متلغيش حاجة لو حصل خطأ في النص. استخدمها لما تنقل سيرفر أو ترجع لنقطة محفوظة.</p>
+            <input type="file" id="fileDeployRestore" accept=".json,application/json" hidden />
           </div>
         </div>
 
@@ -1862,12 +1880,12 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=90"></script>
-  <script src="supabase.config.js?v=90"></script>
-  <script src="data.js?v=90"></script>
-  <script src="cloud.js?v=90"></script>
-  <script src="install.js?v=90"></script>
-  <script src="app.js?v=90"></script>
+  <script src="lib_supabase.js?v=91"></script>
+  <script src="supabase.config.js?v=91"></script>
+  <script src="data.js?v=91"></script>
+  <script src="cloud.js?v=91"></script>
+  <script src="install.js?v=91"></script>
+  <script src="app.js?v=91"></script>
   <script>
     // كاشف أخطاء على الشاشة (بيحول أي خطأ JS لرسالة مرئية)
     (function () {

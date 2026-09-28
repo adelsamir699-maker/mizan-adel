@@ -4632,6 +4632,193 @@
     else toast("النسخة الاحتياطية غير متاحة.", "error");
   }
 
+  // ============ نسخة النشر الكاملة (كود + سكيما + داتا) — ترحيل ٢٣ ============
+  // مجلد واحد يشتغل على أي سيرفر: site/ + database.sql + data.json + README
+  var DEPLOY_SITE_FILES = ["index.html", "app.js", "data.js", "cloud.js", "install.js",
+    "lib_supabase.js", "manifest.webmanifest", "sw.js", "styles.css", "supabase.config.js",
+    "icons/icon-1024.png", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png"];
+  var DEPLOY_DB_FILES = ["db/supabase-schema.sql",
+    "db/supabase-upgrade-1.sql", "db/supabase-upgrade-2.sql", "db/supabase-upgrade-3.sql",
+    "db/supabase-upgrade-4.sql", "db/supabase-upgrade-5.sql", "db/supabase-upgrade-6.sql",
+    "db/supabase-upgrade-7.sql", "db/supabase-upgrade-8.sql", "db/supabase-upgrade-9.sql",
+    "db/supabase-upgrade-10.sql", "db/supabase-upgrade-11.sql", "db/supabase-upgrade-12.sql",
+    "db/supabase-upgrade-13.sql", "db/supabase-upgrade-14.sql", "db/supabase-upgrade-15.sql",
+    "db/supabase-upgrade-16.sql", "db/supabase-upgrade-17.sql",
+    "db/supabase-upgrade-18-role-delete-protection.sql", "db/supabase-upgrade-19-offline-multidevice.sql",
+    "db/supabase-upgrade-20-invoice-seq.sql", "db/supabase-upgrade-21-admin-lastseen.sql",
+    "db/supabase-upgrade-22-admin-online.sql", "db/supabase-upgrade-23-full-backup.sql"];
+  var DEPLOY_DATA_TABLES = ["organizations", "profiles",
+    "accounts", "audit_logs", "categories", "customer_txs", "customers",
+    "journal_entries", "journal_lines", "mizan_created_accounts", "mizan_invoice_seq",
+    "mizan_pw_store", "owners", "password_changes", "presence", "products",
+    "purchase_items", "purchases", "sale_items", "sales", "supplier_txs", "suppliers",
+    "treasury", "units", "vouchers", "warehouses"];
+
+  function deployStamp() {
+    const d = new Date(), p = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "_" + p(d.getHours()) + p(d.getMinutes());
+  }
+
+  function fetchSiteBlob(path) {
+    return fetch(new URL(path, location.href).href, { cache: "no-store" })
+      .then((res) => (res.ok ? res.blob() : null)).catch(() => null);
+  }
+
+  function sqlLit(v) {
+    if (v === null || v === undefined) return "NULL";
+    if (typeof v === "number" || typeof v === "boolean") return String(v);
+    if (typeof v === "object") return "'" + JSON.stringify(v).replace(/'/g, "''") + "'";
+    return "'" + String(v).replace(/'/g, "''") + "'";
+  }
+
+  // insert statements لجدول من مصفوفة صفوف JSON — مع تخطي الأعمدة المُولَّدة
+  function genInserts(schema, table, rows, dropKeys) {
+    if (!Array.isArray(rows) || !rows.length) return "";
+    const cols = Object.keys(rows[0]).filter((k) => (dropKeys || []).indexOf(k) === -1);
+    let out = "-- " + schema + "." + table + " (" + rows.length + " صف)\n";
+    const head = "insert into " + schema + "." + table + " (" +
+      cols.map((c) => '"' + c + '"').join(",") + ") values (";
+    rows.forEach((r) => {
+      out += head + cols.map((c) => sqlLit(r[c])).join(",") + ") on conflict do nothing;\n";
+    });
+    return out + "\n";
+  }
+
+  function buildDeploySql(dump, includeData) {
+    let sql = "-- ============================================================\n" +
+      "-- ميزان — ملف قاعدة البيانات (مولّد " + new Date().toLocaleString("ar-EG") + ")\n" +
+      "-- " + (includeData ? "نسخة كاملة: بنية + بيانات كل الشركات + حسابات الدخول" : "نسخة فارغة: بنية فقط — بلا أي شركات أو بيانات") + "\n" +
+      "-- الاستخدام: مشروع Supabase جديد ← SQL Editor ← الصق الكل ← Run\n" +
+      "-- ============================================================\n\n";
+    return sql;
+  }
+
+  async function ownerDeployBackup(includeData) {
+    if (!(A.online && DATA && DATA.adminBackupFull)) { toast("النسخة الاحتياطية غير متاحة.", "error"); return; }
+    toast("جارٍ تجهيز نسخة النشر " + (includeData ? "الكاملة (ببيانات الشركات)..." : "الفارغة (سورس فقط)..."), "info");
+    let dump;
+    try { dump = await DATA.adminBackupFull(); }
+    catch (e) { toast("خطأ في سحب البيانات: " + (e.message || e), "error"); return; }
+    if (!dump || !Array.isArray(dump.organizations)) { toast("لم تصل بيانات كاملة من السيرفر.", "error"); return; }
+    // 1) ملفات البنية (SQL) من نفس الموقع المنشور
+    const schemaParts = [];
+    for (const p of DEPLOY_DB_FILES) {
+      const b = await fetchSiteBlob(p);
+      if (b) schemaParts.push("-- ==== " + p + " ====\n" + await b.text());
+    }
+    if (!schemaParts.length) { toast("تعذّر سحب ملفات البنية (db/*.sql) من الموقع — حدّث النسخة المنشورة أولًا.", "error"); return; }
+    // 2) ملفات الموقع (site/)
+    const siteFiles = [];
+    for (const p of DEPLOY_SITE_FILES) {
+      const b = await fetchSiteBlob(p);
+      if (b) siteFiles.push({ name: "site/" + p, blob: b });
+    }
+    if (!siteFiles.length) { toast("تعذّر سحب ملفات الموقع.", "error"); return; }
+    // 3) database.sql = البنية (+ البيانات لو نسخة كاملة)
+    let dbSql = buildDeploySql(dump, includeData) + "\n" + schemaParts.join("\n\n") + "\n";
+    if (includeData) {
+      dbSql += "\n-- ===== بيانات حسابات الدخول (كلمات المرور مشفرة bcrypt) =====\n" +
+        genInserts("auth", "users", dump._auth_users, ["confirmed_at"]) +
+        genInserts("auth", "identities", dump._auth_identities, ["email"]) +
+        "\n-- ===== بيانات الشركات والباقي (ترتيب آمن للمفاتيح الأجنبية) =====\n";
+      DEPLOY_DATA_TABLES.forEach((t) => { dbSql += genInserts("public", t, dump[t], []); });
+    } else {
+      dbSql += "\n-- نسخة فارغة: لا توجد بيانات شركات ولا حسابات دخول.\n" +
+        "-- أول مستخدم يسجّل من البرنامج يبقى صاحب شركته؛ ولتعيين مالك عام للنظام:\n" +
+        "-- update public.profiles set is_superadmin = true where id = 'معرف المستخدم من auth.users';\n";
+    }
+    const files = [
+      { name: "database.sql", blob: new Blob([dbSql], { type: "application/sql" }) },
+      { name: "README.txt", blob: new Blob([deployReadme(includeData, dump)], { type: "text/plain;charset=utf-8" }) },
+      { name: "manifest.json", blob: new Blob([JSON.stringify({
+        kind: includeData ? "full" : "empty", at: new Date().toISOString(),
+        app: "mizan", build: window.MIZAN_BUILD,
+        companies: (dump.organizations || []).length,
+        auth_users: (dump._auth_users || []).length,
+        counts: DEPLOY_DATA_TABLES.reduce((a, t) => { a[t] = (dump[t] || []).length; return a; }, {})
+      }, null, 2)], { type: "application/json" }) }
+    ];
+    siteFiles.forEach((f) => files.push(f));
+    // 4) data.json للنسخة الكاملة (لزرار الاستعادة ♻️ على أي سيرفر تاني)
+    if (includeData) files.push({ name: "data.json", blob: new Blob([JSON.stringify(dump)], { type: "application/json" }) });
+    const baseName = "mizan-deploy-backup-" + (includeData ? "full" : "empty") + "-" + deployStamp();
+    saveDeployBundle(files, baseName).then((how) => {
+      addActivity("نسخة نشر", "نسخة " + (includeData ? "كاملة" : "فارغة") + " — " + how);
+      toast("اتحفظت في " + baseName + " (" + files.length + " ملف). شوف README.txt لخطوات التشغيل.", "success");
+    });
+  }
+
+  function deployReadme(includeData, dump) {
+    return "ميزان — نسخة نشر (" + (includeData ? "كاملة ببيانات الشركات" : "فارغة — سورس فقط") + ")\n" +
+      "تاريخ التجهيز: " + new Date().toLocaleString("ar-EG") + "\n\n" +
+      "محتويات المجلد:\n" +
+      "  site/        ملفات البرنامج كاملة (ليتنزل على أي استضافة)\n" +
+      "  database.sql ملف قاعدة البيانات (البنية" + (includeData ? " + بيانات كل الشركات وحسابات الدخول" : " فقط — بلا بيانات") + ")\n" +
+      (includeData ? "  data.json    بيانات قاعدة البيانات الخام (لزرار الاستعادة ♻️ داخل البرنامج)\n" : "") +
+      "  manifest.json+README.txt\n\n" +
+      "خطوات التشغيل على سيرفر جديد:\n" +
+      "  1) Supabase.com → مشروع جديد (أي دولة).\n" +
+      "  2) SQL Editor → New query → الصق محتوى database.sql كله → Run.\n" +
+      "  3) Project Settings → API: انسخ Project URL و anon public key.\n" +
+      "  4) ظلّف مجلد site/ على أي استضافة (GitHub Pages/Netlify/سيرفر خاص).\n" +
+      "  5) عدّل ملف supabase.config.js في الاستضافة: حط الـ URL والـ anon الجديدين.\n" +
+      "  6) افتح الموقع وسجّل الدخول" + (includeData ? " بنفس اليوزرات وكلمات المرور القديمة — كل الشركات والبيانات موجودة." : " — أنشئ شركتك الأولى عادي.") + "\n\n" +
+      (includeData ? "لإرجاع البيانات لسيرفر فيه نظام شغال بدل خطوة (2): افتح إعدادات المالك → تبويب النسخ الاحتياطي → زر «♻️ استعادة من ملف data.json».\n\n" : "") +
+      "تنبيه أمان" + (includeData ? ": النسخة الكاملة فيها حسابات دخول وكلمات مرور مشفرة — خزّنها في مكان آمن." : ": هذه نسخة بنية فقط بلا أي بيانات عملاء.") + "\n";
+  }
+
+  function saveDeployBundle(files, baseName) {
+    const dl = () => {
+      let i = 0;
+      return new Promise((resolve) => {
+        (function next() {
+          if (i >= files.length) { resolve("مجلد التنزيلات (ملفات منفصلة)"); return; }
+          const f = files[i++];
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(f.blob);
+          a.download = baseName + "__" + f.name.replace(/\//g, "__");
+          a.click();
+          setTimeout(() => { URL.revokeObjectURL(a.href); next(); }, 250);
+        })();
+      });
+    };
+    if (!window.showDirectoryPicker) return dl();
+    return window.showDirectoryPicker().then(async (root) => {
+      const dir = await root.getDirectoryHandle(baseName, { create: true });
+      for (const f of files) {
+        const parts = f.name.split("/");
+        const fname = parts.pop();
+        let d = dir;
+        for (const p of parts) d = await d.getDirectoryHandle(p, { create: true });
+        const fh = await d.getFileHandle(fname, { create: true });
+        const w = await fh.createWritable();
+        await w.write(f.blob);
+        await w.close();
+      }
+      return "المجلد اللي اخترته";
+    }).catch((e) => {
+      if (e && e.name === "AbortError") return "— (اتلغى)";
+      return dl();
+    });
+  }
+
+  // استعادة نسخة النشر الكاملة على السيرفر الحالي (ترجّع القاعدة لحالة الملف)
+  function ownerRestoreFullFile(jsonStr) {
+    let payload;
+    try { payload = JSON.parse(jsonStr); } catch (e) { toast("الملف غير صالح أو تالف.", "warning"); return; }
+    if (!payload || !Array.isArray(payload.organizations)) { toast("الملف ده مش نسخة نشر كاملة (لا توجد organizations).", "warning"); return; }
+    const w = confirm("تحذير شديد ⚠️⚠️⚠️\n\nسيتم مسح كل بيانات السيرفر الحالي واستبدالها ببيانات الملف:\n" +
+      payload.organizations.length + " شركة، " + ((payload._auth_users || []).length) + " حساب دخول.\n" +
+      "لو حصل أي خطأ أثناء الاستعادة لن يُمسح شيء (العملية كتلة واحدة).\n\nهل أنت متأكد تمامًا؟");
+    if (!w) { toast("تم إلغاء الاستعادة.", "info"); return; }
+    toast("جارٍ الاستعادة الكاملة...", "info");
+    DATA.adminRestoreFull(payload).then((msg) => {
+      toast(msg || "تمت الاستعادة.", "success");
+      addActivity("نسخة نشر", "استعادة كاملة من ملف data.json");
+      setTimeout(() => window.location.reload(), 1800);
+    }).catch((e) => toast("خطأ في الاستعادة (لم يُمسح شيء): " + (e.message || e), "error"));
+  }
+
   // استعادة نسخة للمالك: يختار الشركة أولًا (أو الكل) من القائمة، بتحذير فقط — بدون باسورد
   function ownerRestoreFile(jsonStr) {
     let payload;
@@ -5081,6 +5268,24 @@
       reader.readAsText(f);
       e.target.value = "";
     });
+    /* ---- نسخة النشر الكاملة (المالك) ---- */
+    const bdf = document.getElementById("btnDeployFull");
+    if (bdf) bdf.addEventListener("click", () => ownerDeployBackup(true));
+    const bde = document.getElementById("btnDeployEmpty");
+    if (bde) bde.addEventListener("click", () => ownerDeployBackup(false));
+    const bdr = document.getElementById("btnDeployRestore");
+    const fdr = document.getElementById("fileDeployRestore");
+    if (bdr && fdr) {
+      bdr.addEventListener("click", () => fdr.click());
+      fdr.addEventListener("change", (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => ownerRestoreFullFile(String(ev.target.result));
+        reader.readAsText(f);
+        e.target.value = "";
+      });
+    }
 
     /* ---- إعدادات العميل ---- */
     $("#btnSaveClientSettings").addEventListener("click", saveClientSettingsForm);

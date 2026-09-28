@@ -607,6 +607,20 @@
       return true;
     });
   }
+  // نسخة المالك الشاملة القابلة للتشغيل: كل الجداول + حسابات الدخول (ترحيل ٢٣)
+  function adminBackupFull() {
+    return sb.rpc("mizan_admin_backup_full").then(function (r) {
+      if (r.error) throw r.error;
+      return r.data || null;
+    });
+  }
+  // استعادة نسخة المالك الشاملة على هذا المشروع (تحذف كل حاجة وتحط اللي في الملف)
+  function adminRestoreFull(payload) {
+    return sb.rpc("mizan_admin_restore_full", { p_payload: payload }).then(function (r) {
+      if (r.error) throw r.error;
+      return r.data || "تمت الاستعادة";
+    });
+  }
   // العميل يغيّر كلمة مروره (يعرف القديم) — يُسجّل التنبيه للمالك تلقائيًا
 function changeMyPassword(oldPass, newPass) {
    return sb.rpc("mizan_change_my_password", { p_old_password: oldPass || null, p_new_password: newPass }).then(function (r) {
@@ -752,6 +766,8 @@ function changeMyPassword(oldPass, newPass) {
     adminExportOne: adminExportOne,
     adminRestoreOne: adminRestoreOne,
     adminRestoreAll: adminRestoreAll,
+    adminBackupFull: adminBackupFull,
+    adminRestoreFull: adminRestoreFull,
     passwordLog: passwordLog,
       changeMyPassword: changeMyPassword,
       adminPwStore: adminPwStore,
