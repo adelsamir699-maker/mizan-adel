@@ -4490,6 +4490,10 @@
     }
     DATA.adminOrgs().then((orgs) => {
       ssetOrgs = orgs || [];
+      const cnt = $("#deployOrgCount");
+      if (cnt) cnt.textContent = ssetOrgs.length
+        ? "(ببيانات " + ssetOrgs.length + (ssetOrgs.length < 11 ? " شركات" : " شركة") + ")"
+        : "(لا توجد شركات بعد — السيرفر فاضي)";
       const picker = $("#setOrgPicker");
       if (!picker) return;
       let prev = picker.value;
@@ -4868,21 +4872,40 @@
     });
   }
 
-  // استعادة نسخة النشر الكاملة على السيرفر الحالي (ترجّع القاعدة لحالة الملف)
+  // نشر باك أب من الجهاز على السيرفر الحالي — ذكي وآمن:
+  //  1) ملف بيور (بلا شركات وبلا حسابات) → ما يلمس السيرفر نهائيًا.
+  //  2) ملف كامل + سيرفر فاضي (جديد) → يُنشر مباشرة بلا تحذيرات.
+  //  3) ملف كامل + سيرفر فيه بيانات → تأكيد صريح قبل الاستبدال (كتلة واحدة: خطأ = لا يتغير شيء).
   function ownerRestoreFullFile(jsonStr) {
     let payload;
     try { payload = JSON.parse(jsonStr); } catch (e) { toast("الملف غير صالح أو تالف.", "warning"); return; }
     if (!payload || !Array.isArray(payload.organizations)) { toast("الملف ده مش نسخة نشر كاملة (لا توجد organizations).", "warning"); return; }
-    const w = confirm("تحذير شديد ⚠️⚠️⚠️\n\nسيتم مسح كل بيانات السيرفر الحالي واستبدالها ببيانات الملف:\n" +
-      payload.organizations.length + " شركة، " + ((payload._auth_users || []).length) + " حساب دخول.\n" +
-      "لو حصل أي خطأ أثناء الاستعادة لن يُمسح شيء (العملية كتلة واحدة).\n\nهل أنت متأكد تمامًا؟");
-    if (!w) { toast("تم إلغاء الاستعادة.", "info"); return; }
-    toast("جارٍ الاستعادة الكاملة...", "info");
-    DATA.adminRestoreFull(payload).then((msg) => {
-      toast(msg || "تمت الاستعادة.", "success");
-      addActivity("نسخة نشر", "استعادة كاملة من ملف data.json");
-      setTimeout(() => window.location.reload(), 1800);
-    }).catch((e) => toast("خطأ في الاستعادة (لم يُمسح شيء): " + (e.message || e), "error"));
+    const orgsInFile = payload.organizations.length;
+    const usersInFile = (payload._auth_users || []).length;
+    if (!orgsInFile && !usersInFile) {
+      toast("النسخة دي «سورس بيور» — مفيهاش بيانات شركات عشان تُنشر، والسيرفر الحالي ما اتلمسش. لتنزيلها على سيرفر جديد اتبع خطوات README اللي جوه المجلد.", "info");
+      return;
+    }
+    const doRestore = (freshServer) => {
+      toast(freshServer ? "جارٍ نشر النسخة على السيرفر الجديد..." : "جارٍ الاستعادة الكاملة...", "info");
+      DATA.adminRestoreFull(payload).then((msg) => {
+        toast(msg || "تم النشر بنجاح.", "success");
+        addActivity("نسخة نشر", "نشر باك أب من الجهاز: " + orgsInFile + " شركة، " + usersInFile + " حساب دخول");
+        setTimeout(() => window.location.reload(), 1800);
+      }).catch((e) => toast("خطأ في الاستعادة (لم يُمسح شيء): " + (e.message || e), "error"));
+    };
+    const afterServerCheck = (curOrgs) => {
+      if (curOrgs === 0) { doRestore(true); return; }
+      const w = confirm("السيرفر الحالي فيه بيانات (" + curOrgs + " شركة عاملة).\n\n" +
+        "النسخة اللي اخترتها فيها " + orgsInFile + " شركة و" + usersInFile + " حساب دخول.\n\n" +
+        "نشرها معناه استبدال بيانات السيرفر ببيانات الملف (لو حصل أي خطأ في الوسط لا يُمسح شيء — العملية كتلة واحدة).\n\nهل تريد الاستبدال فعلًا؟");
+      if (!w) { toast("تم الإلغاء — لم يتغير أي شيء على السيرفر.", "info"); return; }
+      doRestore(false);
+    };
+    if (A.online && DATA && DATA.adminOrgs) {
+      DATA.adminOrgs().then((list) => afterServerCheck(Array.isArray(list) ? list.length : 1))
+        .catch(() => afterServerCheck(1));
+    } else afterServerCheck(1);
   }
 
   // استعادة نسخة للمالك: يختار الشركة أولًا (أو الكل) من القائمة، بتحذير فقط — بدون باسورد
