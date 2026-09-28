@@ -76,11 +76,23 @@
     });
   }
 
+  // علامة ?reinstall=1: جاي من نافذة الأيقونة عايز يثبّت من المتصفح العادي
+  function wantsReinstall() {
+    try { return location.search.indexOf("reinstall=1") !== -1; } catch (e) { return false; }
+  }
+
   // التقاط نافذة التثبيت الأصلية لو المتصفح وفّرها
   window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     deferredPrompt = e;
     showBtn();
+    // جاي بعلامة إعادة التثبيت → نجرب فتح النافذة فورًا (لو المتصفح سمح)
+    if (wantsReinstall()) {
+      try {
+        e.prompt();
+        e.userChoice.then(() => { deferredPrompt = null; }).catch(() => { deferredPrompt = null; });
+      } catch (err) { /* لو محتاج ضغطة يدوية، الزرار ظاهر فوق */ }
+    }
   });
 
   // بعد نجاح التثبيت: الزرار يفضل ظاهر + رسالة طمأنة
@@ -91,12 +103,7 @@
   });
 
   function onClick() {
-    // فاتح من الاختصار نفسه → التحديث تلقائي، مفيش حاجة تتعمل
-    if (isStandalone()) {
-      showHint("أنت الآن تفتح ميزان من الأيقونة المثبتة بالفعل — والنسخة المعروضة هي دائمًا الأحدث.");
-      return;
-    }
-
+    // لو نافذة التثبيت الأصلية جاهزة → استخدمها على طول (حتى من جوه الأيقونة)
     if (deferredPrompt) {
       try {
         deferredPrompt.prompt();
@@ -108,6 +115,16 @@
         }).catch(() => { deferredPrompt = null; });
         return;
       } catch (e) { deferredPrompt = null; }
+    }
+
+    // فاتح من الأيقونة نفسها (standalone) → المتصفح مبيقدرش يفتح نافذة تثبيت من هنا،
+    // فنفتح الصفحة في متصفح عادي بعلامة ?reinstall=1 ويكمل التثبيت من هناك.
+    if (isStandalone()) {
+      showHint("أنت بتفتح ميزان من الأيقونة نفسها — فتحنا لك الصفحة في متصفح عادي في نافذة جديدة، دوس زرار «⬇️ تنزيل أيقونة البرنامج» هناك واختار تثبيت. النسخة الجديدة هتستبدل القديمة بنفس بياناتك. (لو النافذة ما فتحتش: انسخ الرابط وافتحه في كروم عادي)");
+      try {
+        window.open(location.origin + location.pathname + "?reinstall=1", "_blank");
+      } catch (e) { /* تجاهل */ }
+      return;
     }
 
     // مفيش نافذة أصلية جاهزة دلوقتي: لو المتصفح فاكر إن التطبيق لسه مثبّت
@@ -142,6 +159,11 @@
     // الأيقونة (حتى لو المتصفح فاكر التطبيق مثبّت — المستخدم ممكن يكون مسحها)،
     // وفي وضع standalone بيطمّن المستخدم إن النسخة دي هي الأحدث.
     showBtn();
+
+    // جاي بعلامة ?reinstall=1 → إرشاد ودّي لو نافذة التثبيت ماظهرتش لوحدها
+    if (wantsReinstall() && !isStandalone()) {
+      showHint("دوس زرار «⬇️ تنزيل أيقونة البرنامج» فوق واختار «تثبيت» من النافذة اللي هتظهر — النسخة الجديدة هتستبدل القديمة بنفس بياناتك.");
+    }
   }
 
   if (document.readyState === "loading") {
