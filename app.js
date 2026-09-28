@@ -3298,11 +3298,16 @@
   }
 
   /* ================== استعلام عن الفواتير ================== */
+  // صلاحية حذف الفواتير: حساب صاحب الشركة + حساب مالك البرنامج (سوبر أدمن) فقط —
+  // الحسابات الفرعية للأعضاء ما بيشفوش الزرار ولا يقدروا يستدعوا الحذف.
+  function canDeleteInvoices() { return isCompanyOwnerAcct() || isSuperAcct(); }
+
   function renderInvoiceQuery() {
     const fromS = $("#dtpFromS").value || "2000-01-01";
     const toS = $("#dtpToS").value || "2999-12-31";
     const fromP = $("#dtpFromP").value || "2000-01-01";
     const toP = $("#dtpToP").value || "2999-12-31";
+    const canDel = canDeleteInvoices();
 
     const inRange = (d, from, to) => (d || "") >= from && (d || "") <= to;
 
@@ -3321,7 +3326,8 @@
           '<td>' + esc(isSales ? (inv.customerName || inv.customer || "-") : (inv.supplierName || inv.supplier || "-")) + '</td>' +
           '<td>' + fmt(inv.grandTotal) + ' ج.م</td>' +
           '<td>' + esc(inv.paymentMethod) + '</td>' +
-          '<td class="cell-actions"><button class="btn small sky" type="button" data-act="print">🖨️ طباعة</button></td>';
+          '<td class="cell-actions"><button class="btn small sky" type="button" data-act="print">🖨️ طباعة</button>' +
+          (canDel ? ' <button class="btn small red" type="button" data-act="del">🗑️ حذف</button>' : '') + '</td>';
         tr.dataset.iid = inv.id;
         tr.dataset.typ = isSales ? "s" : "p";
         tbody.appendChild(tr);
@@ -3337,6 +3343,88 @@
 
     fill($("#dgvInvS tbody"), sales.filter((i) => inRange(i.invoiceDate || i.date, fromS, toS)).filter((i) => match(i, qs, i.customerName || i.customer)), true);
     fill($("#dgvInvP tbody"), purchases.filter((i) => inRange(i.invoiceDate || i.date, fromP, toP)).filter((i) => match(i, qp, i.supplierName || i.supplier)), false);
+  }
+
+  // حذف فاتورة (بيع/شراء) بتراجع كامل: المخزون + أثر الدفع (خزينة أو أرصدة وقيود) + السطر نفسه.
+  // مسموح لحساب صاحب الشركة وللمالك (سوبر أدمن) فقط — فحص ثانٍ جوه الدالة حتى لو استُدّت من غير الزرار.
+  function deleteInvoiceQuery(inv, isSales) {
+    if (!canDeleteInvoices()) { toast("صلاحية حذف الفواتير لصاحب الشركة ومالك البرنامج فقط.", "error"); return; }
+    if (!inv) return;
+    const kind = isSales ? "مبيعات" : "مشتريات";
+    const who = isSales ? (inv.customerName || inv.customer || "-") : (inv.supplierName || inv.supplier || "-");
+    const wh = inv.warehouse || inv.store || "";
+    const items = inv.items || [];
+    // حذف فاتورة شراء بيرجع كميتها من المخزن — ممنوع لو المخزن هيطلع أقل من صفر
+    if (!isSales) {
+      const negs = items.filter((it) => {
+        const p = products.find((x) => x.id === it.productId);
+        return p && stockAt(p, wh) - (Number(it.qty) || 0) < 0;
+      });
+      if (negs.length) {
+        toast("لا يمكن حذف الفاتورة: المخزن أقل من كميات أصنافها (" + negs.map((n) => n.nameAr).join("، ") + ") — سجّل مرتجع عليها أولًا.", "warning");
+        return;
+      }
+    }
+    const num = String(inv.invoiceNumber || inv.invoiceNo || "-");
+    const amt = Math.round((Number(inv.grandTotal) || 0) * 100) / 100;
+    if (!confirm("متأكد إنك عايز تحذف فاتورة الـ" + kind + " رقم (" + num + ") الخاصة بـ " + who + " بمبلغ " + fmt(amt) + " ج.م؟\n\nالحذف بيتراجع عن كل أثرها: الأصناف للمخزن، وأثر الدفع (الخزينة أو الرصيد وقيده). الخطوة دي ما ينفعش الرجوع عليها بعد التنفيذ.")
+    ) {
+      toast("تم الإلغاء — الفاتورة كما هي.", "warning");
+      return;
+    }
+    // 1) المخزون: فاتورة بيع → الكميات ترجع، فاتورة شراء → الكميات تتنقص
+    items.forEach((it) => {
+      const p = products.find((x) => x.id === it.productId);
+      if (p) addStockAt(p, wh, isSales ? (Number(it.qty) || 0) : -(Number(it.qty) || 0));
+    });
+    saveProducts();
+    // 2) الأثر المالي
+    const pm = String(inv.paymentMethod || "");
+    if (pm === "آجل") {
+      if (isSales) {
+        for (let i = txs.length - 1; i >= 0; i--) {
+          const t = txs[i];
+          if (t && Number(t.customerId) === Number(inv.customerId)
+            && Math.round((Number(t.debit) || 0) * 100) / 100 === amt
+            && String(t.desc || "").includes("فاتورة مبيعات آجلة")
+            && String(t.desc || "").includes(num)) { txs.splice(i, 1); break; }
+        }
+        recalculateCustomerBalances();
+        saveCustomers();
+        saveTxs();
+      } else {
+        for (let i = supplierTxs.length - 1; i >= 0; i--) {
+          const t = supplierTxs[i];
+          if (t && Number(t.supplierId) === Number(inv.supplierId)
+            && Math.round((Number(t.debit) || 0) * 100) / 100 === amt
+            && String(t.desc || "").includes("فاتورة مشتريات آجلة")
+            && String(t.desc || "").includes(num)) { supplierTxs.splice(i, 1); break; }
+        }
+        recalculateSupplierBalances();
+        saveSuppliers();
+        saveSupplierTxs();
+      }
+    } else {
+      // نقدي/بنك/محفظة: انعكاس حركة الخزينة اللي اتسجلت بيها الفاتورة
+      let tr = treasury.find((x) => x.id === inv.treasuryId);
+      if (!tr) {
+        const isBank = pm.includes("بنك") || pm.includes("تحويل");
+        const isWallet = pm.includes("محفظ");
+        const type = isBank ? "bank" : isWallet ? "wallet" : "cash";
+        tr = treasury.find((x) => x.type === type) || treasury.find((x) => x.type === "cash") || treasury[0];
+      }
+      if (tr) {
+        tr.balance = Math.round(((tr.balance || 0) + (isSales ? -amt : amt)) * 100) / 100;
+        saveTreasury();
+        syncTreasuryItemToSett(tr);
+      }
+    }
+    // 3) حذف الفاتورة نفسها + سجل النشاط + تحديث الاستعلام
+    if (isSales) { sales = sales.filter((x) => x.id !== inv.id); saveSales(); }
+    else { purchases = purchases.filter((x) => x.id !== inv.id); savePurchases(); }
+    addActivity("حذف فاتورة", "حذف فاتورة " + kind + " رقم (" + num + ") - " + who + " - بمبلغ " + fmt(amt) + " ج.م (تراجع كامل للمخزون والأرصدة)");
+    toast("تم حذف فاتورة (" + num + ") بنجاح وتراجع أثرها بالكامل.", "success");
+    renderInvoiceQuery();
   }
 
   /* ================== الخزينة والمصروفات ================== */
@@ -5267,18 +5355,22 @@
     ["dtpFromP", "dtpToP", "txtSearchInvP"].forEach((id) => $("#" + id).addEventListener("input", renderInvoiceQuery));
     $("#btnRefreshInvoices").addEventListener("click", renderInvoiceQuery);
     $("#dgvInvS tbody").addEventListener("click", (e) => {
-      const btn = e.target.closest('[data-act="print"]');
+      const btn = e.target.closest('[data-act="print"],[data-act="del"]');
       if (!btn) return;
       const tr = btn.closest("tr");
       const inv = sales.find((x) => x.id === parseInt(tr.dataset.iid, 10));
-      if (inv) printInvoice(inv);
+      if (!inv) return;
+      if (btn.dataset.act === "del") { deleteInvoiceQuery(inv, true); return; }
+      printInvoice(inv);
     });
     $("#dgvInvP tbody").addEventListener("click", (e) => {
-      const btn = e.target.closest('[data-act="print"]');
+      const btn = e.target.closest('[data-act="print"],[data-act="del"]');
       if (!btn) return;
       const tr = btn.closest("tr");
       const inv = purchases.find((x) => x.id === parseInt(tr.dataset.iid, 10));
-      if (inv) printPurchaseInvoice(inv);
+      if (!inv) return;
+      if (btn.dataset.act === "del") { deleteInvoiceQuery(inv, false); return; }
+      printPurchaseInvoice(inv);
     });
 
     /* ---- الخزينة ---- */
