@@ -1062,3 +1062,22 @@ td.c-tax.tax-hidden {
 }
 #loginScreen #btnWipe:hover{ background:#22352c !important; }
 
+/* زرار «تنزيل أيقونة البرنامج على الجهاز» (تثبيت PWA) */
+#loginScreen .btn.install-app{
+  margin-top:10px;
+  background:transparent;
+  color:#d4af37;
+  border:1px solid rgba(212,175,55,.45);
+  border-radius:10px;
+  font-weight:700;
+  font-size:13px;
+  padding:9px 12px;
+  transition:background .15s ease, color .15s ease, border-color .15s ease;
+}
+#loginScreen .btn.install-app:hover{
+  background:rgba(212,175,55,.12);
+  border-color:#d4af37;
+  color:#f4e9c8;
+}
+#loginScreen .btn.install-app[hidden]{ display:none; }
+
