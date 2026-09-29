@@ -861,6 +861,8 @@
       const m = /^CUST-(\d+)$/.exec(c.code || "");
       if (m) max = Math.max(max, +m[1]);
     });
+    // الأرقام المتقاعدة (عملاء محذوفون لهم مستندات) لا تُعاد أبدًا
+    max = Math.max(max, retiredMaxNum("customer"));
     return "CUST-" + String(max + 1).padStart(4, "0");
   }
 
@@ -874,6 +876,7 @@
       const m = /^SUPP-(\d+)$/.exec(s.code || "");
       if (m) max = Math.max(max, +m[1]);
     });
+    max = Math.max(max, retiredMaxNum("supplier"));
     return "SUPP-" + String(max + 1).padStart(4, "0");
   }
 
@@ -1166,6 +1169,7 @@
       $("#addEditTitle").textContent = "إضافة عميل جديد";
       $("#btnSaveCustomer").textContent = "💾 إضافة العميل";
       $("#fCode").value = nextCustomerCode();
+      prefetchNextCode("customer", "fCode"); // دمج الأرقام المتقاعدة من السيرفر
       $("#fCode").disabled = false;
       $("#fName").value = "";
       $("#fPhone").value = "";
@@ -1355,6 +1359,8 @@
   function openActions(cust) {
     actionsCust = cust;
     $("#actTitle").textContent = "👤 إدارة العميل: " + cust.nameAr + " (" + cust.code + ") - By Adel Samir - واتس: 01555304378";
+    const canD105 = canManageDocs();
+    $("#actDocScan").hidden = !canD105; $("#actDocPick").hidden = !canD105; $("#actDocList").hidden = !canD105;
     $("#actName").textContent = "👤 العميل: " + cust.nameAr;
     $("#actDetails1").textContent = "الكود: " + cust.code + " | الهاتف: " + (cust.phone || "-") + " | هاتف آخر: " + (cust.secondaryPhone || "-");
     $("#actDetails2").textContent = "العنوان: " + (cust.address || "-") + " | ملاحظات: " + (cust.notes || "-");
@@ -2555,6 +2561,7 @@
   /* ---- إضافة سريعة: عميل ---- */
   function openQuickCustomer() {
     $("#qCCode").value = nextCustomerCode();
+    prefetchNextCode("customer", "qCCode");
     $("#qCName").value = "";
     $("#qCPhone").value = "";
     $("#qCWallet").value = "";
@@ -2972,6 +2979,7 @@
   /* ---- إضافة سريعة: مورد ---- */
   function openQuickSupplier() {
     $("#qSCode").value = nextSupplierCode();
+    prefetchNextCode("supplier", "qSCode");
     $("#qSName").value = "";
     $("#qSPhone").value = "";
     $("#qSWallet").value = "";
@@ -3090,6 +3098,7 @@
     suppEditingId = supplier ? supplier.id : null;
     $("#suppAddEditTitle").textContent = supplier ? "✏️ تعديل بيانات المورد" : "إضافة مورد جديد";
     $("#fSCode").value = supplier ? supplier.code : nextSupplierCode();
+    if (!supplier) prefetchNextCode("supplier", "fSCode");
     $("#fSName").value = supplier ? supplier.nameAr : "";
     $("#fSPhone").value = supplier ? (supplier.phone || "") : "";
     $("#fSWallet").value = supplier ? (supplier.walletPhone || "") : "";
@@ -3159,6 +3168,8 @@
   function openSuppActions(s) {
     actionsSupp = s;
     $("#sactTitle").textContent = "📦 إدارة المورد: " + s.nameAr + " (" + s.code + ")";
+    const canS105 = canManageDocs();
+    $("#sactDocScan").hidden = !canS105; $("#sactDocPick").hidden = !canS105; $("#sactDocList").hidden = !canS105;
     $("#sactName").textContent = "📦 المورد: " + s.nameAr;
     $("#sactDetails1").textContent = "الكود: " + s.code + " | الهاتف: " + (s.phone || "-");
     $("#sactDetails2").textContent = "العنوان: " + (s.address || "-") + " | ملاحظات: " + (s.notes || "-");
@@ -4450,6 +4461,7 @@
 
   // ================== العميل: تحميل وحفظ تبويبات شركته ==================
   function loadClientSettingsForm() {
+    try { renderDocRootBox(); } catch (e) {} // build 105: صندوق مسار المستندات
     if (A.online && DATA && DATA.clientSett) {
       $("#csettTabs").disabled = true;
       DATA.clientSett().then((p) => {
@@ -5149,12 +5161,19 @@
       if (confirm("هل أنت متأكد من حذف العميل (" + cust.nameAr + ")؟")) {
         customers = customers.filter((c) => c.id !== cust.id);
         saveCustomers();
+        // تقاعد الرقم: لا يُعاد استخدامه لعميل آخر (عشان مستندات Clients\<num>) + الملفات لا تُمس
+        retireLocal("customer", cust.code);
         hideModal("mActions");
-        toast("تم حذف العميل بنجاح.", "success");
+        toast("تم حذف العميل بنجاح — رقمه " + cust.code + " تقاعد ولن يُستخدم مرة أخرى، ومستنداته محفوظة.", "success");
         renderTable();
       }
     });
     $("#actClose").addEventListener("click", () => hideModal("mActions"));
+
+    // build 105: مستندات العميل (مسح ضوئي / حفظ من الجهاز / استدعاء)
+    $("#actDocScan").addEventListener("click", () => docScan(actionsCust, "customer"));
+    $("#actDocPick").addEventListener("click", () => docPick(actionsCust, "customer"));
+    $("#actDocList").addEventListener("click", () => openDocsModal(actionsCust, "customer"));
 
     $("#btnPrintStmt").addEventListener("click", () => {
       if (statementCtx && statementCtx.type === "supplier") {
@@ -5331,12 +5350,17 @@
       if (confirm("هل أنت متأكد من حذف المورد (" + s.nameAr + ")؟")) {
         suppliers = suppliers.filter((x) => x.id !== s.id);
         saveSuppliers();
+        retireLocal("supplier", s.code);
         hideModal("mSuppActions");
-        toast("تم حذف المورد بنجاح.", "success");
+        toast("تم حذف المورد بنجاح — رقمه " + s.code + " تقاعد ولن يُستخدم مرة أخرى، ومستنداته محفوظة.", "success");
         renderSuppliers();
       }
     });
     $("#sactClose").addEventListener("click", () => hideModal("mSuppActions"));
+    // build 105: مستندات المورد
+    $("#sactDocScan").addEventListener("click", () => docScan(actionsSupp, "supplier"));
+    $("#sactDocPick").addEventListener("click", () => docPick(actionsSupp, "supplier"));
+    $("#sactDocList").addEventListener("click", () => openDocsModal(actionsSupp, "supplier"));
     $("#psMethod").addEventListener("change", applyTreasuryFilterSupp);
     $("#btnSaveSupPay").addEventListener("click", savePaySupplement);
     $("#btnCancelSupPay").addEventListener("click", () => hideModal("mPaySuppDebt"));
@@ -6109,7 +6133,10 @@ const pwEye = document.getElementById("btnShowPass");
       if (!u) { toast("الحساب غير موجود", "error"); return; }
       let opts = "";
       ADMIN_FEATURES.forEach(([k, label]) => {
-        const on = !(u.features && u.features[k] === false);
+        // مستندات العملاء: opt-in — لا تُمنح إلا لو مفعّلة صريحًا (زي clientSettings)
+        const on = k === "docManager"
+          ? (u.features && u.features[k] === true)
+          : !(u.features && u.features[k] === false);
         opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-feat\" value=\"" + k + "\" " + (on ? "checked" : "") + " /> " + label + "</label>";
       });
       const body = "<div class=\"feat-grid\">" + opts + "</div>" +
@@ -6142,7 +6169,8 @@ const pwEye = document.getElementById("btnShowPass");
       }
       let opts = "";
       ADMIN_FEATURES.forEach(([k, label]) => {
-        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-newfeat\" value=\"" + k + "\" checked /> " + label + "</label>";
+        const def = k === "docManager" ? "" : " checked";
+        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-newfeat\" value=\"" + k + "\"" + def + " /> " + label + "</label>";
       });
       const body = "<div class=\"feat-grid\" style=\"grid-template-columns:repeat(3,1fr)\">" +
         "<input id=\"memberNewUser\" class=\"inp\" placeholder=\"يوزر نيم (إنجليزي)\" />" +
@@ -6279,7 +6307,8 @@ const pwEye = document.getElementById("btnShowPass");
         ["users", "المستخدمون"], ["audit", "سجل العمليات"],
         ["clientSettings", "إعدادات مؤسستك"], ["settings", "الإعدادات (المالك)"],
         ["catTab", "تبويب التصنيفات"], ["unitTab", "تبويب وحدات القياس"], ["whTab", "تبويب المستودعات"],
-        ["walletTab", "تبويب المحافظ الإلكترونية"], ["bankTab", "تبويب حسابات البنوك"], ["ownerTab", "تبويب أصحاب المنشأة"]
+        ["walletTab", "تبويب المحافظ الإلكترونية"], ["bankTab", "تبويب حسابات البنوك"], ["ownerTab", "تبويب أصحاب المنشأة"],
+        ["docManager", "📁 إدارة مستندات العملاء والموردين"]
         ];
 
   function fmtDate(d) { return d ? String(d).slice(0, 10) : ""; }
@@ -7358,6 +7387,288 @@ const pwEye = document.getElementById("btnShowPass");
     downloadCSV("اشتراكات_ميزان_" + subsToday() + ".csv", rows);
     toast("تم حفظ جدول الاشتراكات — بيتفتح في Excel", "ok");
     addActivity("تصدير اشتراكات", "تصدير جدول الاشتراكات إلى Excel (" + (rows.length - 1) + " شركة)");
+  }
+
+  // ============================================================
+  // ===== نظام إدارة المستندات — build 105 (Mizan Document Manager) =====
+  // الملفات تُحفظ على القرص خارج C عبر سيرفر الشركة المحلي فقط (/api/doc/*)،
+  // وقاعدة البيانات تخزن البيانات والمسار النسبي. الفتح/الحفظ متاحان على
+  // جهاز سيرفر المستندات ولحساب يملك صلاحية «إدارة مستندات العملاء والموردين».
+  // ============================================================
+  const DOC_PORTS = [3060, 3001];
+  let docApiBase = null;   // أساس API الناجح: "" (نفس الأصل) أو "http://127.0.0.1:3060"
+  let docDevState = null;  // نتيجة آخر فحص لهذا الجهاز
+  const RETIRED = { customer: new Set(), supplier: new Set() }; // أرقام متقاعدة (mirror محلي)
+
+  function retiredKey(type) { return "mizan_retired_" + (DATA.orgId && DATA.orgId() || "local") + "_" + type; }
+  function loadRetiredLocal(type) {
+    try { (JSON.parse(localStorage.getItem(retiredKey(type)) || "[]")).forEach((c) => RETIRED[type].add(c)); } catch (e) {}
+  }
+  function retireLocal(type, code) {
+    if (!code) return;
+    RETIRED[type].add(code);
+    try { localStorage.setItem(retiredKey(type), JSON.stringify(Array.from(RETIRED[type]))); } catch (e) {}
+    if (A.online && DATA.codeRetire) DATA.codeRetire(type, code).catch(() => {});
+  }
+  function refreshRetired(type) {
+    loadRetiredLocal(type);
+    if (A.online && DATA.codeListRetired) {
+      DATA.codeListRetired(type).then((codes) => {
+        (codes || []).forEach((c) => RETIRED[type].add(c));
+        try { localStorage.setItem(retiredKey(type), JSON.stringify(Array.from(RETIRED[type]))); } catch (e) {}
+      }).catch(() => {});
+    }
+  }
+  function retiredMaxNum(type) {
+    loadRetiredLocal(type);
+    let mx = 0;
+    RETIRED[type].forEach((code) => {
+      const m = /-(\d+)$/.exec(code) || /^(\d+)$/.exec(code);
+      if (m) mx = Math.max(mx, +m[1]);
+    });
+    return mx;
+  }
+  // كود لاحق محلي + دمج الأرقام المتقاعدة، وتهيّأ أسيًا من السيرفر (مصدر الحقيقة)
+  function prefetchNextCode(type, inputId) {
+    refreshRetired(type);
+    if (A.online && DATA.codeNext) {
+      const el0 = document.getElementById(inputId);
+      const localVal = el0 ? el0.value : null;
+      DATA.codeNext(type).then((c) => {
+        const el = document.getElementById(inputId);
+        if (el && (el.value === localVal || /^-0000$/.test(el.value))) el.value = c;
+      }).catch(() => {});
+    }
+  }
+
+  function docCandidates() {
+    const list = [];
+    const here = location.port;
+    if (DOC_PORTS.indexOf(here) >= 0 && location.hostname !== "") list.push(""); // من سيرفر ميزان نفسه
+    if (location.hostname === "localhost" || location.hostname === "127.0.0.1" || /^[a-zA-Z]$/.test(location.hostname) === false) {
+      DOC_PORTS.forEach((p) => list.push("http://127.0.0.1:" + p));
+    }
+    return list;
+  }
+  function docApi(pathname, opts) {
+    const tries = docApiBase !== null ? [docApiBase] : docCandidates();
+    let i = 0;
+    const next = () => {
+      if (i >= tries.length) return Promise.resolve(null);
+      const base = tries[i++];
+      return fetch(base + "/api/doc" + pathname, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}))
+        .then((r) => r.json().then((j) => { docApiBase = base; return j; }))
+        .catch(() => next());
+    };
+    return next();
+  }
+  function docProbe(cb) {
+    return docApi("/status", { method: "GET" }).then((j) => {
+      docDevState = j && j.isDocManager ? j : null;
+      if (cb) cb(docDevState);
+      return docDevState;
+    });
+  }
+  function canManageDocs() {
+    if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+    const mp = (window.DATA && DATA.me && DATA.me());
+    return !!(mp && mp.features && mp.features.docManager === true);
+  }
+  function docPartyNum(code) {
+    const m = /(\d+)\s*$/.exec(String(code || ""));
+    return m ? String(+m[1]) : (String(code || "0").replace(/[^A-Za-z0-9_-]/g, "") || "0");
+  }
+  function docBytesToB64(file) {
+    return file.arrayBuffer().then((buf) => {
+      const u8 = new Uint8Array(buf);
+      let s = "";
+      const CH = 0x8000;
+      for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+      return btoa(s);
+    });
+  }
+  let docCtx = null; // {type, code, id, name} للسياق الحالي (رفع/مسح)
+  function docEnsureDev(cb) {
+    if (docDevState && docDevState.ok) return cb(docDevState);
+    docProbe((st) => {
+      if (st && st.ok) return cb(st);
+      toast("هذا الجهاز ليس جهاز سيرفر المستندات — افتح ميزان من سيرفر الشركة (http://<عنوان السيرفر>:3060) على جهاز التخزين", "warning");
+      if (cb) cb(null);
+    });
+  }
+  function docScan(party, type) {
+    if (!canManageDocs()) { toast("لا تملك صلاحية «إدارة مستندات العملاء والموردين»", "error"); return; }
+    docEnsureDev((st) => {
+      if (!st) return;
+      docApi("/scan", { method: "POST", body: "{}" }).then((r) => {
+        docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
+        if (r && r.ok) toast("فُتحت شاشة المسح الضوئي — لو خليت مكان الحفظ في Windows Scan هو " + ((r.scansDir || "Scans").split("\\").pop()) + " هتلاقي زرار «📥 استيراد الملفات الممسوحة» في نافذة المستندات", "ok");
+        else toast((r && r.error) || "تعذّر فتح شاشة المسح — استخدم «حفظ مستند من الجهاز» بعد المسح من برنامج الماسح", "warning");
+      });
+    });
+  }
+  function docPick(party, type) {
+    if (!canManageDocs()) { toast("لا تملك صلاحية «إدارة مستندات العملاء والموردين»", "error"); return; }
+    docEnsureDev((st) => {
+      if (!st) return;
+      docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
+      const inp = $("#docFileInput");
+      inp.value = "";
+      inp.onchange = () => docUploadFiles(inp.files);
+      inp.click();
+    });
+  }
+  function docUploadFiles(files) {
+    if (!files || !files.length || !docCtx) return;
+    let done = 0, okCount = 0;
+    const total = files.length;
+    toast("جارٍ حفظ " + total + " مستند...", "ok");
+    Array.from(files).forEach((f) => {
+      docBytesToB64(f).then((b64) => docApi("/save", {
+        method: "POST",
+        body: JSON.stringify({ partyType: docCtx.type, partyCode: docCtx.code, fileName: f.name, fileExt: (f.name.split(".").pop() || "bin"), base64: b64 })
+      })).then((r) => {
+        if (!r || !r.ok) { toast("فشل حفظ الملف «" + f.name + "»: " + ((r && r.error) || "خطأ غير معروف") + " — لم يُسجَّل أي شيء", "error"); return; }
+        // الشرط 16: التسجيل في القاعدة بعد نجاح حفظ الملف فعليًا فقط
+        return DATA.docAdd(docCtx.type, docCtx.id, docCtx.code, f.name, r.name.split(".").pop(), r.rel, "مستند عام", r.size)
+          .then(() => { okCount++; })
+          .catch((e) => toast("حُفظ الملف لكن فشل تسجيله: " + (e.message || e), "error"));
+      }).catch((e) => toast("خطأ: " + (e.message || e), "error"))
+        .then(() => { done++; if (done === total) {
+          if (okCount) {
+            toast("✅ تم حفظ " + okCount + " من " + total + " في مستندات " + docCtx.name, "ok");
+            addActivity("مستندات", "حفظ " + okCount + " مستند لـ" + (docCtx.type === "supplier" ? " مورد " : " عميل ") + docCtx.name + " (" + docCtx.code + ")");
+            if (!$("#mDocs").hidden) docsRefresh();
+          }
+        } });
+    });
+  }
+  function openDocsModal(party, type) {
+    if (!canManageDocs()) { toast("لا تملك صلاحية «إدارة مستندات العملاء والموردين»", "error"); return; }
+    docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
+    $("#docsTitle").textContent = (type === "supplier" ? "📁 مستندات المورد: " : "📁 مستندات العميل: ") + party.nameAr + " (" + party.code + ")";
+    $("#docsClose").onclick = () => hideModal("mDocs");
+    $("#docsRefresh").onclick = () => { docProbe(() => docsRefresh()); };
+    showModal("mDocs");
+    docProbe(() => docsRefresh());
+  }
+  function docsRefresh() {
+    if (!docCtx) return;
+    const body = $("#docsBody");
+    body.innerHTML = '<tr><td colspan="6" class="login-sub">جارٍ التحميل...</td></tr>';
+    const st = docDevState;
+    $("#docsDeviceNote").textContent = (st && st.ok)
+      ? "🖥️ هذا الجهاز هو سيرفر المستندات — التخزين على: " + st.root + " (خارج C)"
+      : "🌐 أنت لست على جهاز سيرفر المستندات: قائمة البيانات متاحة، وفتح الملفات يتم من جهاز السيرفر فقط.";
+    DATA.docList(docCtx.type, docCtx.code).then((rows) => {
+      // ملفات المسح الضوئي الجاهزة للاستهلال (على جهاز السيرفر فقط)
+      const impBtn = $("#docsImportScans");
+      if (st && st.ok) {
+        docApi("/scans", { method: "GET" }).then((s) => {
+          if (impBtn) { impBtn.hidden = !(s && s.ok && s.files && s.files.length); impBtn.onclick = docImportScans; }
+        });
+      } else if (impBtn) impBtn.hidden = true;
+      if (!rows.length) { body.innerHTML = '<tr><td colspan="6" class="login-sub">لا توجد مستندات لهذا العميل بعد — دوس «📄 حفظ مستند من الجهاز» من جهاز السيرفر.</td></tr>'; return; }
+      body.innerHTML = rows.map((d) =>
+        '<tr><td><b>' + esc(d.file_name || d.rel_path.split("\\").pop()) + '</b><div class="login-sub" style="margin:0">' + esc(d.rel_path) + '</div></td>' +
+        '<td>' + esc(d.doc_type || "مستند عام") + '</td>' +
+        '<td>' + (d.file_size ? Math.max(1, Math.round(d.file_size / 1024)) + " KB" : "—") + '</td>' +
+        '<td>' + fmtDate(d.created_at) + '</td>' +
+        '<td>' + esc(d.created_by || "—") + '</td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="btn small blue" type="button" data-open="' + d.doc_id + '">📂 فتح</button>' +
+          '<button class="btn small red" type="button" data-deldoc="' + d.doc_id + '">🗑 حذف</button>' +
+        '</td></tr>'
+      ).join("");
+      body.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => docOpenRow(rows.find((x) => x.doc_id === b.dataset.open)));
+      body.querySelectorAll("[data-deldoc]").forEach((b) => b.onclick = () => docDeleteRow(rows.find((x) => x.doc_id === b.dataset.deldoc)));
+    }).catch((e) => {
+      body.innerHTML = '<tr><td colspan="6" class="login-msg err">تعذّر التحميل: ' + esc(e.message || String(e)) + ' — لو قاعدة بيانات جديدة شغّل الترحيل db/supabase-upgrade-25-docs.sql</td></tr>';
+    });
+  }
+  // استيراد كل الملفات الموجودة في مجلد Scans (نتائج المسح الضوئي) إلى ملف الجهة الحالية
+  function docImportScans() {
+    if (!docCtx || !canManageDocs()) return;
+    docApi("/scans", { method: "GET" }).then((s) => {
+      if (!s || !s.ok || !s.files || !s.files.length) { toast("لا توجد ملفات ممسوحة جاهزة", "warning"); return; }
+      let done = 0, okCount = 0;
+      s.files.forEach((f) => {
+        docApi("/scans_import", { method: "POST", body: JSON.stringify({ name: f.name }) }).then((r) => {
+          if (!r || !r.ok || !r.base64) throw new Error((r && r.error) || "تعذّر القراءة");
+          return docApi("/save", { method: "POST", body: JSON.stringify({
+            partyType: docCtx.type, partyCode: docCtx.code, fileName: r.originalName, fileExt: r.ext, base64: r.base64 }) });
+        }).then((r2) => {
+          if (!r2 || !r2.ok) throw new Error((r2 && r2.error) || "تعذّر الحفظ");
+          return DATA.docAdd(docCtx.type, docCtx.id, docCtx.code, r2.originalName || f.name, (r2.name || "").split(".").pop(), r2.rel, "مسح ضوئي", r2.size);
+        }).then(() => { okCount++; })
+          .catch((e) => toast("ملف «" + f.name + "»: " + (e.message || e), "error"))
+          .then(() => { done++; if (done === s.files.length) {
+            if (okCount) {
+              toast("✅ تم استيراد " + okCount + " ملف ممسوح إلى مستندات " + docCtx.name, "ok");
+              addActivity("مستندات", "استيراد " + okCount + " ملف مسح ضوئي لـ" + docCtx.name + " (" + docCtx.code + ")");
+              docsRefresh();
+            }
+          } });
+      });
+    });
+  }
+  function docOpenRow(d) {    if (!d) return;
+    docEnsureDev((st) => {
+      if (!st) return;
+      docApi("/open", { method: "POST", body: JSON.stringify({ rel: d.rel_path }) }).then((r) => {
+        if (r && r.ok) toast("📂 تم فتح المستند في برنامج الجهاز الافتراضي", "ok");
+        else toast("⚠️ " + ((r && r.error) || "ملف المستند غير موجود على هذا الجهاز"), "warning");
+      });
+    });
+  }
+  function docDeleteRow(d) {
+    if (!d || !canManageDocs()) return;
+    const choice = confirm("حذف المستند «" + d.file_name + "»؟\n\nدوس OK: حذف السجل والملف معًا (حذف الملفات عملية منفصلة ونهائية)\nدوس Cancel: إلغاء");
+    if (!choice) return;
+    const sure = confirm("تأكيد نهائي: سيتم حذف الملف من القرص ومن السجل ولا يمكن الرجوع.\nمستندات العملاء المحذوفين تبقى محفوظة لو حُذف العميل نفسه.\n\nتأكيد الحذف؟");
+    if (!sure) return;
+    const rmFile = () => docApi("/delete", { method: "POST", body: JSON.stringify({ rel: d.rel_path }) });
+    Promise.resolve(docDevState && docDevState.ok ? rmFile() : { ok: true /* جهاز آخر: سجل فقط */ })
+      .then(() => DATA.docDel(d.doc_id))
+      .then(() => { toast("تم حذف المستند", "ok"); addActivity("مستندات", "حذف مستند " + d.file_name + " (" + d.rel_path + ")"); docsRefresh(); })
+      .catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  }
+  // صندوق «مسار تخزين المستندات» في إعدادات مؤسستك (شرط 13)
+  function renderDocRootBox() {
+    const txt = $("#docRootStatus"), act = $("#docRootActions");
+    if (!txt) return;
+    txt.textContent = "جارٍ فحص هذا الجهاز...";
+    act.innerHTML = "";
+    docProbe((st) => {
+      if (st && st.ok) {
+        txt.innerHTML = "🖥️ <b>هذا الجهاز هو Mizan Document Manager</b> — المستندات محفوظة على: <b>" + esc(st.root) + "</b> (قرص خارج C — فورمات أو إعادة تثبيت Windows أو البرنامج لا تُفقد أي مستند).";
+        const b1 = document.createElement("button"); b1.className = "btn small"; b1.type = "button"; b1.textContent = "🔀 تغيير مسار التخزين";
+        b1.onclick = () => {
+          const np = prompt("اكتب المسار الجديد على Partition غير C (مثل E:\\MizanDocuments):", st.root);
+          if (!np) return;
+          docApi("/root", { method: "POST", body: JSON.stringify({ root: np }) }).then((r) => {
+            if (r && r.ok) { toast("تم تغيير المسار إلى " + r.root, "ok"); addActivity("مستندات", "تغيير مسار تخزين المستندات إلى " + r.root); renderDocRootBox(); }
+            else toast((r && r.error) || "تعذّر تغيير المسار", "error");
+          });
+        };
+        const b2 = document.createElement("button"); b2.className = "btn small"; b2.type = "button"; b2.textContent = "🔄 إعادة فحص";
+        b2.onclick = () => renderDocRootBox();
+        act.appendChild(b1); act.appendChild(b2);
+      } else if (st && st.needPick) {
+        txt.textContent = "⚠️ هذا الجهاز لا يوجد فيه Partition غير القرص C — حدد مكانًا مناسبًا للتخزين (قرص/Partition آخر) قبل استخدام المستندات.";
+        const b = document.createElement("button"); b.className = "btn small"; b.type = "button"; b.textContent = "📁 تحديد مسار التخزين";
+        b.onclick = () => {
+          const np = prompt("مسار التخزين على Partition غير C (مثال D:\\MizanDocuments):", "D:\\MizanDocuments");
+          if (!np) return;
+          docApi("/root", { method: "POST", body: JSON.stringify({ root: np }) }).then((r) => {
+            if (r && r.ok) { toast("تم", "ok"); renderDocRootBox(); } else toast((r && r.error) || "تعذّر", "error");
+          });
+        };
+        act.appendChild(b);
+      } else {
+        txt.textContent = "🌐 هذا الجهاز ليس سيرفر المستندات — عمليات الملفات (مسح/حفظ/فتح) تُنفَّذ من جهاز سيرفر الشركة نفسه.";
+      }
+    });
   }
 
   function setupAdmin() {

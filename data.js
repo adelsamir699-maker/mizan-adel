@@ -400,6 +400,30 @@
       return f[key];
    }
 
+  // ---- مستندات العملاء/الموردين (build 105) ----
+  function docAdd(partyType, partyId, partyCode, fileName, ext, rel, type, size) {
+    return sb.rpc("mizan_add_doc", {
+      p_party_type: partyType, p_party_id: partyId, p_party_code: partyCode,
+      p_file_name: fileName, p_ext: ext, p_rel: rel, p_type: type, p_size: size
+    }).then(function (r) { if (r.error) throw r.error; return r.data; });
+  }
+  function docList(partyType, partyCode) {
+    return sb.rpc("mizan_list_docs", { p_party_type: partyType || null, p_party_code: partyCode || null })
+      .then(function (r) { if (r.error) throw r.error; return r.data || []; });
+  }
+  function docDel(docId) {
+    return sb.rpc("mizan_del_doc", { p_doc: docId }).then(function (r) { if (r.error) throw r.error; return r.data; });
+  }
+  function codeRetire(partyType, code) {
+    return sb.rpc("mizan_retire_code", { p_party_type: partyType, p_code: code }).then(function (r) { if (r.error) throw r.error; return true; });
+  }
+  function codeListRetired(partyType) {
+    return sb.rpc("mizan_list_retired", { p_party_type: partyType }).then(function (r) { if (r.error) throw r.error; return r.data || []; });
+  }
+  function codeNext(partyType) {
+    return sb.rpc("mizan_next_code", { p_party_type: partyType }).then(function (r) { if (r.error) throw r.error; return r.data; });
+  }
+
   // ---- دوال المالك (إدارة الشركات والوقت والأعضاء) ----
   function adminOrgs() {
     return sb.rpc("mizan_admin_orgs").then(function (r) {
@@ -782,6 +806,12 @@ function changeMyPassword(oldPass, newPass) {
     adminSetSub: adminSetSub,
     getSubPlans: getSubPlans,
     setSubPlans: setSubPlans,
+    docAdd: docAdd,
+    docList: docList,
+    docDel: docDel,
+    codeRetire: codeRetire,
+    codeListRetired: codeListRetired,
+    codeNext: codeNext,
     adminSetUser: adminSetUser,
     adminCreateOrg: adminCreateOrg,
     adminCreateUser: adminCreateUser,

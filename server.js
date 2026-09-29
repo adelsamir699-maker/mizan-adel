@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { spawn } = require("child_process");
 
 const ports = [3001, 3060];
 const types = {
@@ -19,6 +20,209 @@ const isLocalRequest = (req) => {
   const ip = req.socket.remoteAddress || "";
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1" || ip.endsWith("127.0.0.1");
 };
+
+/* ================================================================
+   Mizan Document Manager — مخزن مستندات العملاء والموردين
+   القواعد: لا تخزين على C مطلقًا — الجذر الافتراضي D:\MizanDocuments،
+   وإلا أول Partition متاح غير C (E/F...)، ولو مفيش غير C المستخدم
+   هو اللي يحدد مكان مناسب. المسار النسبي فقط هو اللي يروح لقاعدة البيانات.
+   ================================================================ */
+const { execFile } = require("child_process");
+const DOC_CFG_FILE = path.join(__dirname, "db", "mizan_doc_root.json");
+const DOC_BASE_NAME = "MizanDocuments";
+const C_DRIVE = /^[cC]:/;
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 80 * 1024 * 1024) { reject(new Error("الملف كبير جدًا")); req.destroy(); } });
+    req.on("end", () => { try { resolve(body ? JSON.parse(body) : {}); } catch (e) { reject(e); } });
+    req.on("error", reject);
+  });
+}
+
+function sendJson(res, code, obj) {
+  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(obj));
+}
+
+function driveExists(letter) {
+  try { return fs.existsSync(letter + ":\\"); } catch (e) { return false; }
+}
+
+function docCfg() {
+  try { return JSON.parse(fs.readFileSync(DOC_CFG_FILE, "utf-8")); } catch (e) { return {}; }
+}
+
+// الجذر: إعدادات الجهاز أولًا (لو سليمة)، وبعدها D، وبعدها أي Partition غير C
+function resolveDocRoot(createIfMissing) {
+  const cfg = docCfg();
+  if (cfg.root && !C_DRIVE.test(cfg.root)) {
+    try {
+      if (fs.existsSync(cfg.root)) return { ok: true, root: cfg.root, source: "config" };
+      if (createIfMissing) { fs.mkdirSync(cfg.root, { recursive: true }); return { ok: true, root: cfg.root, source: "config" }; }
+    } catch (e) { /* نجرب الاكتشاف التلقائي */ }
+  }
+  const letters = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
+  // 1) مجلد MizanDocuments موجود فعلًا على Partition ما (إعادة ربط تلقائي بعد فورمات C)
+  for (const L of letters) {
+    const p = L + ":\\" + DOC_BASE_NAME;
+    if (driveExists(L) && fs.existsSync(p)) return { ok: true, root: p, source: "found" };
+  }
+  // 2) أول Partition غير C: ننشئ عليه المجلد
+  if (createIfMissing) {
+    for (const L of letters) {
+      if (driveExists(L)) {
+        const p = L + ":\\" + DOC_BASE_NAME;
+        try {
+          fs.mkdirSync(p, { recursive: true });
+          const probe = path.join(p, ".write_test");
+          fs.writeFileSync(probe, "1"); fs.unlinkSync(probe);
+          const conf = { root: p };
+          try { fs.mkdirSync(path.dirname(DOC_CFG_FILE), { recursive: true }); fs.writeFileSync(DOC_CFG_FILE, JSON.stringify(conf)); } catch (e) {}
+          return { ok: true, root: p, source: "created" };
+        } catch (e) { /* جرّب الحرف التالي */ }
+      }
+    }
+  } else {
+    for (const L of letters) { if (driveExists(L)) return { ok: false, needPick: true, firstAlt: L }; }
+  }
+  return { ok: false, needPick: true, onlyC: true };
+}
+
+// أمان: مسار نسبي نظيف داخل الجذر فقط (بلا .. وبلا حرف قرص)
+function safeJoin(root, rel) {
+  if (!rel || typeof rel !== "string") return null;
+  const clean = rel.replace(/\//g, "\\").replace(/^[\\]+/, "");
+  if (/\.\./.test(clean) || /^[a-zA-Z]:/.test(clean)) return null;
+  const full = path.normalize(path.join(root, clean));
+  if (!full.startsWith(path.normalize(root))) return null;
+  return full;
+}
+
+function docRoutes(req, res, urlPath) {
+  if (!urlPath.startsWith("/api/doc/")) return false;
+  if (!isLocalRequest(req)) { sendJson(res, 403, { ok: false, error: "403 — المستندات متاحة على جهاز Mizan Document Manager فقط" }); return true; }
+
+  const done = (code, obj) => sendJson(res, code, obj);
+
+  if (urlPath === "/api/doc/status" && req.method === "GET") {
+    // شرط 14: جهاز المستندات يتأكد ويُنشئ المجلد إن لم يكن موجودًا (على غير C فقط)
+    const r = resolveDocRoot(true);
+    done(200, Object.assign({ ok: r.ok, isDocManager: true }, r));
+    return true;
+  }
+
+  if (urlPath === "/api/doc/root" && req.method === "POST") {
+    readJsonBody(req).then((b) => {
+      let root = String(b.root || "").trim();
+      if (!root) { const r = resolveDocRoot(true); return done(200, r.ok ? { ok: true, root: r.root } : { ok: false, needPick: true }); }
+      if (!/^[a-zA-Z]:[\\/]/.test(root)) return done(200, { ok: false, error: "لازم يكون مسارًا مطلقًا مثل D:\\MizanDocuments" });
+      if (C_DRIVE.test(root)) return done(200, { ok: false, error: "ممنوع التخزين على القرص C — اختار Partition تاني (D أو E أو F)" });
+      if (!/MizanDocuments$/i.test(root.replace(/[\\]+$/, ""))) root = path.join(root, DOC_BASE_NAME);
+      try {
+        fs.mkdirSync(root, { recursive: true });
+        const probe = path.join(root, ".write_test");
+        fs.writeFileSync(probe, "1"); fs.unlinkSync(probe);
+        fs.writeFileSync(DOC_CFG_FILE, JSON.stringify({ root }));
+        done(200, { ok: true, root });
+      } catch (e) { done(200, { ok: false, error: "تعذّر إنشاء المجلد أو الكتابة عليه: " + e.message }); }
+    }).catch((e) => done(400, { ok: false, error: e.message }));
+    return true;
+  }
+
+  if (urlPath === "/api/doc/save" && req.method === "POST") {
+    readJsonBody(req).then((b) => {
+      const r = resolveDocRoot(true);
+      if (!r.ok) return done(200, { ok: false, error: "لا يوجد Partition متاح غير C للتخزين — حدّد مسارًا من الإعدادات", needPick: true });
+      const partyType = b.partyType === "supplier" ? "supplier" : "customer";
+      const folderName = partyType === "supplier" ? "Suppliers" : "Clients";
+      // رقم الجهة من الكود (CUST-1258 أو SUPP-007 أو 1258) — أرقام فقط
+      const num = String(b.partyCode || "").replace(/^[A-Za-z]+-/, "").replace(/[^0-9]/g, "") || String(b.partyCode || "0").replace(/[^A-Za-z0-9_-]/g, "");
+      const dir = path.join(r.root, folderName, num);
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { return done(200, { ok: false, error: "تعذّر إنشاء مجلد الجهة: " + e.message }); }
+      // تسلسل تلقائي: 001, 002, ...
+      let seq = 1;
+      try {
+        const names = fs.readdirSync(dir);
+        names.forEach((n) => { const m = /^(\d+)\./.exec(n); if (m) seq = Math.max(seq, +m[1] + 1); });
+      } catch (e) {}
+      const ext = String(b.fileExt || (b.fileName || "").split(".").pop() || "bin").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "bin";
+      const name = String(seq).padStart(3, "0") + "." + ext;
+      let buf;
+      try { buf = Buffer.from(String(b.base64 || ""), "base64"); if (!buf.length) throw new Error("الملف فارغ"); } catch (e) { return done(200, { ok: false, error: "تعذّر قراءة الملف: " + e.message }); }
+      const full = path.join(dir, name);
+      try { fs.writeFileSync(full, buf); } catch (e) { return done(200, { ok: false, error: "فشل حفظ الملف على القرص: " + e.message }); }
+      const rel = folderName + "\\" + num + "\\" + name;
+      done(200, { ok: true, rel, name, originalName: b.fileName || name, size: buf.length, root: r.root });
+    }).catch((e) => done(400, { ok: false, error: e.message }));
+    return true;
+  }
+
+  if ((urlPath === "/api/doc/open" || urlPath === "/api/doc/exists" || urlPath === "/api/doc/delete") && req.method === "POST") {
+    readJsonBody(req).then((b) => {
+      const r = resolveDocRoot(false);
+      if (!r.ok) return done(200, { ok: false, error: "مسار المستندات غير مُهيّأ على هذا الجهاز" });
+      const full = safeJoin(r.root, b.rel);
+      if (!full) return done(200, { ok: false, error: "مسار غير صالح" });
+      if (!fs.existsSync(full)) return done(200, { ok: false, missing: true, error: "ملف المستند غير موجود على هذا الجهاز" });
+      if (urlPath === "/api/doc/exists") return done(200, { ok: true, exists: true });
+      if (urlPath === "/api/doc/delete") {
+        try { fs.unlinkSync(full); done(200, { ok: true }); } catch (e) { done(200, { ok: false, error: "تعذّر حذف الملف: " + e.message }); }
+        return true;
+      }
+      // open: برنامج الجهاز الافتراضي (detached حتى ميوقفش السيرفر)
+      execFile("cmd", ["/c", "start", "", full], { detached: true, windowsHide: true, cwd: path.dirname(full) }, (err) => {
+        if (err) return done(200, { ok: false, error: "تعذّر فتح الملف: " + err.message });
+        done(200, { ok: true });
+      });
+    }).catch((e) => done(400, { ok: false, error: e.message }));
+    return true;
+  }
+
+  if (urlPath === "/api/doc/scan" && req.method === "POST") {
+    // يفتح تطبيق Windows Scan الرسمي + مجلد Scans جاهز لاستقبال الممسوح
+    const r0 = resolveDocRoot(true);
+    if (r0.ok) { try { fs.mkdirSync(path.join(r0.root, "Scans"), { recursive: true }); } catch (e) {} }
+    execFile("cmd", ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, (err) => {
+      if (err) return sendJson(res, 200, { ok: false, error: "تطبيق المسح الضوئي مش متاح على الجهاز — استخدم «اختيار مستند من الجهاز» بعد المسح من برنامج الماسح" });
+      sendJson(res, 200, { ok: true, scansDir: r0.ok ? path.join(r0.root, "Scans") : null });
+    });
+    return true;
+  }
+
+  if (urlPath === "/api/doc/scans" && req.method === "GET") {
+    // قائمة الملفات الحديثة في مجلد المسح (Windows Scan يحفظ فيها)
+    const r = resolveDocRoot(false);
+    if (!r.ok) return done(200, { ok: false, error: "مسار المستندات غير مُهيّأ" });
+    const dir = path.join(r.root, "Scans");
+    try {
+      if (!fs.existsSync(dir)) return done(200, { ok: true, files: [] });
+      const files = fs.readdirSync(dir).map((n) => {
+        try { const st = fs.statSync(path.join(dir, n)); return { name: n, size: st.size, mtime: st.mtimeMs }; } catch (e) { return null; }
+      }).filter(Boolean).sort((a, b) => b.mtime - a.mtime).slice(0, 20);
+      done(200, { ok: true, files });
+    } catch (e) { done(200, { ok: false, error: e.message }); }
+    return true;
+  }
+
+  if (urlPath === "/api/doc/scans_import" && req.method === "POST") {
+    // نقل ملف ممسوح حديثًا من Scans إلى مجلد الجهة (نفس مسار save لكن المصدر قرص محلي)
+    readJsonBody(req).then((b) => {
+      const r = resolveDocRoot(true);
+      if (!r.ok) return done(200, { ok: false, error: "مسار المستندات غير مُهيّأ" });
+      const srcFull = safeJoin(r.root, "Scans\\" + String(b.name || "").replace(/[\\/:*?"<>|]/g, ""));
+      if (!srcFull || !fs.existsSync(srcFull)) return done(200, { ok: false, error: "الملف الممسوح غير موجود في مجلد المسح" });
+      const buf = fs.readFileSync(srcFull);
+      const ext = (path.extname(srcFull) || ".bin").slice(1).toLowerCase();
+      done(200, { ok: true, base64: buf.toString("base64"), size: buf.length, ext, originalName: b.name });
+    }).catch((e) => done(400, { ok: false, error: e.message }));
+    return true;
+  }
+
+  sendJson(res, 404, { ok: false, error: "404 — مسار مستندات غير معروف" });
+  return true;
+}
 
 let handler = (req, res) => {
   let rawPath = req.url.split("?")[0];
@@ -83,6 +287,9 @@ let handler = (req, res) => {
   }
 
   if (["/", "/go", "/app", "/open"].indexOf(urlPath) >= 0) urlPath = "/index.html";
+
+  // Mizan Document Manager — كل مسارات /api/doc/* (محلي فقط)
+  if (docRoutes(req, res, urlPath)) return;
 
   // حماية من ثغرة Path Traversal: منع الخروج خارج مجلد البرنامج
   const safePath = path.normalize(path.join(__dirname, urlPath));
