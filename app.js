@@ -7390,16 +7390,26 @@ const pwEye = document.getElementById("btnShowPass");
   }
 
   // ============================================================
-  // ===== نظام إدارة المستندات — build 105/106 (فكرة الفاست بكلس) =====
-  // كل جهاز بيحفظ المستندات بتاعته على قرصه المحلي (خارج C دائمًا) عن
-  // طريق سيرفره هو: سيرفر كل جهاز يستقبل أوامر من جهاز نفسه فقط،
-  // وأذرع المستندات ترد بمخاطبات تسمح للصفحة المفتوحة من رابط الويب
-  // إن تخاطب سيرفر نفس الجهاز. قاعدة البيانات تخزين بيانات وسجل
-  // مشترك (اسم الملف/النوع/المسار النسبي) عشان القائمة تبان من أي مكان.
+  // ===== نظام إدارة المستندات — build 107 (من النسخة المنشورة) =====
+  // المستندات بتتحفظ على قرص جهاز المستخدم مباشرة عن طريق File System
+  // Access API: المستخدم بيربط فولدر مرة واحدة (زي D:\MizanDocuments)
+  // والمتصفح بيفتكر الرابط — مفيش أي برنامج مساعد ومفيش رفع للملفات على
+  // السحابة. قاعدة البيانات بتحتفظ بسجل المستند (اسم/نوع/مسار نسبي) عشان
+  // القائمة تبان من أي جهاز، والملف نفسه يفضل عند الجهاز اللي حفظه.
+  // المتصفحات المدعومة للمستندات: Chrome و Edge على الكمبيوتر.
   // ============================================================
-  const DOC_PORTS = [3060, 3001];
-  let docApiBase = null;   // أساس API الناجح: "" (نفس الأصل) أو "http://127.0.0.1:3060"
-  let docDevState = null;  // نتيجة آخر فحص لهذا الجهاز
+  const DOC_ROOT_NAME = "MizanDocuments";
+  const DOC_TOPS = ["Clients", "Suppliers", "Scans"];
+  const DOC_IDB = { name: "mizan_doc_store", ver: 1, store: "handles" };
+  let docRootH = null;    // مرجع فولدر المستندات على جهاز المستخدم
+  let docStoreSt = null;  // آخر حالة: {ok,name} / {needPick} / {needGesture,name} / {unsupported}
+  let docPending = [];    // ملفات اختارها المستخدم ومستنين ربط الفولدر
+  let docViewUrl = null;  // رابط معاينة المستند المفتوح حاليًا
+  const DOC_INLINE = {
+    pdf: "application/pdf", txt: "text/plain",
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif",
+    webp: "image/webp", bmp: "image/bmp", tif: "image/tiff", tiff: "image/tiff", svg: "image/svg+xml"
+  };
   const RETIRED = { customer: new Set(), supplier: new Set() }; // أرقام متقاعدة (mirror محلي)
 
   function retiredKey(type) { return "mizan_retired_" + (DATA.orgId && DATA.orgId() || "local") + "_" + type; }
@@ -7443,34 +7453,6 @@ const pwEye = document.getElementById("btnShowPass");
     }
   }
 
-  function docCandidates() {
-    const list = [];
-    const here = location.port;
-    if (DOC_PORTS.indexOf(here) >= 0 && location.hostname !== "") list.push(""); // من سيرفر ميزان نفسه
-    if (location.hostname === "localhost" || location.hostname === "127.0.0.1" || /^[a-zA-Z]$/.test(location.hostname) === false) {
-      DOC_PORTS.forEach((p) => list.push("http://127.0.0.1:" + p));
-    }
-    return list;
-  }
-  function docApi(pathname, opts) {
-    const tries = docApiBase !== null ? [docApiBase] : docCandidates();
-    let i = 0;
-    const next = () => {
-      if (i >= tries.length) return Promise.resolve(null);
-      const base = tries[i++];
-      return fetch(base + "/api/doc" + pathname, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}))
-        .then((r) => r.json().then((j) => { docApiBase = base; return j; }))
-        .catch(() => next());
-    };
-    return next();
-  }
-  function docProbe(cb) {
-    return docApi("/status", { method: "GET" }).then((j) => {
-      docDevState = j || null;
-      if (cb) cb(docDevState);
-      return docDevState;
-    });
-  }
   function canManageDocs() {
     if (isSuperAcct() || isCompanyOwnerAcct()) return true;
     const mp = (window.DATA && DATA.me && DATA.me());
@@ -7480,77 +7462,267 @@ const pwEye = document.getElementById("btnShowPass");
     const m = /(\d+)\s*$/.exec(String(code || ""));
     return m ? String(+m[1]) : (String(code || "0").replace(/[^A-Za-z0-9_-]/g, "") || "0");
   }
-  function docBytesToB64(file) {
-    return file.arrayBuffer().then((buf) => {
-      const u8 = new Uint8Array(buf);
-      let s = "";
-      const CH = 0x8000;
-      for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
-      return btoa(s);
+  function docPartyTop(type) { return type === "supplier" ? "Suppliers" : "Clients"; }
+  function docsFsSupported() { return typeof window.showDirectoryPicker === "function"; }
+  function docExtOf(fileName) {
+    const p = String(fileName || "").split(".");
+    const e = p.length > 1 ? p.pop().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) : "";
+    return e || "bin";
+  }
+
+  // ---- تخزين مرجع الفولدر في IndexedDB (كل جهاز بيربط فولدره هو) ----
+  function docIdb() {
+    return new Promise((resolve, reject) => {
+      const rq = indexedDB.open(DOC_IDB.name, DOC_IDB.ver);
+      rq.onupgradeneeded = () => { try { rq.result.createObjectStore(DOC_IDB.store); } catch (e) {} };
+      rq.onsuccess = () => resolve(rq.result);
+      rq.onerror = () => reject(rq.error);
     });
   }
-  let docCtx = null; // {type, code, id, name} للسياق الحالي (رفع/مسح)
-  // أي جهاز بيحفظ على قرصه هو (زي الفاست بكلس) — المطلوب بس إن سيرفر
-  // الجهاز ده يكون شغال، ومش مطلوب «جهاز سيرفر» للشركة كلها.
-  function docEnsureDev(cb) {
-    if (docDevState && docDevState.ok) return cb(docDevState);
-    docProbe((st) => {
-      if (st && st.ok) return cb(st);
-      if (st && st.needPick) {
-        toast("حدّد مكان تخزين المستندات على جهازك من «بيانات شركتك» (قرص غير C مثل D:\\MizanDocuments)", "warning");
-      } else {
-        toast("عشان الجهاز ده يحفظ المستندات على قرصه: افتح البرنامج من اختصار سطح المكتب أو من «تشغيل ميزان.bat»، وسمح للمتصفح بالوصول للشبكة المحلية لو طلبها، ثم أعد المحاولة", "warning");
+  function docIdbPut(key, val) {
+    return docIdb().then((db) => new Promise((resolve, reject) => {
+      const tx = db.transaction(DOC_IDB.store, "readwrite");
+      tx.objectStore(DOC_IDB.store).put(val, key);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    }));
+  }
+  function docIdbGet(key) {
+    return docIdb().then((db) => new Promise((resolve) => {
+      const tx = db.transaction(DOC_IDB.store, "readonly");
+      const rq = tx.objectStore(DOC_IDB.store).get(key);
+      rq.onsuccess = () => resolve(rq.result === undefined ? null : rq.result);
+      rq.onerror = () => resolve(null);
+    }));
+  }
+
+  // ---- فحص الحالة من غير ما نفتح أي نافذة ----
+  async function docStoreCheck() {
+    if (!docsFsSupported()) { docStoreSt = { unsupported: true }; return docStoreSt; }
+    if (!docRootH) { try { docRootH = await docIdbGet("root"); } catch (e) { docRootH = null; } }
+    if (!docRootH) { docStoreSt = { needPick: true }; return docStoreSt; }
+    let p = "prompt";
+    try { p = await docRootH.queryPermission({ mode: "readwrite" }); } catch (e) { p = "prompt"; }
+    docStoreSt = (p === "granted")
+      ? { ok: true, name: docRootH.name || DOC_ROOT_NAME }
+      : { needGesture: true, name: docRootH.name || DOC_ROOT_NAME };
+    return docStoreSt;
+  }
+  // ---- ربط الفولدر (لازم من جوه دوسة مستخدم) ----
+  async function docStoreLink() {
+    const picked = await window.showDirectoryPicker({ id: "mizan-docs", mode: "readwrite", startIn: "documents" });
+    let root = picked;
+    // لو اختار فولدر أب (مثل D:\ أو المستندات) نبني/نستخدم MizanDocuments جواه
+    if (!new RegExp("^" + DOC_ROOT_NAME + "$", "i").test(String(picked.name || ""))) {
+      try { root = await picked.getDirectoryHandle(DOC_ROOT_NAME, { create: true }); } catch (e) { root = picked; }
+    }
+    for (const n of DOC_TOPS) { try { await root.getDirectoryHandle(n, { create: true }); } catch (e) {} }
+    docRootH = root;
+    try { await docIdbPut("root", root); } catch (e) {}
+    docStoreSt = { ok: true, name: root.name || DOC_ROOT_NAME };
+    return docStoreSt;
+  }
+  // استكمال الوصول لفولدر مربوط قبل كده من غير ما نختار من جديد
+  async function docStoreResume() {
+    if (docRootH && docRootH.requestPermission) {
+      try {
+        const q = await docRootH.requestPermission({ mode: "readwrite" });
+        if (q === "granted") { docStoreSt = { ok: true, name: docRootH.name || DOC_ROOT_NAME }; return docStoreSt; }
+      } catch (e) {}
+    }
+    return docStoreLink();
+  }
+  // ضمان إن الفولدر مربوط ومتاح للكتابة، برسالة ودودة لو محتاج ربط
+  async function docStoreWant(withGesture) {
+    const st = await docStoreCheck();
+    if (st.ok) return st;
+    if (st.unsupported) {
+      toast("عشان تستخدم مستندات على القرص افتح ميزان من متصفح Chrome أو Edge على الكمبيوتر — باقي البرنامج شغال عادي", "warning");
+      return null;
+    }
+    if (!withGesture) {
+      toast(st.needGesture
+        ? "دوس «📁 فولدر المستندات» مرة واحدة وسيح المتصفح يكمل الوصول، وبعدها كل العمليات تتم تلقائيًا"
+        : "اربط فولدر المستندات على جهازك أول مرة بالدوس على «📁 فولدر المستندات»", "warning");
+      return null;
+    }
+    try { return st.needGesture ? await docStoreResume() : await docStoreLink(); }
+    catch (e) {
+      if (e && e.name === "AbortError") return null;
+      toast("ما كملش ربط الفولدر — جرّب تاني", "warning");
+      return null;
+    }
+  }
+
+  // ---- أمان المسار: جوه فولدر المستندات فقط، وبلا .. ----
+  function docRelParts(rel) {
+    const parts = String(rel || "").replace(/\//g, "\\").split("\\").filter(Boolean);
+    if (!parts.length || parts.indexOf("..") >= 0) return null;
+    if (DOC_TOPS.indexOf(parts[0]) < 0) return null;
+    return parts;
+  }
+  async function docDirOf(parts, create) {
+    if (!docRootH) return null;
+    let dir = docRootH;
+    for (let i = 0; i < parts.length - 1; i++) {
+      try { dir = await dir.getDirectoryHandle(parts[i], create ? { create: true } : {}); } catch (e) { return null; }
+    }
+    return dir;
+  }
+  async function docGetFileH(rel) {
+    const parts = docRelParts(rel);
+    if (!parts || !docRootH) return null;
+    const dir = await docDirOf(parts, false);
+    if (!dir) return null;
+    try { return await dir.getFileHandle(parts[parts.length - 1]); } catch (e) { return null; }
+  }
+  async function docExistsRel(rel) { return !!(await docGetFileH(rel)); }
+  async function docRemoveFile(rel) {
+    const parts = docRelParts(rel);
+    if (!parts || !docRootH) return { ok: true, skipped: true };
+    const dir = await docDirOf(parts, false);
+    if (!dir) return { ok: true, skipped: true };
+    try { await dir.removeEntry(parts[parts.length - 1]); return { ok: true }; }
+    catch (e) {
+      if (e && e.name === "NotFoundError") return { ok: true, skipped: true };
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+  }
+  // ---- تسلسل تلقائي داخل فولدر الجهة: 001, 002, ... ----
+  async function docSeqIn(dirH) {
+    let mx = 0;
+    try {
+      for await (const entry of dirH.values()) {
+        const m = /^(\d+)\./.exec(String(entry && entry.name || ""));
+        if (m) mx = Math.max(mx, Number(m[1]));
       }
-      if (cb) cb(null);
+    } catch (e) {}
+    return mx;
+  }
+  // ---- حفظ ملف جوه فولدر الجهة على القرص (بيستقبل File أو Blob) ----
+  async function docSaveToParty(file, ctx, typeLabel) {
+    if (!docRootH) throw new Error("الفولدر مش مربوط");
+    const top = docPartyTop(ctx.type);
+    const num = docPartyNum(ctx.code);
+    let dir;
+    try {
+      dir = await docRootH.getDirectoryHandle(top, { create: true });
+      dir = await dir.getDirectoryHandle(num, { create: true });
+    } catch (e) { throw new Error("تعذّر تجهيز فولدر الجهة: " + ((e && e.message) || e)); }
+    const seq = (await docSeqIn(dir)) + 1;
+    const name = String(seq).padStart(3, "0") + "." + docExtOf(file.name || ctx.fileName);
+    const fh = await dir.getFileHandle(name, { create: true });
+    const w = await fh.createWritable();
+    await w.write(file);
+    await w.close();
+    return {
+      rel: top + "\\" + num + "\\" + name, name: name,
+      originalName: file.name || name, size: file.size || 0,
+      docType: typeLabel || "مستند عام", rootName: docRootH.name || DOC_ROOT_NAME
+    };
+  }
+  // ---- ملفات المسح الضوئي الجاهزة في فولدر Scans ----
+  async function docScansList() {
+    if (!docRootH) return [];
+    let sc;
+    try { sc = await docRootH.getDirectoryHandle("Scans", { create: true }); } catch (e) { return []; }
+    const out = [];
+    try {
+      for await (const entry of sc.values()) {
+        if (!entry || entry.kind !== "file") continue;
+        let size = 0, mtime = 0;
+        try { const f = await entry.getFile(); size = f.size || 0; mtime = f.lastModified || 0; } catch (e) {}
+        out.push({ name: entry.name, size: size, mtime: mtime });
+      }
+    } catch (e) {}
+    out.sort((a, b) => b.mtime - a.mtime);
+    return out.slice(0, 20);
+  }
+  async function docImportScanFile(name, ctx) {
+    let sc;
+    try { sc = await docRootH.getDirectoryHandle("Scans", { create: true }); } catch (e) { throw new Error("مفيش فولدر للمسح الضوئي على الجهاز ده"); }
+    let file;
+    try { const fh = await sc.getFileHandle(name); file = await fh.getFile(); } catch (e) { throw new Error("الملف الممسوح مش موجود في فولدر المسح"); }
+    const r = await docSaveToParty(file, ctx, "مسح ضوئي");
+    r.originalName = name;
+    return r;
+  }
+
+  let docCtx = null; // {type, code, id, name} للسياق الحالي (رفع/مسح)
+  function docsRefreshIfOpen() { if (docCtx && window.$ && !$("#mDocs").hidden) docsRefresh(); }
+
+  // دوسة المستخدم على «📁 فولدر المستندات» — بتفتح اختيار الفولدر وبتكمّل المعلّق
+  function docLinkButton() {
+    docStoreWant(true).then((st) => {
+      if (!st) return;
+      toast("✅ تمام — جهازك هيحفظ المستندات في فولدر " + st.name + " على قرصك", "ok");
+      addActivity("مستندات", "ربط فولدر المستندات " + st.name);
+      renderDocRootBox();
+      docsRefreshIfOpen();
+      docFlushPending();
     });
   }
+  // ملفات اتاختارت قبل ما الفولدر يتربط — تتحفظ أول ما الربط يكتمل
+  function docFlushPending() {
+    if (!docPending.length || !docStoreSt || !docStoreSt.ok) return;
+    const list = docPending.slice();
+    docPending = [];
+    docUploadFiles(list);
+  }
+
   function docScan(party, type) {
     if (!canManageDocs()) { toast("لا تملك صلاحية «إدارة مستندات العملاء والموردين»", "error"); return; }
-    docEnsureDev((st) => {
+    // (1) محاولة فتح برنامج المسح الضوئي الرسمي — لازم جوه الدوسة نفسها
+    let launched = false;
+    try {
+      const a = document.createElement("a");
+      a.href = "windowsscan:"; a.rel = "noopener"; a.style.display = "none";
+      document.body.appendChild(a); a.click(); a.remove();
+      launched = true;
+    } catch (e) {}
+    // (2) تجهيز فولدر المستندات واستقبال النتائج
+    docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
+    docStoreWant(true).then((st) => {
       if (!st) return;
-      docApi("/scan", { method: "POST", body: "{}" }).then((r) => {
-        docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
-        if (r && r.ok) toast("فُتحت شاشة المسح الضوئي — لو خليت مكان الحفظ في Windows Scan هو " + ((r.scansDir || "Scans").split("\\").pop()) + " هتلاقي زرار «📥 استيراد الملفات الممسوحة» في نافذة المستندات", "ok");
-        else toast((r && r.error) || "تعذّر فتح شاشة المسح — استخدم «حفظ مستند من الجهاز» بعد المسح من برنامج الماسح", "warning");
-      });
+      toast("📷 " + (launched ? "برنامج المسح الضوئي مفتوح — " : "") + "خلي مكان الحفظ في برنامج المسح هو فولدر Scans جوه " + st.name + "، وبعدها دوس «📥 استيراد الملفات الممسوحة» من نافذة المستندات", "ok");
+      docsRefreshIfOpen();
     });
   }
   function docPick(party, type) {
     if (!canManageDocs()) { toast("لا تملك صلاحية «إدارة مستندات العملاء والموردين»", "error"); return; }
-    docEnsureDev((st) => {
-      if (!st) return;
-      docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
-      const inp = $("#docFileInput");
-      inp.value = "";
-      inp.onchange = () => docUploadFiles(inp.files);
-      inp.click();
-    });
+    docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
+    // اختيار الملفات بيتعمل مباشر (من غير انتظار) عشان المتصفح يسمح بالنافذة
+    const inp = $("#docFileInput");
+    inp.value = "";
+    inp.onchange = () => docUploadFiles(inp.files);
+    docStoreCheck();
+    inp.click();
   }
   function docUploadFiles(files) {
     if (!files || !files.length || !docCtx) return;
-    let done = 0, okCount = 0, lastRel = null, lastRoot = null;
-    const total = files.length;
-    toast("جارٍ حفظ " + total + " مستند في فولدر العميل على جهازك...", "ok");
-    Array.from(files).forEach((f) => {
-      docBytesToB64(f).then((b64) => docApi("/save", {
-        method: "POST",
-        body: JSON.stringify({ partyType: docCtx.type, partyCode: docCtx.code, fileName: f.name, fileExt: (f.name.split(".").pop() || "bin"), base64: b64 })
-      })).then((r) => {
-        if (!r || !r.ok) { toast("فشل حفظ الملف «" + f.name + "»: " + ((r && r.error) || "خطأ غير معروف") + " — لم يُسجَّل أي شيء", "error"); return; }
-        // الشرط 16: التسجيل في القاعدة بعد نجاح حفظ الملف فعليًا فقط
-        lastRel = r.rel; lastRoot = r.root || lastRoot;
-        return DATA.docAdd(docCtx.type, docCtx.id, docCtx.code, f.name, r.name.split(".").pop(), r.rel, "مستند عام", r.size)
-          .then(() => { okCount++; })
-          .catch((e) => toast("حُفظ الملف لكن فشل تسجيله: " + (e.message || e), "error"));
-      }).catch((e) => toast("خطأ: " + (e.message || e), "error"))
-        .then(() => { done++; if (done === total) {
-          if (okCount) {
-            const folder = lastRel ? ((lastRoot ? lastRoot + "\\" : "") + lastRel.split("\\").slice(0, 2).join("\\")) : null;
-            toast("✅ تم حفظ " + okCount + " من " + total + " في فولدر " + (docCtx.type === "supplier" ? "المورد" : "العميل") + " " + docCtx.name + (folder ? " — " + folder : ""), "ok");
-            addActivity("مستندات", "حفظ " + okCount + " مستند لـ" + (docCtx.type === "supplier" ? " مورد " : " عميل ") + docCtx.name + " (" + docCtx.code + ")");
-            if (!$("#mDocs").hidden) docsRefresh();
-          }
-        } });
+    const list = Array.from(files);
+    if (!docStoreSt || !docStoreSt.ok) {
+      docPending = docPending.concat(list);
+      toast("📎 استلمت " + list.length + " ملف — دوس «📁 فولدر المستندات» وبعدها هيتم الحفظ على جهازك فورًا", "warning");
+      return;
+    }
+    const total = list.length;
+    let okCount = 0, lastRel = null, lastRoot = null;
+    toast("جارٍ حفظ " + total + " مستند في فولدر " + (docCtx.type === "supplier" ? "المورد" : "العميل") + " على جهازك...", "ok");
+    // حفظ بالترتيب (ملف ورا التاني) عشان رقم التسلسل ميكررش نفسه لو اتحفظ أكتر من ملف مع بعض
+    const saveOne = (f) => docSaveToParty(f, docCtx).then((r) => {
+      // التسجيل في القاعدة بعد نجاح حفظ الملف فعليًا فقط
+      lastRel = r.rel; lastRoot = r.rootName || lastRoot;
+      return DATA.docAdd(docCtx.type, docCtx.id, docCtx.code, f.name, r.name.split(".").pop(), r.rel, r.docType, r.size)
+        .then(() => { okCount++; })
+        .catch((e) => toast("حُفظ الملف لكن فشل تسجيله: " + ((e && e.message) || e), "error"));
+    }).catch((e) => toast("فشل حفظ الملف «" + f.name + "»: " + ((e && e.message) || e) + " — لم يُسجَّل أي شيء", "error"));
+    list.reduce((chain, f) => chain.then(() => saveOne(f)), Promise.resolve()).then(() => {
+      if (!okCount) return;
+      const folder = lastRel ? ((lastRoot ? lastRoot + "\\" : "") + docPartyTop(docCtx.type) + "\\" + docPartyNum(docCtx.code)) : null;
+      toast("✅ تم حفظ " + okCount + " من " + total + " في فولدر " + (docCtx.type === "supplier" ? "المورد" : "العميل") + " " + docCtx.name + (folder ? " — " + folder : ""), "ok");
+      addActivity("مستندات", "حفظ " + okCount + " مستند لـ" + (docCtx.type === "supplier" ? " مورد " : " عميل ") + docCtx.name + " (" + docCtx.code + ")");
+      docsRefresh();
     });
   }
   function openDocsModal(party, type) {
@@ -7559,15 +7731,16 @@ const pwEye = document.getElementById("btnShowPass");
     $("#docsTitle").textContent = (type === "supplier" ? "📁 مستندات المورد: " : "📁 مستندات العميل: ") + party.nameAr + " (" + party.code + ")";
     const sInp = $("#docsSearch"); if (sInp) sInp.value = "";
     $("#docsClose").onclick = () => hideModal("mDocs");
-    $("#docsRefresh").onclick = () => { docProbe(() => docsRefresh()); };
+    $("#docsRefresh").onclick = () => { docStoreCheck().then(() => docsRefresh()); };
+    const lb = $("#docsLink"); if (lb) lb.onclick = docLinkButton;
     showModal("mDocs");
-    docProbe(() => docsRefresh());
+    docStoreCheck().then(() => docsRefresh());
   }
   // أيقونة حسب الامتداد + تنسيق الحجم — لشاشة المستندات الاحترافية (build 106)
   function docsIcon(name) {
     const e = String(name || "").split(".").pop().toLowerCase();
     if (e === "pdf") return "📕";
-    if (["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff"].indexOf(e) >= 0) return "🖼️";
+    if (["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "svg"].indexOf(e) >= 0) return "🖼️";
     if (["xls", "xlsx", "csv"].indexOf(e) >= 0) return "📊";
     if (["doc", "docx"].indexOf(e) >= 0) return "📘";
     if (e === "zip" || e === "rar" || e === "7z") return "🗜️";
@@ -7598,103 +7771,145 @@ const pwEye = document.getElementById("btnShowPass");
     if (!docCtx) return;
     const body = $("#docsBody");
     body.innerHTML = '<tr><td colspan="6" class="login-sub">جارٍ التحميل...</td></tr>';
-    const st = docDevState;
-    const folderRel = (docCtx.type === "supplier" ? "Suppliers\\" : "Clients\\") + docPartyNum(docCtx.code);
+    const st = docStoreSt || { needPick: true };
+    const folderRel = docPartyTop(docCtx.type) + "\\" + docPartyNum(docCtx.code);
     $("#docsStatParty").textContent = (docCtx.type === "supplier" ? "🤝 مورد • " : "👤 عميل • ") + docCtx.code;
-    $("#docsDeviceNote").innerHTML = (st && st.ok)
-      ? "📁 فولدر المستندات على جهازك: <b><span dir=\"ltr\">" + esc(st.root + "\\" + folderRel) + "</span></b>"
-      : "📁 مسار الفولدر: <b><span dir=\"ltr\">" + esc(folderRel) + "</span></b> داخل مكان تخزين كل جهاز — المسار الكامل بيظهر لما تفتح من الجهاز اللي حفظ الملف";
+    const lb = $("#docsLink");
+    if (st.ok) {
+      $("#docsDeviceNote").innerHTML = "📁 فولدر المستندات على جهازك: <b><span dir=\"ltr\">" + esc(st.name + "\\" + folderRel) + "</span></b> — كل ملف بيتحفظ ويترجع من قرص جهازك مباشرة";
+      if (lb) lb.hidden = true;
+    } else if (st.unsupported) {
+      $("#docsDeviceNote").textContent = "🖥️ للمستندات على القرص استخدم Chrome أو Edge على الكمبيوتر — باقي مزايا ميزان شغالة هنا عادي.";
+      if (lb) lb.hidden = true;
+    } else {
+      $("#docsDeviceNote").textContent = "📁 اول مرة على الجهاز ده: دوس «📁 فولدر المستندات» واختار مكان مثل D:\\MizanDocuments — بعدها الحفظ والاستدعاء والفتح بيتم تلقائيًا على قرصك.";
+      if (lb) lb.hidden = false;
+    }
     DATA.docList(docCtx.type, docCtx.code).then((rows) => {
-      // ملفات المسح الضوئي الجاهزة للاستيراد (لو فيها نتائج على الجهاز ده)
+      // ملفات المسح الضوئي الجاهزة للاستيراد (لو الفولدر مربوط وفيها ملفات)
       const impBtn = $("#docsImportScans");
-      if (st && st.ok) {
-        docApi("/scans", { method: "GET" }).then((s) => {
-          if (impBtn) { impBtn.hidden = !(s && s.ok && s.files && s.files.length); impBtn.onclick = docImportScans; }
+      if (st.ok) {
+        docScansList().then((sf) => {
+          if (impBtn) { impBtn.hidden = !(sf && sf.length); impBtn.onclick = docImportScans; }
         });
       } else if (impBtn) impBtn.hidden = true;
-      // بحث تلقائي في كل الخانات (ذكى بلا حساسية للهمزة/ال/الياء/التاء المربوطة)
-      const searchInp = $("#docsSearch");
-      const pickRows = () => {
-        const q = docsNorm(searchInp && searchInp.value);
-        if (!q) return rows;
-        const toks = q.split(" ");
-        return rows.filter((d) => {
-          const hay = " " + docsRowHay(d) + " ";
-          return toks.every((t) => hay.indexOf(" " + t) >= 0 || hay.indexOf(t) >= 0);
-        });
-      };
-      const paintRows = (list) => {
-        if (!list.length) {
-          $("#docsStatCount").textContent = "📄 0 مستند";
-          $("#docsStatSize").textContent = "🗂 0 KB";
-          body.innerHTML = rows.length
-            ? '<tr><td colspan="6" style="text-align:center;padding:22px 10px">🔍 مفيش نتيجة مطابقة للبحث — جرّب كلمة تانية</td></tr>'
-            : '<tr><td colspan="6" style="text-align:center;padding:26px 10px"><div style="font-size:34px;margin-bottom:6px">🗂️</div>لا توجد مستندات بعد — دوس «📄 حفظ مستند من الجهاز» وهي اتحفظ في فولدر ' + esc(docCtx.name) + ' على جهازك.</td></tr>';
-          return;
-        }
-        let totalSize = 0;
-        list.forEach((d) => { totalSize += Number(d.file_size || 0); });
-        $("#docsStatCount").textContent = "📄 " + list.length + (rows.length !== list.length ? " من " + rows.length : "") + " مستند";
-        $("#docsStatSize").textContent = "🗂 " + docsFmtSize(totalSize);
-        body.innerHTML = list.map((d) => {
-          const fname = d.file_name || d.rel_path.split("\\").pop();
-          const full = (st && st.ok) ? st.root + "\\" + d.rel_path : d.rel_path;
-          return '<tr>' +
-            '<td><span class="doc-ico">' + docsIcon(fname) + '</span><b>' + esc(fname) + '</b>' +
-              '<div class="doc-path">' + esc(full) + (st && st.ok ? '' : ' — على جهاز تاني') + '</div></td>' +
-            '<td>' + esc(d.doc_type || "مستند عام") + '</td>' +
-            '<td>' + docsFmtSize(d.file_size) + '</td>' +
-            '<td>' + fmtDate(d.created_at) + '</td>' +
-            '<td>' + esc(d.created_by || "—") + '</td>' +
-            '<td style="white-space:nowrap">' +
-              '<button class="btn small blue" type="button" data-open="' + d.doc_id + '">📂 فتح</button> ' +
-              '<button class="btn small red" type="button" data-deldoc="' + d.doc_id + '">🗑 حذف</button>' +
-            '</td></tr>';
-        }).join("");
-        body.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => docOpenRow(list.find((x) => x.doc_id === b.dataset.open)));
-        body.querySelectorAll("[data-deldoc]").forEach((b) => b.onclick = () => docDeleteRow(list.find((x) => x.doc_id === b.dataset.deldoc)));
-      };
-      if (searchInp) searchInp.oninput = () => paintRows(pickRows());
-      paintRows(pickRows());
+      // وجود الملف على الجهاز ده (عشان الشاشة تفرّق بين ملفات جهازه وجهاز تاني)
+      const hereP = st.ok ? Promise.all(rows.map((d) => docExistsRel(d.rel_path).then((y) => { d._here = !!y; }))) : Promise.resolve();
+      hereP.then(() => {
+        // بحث تلقائي في كل الخانات (ذكى بلا حساسية للهمزة/ال/الياء/التاء المربوطة)
+        const searchInp = $("#docsSearch");
+        const pickRows = () => {
+          const q = docsNorm(searchInp && searchInp.value);
+          if (!q) return rows;
+          const toks = q.split(" ");
+          return rows.filter((d) => {
+            const hay = " " + docsRowHay(d) + " ";
+            return toks.every((t) => hay.indexOf(" " + t) >= 0 || hay.indexOf(t) >= 0);
+          });
+        };
+        const paintRows = (list) => {
+          if (!list.length) {
+            $("#docsStatCount").textContent = "📄 0 مستند";
+            $("#docsStatSize").textContent = "🗂 0 KB";
+            body.innerHTML = rows.length
+              ? '<tr><td colspan="6" style="text-align:center;padding:22px 10px">🔍 مفيش نتيجة مطابقة للبحث — جرّب كلمة تانية</td></tr>'
+              : '<tr><td colspan="6" style="text-align:center;padding:26px 10px"><div style="font-size:34px;margin-bottom:6px">🗂️</div>لا توجد مستندات بعد — دوس «📄 حفظ مستند من الجهاز» وهي اتحفظ في فولدر ' + esc(docCtx.name) + ' على جهازك.</td></tr>';
+            return;
+          }
+          let totalSize = 0;
+          list.forEach((d) => { totalSize += Number(d.file_size || 0); });
+          const hereN = st.ok ? list.filter((d) => d._here).length : 0;
+          $("#docsStatCount").textContent = "📄 " + list.length + (rows.length !== list.length ? " من " + rows.length : "") + " مستند" + (st.ok ? " • " + hereN + " على جهازك" : "");
+          $("#docsStatSize").textContent = "🗂 " + docsFmtSize(totalSize);
+          body.innerHTML = list.map((d) => {
+            const fname = d.file_name || d.rel_path.split("\\").pop();
+            const full = st.ok ? (st.name + "\\" + d.rel_path) : d.rel_path;
+            const tag = st.ok ? (d._here ? "" : " — نسخة الجهاز ده مش موجودة") : " — الملف على جهاز تاني";
+            return '<tr>' +
+              '<td><span class="doc-ico">' + docsIcon(fname) + '</span><b title="' + esc(fname) + '">' + esc(fname) + '</b>' +
+                '<div class="doc-path" title="' + esc(full + tag) + '">' + esc(full) + esc(tag) + '</div></td>' +
+              '<td title="' + esc(d.doc_type || 'مستند عام') + '">' + esc(d.doc_type || 'مستند عام') + '</td>' +
+              '<td class="nowrap">' + docsFmtSize(d.file_size) + '</td>' +
+              '<td class="nowrap">' + fmtDate(d.created_at) + '</td>' +
+              '<td title="' + esc(d.created_by || '—') + '">' + esc(d.created_by || '—') + '</td>' +
+              '<td style="white-space:nowrap">' +
+                '<button class="btn small blue" type="button" data-open="' + d.doc_id + '">📂 فتح</button> ' +
+                '<button class="btn small red" type="button" data-deldoc="' + d.doc_id + '">🗑 حذف</button>' +
+              '</td></tr>';
+          }).join("");
+          body.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => docOpenRow(list.find((x) => x.doc_id === b.dataset.open)));
+          body.querySelectorAll("[data-deldoc]").forEach((b) => b.onclick = () => docDeleteRow(list.find((x) => x.doc_id === b.dataset.deldoc)));
+        };
+        if (searchInp) searchInp.oninput = () => paintRows(pickRows());
+        paintRows(pickRows());
+      });
     }).catch((e) => {
       body.innerHTML = '<tr><td colspan="6" class="login-msg err">تعذّر التحميل: ' + esc(e.message || String(e)) + ' — لو قاعدة بيانات جديدة شغّل الترحيل db/supabase-upgrade-25-docs.sql</td></tr>';
     });
   }
-  // استيراد كل الملفات الموجودة في مجلد Scans (نتائج المسح الضوئي) إلى ملف الجهة الحالية
+  // استيراد كل الملفات الموجودة في فولدر Scans (نتائج المسح الضوئي) إلى مستندات الجهة
   function docImportScans() {
     if (!docCtx || !canManageDocs()) return;
-    docApi("/scans", { method: "GET" }).then((s) => {
-      if (!s || !s.ok || !s.files || !s.files.length) { toast("لا توجد ملفات ممسوحة جاهزة", "warning"); return; }
-      let done = 0, okCount = 0;
-      s.files.forEach((f) => {
-        docApi("/scans_import", { method: "POST", body: JSON.stringify({ name: f.name }) }).then((r) => {
-          if (!r || !r.ok || !r.base64) throw new Error((r && r.error) || "تعذّر القراءة");
-          return docApi("/save", { method: "POST", body: JSON.stringify({
-            partyType: docCtx.type, partyCode: docCtx.code, fileName: r.originalName, fileExt: r.ext, base64: r.base64 }) });
-        }).then((r2) => {
-          if (!r2 || !r2.ok) throw new Error((r2 && r2.error) || "تعذّر الحفظ");
-          return DATA.docAdd(docCtx.type, docCtx.id, docCtx.code, r2.originalName || f.name, (r2.name || "").split(".").pop(), r2.rel, "مسح ضوئي", r2.size);
-        }).then(() => { okCount++; })
-          .catch((e) => toast("ملف «" + f.name + "»: " + (e.message || e), "error"))
-          .then(() => { done++; if (done === s.files.length) {
-            if (okCount) {
-              toast("✅ تم استيراد " + okCount + " ملف ممسوح إلى مستندات " + docCtx.name, "ok");
-              addActivity("مستندات", "استيراد " + okCount + " ملف مسح ضوئي لـ" + docCtx.name + " (" + docCtx.code + ")");
-              docsRefresh();
-            }
-          } });
+    docStoreWant(true).then((st) => {
+      if (!st) return;
+      docScansList().then((files) => {
+        if (!files || !files.length) { toast("لا توجد ملفات ممسوحة جاهزة في فولدر Scans", "warning"); return; }
+        let okCount = 0;
+        // استيراد بالترتيب عشان التسلسل ميكررش نفسه
+        const one = (f) => docImportScanFile(f.name, docCtx).then((r) => {
+          if (!r || !r.rel) throw new Error("تعذّر الحفظ");
+          return DATA.docAdd(docCtx.type, docCtx.id, docCtx.code, r.originalName || f.name, (r.name || "").split(".").pop(), r.rel, "مسح ضوئي", r.size)
+            .then(() => { okCount++; });
+        }).catch((e) => toast("ملف «" + f.name + "»: " + ((e && e.message) || e), "error"));
+        files.reduce((chain, f) => chain.then(() => one(f)), Promise.resolve()).then(() => {
+          if (!okCount) return;
+          toast("✅ تم استيراد " + okCount + " ملف ممسوح إلى مستندات " + docCtx.name, "ok");
+          addActivity("مستندات", "استيراد " + okCount + " ملف مسح ضوئي لـ" + docCtx.name + " (" + docCtx.code + ")");
+          docsRefresh();
+        });
       });
     });
   }
+  // ---- فتح المستند: معاينة جوه البرنامج للصور وPDF، وتنزيل لباقي الأنواع ----
+  function docViewClose() {
+    hideModal("mDocView");
+    if (docViewUrl) { try { URL.revokeObjectURL(docViewUrl); } catch (e) {} docViewUrl = null; }
+    const bd = $("#docViewBody"); if (bd) bd.innerHTML = "";
+  }
   function docOpenRow(d) {
     if (!d) return;
-    docEnsureDev((st) => {
+    docStoreWant(true).then((st) => {
       if (!st) return;
-      docApi("/open", { method: "POST", body: JSON.stringify({ rel: d.rel_path }) }).then((r) => {
-        if (r && r.ok) toast("📂 تم فتح المستند في برنامج الجهاز الافتراضي", "ok");
-        else if (r && r.missing) toast("ℹ️ نسخة المستند ده مش على جهازك — افتح البرنامج من الجهاز اللي حفظه، أو احفظ نسخة تانية من هنا", "warning");
-        else toast("⚠️ " + ((r && r.error) || "تعذّر فتح المستند"), "warning");
-      });
+      return docGetFileH(d.rel_path).then((fh) => {
+        if (!fh) {
+          toast("ℹ️ نسخة المستند ده مش على جهازك — الملف موجود عند الجهاز اللي حفظه، وتقدر تحفظ نسخة جديدة من هنا", "warning");
+          docsRefresh();
+          return;
+        }
+        return fh.getFile().then((file) => {
+          const fname = d.file_name || file.name || "مستند";
+          const ext = docExtOf(file.name || fname);
+          const mime = DOC_INLINE[ext] || "";
+          if (docViewUrl) { try { URL.revokeObjectURL(docViewUrl); } catch (e) {} }
+          docViewUrl = URL.createObjectURL(file);
+          $("#docViewTitle").textContent = "📂 " + fname;
+          $("#docViewMeta").textContent = (ext.toUpperCase() || "ملف") + " • " + docsFmtSize(file.size) + " • " + st.name + "\\" + d.rel_path;
+          const bd = $("#docViewBody");
+          if (mime.indexOf("image/") === 0) bd.innerHTML = '<img src="' + docViewUrl + '" alt="' + esc(fname) + '" />';
+          else if (mime === "application/pdf" || mime.indexOf("text/") === 0) bd.innerHTML = '<iframe src="' + docViewUrl + '" title="' + esc(fname) + '"></iframe>';
+          else bd.innerHTML = '<div class="docs-no-preview"><div class="dnp-ico">' + docsIcon(fname) + '</div>' +
+            '<p>دي ملفات ' + esc((ext || "").toUpperCase()) + ' — تقدر تفتحها في برنامج الجهاز من زرار «⬇️ تنزيل وفتح».</p></div>';
+          const dl = $("#docViewDownload");
+          dl.onclick = () => {
+            const a = document.createElement("a");
+            a.href = docViewUrl; a.download = fname;
+            document.body.appendChild(a); a.click(); a.remove();
+            toast("📥 تم تنزيل «" + fname + "» — افتحه من مجلد التنزيلات", "ok");
+          };
+          $("#docViewClose").onclick = docViewClose;
+          showModal("mDocView");
+        });
+      }).catch((e) => toast("تعذّر فتح المستند: " + ((e && e.message) || e), "error"));
     });
   }
   function docDeleteRow(d) {
@@ -7703,55 +7918,79 @@ const pwEye = document.getElementById("btnShowPass");
     if (!choice) return;
     const sure = confirm("تأكيد نهائي: الحذف نهائي ومش بيرجع.\n(مستندات العملاء والموردين المحذوفين فضلت محفوظة — اللي بنحذفه هنا هو المستند نفسه)\n\nتأكيد حذف «" + d.file_name + "»؟");
     if (!sure) return;
-    docProbe(() => {
-      const rmFile = () => docApi("/delete", { method: "POST", body: JSON.stringify({ rel: d.rel_path }) });
-      Promise.resolve(docDevState && docDevState.ok ? rmFile() : { ok: true /* النسخة المحلية مقفولة: السجل كفاية */ })
-        .then((fr) => {
-          if (fr && fr.ok === false && !fr.missing) {
-            toast("ملف المستند ما انحذفش من جهازك («" + (fr.error || "") + "») — والسجل اتحذف من كل الأجهزة", "warning");
-          }
-          return DATA.docDel(d.doc_id);
-        })
-        .then(() => { toast("تم حذف المستند" + (docDevState && docDevState.ok ? " بسجله وبملفه من جهازك" : " من كل الأجهزة"), "ok"); addActivity("مستندات", "حذف مستند " + d.file_name + " (" + d.rel_path + ")"); docsRefresh(); })
-        .catch((e) => toast("خطأ: " + (e.message || e), "error"));
+    docStoreCheck().then((st) => {
+      const rmFile = () => (st && st.ok) ? docRemoveFile(d.rel_path) : Promise.resolve({ ok: true, skipped: true });
+      rmFile().then((fr) => {
+        if (fr && fr.ok === false) toast("ملف المستند ما انحذفش من جهازك — والسجل اتحذف من كل الأجهزة", "warning");
+        return DATA.docDel(d.doc_id);
+      })
+        .then(() => { toast("تم حذف المستند" + (st && st.ok ? " بسجله وبملفه من جهازك" : " من كل الأجهزة"), "ok"); addActivity("مستندات", "حذف مستند " + d.file_name + " (" + d.rel_path + ")"); docsRefresh(); })
+        .catch((e) => toast("خطأ: " + ((e && e.message) || e), "error"));
     });
   }
-  // صندوق «مسار تخزين المستندات» في إعدادات مؤسستك — لكل جهاز مساره الخاص
+  // صندوق «فولدر المستندات» في إعدادات مؤسستك — لكل جهاز فولدره على قرصه
   function renderDocRootBox() {
     const txt = $("#docRootStatus"), act = $("#docRootActions");
     if (!txt) return;
     txt.textContent = "جارٍ فحص هذا الجهاز...";
     act.innerHTML = "";
-    docProbe((st) => {
-      if (st && st.ok) {
-        txt.innerHTML = "💾 <b>جهازك بيحفظ المستندات في: " + esc(st.root) + (st.device ? " (جهاز " + esc(st.device) + ")" : "") + "</b> — الفورمات أو إعادة تثبيت البرنامج لا تُفقد أي مستند، وباقي أجهزة الشركة بتحفظ على أقراصها بنفس الطريقة.";
-        const b1 = document.createElement("button"); b1.className = "btn small"; b1.type = "button"; b1.textContent = "🔀 تغيير مسار التخزين";
-        b1.onclick = () => {
-          const np = prompt("اكتب المسار الجديد على Partition غير C (مثل E:\\MizanDocuments):", st.root);
-          if (!np) return;
-          docApi("/root", { method: "POST", body: JSON.stringify({ root: np }) }).then((r) => {
-            if (r && r.ok) { toast("تم تغيير المسار إلى " + r.root, "ok"); addActivity("مستندات", "تغيير مسار تخزين المستندات إلى " + r.root); renderDocRootBox(); }
-            else toast((r && r.error) || "تعذّر تغيير المسار", "error");
-          });
-        };
-        const b2 = document.createElement("button"); b2.className = "btn small"; b2.type = "button"; b2.textContent = "🔄 إعادة فحص";
-        b2.onclick = () => renderDocRootBox();
-        act.appendChild(b1); act.appendChild(b2);
-      } else if (st && st.needPick) {
-        txt.textContent = "⚠️ جهازك ده لا يوجد فيه Partition غير القرص C — حدد مكانًا مناسبًا للتخزين (قرص/Partition آخر) قبل استخدام المستندات.";
-        const b = document.createElement("button"); b.className = "btn small"; b.type = "button"; b.textContent = "📁 تحديد مسار التخزين";
-        b.onclick = () => {
-          const np = prompt("مسار التخزين على Partition غير C (مثال D:\\MizanDocuments):", "D:\\MizanDocuments");
-          if (!np) return;
-          docApi("/root", { method: "POST", body: JSON.stringify({ root: np }) }).then((r) => {
-            if (r && r.ok) { toast("تم", "ok"); renderDocRootBox(); } else toast((r && r.error) || "تعذّر", "error");
-          });
-        };
-        act.appendChild(b);
+    const mkBtn = (label, fn, cls) => {
+      const b = document.createElement("button");
+      b.className = "btn small " + (cls || "");
+      b.type = "button"; b.textContent = label;
+      b.onclick = fn;
+      act.appendChild(b);
+      return b;
+    };
+    docStoreCheck().then((st) => {
+      if (st.ok) {
+        txt.innerHTML = "💾 جهازك بيحفظ مستنداته في فولدر <b>" + esc(st.name) + "</b> على قرصه — إعادة تثبيت البرنامج أو تنصيب ويندوز جديد ما تمسّش أي مستند، وباقي أجهزة الشركة بتحفظ على أقراصها.";
+        mkBtn("🔀 تغيير فولدر المستندات", () => {
+          docStoreLink().then((r) => {
+            toast("تم تغيير فولدر المستندات إلى " + r.name, "ok");
+            addActivity("مستندات", "تغيير فولدر تخزين المستندات إلى " + r.name);
+            renderDocRootBox(); docsRefreshIfOpen();
+          }).catch((e) => { if (!e || e.name !== "AbortError") toast("تعذّر تغيير الفولدر", "error"); });
+        }, "light");
+        mkBtn("🔄 إعادة فحص", () => renderDocRootBox());
+      } else if (st.unsupported) {
+        txt.textContent = "🖥️ مستندات الماسح الضوئي والملفات على القرص متاحة في متصفح Chrome أو Edge على الكمبيوتر. بيانات ميزان السحابية وشاشاته كلها شغالة هنا عادي.";
       } else {
-        txt.textContent = "🌐 النسخة المحلية من ميزان مش شغالة على الجهاز ده — شغّل الاختصار أو «تشغيل ميزان.bat» عشان جهازك يقدر يحفظ مستنداته ويفتحها. سجل المستندات المشترك بيفضل ظاهر من أي مكان.";
+        txt.textContent = st.needGesture
+          ? "📁 فولدر المستندات مربوط على الجهاز ده (" + st.name + ") — دوس الزرار وسيح المتصفح يكمل الوصول، وبعدها كل العمليات تتم تلقائيًا."
+          : "📁 عشان جهازك يحفظ مستنداته على قرصه: دوس الزرار واختار مكان مثل D:\\MizanDocuments (مرة واحدة بس).";
+        mkBtn("📁 فولدر المستندات", docLinkButton, "green");
+        mkBtn("🔄 إعادة فحص", () => renderDocRootBox());
       }
     });
+  }
+  // خطاف اختبارات داخلية (بيشتغل بس مع ?docmock=1 — بيستخدم في فحص المنطق)
+  if (location.search.indexOf("docmock=1") >= 0) {
+    window.__mizanDocTest = {
+      setRoot: (h) => { docRootH = h; docStoreSt = h ? { ok: true, name: h.name || "mock" } : null; },
+      getRoot: () => docRootH,
+      check: () => docStoreCheck(),
+      save: (file, ctx, label) => docSaveToParty(file, ctx, label),
+      exists: (rel) => docExistsRel(rel),
+      remove: (rel) => docRemoveFile(rel),
+      scans: () => docScansList(),
+      importScan: (name, ctx) => docImportScanFile(name, ctx),
+      seqIn: (rel) => docDirOf(docRelParts(rel + "\\x"), false).then((dir) => (dir ? docSeqIn(dir) : -1)),
+      state: () => docStoreSt,
+      // نقاط دخول الواجهة (للتقييم الشامل في المتصفح)
+      setCtx: (c) => { docCtx = c; },
+      getCtx: () => docCtx,
+      openModal: (party, type) => openDocsModal(party, type),
+      refresh: () => docsRefresh(),
+      upload: (files, ctx) => { if (ctx) docCtx = ctx; docUploadFiles(files); },
+      flush: () => docFlushPending(),
+      pending: () => docPending.slice(),
+      openRow: (d) => docOpenRow(d),
+      deleteRow: (d) => docDeleteRow(d),
+      linkBtn: () => docLinkButton(),
+      settings: () => renderDocRootBox(),
+      viewState: () => ({ url: docViewUrl, modalHidden: document.getElementById("mDocView").hidden, body: document.getElementById("docViewBody").innerHTML.slice(0, 220) })
+    };
   }
 
   function setupAdmin() {

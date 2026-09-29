@@ -331,7 +331,18 @@ let handler = (req, res) => {
 };
 
 ports.forEach((p) => {
-  http.createServer(handler).listen(p, "0.0.0.0", () => {
+  const srv = http.createServer(handler);
+  srv.on("error", (e) => {
+    if (e && e.code === "EADDRINUSE") {
+      // السيرفر شغال فعلًا على المنفذ ده — نكمّل عادي بدل ما نقفل (مهم لأذرع المستندات)
+      console.log("منفذ " + p + " مستخدم — فيه سيرفر ميزان تاني شغال عليه، تمام.");
+    }
+  });
+  srv.listen(p, "0.0.0.0", () => {
     console.log(`Server running on network at http://0.0.0.0:${p}/`);
   });
 });
+
+// أي خطأ غير متوقع لا يقفل السيرفر — المستندات تفضل تستقبل أوامر
+process.on("uncaughtException", (e) => { console.log("خطأ تم تجاهله: " + ((e && e.message) || e)); });
+process.on("unhandledRejection", (e) => { console.log("رفض تم تجاهله: " + ((e && e.message) || e)); });

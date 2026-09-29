@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4"; // نسخة المنتج (اللي يشوفه العميل)
-    window.MIZAN_BUILD = 106;       // عدّاد البناء والكاش (للتطوير فقط)
+    window.MIZAN_BUILD = 107;       // عدّاد البناء والكاش (للتطوير فقط)
 
     (function () {
       var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
@@ -39,7 +39,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=106" />
+  <link rel="stylesheet" href="styles.css?v=107" />
 </head>
 <body>
 
@@ -1597,19 +1597,36 @@
       <input type="text" class="inp docs-search" id="docsSearch" placeholder="🔍 بحث تلقائي في كل البيانات — بلا حساسية للهمزة أو (ال) أو الياء أو التاء المربوطة" />
       <div class="tbl-wrap docs-wrap">
         <table class="data-table docs-table" id="docsTable">
+          <colgroup><col class="c-doc" /><col class="c-type" /><col class="c-size" /><col class="c-date" /><col class="c-by" /><col class="c-act" /></colgroup>
           <thead><tr><th>المستند</th><th>النوع</th><th>الحجم</th><th>التاريخ</th><th>بواسطة</th><th>إجراءات</th></tr></thead>
           <tbody id="docsBody"></tbody>
         </table>
       </div>
       <p class="docs-foot">🔒 كل جهاز بيحفظ مستنداته في فولدر الجهة على قرصه، وحذف العميل أو المورد لا يمس المستندات المحفوظة.</p>
       <div class="feat-btns">
+        <button class="btn green" type="button" id="docsLink" hidden>📁 فولدر المستندات</button>
         <button class="btn green" type="button" id="docsImportScans" hidden>📥 استيراد الملفات الممسوحة</button>
         <button class="btn sky" type="button" id="docsRefresh">🔄 تحديث القائمة</button>
         <button class="btn light" type="button" id="docsClose">❌ إغلاق</button>
       </div>
     </div>
   </div>
-  <input type="file" id="docFileInput" hidden />
+  <input type="file" id="docFileInput" multiple hidden />
+
+  <!-- نافذة معاينة مستند — build 107 -->
+  <div class="modal-overlay" id="mDocView" hidden>
+    <div class="modal m640 docs-modal docs-view-modal" id="mDocViewBox">
+      <div class="docs-head">
+        <h3 id="docViewTitle">📂 معاينة المستند</h3>
+        <div class="docs-stats"><span class="dstat" id="docViewMeta"></span></div>
+      </div>
+      <div class="docs-view" id="docViewBody"></div>
+      <div class="feat-btns">
+        <button class="btn sky" type="button" id="docViewDownload">⬇️ تنزيل وفتح</button>
+        <button class="btn light" type="button" id="docViewClose">❌ إغلاق</button>
+      </div>
+    </div>
+  </div>
 
   <!-- نافذة سداد مستحقات مورد -->
   <div class="modal-overlay" id="mPaySuppDebt" hidden>
@@ -1926,12 +1943,12 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=106"></script>
-  <script src="supabase.config.js?v=106"></script>
-  <script src="data.js?v=106"></script>
-  <script src="cloud.js?v=106"></script>
-  <script src="install.js?v=106"></script>
-  <script src="app.js?v=106"></script>
+  <script src="lib_supabase.js?v=107"></script>
+  <script src="supabase.config.js?v=107"></script>
+  <script src="data.js?v=107"></script>
+  <script src="cloud.js?v=107"></script>
+  <script src="install.js?v=107"></script>
+  <script src="app.js?v=107"></script>
   <script>
     // كاشف أخطاء على الشاشة (بيحول أي خطأ JS لرسالة مرئية)
     (function () {
