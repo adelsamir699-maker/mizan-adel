@@ -1222,3 +1222,5 @@ td.c-tax.tax-hidden {
 #mDocsBox .doc-ico{ display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:9px; background:#e8f4f2; font-size:17px; margin-inline-end:8px; vertical-align:middle; }
 #mDocsBox .doc-path{ margin:2px 0 0; font-size:11px; color:#7c8794; direction:ltr; text-align:right; overflow-wrap:anywhere; }
 #mDocsBox .docs-foot{ margin:10px 0 0; font-size:11.5px; color:#7c8794; }
+#mDocsBox .docs-search{ width:100%; box-sizing:border-box; margin:0 0 10px; border:1.5px solid #cfe3df; border-radius:10px; padding:9px 12px; font-size:13.5px; background:#fbfefe; }
+#mDocsBox .docs-search:focus{ outline:none; border-color:#14907f; box-shadow:0 0 0 3px rgba(20,144,127,.12); }

@@ -7557,6 +7557,7 @@ const pwEye = document.getElementById("btnShowPass");
     if (!canManageDocs()) { toast("لا تملك صلاحية «إدارة مستندات العملاء والموردين»", "error"); return; }
     docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
     $("#docsTitle").textContent = (type === "supplier" ? "📁 مستندات المورد: " : "📁 مستندات العميل: ") + party.nameAr + " (" + party.code + ")";
+    const sInp = $("#docsSearch"); if (sInp) sInp.value = "";
     $("#docsClose").onclick = () => hideModal("mDocs");
     $("#docsRefresh").onclick = () => { docProbe(() => docsRefresh()); };
     showModal("mDocs");
@@ -7579,6 +7580,20 @@ const pwEye = document.getElementById("btnShowPass");
     if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
     return Math.max(1, Math.round(n / 1024)) + " KB";
   }
+  // تطبيع عربي للبحث الذكي: بلا تشكيل/تطويل، الهمزات ألف، الياء موحّدة،
+  // التاء المربوطة هاء، وإزالة «ال» التعريف من أول كل كلمة
+  function docsNorm(s) {
+    s = String(s || "").toLowerCase();
+    s = s.replace(/[ً-ْٰـ]/g, "");
+    s = s.replace(/[أإآٱ]/g, "ا").replace(/ى/g, "ي").replace(/ؤ/g, "و").replace(/ئ/g, "ي").replace(/ة/g, "ه");
+    s = s.replace(/[^؀-ۿa-z0-9]+/g, " ").trim();
+    s = " " + s + " ";
+    s = s.replace(/ ال(?=[؀-ۿ])/g, " ");
+    return s.trim().replace(/\s+/g, " ");
+  }
+  function docsRowHay(d) {
+    return docsNorm([d.file_name, d.rel_path, d.doc_type, d.created_by, fmtDate(d.created_at), String(d.file_size || "")].join(" "));
+  }
   function docsRefresh() {
     if (!docCtx) return;
     const body = $("#docsBody");
@@ -7597,33 +7612,50 @@ const pwEye = document.getElementById("btnShowPass");
           if (impBtn) { impBtn.hidden = !(s && s.ok && s.files && s.files.length); impBtn.onclick = docImportScans; }
         });
       } else if (impBtn) impBtn.hidden = true;
-      if (!rows.length) {
-        $("#docsStatCount").textContent = "📄 0 مستند";
-        $("#docsStatSize").textContent = "🗂 0 KB";
-        body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:26px 10px"><div style="font-size:34px;margin-bottom:6px">🗂️</div>لا توجد مستندات بعد — دوس «📄 حفظ مستند من الجهاز» وهي اتحفظ في فولدر ' + esc(docCtx.name) + ' على جهازك.</td></tr>';
-        return;
-      }
-      let totalSize = 0;
-      rows.forEach((d) => { totalSize += Number(d.file_size || 0); });
-      $("#docsStatCount").textContent = "📄 " + rows.length + " مستند";
-      $("#docsStatSize").textContent = "🗂 " + docsFmtSize(totalSize);
-      body.innerHTML = rows.map((d) => {
-        const fname = d.file_name || d.rel_path.split("\\").pop();
-        const full = (st && st.ok) ? st.root + "\\" + d.rel_path : d.rel_path;
-        return '<tr>' +
-          '<td><span class="doc-ico">' + docsIcon(fname) + '</span><b>' + esc(fname) + '</b>' +
-            '<div class="doc-path">' + esc(full) + (st && st.ok ? '' : ' — على جهاز تاني') + '</div></td>' +
-          '<td>' + esc(d.doc_type || "مستند عام") + '</td>' +
-          '<td>' + docsFmtSize(d.file_size) + '</td>' +
-          '<td>' + fmtDate(d.created_at) + '</td>' +
-          '<td>' + esc(d.created_by || "—") + '</td>' +
-          '<td style="white-space:nowrap">' +
-            '<button class="btn small blue" type="button" data-open="' + d.doc_id + '">📂 فتح</button> ' +
-            '<button class="btn small red" type="button" data-deldoc="' + d.doc_id + '">🗑 حذف</button>' +
-          '</td></tr>';
-      }).join("");
-      body.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => docOpenRow(rows.find((x) => x.doc_id === b.dataset.open)));
-      body.querySelectorAll("[data-deldoc]").forEach((b) => b.onclick = () => docDeleteRow(rows.find((x) => x.doc_id === b.dataset.deldoc)));
+      // بحث تلقائي في كل الخانات (ذكى بلا حساسية للهمزة/ال/الياء/التاء المربوطة)
+      const searchInp = $("#docsSearch");
+      const pickRows = () => {
+        const q = docsNorm(searchInp && searchInp.value);
+        if (!q) return rows;
+        const toks = q.split(" ");
+        return rows.filter((d) => {
+          const hay = " " + docsRowHay(d) + " ";
+          return toks.every((t) => hay.indexOf(" " + t) >= 0 || hay.indexOf(t) >= 0);
+        });
+      };
+      const paintRows = (list) => {
+        if (!list.length) {
+          $("#docsStatCount").textContent = "📄 0 مستند";
+          $("#docsStatSize").textContent = "🗂 0 KB";
+          body.innerHTML = rows.length
+            ? '<tr><td colspan="6" style="text-align:center;padding:22px 10px">🔍 مفيش نتيجة مطابقة للبحث — جرّب كلمة تانية</td></tr>'
+            : '<tr><td colspan="6" style="text-align:center;padding:26px 10px"><div style="font-size:34px;margin-bottom:6px">🗂️</div>لا توجد مستندات بعد — دوس «📄 حفظ مستند من الجهاز» وهي اتحفظ في فولدر ' + esc(docCtx.name) + ' على جهازك.</td></tr>';
+          return;
+        }
+        let totalSize = 0;
+        list.forEach((d) => { totalSize += Number(d.file_size || 0); });
+        $("#docsStatCount").textContent = "📄 " + list.length + (rows.length !== list.length ? " من " + rows.length : "") + " مستند";
+        $("#docsStatSize").textContent = "🗂 " + docsFmtSize(totalSize);
+        body.innerHTML = list.map((d) => {
+          const fname = d.file_name || d.rel_path.split("\\").pop();
+          const full = (st && st.ok) ? st.root + "\\" + d.rel_path : d.rel_path;
+          return '<tr>' +
+            '<td><span class="doc-ico">' + docsIcon(fname) + '</span><b>' + esc(fname) + '</b>' +
+              '<div class="doc-path">' + esc(full) + (st && st.ok ? '' : ' — على جهاز تاني') + '</div></td>' +
+            '<td>' + esc(d.doc_type || "مستند عام") + '</td>' +
+            '<td>' + docsFmtSize(d.file_size) + '</td>' +
+            '<td>' + fmtDate(d.created_at) + '</td>' +
+            '<td>' + esc(d.created_by || "—") + '</td>' +
+            '<td style="white-space:nowrap">' +
+              '<button class="btn small blue" type="button" data-open="' + d.doc_id + '">📂 فتح</button> ' +
+              '<button class="btn small red" type="button" data-deldoc="' + d.doc_id + '">🗑 حذف</button>' +
+            '</td></tr>';
+        }).join("");
+        body.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => docOpenRow(list.find((x) => x.doc_id === b.dataset.open)));
+        body.querySelectorAll("[data-deldoc]").forEach((b) => b.onclick = () => docDeleteRow(list.find((x) => x.doc_id === b.dataset.deldoc)));
+      };
+      if (searchInp) searchInp.oninput = () => paintRows(pickRows());
+      paintRows(pickRows());
     }).catch((e) => {
       body.innerHTML = '<tr><td colspan="6" class="login-msg err">تعذّر التحميل: ' + esc(e.message || String(e)) + ' — لو قاعدة بيانات جديدة شغّل الترحيل db/supabase-upgrade-25-docs.sql</td></tr>';
     });
