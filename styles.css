@@ -1206,3 +1206,19 @@ td.c-tax.tax-hidden {
 #adminSubsList .subs-amt{ font-weight:900; color:#b8912c; }
 #adminSubsList tr[data-locked="1"] td:first-child{ border-right:3px solid #c0392b; padding-right:10px; }
 
+
+/* ===== شاشة مستندات العملاء/الموردين الاحترافية — build 106 ===== */
+#mDocsBox .docs-head{ display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; background:linear-gradient(135deg,#0e7a6d,#14907f); color:#fff; padding:14px 18px; border-radius:14px 14px 0 0; margin:-20px -20px 14px; box-shadow:0 2px 10px rgba(14,122,109,.25); }
+#mDocsBox .docs-head h3{ margin:0; font-size:18px; }
+#mDocsBox .docs-stats{ display:flex; gap:8px; flex-wrap:wrap; }
+#mDocsBox .dstat{ background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.32); color:#fff; font-size:12.5px; font-weight:700; padding:5px 11px; border-radius:999px; white-space:nowrap; }
+#mDocsBox .docs-folder{ margin:0 0 10px; font-size:12.5px; color:#0e7a6d; background:#eefaf7; border:1px dashed #9fd8cf; border-radius:8px; padding:7px 11px; overflow-wrap:anywhere; }
+#mDocsBox .docs-wrap{ max-height:46vh; overflow:auto; border:1px solid #e3e8ee; border-radius:10px; }
+#mDocsBox .docs-table{ width:100%; border-collapse:collapse; }
+#mDocsBox .docs-table thead th{ position:sticky; top:0; background:#f2f7f6; color:#0e554c; font-size:12.5px; padding:9px 10px; border-bottom:2px solid #d7e5e2; z-index:1; }
+#mDocsBox .docs-table td{ padding:9px 10px; font-size:13px; border-bottom:1px solid #eef2f5; vertical-align:top; }
+#mDocsBox .docs-table tbody tr:nth-child(even){ background:#f8fbfa; }
+#mDocsBox .docs-table tbody tr:hover{ background:#eefaf7; }
+#mDocsBox .doc-ico{ display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:9px; background:#e8f4f2; font-size:17px; margin-inline-end:8px; vertical-align:middle; }
+#mDocsBox .doc-path{ margin:2px 0 0; font-size:11px; color:#7c8794; direction:ltr; text-align:right; overflow-wrap:anywhere; }
+#mDocsBox .docs-foot{ margin:10px 0 0; font-size:11.5px; color:#7c8794; }

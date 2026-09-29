@@ -22,11 +22,14 @@ const isLocalRequest = (req) => {
 };
 
 /* ================================================================
-   Mizan Document Manager — مخزن مستندات العملاء والموردين
-   القواعد: لا تخزين على C مطلقًا — الجذر الافتراضي D:\MizanDocuments،
-   وإلا أول Partition متاح غير C (E/F...)، ولو مفيش غير C المستخدم
-   هو اللي يحدد مكان مناسب. المسار النسبي فقط هو اللي يروح لقاعدة البيانات.
+   مدير مستندات ميزان — مخزن مستندات العملاء والموردين
+   القواعد (فكرة الفاست بكلس): كل جهاز بيحفظ المستندات بتاعته على
+   قرصه المحلي (خارج C دائمًا) عن طريق سيرفره هو — الجذر الافتراضي
+   D:\MizanDocuments، وإلا أول Partition متاح غير C (E/F...)، ولو
+   مفيش غير C المستخدم هو اللي يحدد مكان مناسب. لقاعدة البيانات
+   يروح المسار النسبي بس + اسم الجهاز عشان باقي الأجهزة تعرف النسخة فين.
    ================================================================ */
+const os = require("os");
 const { execFile } = require("child_process");
 const DOC_CFG_FILE = path.join(__dirname, "db", "mizan_doc_root.json");
 const DOC_BASE_NAME = "MizanDocuments";
@@ -41,8 +44,9 @@ function readJsonBody(req) {
   });
 }
 
-function sendJson(res, code, obj) {
-  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+function sendJson(res, code, obj, extraHeaders) {
+  const h = Object.assign({ "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }, extraHeaders || {});
+  res.writeHead(code, h);
   res.end(JSON.stringify(obj));
 }
 
@@ -102,14 +106,24 @@ function safeJoin(root, rel) {
 
 function docRoutes(req, res, urlPath) {
   if (!urlPath.startsWith("/api/doc/")) return false;
-  if (!isLocalRequest(req)) { sendJson(res, 403, { ok: false, error: "403 — المستندات متاحة على جهاز Mizan Document Manager فقط" }); return true; }
+  // CORS: يخلي الصفحة المفتوحة من رابط الويب تقدر تخاطب سيرفر الجهاز *نفسه*
+  // (الطلبات دي بتيجي من 127.0.0.1 بتاع نفس الجهاز — السيرفرات تفضل مقفولة في وش الشبكات)
+  const DOC_CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Private-Network": "true",
+    "Access-Control-Max-Age": "600",
+  };
+  if (req.method === "OPTIONS") { res.writeHead(204, DOC_CORS); res.end(); return true; }
+  if (!isLocalRequest(req)) { sendJson(res, 403, { ok: false, error: "403 — أذرع المستندات تستقبل أوامر من جهازها هي فقط" }); return true; }
 
-  const done = (code, obj) => sendJson(res, code, obj);
+  const done = (code, obj) => sendJson(res, code, obj, DOC_CORS);
 
   if (urlPath === "/api/doc/status" && req.method === "GET") {
-    // شرط 14: جهاز المستندات يتأكد ويُنشئ المجلد إن لم يكن موجودًا (على غير C فقط)
+    // كل جهاز بيجهّز مكانه الخاص (خارج C دائمًا) — الجهاز جهازُ نفسه في المستندات
     const r = resolveDocRoot(true);
-    done(200, Object.assign({ ok: r.ok, isDocManager: true }, r));
+    done(200, Object.assign({ ok: r.ok, device: os.hostname(), isDocManager: true }, r));
     return true;
   }
 
@@ -185,8 +199,8 @@ function docRoutes(req, res, urlPath) {
     const r0 = resolveDocRoot(true);
     if (r0.ok) { try { fs.mkdirSync(path.join(r0.root, "Scans"), { recursive: true }); } catch (e) {} }
     execFile("cmd", ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, (err) => {
-      if (err) return sendJson(res, 200, { ok: false, error: "تطبيق المسح الضوئي مش متاح على الجهاز — استخدم «اختيار مستند من الجهاز» بعد المسح من برنامج الماسح" });
-      sendJson(res, 200, { ok: true, scansDir: r0.ok ? path.join(r0.root, "Scans") : null });
+      if (err) return sendJson(res, 200, { ok: false, error: "تطبيق المسح الضوئي مش متاح على الجهاز — استخدم «حفظ مستند من الجهاز» بعد المسح من برنامج الماسح" }, DOC_CORS);
+      sendJson(res, 200, { ok: true, scansDir: r0.ok ? path.join(r0.root, "Scans") : null }, DOC_CORS);
     });
     return true;
   }
@@ -220,7 +234,7 @@ function docRoutes(req, res, urlPath) {
     return true;
   }
 
-  sendJson(res, 404, { ok: false, error: "404 — مسار مستندات غير معروف" });
+  sendJson(res, 404, { ok: false, error: "404 — مسار مستندات غير معروف" }, DOC_CORS);
   return true;
 }
 
