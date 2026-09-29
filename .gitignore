@@ -11,3 +11,4 @@ node_modules/
 # سجلات
 *.log
 npm-debug.log*
+db/mizan_doc_root.json
