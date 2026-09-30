@@ -1686,14 +1686,17 @@
 
   /* ================== كشف الحساب ================== */
   function getStatement(cust) {
-    // 🔁 بناء 108: مرتجعات «رد نقدية» ملهاش حركة على الحساب — سطر توضيحي ما يغيّرش الرصيد
+    // 🔁 بناء 108: مرتجعات «رد قيمة المرتجع» ملهاش حركة على الحساب — سطر توضيحي ما يغيّرش الرصيد
     const memoRows = saleReturns
       .filter((r) => r.settlement === "refund" && Number(r.customerId) === Number(cust.id))
-      .map((r) => ({
-        date: retDateOf(r),
-        desc: "↩️ مرتجع مبيعات رقم " + retNo(r) + " — رد نقدية بقيمة " + fmt(r.grandTotal) + " ج.م",
-        debit: 0, credit: 0
-      }));
+      .map((r) => {
+        const tr = treasury.find((x) => Number(x.id) === Number(r.treasuryId));
+        return {
+          date: retDateOf(r),
+          desc: "↩️ مرتجع مبيعات رقم " + retNo(r) + " — رد" + (tr ? " من " + tr.name : "") + " بقيمة " + fmt(r.grandTotal) + " ج.م",
+          debit: 0, credit: 0
+        };
+      });
     const rows = txs
       .filter((t) => Number(t.customerId) === Number(cust.id))
       .concat(memoRows)
@@ -3871,7 +3874,7 @@
   function retSettleText(r) {
     if (r && r.settlement === "refund") {
       const tr = treasury.find((x) => Number(x.id) === Number(r.treasuryId));
-      return "رد نقدية" + (tr ? " من " + tr.name : "");
+      return tr ? "رد من " + tr.name : "رد قيمة المرتجع";
     }
     return "خصم من الرصيد";
   }
@@ -4049,17 +4052,45 @@
     const wantType = retMethodType();
     const prev = sel.value;
     sel.innerHTML = "";
-    const rows = treasury.filter((t) => !t.type || t.type === wantType);
-    (rows.length ? rows : treasury).forEach((t) => {
-      const opt = document.createElement("option");
-      opt.value = t.id;
-      opt.textContent = t.name + " (" + fmt(t.balance) + " ج.م)";
-      sel.appendChild(opt);
+    // 🆕 تسوية المرتجع: الخزينة والبنوك والمحافظ كلها معروضة ومجمّعة، والطريقة المختارة بتحدد الافتراضي
+    const trById = (v) => treasury.find((t) => String(t.id) === String(v));
+    const trType = (t) => (t && t.type) || "cash";
+    const groups = [["cash", "💵 الخزينة (نقدية)"], ["bank", "🏛️ البنوك"], ["wallet", "📱 المحافظ الإلكترونية"]];
+    groups.forEach(function (g) {
+      const rows = treasury.filter((t) => trType(t) === g[0]);
+      if (!rows.length) return;
+      const og = document.createElement("optgroup");
+      og.label = g[1];
+      rows.forEach((t) => {
+        const opt = document.createElement("option");
+        opt.value = t.id;
+        opt.textContent = t.name + " (" + fmt(t.balance) + " ج.م)";
+        og.appendChild(opt);
+      });
+      sel.appendChild(og);
     });
-    if (prev) {
-      const found = Array.prototype.slice.call(sel.options).some((o) => o.value === prev);
-      if (found) sel.value = prev;
+    if (!sel.options.length) return;
+    // الاختيار: يحترم السابق لو من نوع الطريقة، وإلا أول حساب مطابق، وإلا أول حساب متاح
+    let target = (prev && trById(prev) && trType(trById(prev)) === wantType) ? prev : null;
+    if (!target) {
+      const first = treasury.find((t) => trType(t) === wantType);
+      if (first) target = String(first.id);
     }
+    if (!target && prev && trById(prev)) target = prev;
+    if (!target) target = String(sel.options[0].value);
+    const found = Array.prototype.slice.call(sel.options).some((o) => o.value === target);
+    if (found) sel.value = target;
+  }
+
+  // اختيار الحساب يحدد طريقة الرد تلقائيًا (نقدي/بنكي/محفظة) — فيفضل السند والقيود متسقة
+  function syncRetMethodFromTreasury() {
+    const sel = $("#retTreasury");
+    if (!sel || sel.hidden) return;
+    const t = treasury.find((x) => String(x.id) === String(sel.value));
+    if (!t) return;
+    const typ = t.type || "cash";
+    const m = $("#retMethod");
+    if (m) m.value = typ === "bank" ? "تحويل بنكي 🏛️" : typ === "wallet" ? "محفظة إلكترونية 📱" : "نقداً 💵";
   }
 
   function applyRetSettleUI() {
@@ -4071,11 +4102,12 @@
     $("#retTreasury").hidden = !show;
     const hint = $("#retSettleHint");
     if (hint) {
+      const partyLbl = (retDraft && retDraft.isSales) ? "العميل" : (retDraft ? "المورد" : "الطرف");
       hint.textContent = show
-        ? "هيتم تحريك مبلغ فعلي من الخزينة/الحساب."
+        ? "المبلغ هينزل فعليًا من الحساب اللي هتختاره (خزينة أو بنك أو محفظة)."
         : (retDraft && retDraft.isAjali
-          ? "الفاتورة آجلة — قيمة المرتجع بتتخصم من الرصيد (من غير تحريك فلوس)."
-          : "من غير تحريك فلوس — قيمة المرتجع بتتخصم من الرصيد.");
+          ? "الفاتورة آجلة — قيمة المرتجع بتتخصم من رصيد " + partyLbl + "."
+          : "قيمة المرتجع بتتخصم من رصيد " + partyLbl + " وتظهر في كشف حسابه.");
     }
     if (show) fillRetTreasury();
   }
@@ -4202,7 +4234,7 @@
       ? customers.find((c) => Number(c.id) === partyId)
       : suppliers.find((s) => Number(s.id) === partyId);
     if (settle === "balance" && !party) {
-      toast("ما لقيناش حساب " + (isSales ? "العميل" : "المورد") + " المرتبط بالفاتورة — اختار «رد نقدية» أو سجّل الحساب الأول.", "warning");
+      toast("ما لقيناش حساب " + (isSales ? "العميل" : "المورد") + " المرتبط بالفاتورة — اختار «رد قيمة المرتجع» أو سجّل الحساب الأول.", "warning");
       return;
     }
     let tr = null;
@@ -4326,7 +4358,7 @@
     renderTreMoves();
     renderTable();
     renderSuppliers();
-    toast("تم تسجيل المرتجع رقم (" + no + ") وتحديث المخزون" + (settle === "refund" ? " والخزينة" : " والرصيد") + " — الفاتورة الأصلية فضلت موجودة.", "success");
+    toast("تم تسجيل المرتجع رقم (" + no + ") وتحديث المخزون" + (settle === "refund" ? " وحساب الرد (" + tr.name + ")" : " والرصيد") + " — الفاتورة الأصلية فضلت موجودة.", "success");
   }
 
   /* ---- حذف المرتجع: تراجع كل القيود العكسية ---- */
@@ -6537,6 +6569,7 @@
     });
     $("#retSettle").addEventListener("change", applyRetSettleUI);
     $("#retMethod").addEventListener("change", fillRetTreasury);
+    $("#retTreasury").addEventListener("change", syncRetMethodFromTreasury); // 🆕 اختيار الحساب يضبط الطريقة
     $("#dgvRetItems").addEventListener("input", (e) => {
       if (e.target && e.target.classList.contains("ret-qty-inp")) recalcRetTotal();
     });
