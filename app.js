@@ -982,7 +982,8 @@
     customers: "العملاء", suppliers: "الموردين", products: "الأصناف",
     treasury: "الخزائن", accounts: "حسابات الشجرة", vouchers: "السندات",
     journal_entries: "القيود المحاسبية", journal_lines: "أسطر القيود",
-    customer_txs: "حركة العملاء", supplier_txs: "حركة الموردين", settings: "ضبط الشركة"
+    customer_txs: "حركة العملاء", supplier_txs: "حركة الموردين", settings: "ضبط الشركة",
+    employees: "الموظفون", attendance: "سجل الحضور", att_settings: "مدة العمل"
   };
   let lastSyncWarnAt = 0;
   DATA.onSyncError = function (what, err) {
