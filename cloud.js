@@ -20,6 +20,85 @@
     return a.slice(0, 8) + "-" + b.slice(0, 4) + "-4" + b.slice(4, 7) + "-" + c.slice(0, 4) + "-" + tail;
   }
 
+  // تاريخ المستند: النص الفاضي بيكسر عمود date في السحابة (والدورة كلها بتفشل) → بلا تاريخ = null
+  function docDate(r) {
+    var d = r.invoiceDate || r.date || r.returnDate || r.docDate || "";
+    d = String(d).trim();
+    return d ? d.slice(0, 10) : null;
+  }
+
+  // 🔗 رقم الطرف (عميل/مورد/صنف/خزينة) بين الأجهزة: بيتخزن كنص = local_id بتاعه.
+  //    من غير الرقم ده الجهاز التاني بيشوف الاسم بس → الفاتورة بتقطع صلة صاحبها،
+  //    والمتاح للرجوع ووسم المرتجع وكشف حساب الفاتورة كلهم بيتعطلوا.
+  function localIdStr(v) {
+    if (v === null || v === undefined || v === "") return "";
+    var n = Number(v);
+    return isNaN(n) ? String(v) : String(n);
+  }
+  function localIdNum(v) {
+    if (v === null || v === undefined || v === "") return null;
+    var n = Number(v);
+    return isNaN(n) ? null : n;
+  }
+
+  // 🧾 رقم سطر الصنف جوه الفاتورة: على السحابة بيخزن مركّب (رقم الأب × 1000 + ترتيب السطر)
+  //    عشان ما يتعارضش مع فاتورة تانية. هنا نفكّه لرقم السطر الأصلي (1، 2، 3...).
+  //    السطور القديمة اللي أرقامها صغيرة بتفضل زي ما هي.
+  function decodeItemLocalId(v) {
+    var lid = Number(v) || 0;
+    if (!lid) return lid;
+    return (lid % 1000) || lid;
+  }
+
+  // عمود الأب في كل جدول أصناف/أسطر
+  var PARENT_OF = {
+    sale_items: "sale_id", purchase_items: "purchase_id",
+    sale_return_items: "return_id", purchase_return_items: "return_id",
+    journal_lines: "entry_id"
+  };
+
+  // 🗂 السطور اللي الجهاز ده شافها فعلًا في آخر تنزيل (local_id -> uuid السحابي).
+  // الحذف السحابي بيتم بس للسطور دي: جهاز ما يشوفش سطر قط لا يمسحه.
+  function seenIds(name) {
+    var m = (W.idMap && W.idMap[name]) || {};
+    var s = {};
+    Object.keys(m).forEach(function (k) { if (m[k]) s[m[k]] = 1; });
+    return s;
+  }
+  function rememberIds(name, rows) {
+    W.idMap = W.idMap || {};
+    var m = W.idMap[name] || (W.idMap[name] = {});
+    (rows || []).forEach(function (r) {
+      if (r && r.id != null && r.local_id != null) m[Number(r.local_id)] = r.id;
+    });
+  }
+  // 🛡 حد أقصى للحذف في عملية واحدة (حماية لو جهاز حاله ناقص)
+  function capDeletes(what, count, haveCount) {
+    var max = Math.max(5, Math.floor((haveCount || 0) * 0.25));
+    if (count > max) {
+      console.warn("sync guard: تجاوز حد الحذف الآمن", what, count, haveCount);
+      return false;
+    }
+    return true;
+  }
+  // 🛡🛡 حارس «المسح الكامل»: جهاز حاله فاضي خالص والسحابة فيها أكتر من سطر = ده مش مستخدم
+  //    مسح مستنداته، ده جهاز فقد بياناته (أو لسه ما نزّلش). في الحالة دي مابنمسحش حاجة،
+  //    والسحابة هي اللي ترجّع البيانات للجهاز. الحذف العادي (سطر/سطرين من جدول فيه بيانات)
+  //    بيتم عادي — ولو فضل سطر واحد على السحابة حذفه بيتزامن.
+  function wipeGuard(what, localCount, haveCount) {
+    if (Number(localCount) === 0 && Number(haveCount) > 1) {
+      console.warn("sync guard: الجهاز فاضي والسحابة فيها " + haveCount + " سطر من " + what + " — الحذف موقوف");
+      try { if (DATA.onWipeBlocked) DATA.onWipeBlocked(what, haveCount); } catch (e) { }
+      return false;
+    }
+    return true;
+  }
+  // ⚠️ فشل المزامنة كان بيكتب في console بس → المستخدم ما يعرفش. دلوقتي يوصل لتنبيه ودّي.
+  function syncFailed(what, err) {
+    console.warn("sync", what, err && err.message ? err.message : err);
+    try { if (DATA.onSyncError) DATA.onSyncError(what, err); } catch (e) { }
+  }
+
   // خريطة تحويل (محلي → سماوي / سماوي → محلي)
   var META = {
     customers: {
@@ -116,8 +195,9 @@
           org_id: DATA.orgId(),
           local_id: r.id,
           invoice_no: r.invoiceNumber || r.invoiceNo || String(r.id),
-          doc_date: r.invoiceDate || r.date || "",
+          doc_date: docDate(r),
           customer: r.customerName || r.customer || "",
+          customer_id: localIdStr(r.customerId),
           payment_method: r.paymentMethod || "",
           treasury_id: (r.treasuryId != null ? String(r.treasuryId) : ""),
           store: r.warehouse || r.store || "",
@@ -136,6 +216,7 @@
           invoiceDate: r.doc_date,
           customer: r.customer || "",
           customerName: r.customer || "",
+          customerId: localIdNum(r.customer_id),
           paymentMethod: r.payment_method || "",
           treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
           store: r.store || "",
@@ -154,7 +235,7 @@
       itemsTable: "sale_items",
       itemFromCloud: function (r) {
         return {
-          id: r.local_id,
+          id: decodeItemLocalId(r.local_id),
           productId: r.product_id || "",
           nameAr: r.product_name || "",
           code: r.code || "",
@@ -177,6 +258,10 @@
             sale_id: detUuid("sales", sale.id),
             product_id: (it.productId || "").toString(),
             product_name: it.nameAr || "",
+            unit: it.unit || "",
+            code: it.code || "",
+            discount: Number(it.discount || 0),
+            tax: Number(it.tax || 0),
             qty: Number(it.qty || 0),
             price: Number(it.price || 0),
             total: Number(it.total || 0)
@@ -192,8 +277,9 @@
           org_id: DATA.orgId(),
           local_id: r.id,
           invoice_no: r.invoiceNumber || r.invoiceNo || String(r.id),
-          doc_date: r.invoiceDate || r.date || "",
+          doc_date: docDate(r),
           supplier: r.supplierName || r.supplier || "",
+          supplier_id: localIdStr(r.supplierId),
           payment_method: r.paymentMethod || "",
           treasury_id: (r.treasuryId != null ? String(r.treasuryId) : ""),
           store: r.warehouse || r.store || "",
@@ -212,6 +298,7 @@
           invoiceDate: r.doc_date,
           supplier: r.supplier || "",
           supplierName: r.supplier || "",
+          supplierId: localIdNum(r.supplier_id),
           paymentMethod: r.payment_method || "",
           treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
           store: r.store || "",
@@ -230,7 +317,7 @@
       itemsTable: "purchase_items",
       itemFromCloud: function (r) {
         return {
-          id: r.local_id,
+          id: decodeItemLocalId(r.local_id),
           productId: r.product_id || "",
           nameAr: r.product_name || "",
           code: r.code || "",
@@ -253,9 +340,144 @@
             purchase_id: detUuid("purchases", pur.id),
             product_id: (it.productId || "").toString(),
             product_name: it.nameAr || "",
+            unit: it.unit || "",
+            code: it.code || "",
+            discount: Number(it.discount || 0),
+            tax: Number(it.tax || 0),
             qty: Number(it.qty || 0),
             price: Number(it.price || 0),
             total: Number(it.total || 0)
+          };
+        });
+      }
+    },
+    // ============ المرتجعات (بناء 108) ============
+    // نفس نمط الفواتير بالظبط: سطر رئيسي + أصناف، ومعرّف ثابت (detUuid)
+    // عشان الجهاز التاني ما يكررش السطر.
+    sale_returns: {
+      local: function () { return W.sale_returns || []; },
+      toCloud: function (r) {
+        return {
+          id: detUuid("sale_returns", r.id), org_id: DATA.orgId(), local_id: r.id,
+          return_no: r.returnNumber || r.returnNo || String(r.id),
+          doc_date: docDate(r),
+          sale_local_id: (r.saleId != null && !isNaN(Number(r.saleId))) ? Number(r.saleId) : null,
+          customer: r.customerName || r.customer || "",
+          customer_id: localIdStr(r.customerId),
+          settlement: r.settlement || "",
+          payment_method: r.paymentMethod || "",
+          treasury_id: (r.treasuryId != null ? String(r.treasuryId) : ""),
+          store: r.warehouse || r.store || "",
+          notes: r.notes || "",
+          grand_total: r.grandTotal || 0
+        };
+      },
+      fromCloud: function (r) {
+        return {
+          id: r.local_id,
+          returnNo: r.return_no, returnNumber: r.return_no,
+          date: r.doc_date, returnDate: r.doc_date,
+          saleId: (r.sale_local_id == null ? null : Number(r.sale_local_id)),
+          customerId: localIdNum(r.customer_id),
+          customer: r.customer || "", customerName: r.customer || "",
+          settlement: r.settlement || "",
+          paymentMethod: r.payment_method || "",
+          treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
+          store: r.store || "", warehouse: r.store || "",
+          notes: r.notes || "",
+          grandTotal: Number(r.grand_total || 0),
+          status: "posted",
+          items: []
+        };
+      },
+      itemsTable: "sale_return_items",
+      itemFromCloud: function (r) {
+        // local_id = رقم المرتجع ×1000 + رقم السطر → نرجّعه لرقم السطر عشان إعادة الدفع ما تكررش الأصناف
+        return {
+          id: decodeItemLocalId(r.local_id),
+          productId: r.product_id || "", nameAr: r.product_name || "",
+          unit: r.unit || "", code: r.code || "",
+          discount: Number(r.discount || 0), tax: Number(r.tax || 0),
+          qty: Number(r.qty || 0), price: Number(r.price || 0), total: Number(r.total || 0)
+        };
+      },
+      itemToCloud: function (ret) {
+        return (ret.items || []).map(function (it, idx) {
+          var itemId = it.id || (idx + 1);
+          var uniqueLocalId = Number(ret.id) * 1000 + Number(itemId);
+          return {
+            id: detUuid("sale_return_items", uniqueLocalId),
+            org_id: DATA.orgId(), local_id: uniqueLocalId,
+            return_id: detUuid("sale_returns", ret.id),
+            product_id: (it.productId || "").toString(),
+            product_name: it.nameAr || "",
+            unit: it.unit || "", code: it.code || "",
+            discount: Number(it.discount || 0), tax: Number(it.tax || 0),
+            qty: Number(it.qty || 0), price: Number(it.price || 0), total: Number(it.total || 0)
+          };
+        });
+      }
+    },
+    purchase_returns: {
+      local: function () { return W.purchase_returns || []; },
+      toCloud: function (r) {
+        return {
+          id: detUuid("purchase_returns", r.id), org_id: DATA.orgId(), local_id: r.id,
+          return_no: r.returnNumber || r.returnNo || String(r.id),
+          doc_date: docDate(r),
+          purchase_local_id: (r.purchaseId != null && !isNaN(Number(r.purchaseId))) ? Number(r.purchaseId) : null,
+          supplier: r.supplierName || r.supplier || "",
+          supplier_id: localIdStr(r.supplierId),
+          settlement: r.settlement || "",
+          payment_method: r.paymentMethod || "",
+          treasury_id: (r.treasuryId != null ? String(r.treasuryId) : ""),
+          store: r.warehouse || r.store || "",
+          notes: r.notes || "",
+          grand_total: r.grandTotal || 0
+        };
+      },
+      fromCloud: function (r) {
+        return {
+          id: r.local_id,
+          returnNo: r.return_no, returnNumber: r.return_no,
+          date: r.doc_date, returnDate: r.doc_date,
+          purchaseId: (r.purchase_local_id == null ? null : Number(r.purchase_local_id)),
+          supplierId: localIdNum(r.supplier_id),
+          supplier: r.supplier || "", supplierName: r.supplier || "",
+          settlement: r.settlement || "",
+          paymentMethod: r.payment_method || "",
+          treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
+          store: r.store || "", warehouse: r.store || "",
+          notes: r.notes || "",
+          grandTotal: Number(r.grand_total || 0),
+          status: "posted",
+          items: []
+        };
+      },
+      itemsTable: "purchase_return_items",
+      itemFromCloud: function (r) {
+        // local_id = رقم المرتجع ×1000 + رقم السطر → نفكّه لرقم السطر (زي جدول الفاتورة بالظبط)
+        return {
+          id: decodeItemLocalId(r.local_id),
+          productId: r.product_id || "", nameAr: r.product_name || "",
+          unit: r.unit || "", code: r.code || "",
+          discount: Number(r.discount || 0), tax: Number(r.tax || 0),
+          qty: Number(r.qty || 0), price: Number(r.price || 0), total: Number(r.total || 0)
+        };
+      },
+      itemToCloud: function (ret) {
+        return (ret.items || []).map(function (it, idx) {
+          var itemId = it.id || (idx + 1);
+          var uniqueLocalId = Number(ret.id) * 1000 + Number(itemId);
+          return {
+            id: detUuid("purchase_return_items", uniqueLocalId),
+            org_id: DATA.orgId(), local_id: uniqueLocalId,
+            return_id: detUuid("purchase_returns", ret.id),
+            product_id: (it.productId || "").toString(),
+            product_name: it.nameAr || "",
+            unit: it.unit || "", code: it.code || "",
+            discount: Number(it.discount || 0), tax: Number(it.tax || 0),
+            qty: Number(it.qty || 0), price: Number(it.price || 0), total: Number(it.total || 0)
           };
         });
       }
@@ -264,23 +486,34 @@
       local: function () { return W.supplier_txs || []; },
       toCloud: function (r) {
         return { id: detUuid("supplier_txs", r.id), org_id: DATA.orgId(), local_id: r.id,
-          supplier_id: (r.supplierId || "").toString(), doc_date: r.date || "",
-          type: r.type || "", amount: r.amount || 0 };
+          supplier_id: localIdStr(r.supplierId), doc_date: docDate(r),
+          type: r.type || "", amount: r.amount || 0,
+          description: r.desc || r.description || "",
+          debit: r.debit || 0, credit: r.credit || 0 };
       },
       fromCloud: function (r) {
-        return { id: r.local_id, supplierId: Number(r.supplier_id || 0), date: r.doc_date,
-          type: r.type || "", amount: Number(r.amount || 0) };
+        // السطور القديمة مفيهاش debit/credit (اتسجلت نوع/مبلغ بس) → نشتقهم
+        var d = Number(r.debit || 0), c = Number(r.credit || 0);
+        if (!d && !c && r.amount) {
+          if (String(r.type || "").indexOf("مرتجع") !== -1 || String(r.description || "").indexOf("مرتجع") !== -1) c = Number(r.amount);
+          else d = Number(r.amount);
+        }
+        return { id: r.local_id, supplierId: localIdNum(r.supplier_id), date: r.doc_date,
+          createdAt: r.created_at || null,
+          type: r.type || "", amount: Number(r.amount || 0),
+          desc: r.description || "", debit: d, credit: c };
       }
     },
     customer_txs: {
       local: function () { return W.customer_txs || []; },
       toCloud: function (r) {
         return { id: detUuid("customer_txs", r.id), org_id: DATA.orgId(), local_id: r.id,
-          customer_id: (r.customerId || "").toString(), doc_date: r.date || "",
+          customer_id: localIdStr(r.customerId), doc_date: docDate(r),
           description: r.desc || "", debit: r.debit || 0, credit: r.credit || 0 };
       },
       fromCloud: function (r) {
-        return { id: r.local_id, customerId: Number(r.customer_id || 0), date: r.doc_date,
+        return { id: r.local_id, customerId: localIdNum(r.customer_id), date: r.doc_date,
+          createdAt: r.created_at || null,
           desc: r.description || "", debit: Number(r.debit || 0), credit: Number(r.credit || 0) };
       }
     },
@@ -288,7 +521,7 @@
       local: function () { return W.vouchers; },
       toCloud: function (r) {
         return { id: detUuid("vouchers", r.id), org_id: DATA.orgId(), local_id: r.id,
-          no: r.no || r.id, doc_date: r.date || "", kind: r.kind || r.type || "in",
+          no: r.no || r.id, doc_date: docDate(r), kind: r.kind || r.type || "in",
           treasury_id: (r.treasuryId || "").toString(), account_id: (r.accountId || "").toString(),
           amount: r.amount || 0, notes: r.notes || r.desc || "" };
       },
@@ -303,7 +536,7 @@
       local: function () { return W.journalEntries; },
       toCloud: function (r) {
         return { id: detUuid("journal_entries", r.id), org_id: DATA.orgId(), local_id: r.id,
-          jrn_no: r.jrnNo || r.id, doc_date: r.date || "", ref_type: r.refType || "",
+          jrn_no: r.jrnNo || r.id, doc_date: docDate(r), ref_type: r.refType || "",
           ref_id: (r.refId || "").toString(), description: r.description || "" };
       },
       fromCloud: function (r) {
@@ -312,7 +545,7 @@
       },
       itemsTable: "journal_lines",
       itemFromCloud: function (r) {
-        return { id: r.local_id, accountId: Number(r.account_id || 0), accountName: r.account_name,
+        return { id: decodeItemLocalId(r.local_id), accountId: Number(r.account_id || 0), accountName: r.account_name,
           debit: Number(r.debit || 0), credit: Number(r.credit || 0) };
       },
       itemToCloud: function (en) {
@@ -330,76 +563,127 @@
   // ربط الحالة (نضع الحيوانات في window حتى تتمكن app من ملء المرجع)
   window.MIZAN_STATE = W;
 
+  // ============ رفع جدول للسحابة ============
+  // القواعد الجديدة (بناء ١٠٨):
+  //  ١) مفتاح السطر السحابي (id) بيتقرأ من السحابة وميتكتبش من جديد — إعادة كتابة id
+  //     كانت بتيتّم أسطر الأصناف وبنقلت سطور لفواتير تانية.
+  //  ٢) الحذف بيتم بس للسطور اللي الجهاز ده شافها في آخر تنزيل، وبكمية محدودة.
   function syncOne(name) {
     var meta = META[name];
     if (!meta || !DATA.isOnline() || !DATA.client()) return Promise.resolve();
-    var local = meta.local();
+    var local = meta.local() || [];
     var client = DATA.client();
-    return client.from(name).select("local_id").then(function (res) {
-      if (res.error) return; 
+    return client.from(name).select("id, local_id").then(function (res) {
+      if (res.error) { syncFailed(name, res.error); return; }
       var have = res.data || [];
+      var cloudId = {};                                  // local_id -> uuid الموجود على السحابة
+      have.forEach(function (r) { if (r && r.local_id != null) cloudId[Number(r.local_id)] = r.id; });
+      var seen = seenIds(name);
       var localIds = local.map(function (r) { return Number(r.id); });
       var drop = [];
       have.forEach(function (r) {
-        if (r && r.local_id != null && localIds.indexOf(Number(r.local_id)) === -1) drop.push(r.local_id);
+        if (!r || r.local_id == null) return;
+        if (localIds.indexOf(Number(r.local_id)) !== -1) return;
+        if (seen[r.id]) drop.push(r.local_id);           // (٢) اللي مانشوفوش ما نمسحوش
       });
       var rows = local.map(function (r) {
         var row = meta.toCloud(r);
-        if (W.idMap && W.idMap[name] && W.idMap[name][Number(r.id)]) row.id = W.idMap[name][Number(r.id)];
+        var k = Number(r.id);
+        if (cloudId[k] != null) row.id = cloudId[k];     // (١) نلبس السطر نفس رقمه السحابي
+        else if (W.idMap && W.idMap[name] && W.idMap[name][k]) row.id = W.idMap[name][k];
         return row;
       });
-      // حماية: لو المحذوف كتير جدًا (أكتر من نص الجدول في السحابة) يبقى فين كذا
-      // (مثل ما تكون بيانات جهاز اتضاعت) → نتجاهل الحذف ونحفظ بس
-      if (drop.length > 0 && drop.length > Math.ceil((have.length || 0) / 2)) {
-        drop = [];
-      }
+      // حماية إضافية: المحذوف ما يزيدش عن ربع الجدول، والممسوحش لما الجهاز حاله فاضي
+      if (drop.length && !wipeGuard(name, local.length, have.length)) drop = [];
+      if (drop.length && !capDeletes(name, drop.length, have.length)) drop = [];
       var chain = Promise.resolve();
       if (drop.length) {
-        chain = client.from(name).delete().in("local_id", drop);
+        chain = client.from(name).delete().in("local_id", drop).then(function (d) {
+          if (d && d.error) syncFailed(name, d.error);
+        });
       }
       if (rows.length) {
         chain = chain.then(function () {
           return client.from(name).upsert(rows, { onConflict: "org_id,local_id" }).then(function (u) {
-            if (u.error) throw u.error;
+            if (u && u.error) throw u.error;
           });
         });
       }
-      return chain.then(function () { return syncItems(name, meta); });
+      return chain.then(function () {
+        rememberIds(name, rows);
+        rows.forEach(function (r) { if (cloudId[Number(r.local_id)] == null) cloudId[Number(r.local_id)] = r.id; });
+        return syncItems(name, meta, cloudId);
+      }).catch(function (e) { syncFailed(name, e); });
     });
   }
 
-  function syncItems(name, meta) {
+  // ============ رفع أسطر الأصناف ============
+  // هوية السطر = (رقم أبيه السحابي + ترتيبه جوه أبوه). مافيش رقم مركّب مشترك بين فاتورتين.
+  function syncItems(name, meta, cloudId) {
     var itemsTable = meta.itemsTable;
     if (!itemsTable) return Promise.resolve();
     var client = DATA.client();
-    var parent = meta.local();
+    var parentField = meta.itemsParentField || PARENT_OF[itemsTable];
+    if (!parentField) return Promise.resolve();
+    var ids = cloudId || {};
     var items = [];
-    parent.forEach(function (p) {
+    (meta.local() || []).forEach(function (p) {
+      var pUuid = ids[Number(p.id)];
+      if (!pUuid) return;                               // أبوه لسه ما اترفعش → نستنى دورته
       var mapped = meta.itemToCloud(p);
-      if (Array.isArray(mapped)) items = items.concat(mapped);
+      if (!Array.isArray(mapped)) return;
+      mapped.forEach(function (row, idx) {
+        if (!row) return;
+        row.local_id = Number(p.id) * 1000 + (idx + 1);
+        row[parentField] = pUuid;
+        row.id = detUuid(itemsTable, row.local_id);
+        row._pos = pUuid + ":" + (idx + 1);
+        items.push(row);
+      });
     });
-    items = items.filter(Boolean);
-    return client.from(itemsTable).select("local_id").then(function (res) {
-      if (res.error) return;
+    return client.from(itemsTable).select("id, local_id, " + parentField).then(function (res) {
+      if (res.error) { syncFailed(itemsTable, res.error); return; }
       var have = res.data || [];
-      var localIds = items.map(function (r) { return Number(r.local_id); });
+      // لو السطر ده موجود على السحابة في نفس الأب وبنفس ترتيبه → نستخدم رقمه القديم
+      var byPos = {}, claimed = {};
+      have.forEach(function (r) {
+        if (!r || !r[parentField] || r.local_id == null) return;
+        byPos[r[parentField] + ":" + (Number(r.local_id) % 1000)] = r.id;
+      });
+      items.forEach(function (row) {
+        var old = !claimed[row._pos] ? byPos[row._pos] : null;
+        if (old) { claimed[row._pos] = 1; row.id = old; }
+      });
+      var seen = seenIds(itemsTable);
+      var keep = {};
+      items.forEach(function (r) { keep[r.id] = 1; });
       var drop = [];
-      have.forEach(function (r) { if (r.local_id != null && localIds.indexOf(Number(r.local_id)) === -1) drop.push(r.local_id); });
-      if (drop.length > 0 && drop.length > Math.ceil((have.length || 0) / 2)) { drop = []; }
+      have.forEach(function (r) { if (r && !keep[r.id] && seen[r.id]) drop.push(r.id); });
+      if (drop.length && !wipeGuard(itemsTable, items.length, have.length)) drop = [];
+      if (drop.length && !capDeletes(itemsTable, drop.length, have.length)) drop = [];
       var chain = Promise.resolve();
-      if (drop.length) { chain = client.from(itemsTable).delete().in("local_id", drop); }
-      if (items.length) {
-        chain = chain.then(function () {
-          return client.from(itemsTable).upsert(items, { onConflict: "org_id,local_id" }).then(function (u) { if (u.error) throw u.error; });
+      if (drop.length) {
+        chain = client.from(itemsTable).delete().in("id", drop).then(function (d) {
+          if (d && d.error) syncFailed(itemsTable, d.error);
         });
       }
-      return chain;
+      if (items.length) {
+        var payload = items.map(function (r) { delete r._pos; return r; });
+        chain = chain.then(function () {
+          return client.from(itemsTable).upsert(payload, { onConflict: "id" }).then(function (u) {
+            if (u && u.error) throw u.error;
+          });
+        });
+      }
+      return chain.then(function () { rememberIds(itemsTable, items); })
+        .catch(function (e) { syncFailed(itemsTable, e); });
     });
+
   }
 
   function push(name) {
     var t = syncOne(name);
-    t.catch(function (e) { console.warn("sync", name, e.message); });
+    t.catch(function (e) { syncFailed(name, e); });
     return t;
   }
 
@@ -445,18 +729,21 @@
   }
 
   function loadLazyAll() {
-    var lazy = ["sales", "purchases", "supplier_txs", "customer_txs", "vouchers", "journal_entries"];
+    var lazy = ["sales", "purchases", "supplier_txs", "customer_txs", "vouchers", "journal_entries",
+      "sale_returns", "purchase_returns"];
     var tasks = lazy.map(function (n) {
       return DATA.loadLazy(n).then(function (rows) {
+        rememberIds(n, rows);                            // عشان الحارس يعرف الجهاز ده شاف إيه
         if (n === "journal_entries") {
           return DATA.loadLazy("journal_lines").then(function (lines) {
+            rememberIds("journal_lines", lines);
             W.journalEntries = (rows || []).map(function (r) { return META.journal_entries.fromCloud(r); });
             // إلحاق الأسطر
             var byEntry = {};
             (lines || []).forEach(function (l) { byEntry[l.entry_id] = byEntry[l.entry_id] || []; byEntry[l.entry_id].push(l); });
             W.journalEntries.forEach(function (en) {
-              var eid = detUuid("journal_entries", en.id);
-              (byEntry[eid] || []).forEach(function (l) { en.lines.push(META.journal_entries.itemFromCloud(l)); });
+              var eid = (W.idMap.journal_entries || {})[Number(en.id)];
+              bySorted(byEntry[eid] || []).forEach(function (l) { en.lines.push(META.journal_entries.itemFromCloud(l)); });
             });
             return;
           });
@@ -466,25 +753,34 @@
       });
     });
     return Promise.all(tasks).then(function () {
-      // إلحاق الأصناف بالفوترة (سمع/purchase)
-      return Promise.all(["sales", "purchases"].map(function (n) {
-        var meta = META[n].itemsTable;
-        return DATA.loadLazy(meta).then(function (rows) {
-          var arr = W[n];
+      // إلحاق الأصناف بالفواتير والمرتجعات — بالرقم السحابي الحقيقي للأب (مش مشتق)
+      return Promise.all(["sales", "purchases", "sale_returns", "purchase_returns"].map(function (n) {
+        var itemsTable = META[n].itemsTable;
+        var parentField = PARENT_OF[itemsTable];
+        return DATA.loadLazy(itemsTable).then(function (rows) {
+          rememberIds(itemsTable, rows);
+          var arr = W[n] || [];
           var byParent = {};
           (rows || []).forEach(function (r) {
-            var parentId = r.sale_id || r.purchase_id;
+            var parentId = r[parentField];
             byParent[parentId] = byParent[parentId] || [];
             byParent[parentId].push(r);
           });
           arr.forEach(function (doc) {
-            var pid = detUuid(n, doc.id);
-            (byParent[pid] || []).forEach(function (it) {
+            var pid = (W.idMap[n] || {})[Number(doc.id)] || detUuid(n, doc.id);
+            bySorted(byParent[pid] || []).forEach(function (it) {
               doc.items.push(META[n].itemFromCloud(it));
             });
           });
-        }).catch(function () { });
+        }).catch(function (e) { syncFailed(itemsTable, e); });
       }));
+    });
+  }
+
+  // ترتيب أسطر الصنف زي ما هي في الفاتورة الأصلية (الأقدم الأول)
+  function bySorted(rows) {
+    return rows.slice().sort(function (a, b) {
+      return (Number(a.local_id) % 1000) - (Number(b.local_id) % 1000);
     });
   }
 

@@ -1297,3 +1297,77 @@ td.c-tax.tax-hidden {
 #mDocsBox .docs-table td:last-child{ direction:rtl; }
 
 @media (max-width:760px){ #mDocsBox .docs-table td:last-child .btn.small{ padding:2px 5px; font-size:10px; } #mDocsBox .doc-path{ font-size:9.2px; } }
+
+/* ====== build 108 — المرتجعات 🔁 ====== */
+/* وسم «تم استرجاعه بتاريخ…» قدام الصنف في الفاتورة الأصلية */
+.ret-tag {
+  display: inline-block;
+  margin-inline-start: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #FEF3C7;
+  color: #92400E;
+  border: 1px solid #FCD34D;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: normal;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.ret-tag-done { background: #DCFCE7; color: #166534; border-color: #86EFAC; }
+.ret-muted { color: var(--text-muted); font-size: 11px; }
+.ret-settle {
+  display: inline-block;
+  margin-inline-end: 4px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--sel-bg);
+  color: var(--sel-fg);
+  font-size: 10.8px;
+  font-weight: 700;
+}
+.ret-items-cell { text-align: right; white-space: normal; font-size: 11.4px; }
+#viewReturnsReg .dgv td, #viewReturnsReg .dgv th { vertical-align: middle; }
+#viewReturnsReg .view-actions { flex-wrap: wrap; gap: 6px; }
+/* أزرار تبويبات المرتجعات (كلاس مستقل عشان ما ياخدوش handler التبويبات العامة) */
+.ret-tab-btn {
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  background: #fff;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12.6px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ret-tab-btn + .ret-tab-btn { margin-inline-start: 4px; }
+.ret-tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* جدول أصناف المرتجع داخل النافذة */
+#mRetAddBox .ret-items-wrap { max-height: 46vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 9px; }
+#mRetAddBox .ret-qty-inp {
+  width: 82px;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: center;
+  direction: ltr;
+}
+#mRetAddBox .ret-qty-inp:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+#mRetAddBox .ret-total {
+  margin-inline-end: auto;
+  font-weight: 800;
+  color: var(--primary-dark);
+  font-size: 13px;
+}
+#mRetAddBox .ret-hint { margin: 2px 0 8px; font-size: 11.4px; color: var(--text-secondary); }
+#mRetAddBox input[readonly] { background: #F8FAFC; color: var(--text-secondary); font-weight: 700; }
+#mRetPickBox .dgv td { white-space: nowrap; }
+@media (max-width: 760px) {
+  #mRetAddBox .ret-qty-inp { width: 68px; }
+  .ret-tag { font-size: 9.8px; padding: 1px 5px; }
+}

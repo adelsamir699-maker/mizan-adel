@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4"; // نسخة المنتج (اللي يشوفه العميل)
-    window.MIZAN_BUILD = 107;       // عدّاد البناء والكاش (للتطوير فقط)
+    window.MIZAN_BUILD = 108;       // عدّاد البناء والكاش (للتطوير فقط)
 
     (function () {
       var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
@@ -39,7 +39,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=107" />
+  <link rel="stylesheet" href="styles.css?v=108" />
 </head>
 <body>
 
@@ -68,6 +68,7 @@
       <button class="nav-btn" data-view="sales">🛍️  فواتير المبيعات (POS)</button>
       <button class="nav-btn" data-view="purchases">📦  فواتير المشتريات</button>
       <button class="nav-btn" data-view="returns">🔍  استعلام عن الفواتير</button>
+      <button class="nav-btn" data-view="returnsReg" hidden>🔁  المرتجعات</button>
       <button class="nav-btn" data-view="products">🏷️  الأصناف والمخزون</button>
       <button class="nav-btn" data-view="customers">👨‍💼  دليل العملاء</button>
       <button class="nav-btn" data-view="suppliers">📦  دليل الموردين</button>
@@ -486,6 +487,81 @@
                   <th style="width:14%">الإجمالي</th>
                   <th style="width:12%">الدفع</th>
                   <th style="width:21%">طباعة / خيارات</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ===== شاشة المرتجعات (بناء 108) ===== -->
+      <section class="view view-returnsReg" id="viewReturnsReg" data-id="returnsReg" hidden>
+
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnRetPickSale" class="btn green" type="button">🔁 مرتجع على فاتورة بيع</button>
+            <button id="btnRetPickPur" class="btn blue" type="button">🔁 مرتجع على فاتورة شراء</button>
+            <button id="btnRetRefresh" class="btn gray" type="button">تحديث البيانات 🔄</button>
+          </div>
+          <h1 class="view-title">🔁 المرتجعات — رجّع أصناف من أي فاتورة من غير ما تحذفها</h1>
+        </div>
+
+        <div class="tabs">
+          <button class="ret-tab-btn active" data-rett="s">🛍️ مرتجعات المبيعات</button>
+          <button class="ret-tab-btn" data-rett="p">📦 مرتجعات المشتريات</button>
+        </div>
+
+        <div id="retTabS">
+          <div class="search-bar">
+            <label class="filter-label" for="dtpFromRS">من:</label>
+            <input type="date" id="dtpFromRS" class="filter-select" />
+            <label class="filter-label" for="dtpToRS">إلى:</label>
+            <input type="date" id="dtpToRS" class="filter-select" />
+            <input type="text" id="txtSearchRetS" class="search-input" autocomplete="new-search" />
+            <label class="search-label" for="txtSearchRetS">🔍 بحث (رقم المرتجع، الفاتورة، العميل، مبلغ):</label>
+          </div>
+          <div class="table-wrap">
+            <table id="dgvRetS" class="dgv">
+              <thead>
+                <tr>
+                  <th hidden>المعرف</th>
+                  <th style="width:10%">رقم المرتجع</th>
+                  <th style="width:10%">التاريخ</th>
+                  <th style="width:10%">فاتورة رقم</th>
+                  <th style="width:19%">العميل</th>
+                  <th style="width:23%">الأصناف المرتجعة</th>
+                  <th style="width:11%">قيمة المرتجع</th>
+                  <th style="width:17%">التسوية / خيارات</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="retTabP" hidden>
+          <div class="search-bar">
+            <label class="filter-label" for="dtpFromRP">من:</label>
+            <input type="date" id="dtpFromRP" class="filter-select" />
+            <label class="filter-label" for="dtpToRP">إلى:</label>
+            <input type="date" id="dtpToRP" class="filter-select" />
+            <input type="text" id="txtSearchRetP" class="search-input" autocomplete="new-search" />
+            <label class="search-label" for="txtSearchRetP">🔍 بحث (رقم المرتجع، الفاتورة، المورد، مبلغ):</label>
+          </div>
+          <div class="table-wrap">
+            <table id="dgvRetP" class="dgv">
+              <thead>
+                <tr>
+                  <th hidden>المعرف</th>
+                  <th style="width:10%">رقم المرتجع</th>
+                  <th style="width:10%">التاريخ</th>
+                  <th style="width:10%">فاتورة رقم</th>
+                  <th style="width:19%">المورد</th>
+                  <th style="width:23%">الأصناف المرتجعة</th>
+                  <th style="width:11%">قيمة المرتجع</th>
+                  <th style="width:17%">التسوية / خيارات</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -1655,6 +1731,87 @@
     </div>
   </div>
 
+  <!-- 🔁 استدعاء فاتورة لعمل مرتجع عليها (بناء 108) -->
+  <div class="modal-overlay" id="mRetPick" hidden>
+    <div class="modal m640" id="mRetPickBox">
+      <h3 id="retPickTitle">🔁 اختار الفاتورة اللي عليها المرتجع</h3>
+      <div class="search-bar">
+        <input type="text" id="retPickSearch" class="search-input" autocomplete="off" placeholder="رقم الفاتورة أو اسم العميل" />
+        <label class="search-label" for="retPickSearch">🔍 بحث:</label>
+      </div>
+      <div class="table-wrap">
+        <table id="dgvRetPick" class="dgv">
+          <thead>
+            <tr>
+              <th hidden>المعرف</th>
+              <th style="width:16%">رقم الفاتورة</th>
+              <th style="width:18%">التاريخ</th>
+              <th style="width:36%">العميل / المورد</th>
+              <th style="width:16%">الإجمالي</th>
+              <th style="width:14%">اختيار</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="modal-actions">
+        <button id="btnRetPickCancel" class="btn gray" type="button">إلغاء</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🔁 نافذة تسجيل المرتجع: الفاتورة مستدعاة، والكمية بس اللي بتتكتب (بناء 108) -->
+  <div class="modal-overlay" id="mRetAdd" hidden>
+    <div class="modal m760 modal-tall" id="mRetAddBox">
+      <h3 id="retTitle">🔁 تسجيل مرتجع</h3>
+      <div class="form-grid">
+        <label for="retInv">الفاتورة الأصلية:</label>
+        <input type="text" id="retInv" readonly />
+        <label for="retParty">العميل:</label>
+        <input type="text" id="retParty" readonly />
+        <label for="retDate">تاريخ المرتجع:</label>
+        <input type="date" id="retDate" />
+        <label for="retSettle">تسوية المرتجع:</label>
+        <select id="retSettle">
+          <option value="balance">خصم من الرصيد (من غير فلوز)</option>
+          <option value="refund">رد نقدية (من الخزينة)</option>
+        </select>
+        <label for="retMethod" id="lblRetMethod">طريقة الرد:</label>
+        <select id="retMethod">
+          <option>نقداً 💵</option>
+          <option>تحويل بنكي 🏛️</option>
+          <option>محفظة إلكترونية 📱</option>
+        </select>
+        <label for="retTreasury" id="lblRetTreasury">الخزينة / الحساب:</label>
+        <select id="retTreasury"></select>
+        <label for="retNotes">ملاحظات:</label>
+        <input type="text" id="retNotes" autocomplete="off" placeholder="سبب المرتجع (اختياري)" />
+      </div>
+      <div class="panel-title">اكتب الكمية المرتجعة قدام الصنف المطلوب بس — باقي بيانات الفاتورة مستدعاة تلقائيًا</div>
+      <div class="ret-hint" id="retSettleHint"></div>
+      <div class="table-wrap ret-items-wrap">
+        <table id="dgvRetItems" class="dgv">
+          <thead>
+            <tr>
+              <th style="width:32%">الصنف</th>
+              <th style="width:12%">المُباع</th>
+              <th style="width:14%">السعر</th>
+              <th style="width:16%">المتبقي للرجوع</th>
+              <th style="width:14%">كمية مرتجعة</th>
+              <th style="width:12%">قيمة المرتجع</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="modal-actions">
+        <span id="retTotal" class="ret-total">قيمة المرتجع: 0.00 ج.م</span>
+        <button id="btnRetCancel" class="btn gray" type="button">إلغاء</button>
+        <button id="btnRetSave" class="btn green" type="button">💾 تسجيل المرتجع</button>
+      </div>
+    </div>
+  </div>
+
   <!-- نافذة إضافة / تعديل خزينة -->
   <div class="modal-overlay" id="mTreasury" hidden>
     <div class="modal m520" id="mTreasuryBox">
@@ -1943,12 +2100,12 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=107"></script>
-  <script src="supabase.config.js?v=107"></script>
-  <script src="data.js?v=107"></script>
-  <script src="cloud.js?v=107"></script>
-  <script src="install.js?v=107"></script>
-  <script src="app.js?v=107"></script>
+  <script src="lib_supabase.js?v=108"></script>
+  <script src="supabase.config.js?v=108"></script>
+  <script src="data.js?v=108"></script>
+  <script src="cloud.js?v=108"></script>
+  <script src="install.js?v=108"></script>
+  <script src="app.js?v=108"></script>
   <script>
     // كاشف أخطاء على الشاشة (بيحول أي خطأ JS لرسالة مرئية)
     (function () {

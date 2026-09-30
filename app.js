@@ -24,12 +24,15 @@
   const LS_JOURNAL = "mizan_journal_v1";
   const LS_USERS = "mizan_users_v1";
   const LS_VOUCHERS = "mizan_vouchers_v1";
+  // المرتجعات (بناء 108): جدول لكل نوع — وأصناف كل مرتجع محفوظة جواه (items).
+  const LS_SALE_RETURNS = "mizan_sale_returns_v1";
+  const LS_PURCHASE_RETURNS = "mizan_purchase_returns_v1";
   const LS_SETTINGS = "mizan_settings_v1";
   // كل مفاتيح البيانات المحلية (مشتركة بين كل الحسابات في نفس المتصفح)
   const LS_ALL_KEYS = [
     LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_ACTIVITY, LS_SALES, LS_TREASURY,
     LS_SUPPLIERS, LS_SUP_TXS, LS_PURCHASES, LS_ACCOUNTS, LS_JOURNAL,
-    LS_USERS, LS_VOUCHERS, LS_SETTINGS
+    LS_USERS, LS_VOUCHERS, LS_SALE_RETURNS, LS_PURCHASE_RETURNS, LS_SETTINGS
   ];
   // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
@@ -227,6 +230,8 @@
   let suppliers = [];
   let supplierTxs = [];
   let purchases = [];
+  let saleReturns = [];
+  let purchaseReturns = [];
   let accounts = [];
   let journalEntries = [];
   let users = [];
@@ -348,6 +353,8 @@
     txs.forEach((t) => {
       if (Number(t.credit || 0) <= 0) return;
       if ((t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة")) return;
+      // حركة مرتجع (خصم من رصيد العميل) ليست تحصيل — ما ينفعش تولّد سند قبض (بناء 108)
+      if ((t.desc || "").includes("مرتجع")) return;
       const hasVoucher = vouchers.some((v) => (v.refType === "customer_tx" && v.refId === t.id) || (v.refId === t.id));
       if (hasVoucher) return;
 
@@ -384,6 +391,8 @@
     (supplierTxs || []).forEach((t) => {
       if (Number(t.credit || 0) <= 0) return;
       if ((t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة")) return;
+      // حركة مرتجع مشتريات (خصم من مستحق المورد) ليست سدادًا — ما تولّدش سند صرف (بناء 108)
+      if ((t.desc || "").includes("مرتجع")) return;
       const hasVoucher = vouchers.some((v) => (v.refType === "supplier_tx" && v.refId === t.id) || (v.refId === t.id));
       if (hasVoucher) return;
 
@@ -467,6 +476,8 @@
           suppliers,
           supplierTxs,
           purchases,
+          saleReturns,
+          purchaseReturns,
           accounts,
           journalEntries,
           users,
@@ -515,6 +526,8 @@
           take(data.suppliers, LS_SUPPLIERS, suppliers, seedSuppliers, (v) => { suppliers = v; }, saveSuppliers);
           take(data.supplierTxs, LS_SUP_TXS, supplierTxs, seedSupplierTxs, (v) => { supplierTxs = v; }, saveSupplierTxs);
           take(data.purchases, LS_PURCHASES, purchases, seedPurchases, (v) => { purchases = v; }, savePurchases);
+          take(data.saleReturns, LS_SALE_RETURNS, saleReturns, undefined, (v) => { saleReturns = v; }, saveSaleReturns);
+          take(data.purchaseReturns, LS_PURCHASE_RETURNS, purchaseReturns, undefined, (v) => { purchaseReturns = v; }, savePurchaseReturns);
           take(data.products, LS_PRODUCTS, products, seedProducts, (v) => { products = v; }, saveProducts);
           take(data.accounts, LS_ACCOUNTS, accounts, seedAccounts, (v) => { accounts = v; }, saveAccounts);
           take(data.vouchers, LS_VOUCHERS, vouchers, seedVouchers, (v) => { vouchers = v; }, saveVouchers);
@@ -539,6 +552,8 @@
     DB.accounts = accounts;
     DB.sales = sales;
     DB.purchases = purchases;
+    DB.sale_returns = saleReturns;
+    DB.purchase_returns = purchaseReturns;
     DB.supplier_txs = supplierTxs;
     DB.customer_txs = txs;
     DB.vouchers = vouchers;
@@ -714,6 +729,8 @@
       journalEntries = JSON.parse(localStorage.getItem(LS_JOURNAL)) || seedJournal;
       users = JSON.parse(localStorage.getItem(LS_USERS)) || seedUsers;
       vouchers = JSON.parse(localStorage.getItem(LS_VOUCHERS)) || seedVouchers;
+      saleReturns = JSON.parse(localStorage.getItem(LS_SALE_RETURNS)) || [];
+      purchaseReturns = JSON.parse(localStorage.getItem(LS_PURCHASE_RETURNS)) || [];
       settings = Object.assign({}, defaultSettings, JSON.parse(localStorage.getItem(LS_SETTINGS)) || {});
       TAX.enabled = settings.taxEnabled == null ? TAX.enabled : Boolean(settings.taxEnabled);
       if (settings.taxRate != null) {
@@ -734,6 +751,8 @@
       journalEntries = seedJournal;
       users = seedUsers;
       vouchers = seedVouchers;
+      saleReturns = [];
+      purchaseReturns = [];
       settings = Object.assign({}, defaultSettings);
     }
     if (!localStorage.getItem(LS_CUSTOMERS)) saveCustomers();
@@ -749,6 +768,8 @@
     if (!localStorage.getItem(LS_JOURNAL)) persistJournal();
     if (!localStorage.getItem(LS_USERS)) saveUsers();
     if (!localStorage.getItem(LS_VOUCHERS)) saveVouchers();
+    if (!localStorage.getItem(LS_SALE_RETURNS)) saveSaleReturns();
+    if (!localStorage.getItem(LS_PURCHASE_RETURNS)) savePurchaseReturns();
     if (!localStorage.getItem(LS_SETTINGS)) saveSettings();
   }
 
@@ -780,6 +801,17 @@
   function savePurchases() {
     localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
     pushTable("purchases"); syncToLocalDisk();
+  }
+
+  // المرتجعات (بناء 108) — نفس مسار الحفظ: محلي أولًا ثم رفع للسحابة ثم لقطة الديسك
+  function saveSaleReturns() {
+    localStorage.setItem(LS_SALE_RETURNS, JSON.stringify(saleReturns));
+    pushTable("sale_returns"); syncToLocalDisk();
+  }
+
+  function savePurchaseReturns() {
+    localStorage.setItem(LS_PURCHASE_RETURNS, JSON.stringify(purchaseReturns));
+    pushTable("purchase_returns"); syncToLocalDisk();
   }
 
   function saveAccounts() {
@@ -891,6 +923,42 @@
     toastTimer = setTimeout(() => (el.hidden = true), 3500);
   }
 
+  /* ===== فشل المزامنة السحابية: رسالة ودّية للعميل (من غير مصطلحات تقنية) =====
+     cloud.js بيندهّي الدالة دي لو أي جدول ما قدرش يترفع على السحابة.
+     القاعدة: واجهة العميل تفضل نظيفة بالعربي — التشخيص التقني يروح للـ console بس. */
+  const SYNC_FRIENDLY_NAMES = {
+    sales: "الفواتير", sale_items: "أصناف فواتير البيع",
+    purchases: "فواتير المشتريات", purchase_items: "أصناف فواتير المشتريات",
+    sale_returns: "مرتجعات البيع", sale_return_items: "أصناف مرتجعات البيع",
+    purchase_returns: "مرتجعات المشتريات", purchase_return_items: "أصناف مرتجعات المشتريات",
+    customers: "العملاء", suppliers: "الموردين", products: "الأصناف",
+    treasury: "الخزائن", accounts: "حسابات الشجرة", vouchers: "السندات",
+    journal_entries: "القيود المحاسبية", journal_lines: "أسطر القيود",
+    customer_txs: "حركة العملاء", supplier_txs: "حركة الموردين", settings: "ضبط الشركة"
+  };
+  let lastSyncWarnAt = 0;
+  DATA.onSyncError = function (what, err) {
+    try { console.warn("ميزان — المزامنة وقفت عند:", what, err && (err.message || err)); } catch (e) { }
+    // إحنا أوفلاين؟ الموضوع طبيعي ومش محتاج تنبيه
+    if (typeof DATA.isOnline === "function" && !DATA.isOnline()) return;
+    const now = Date.now();
+    if (now - lastSyncWarnAt < 60000) return;   // رسالة واحدة في الدقيقة مش أكتر
+    lastSyncWarnAt = now;
+    const label = SYNC_FRIENDLY_NAMES[what] || "البيانات";
+    toast("رفع «" + label + "» للسحابة مكملش دلوقتي. بياناتك على الجهاز محفوظة عادي — " +
+      "اتأكد من الإنترنت وبعدها احفظ أي تعديل صغير وهيتبعت كله.");
+  };
+  // حارس «المسح الكامل»: البرنامج وقف مسح كبير على السحابة لأن بيانات الجهاز كانت ناقصة
+  DATA.onWipeBlocked = function (what, cloudCount) {
+    try { console.warn("ميزان — حارس الحدى بيحمي:", what, cloudCount); } catch (e) { }
+    const now = Date.now();
+    if (now - lastSyncWarnAt < 60000) return;
+    lastSyncWarnAt = now;
+    const label = SYNC_FRIENDLY_NAMES[what] || "البيانات";
+    toast("برنامجك لقى " + (cloudCount || "") + " سجل على السحابة من «" + label + "» وهو ناقص عندك،" +
+      " فمسحش حاجة نهائي. أقفل البرنامج وافتحه تاني وهترجع بياناتك.");
+  };
+
   /* ================== النوافذ ================== */
   function showModal(id) {
     $("#" + id).hidden = false;
@@ -923,7 +991,7 @@
   }
 
   /* ================== الروترة بين الشاشات ================== */
-  const BUILT_VIEWS = ["dashboard", "customers", "products", "sales", "purchases", "suppliers", "returns", "treasury", "accounts", "journal", "balance", "treasuryStatements", "reports", "users", "audit", "settings", "clientSettings"];
+  const BUILT_VIEWS = ["dashboard", "customers", "products", "sales", "purchases", "suppliers", "returns", "returnsReg", "treasury", "accounts", "journal", "balance", "treasuryStatements", "reports", "users", "audit", "settings", "clientSettings"];
 
   // حساب المستخدم الحالي — المصدر الموثوق هو mizan_access (فيه role + is_superadmin)
   // لأن getProfile() قد يكون null أو ناقصًا لحظة الدخول.
@@ -960,7 +1028,7 @@
   }
 
   // هل يُسمح بعرض هذه الشاشة لهذا الحساب؟
-  // «إعدادات مؤسستك» استثناءً: يجب أن يفعّلها صاحب الشركة **صريحًا** (opt-in).
+  // «إعدادات مؤسستك» و«المرتجعات» استثناءً: يجب أن يفعّلها صاحب الشركة **صريحًا** (opt-in).
   // المالك العام وصاحب الشركة مسموح لهما دائمًا لأن البيانات شركتهما.
   function canUseView(name) {
     var DE = window.DATA || {};
@@ -969,8 +1037,17 @@
       if (!DE.featureFlag) return true; // احتياطي: لو الدالة غير موجودة نسمح
       return DE.featureFlag("clientSettings") === true;
     }
+    // 🔁 شاشة المرتجعات: صلاحية مستقلة opt-in (بناء 108)
+    if (name === "returnsReg") {
+      if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+      if (!DE.featureFlag) return false;
+      return DE.featureFlag("returnsManager") === true;
+    }
     return DE.featureEnabled ? DE.featureEnabled(name) : true;
   }
+
+  // صلاحية تسجيل/حذف المرتجعات (نفس بوابة الشاشة + فحص ثانٍ جوه الدوال)
+  function canManageReturns() { return canUseView("returnsReg"); }
 
   // إخفاء أزرار الشاشات غير المفعّلة في اشتراك الشركة الحالية
   function applyFeatureGating() {
@@ -996,6 +1073,11 @@
     // «إعدادات مؤسستك» لا تُفتح إلا لمن فعّلها صاحب الشركة (أو المالك/صاحب الشركة)
     if (name === "clientSettings" && !canUseView("clientSettings")) {
       toast("صلاحية «إعدادات مؤسستك» غير مفعّلة لحسابك", "error");
+      name = "dashboard";
+    }
+    // 🔁 «المرتجعات» نفس النمط: صلاحية مستقلة opt-in لحساب العضو
+    if (name === "returnsReg" && !canManageReturns()) {
+      toast("صلاحية «إدارة المرتجعات» غير مفعّلة لحسابك", "error");
       name = "dashboard";
     }
     document.querySelectorAll(".view[data-id]").forEach((v) => {
@@ -1031,6 +1113,7 @@
     }
     if (name === "suppliers") renderSuppliers();
     if (name === "returns") renderInvoiceQuery();
+    if (name === "returnsReg") renderReturns();
     if (name === "treasury") { syncTreasuryFromSett(); recalculateTreasuryBalances(); renderTreasury(); renderTreMoves(); }
     if (name === "accounts") renderAccounts();
     if (name === "journal") renderJournal();
@@ -1049,23 +1132,28 @@
   function renderDashboard() {
     const today = todayISO();
     const isToday = (d) => (d || "").slice(0, 10) === today;
-    const salesToday = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => m + (s.grandTotal || 0), 0);
-    const purToday = purchases.filter((p) => isToday(p.invoiceDate)).reduce((m, p) => m + (p.grandTotal || 0), 0);
-    const expToday = vouchers.filter((v) => v.type === "out" && isToday(v.date)).reduce((m, v) => m + (v.amount || 0), 0);
-    const revToday = vouchers.filter((v) => v.type === "in" && isToday(v.date)).reduce((m, v) => m + (v.amount || 0), 0);
+    // 🔁 بناء 108: المرتجعات بت تخصم من أرقام اليوم (والسندات اللي منها ما تتحسبش مصروف/إيراد)
+    const isRetVoucher = (v) => String((v && v.refType) || "").indexOf("_return") !== -1;
+    const retSaleToday = saleReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + (Number(r.grandTotal) || 0), 0);
+    const retPurToday = purchaseReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + (Number(r.grandTotal) || 0), 0);
+    const salesToday = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => m + (s.grandTotal || 0), 0) - retSaleToday;
+    const purToday = purchases.filter((p) => isToday(p.invoiceDate)).reduce((m, p) => m + (p.grandTotal || 0), 0) - retPurToday;
+    const expToday = vouchers.filter((v) => v.type === "out" && isToday(v.date) && !isRetVoucher(v)).reduce((m, v) => m + (v.amount || 0), 0);
+    const revToday = vouchers.filter((v) => v.type === "in" && isToday(v.date) && !isRetVoucher(v)).reduce((m, v) => m + (v.amount || 0), 0);
     const treTotal = treasury.reduce((m, t) => m + (t.balance || 0), 0);
 
     $("#kSales").textContent = fmt(salesToday) + " ج.م";
     $("#kPurchases").textContent = fmt(purToday) + " ج.م";
     $("#kExpenses").textContent = fmt(expToday) + " ج.م";
-    // صافي ربح اليوم = مجموع (سعر البيع − سعر الشراء) × الكمية لأصناف فواتير اليوم
-    const profitToday = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => {
-      return m + (s.items || []).reduce((mm, it) => {
-        const pr = products.find((x) => Number(x.id) === Number(it.productId));
-        const cost = pr ? (Number(pr.purchasePrice) || Number(pr.weightedAvgCost) || 0) : 0;
-        return mm + (Number(it.qty) || 0) * ((Number(it.price) || 0) - cost);
-      }, 0);
+    // صافي ربح اليوم = مجموع (سعر البيع − سعر الشراء) × الكمية لأصناف فواتير اليوم − مرتجعات اليوم
+    const marginOf = (items) => (items || []).reduce((mm, it) => {
+      const pr = products.find((x) => Number(x.id) === Number(it.productId));
+      const cost = pr ? (Number(pr.purchasePrice) || Number(pr.weightedAvgCost) || 0) : 0;
+      return mm + (Number(it.qty) || 0) * ((Number(it.price) || 0) - cost);
     }, 0);
+    const profitSold = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => m + marginOf(s.items), 0);
+    const profitReturned = saleReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + marginOf(r.items), 0);
+    const profitToday = profitSold - profitReturned;
     $("#kProfit").textContent = fmt(Math.round(profitToday * 100) / 100) + " ج.م";
     $("#kTreasury").textContent = fmt(treTotal) + " ج.م";
 
@@ -1380,8 +1468,17 @@
 
   /* ================== كشف الحساب ================== */
   function getStatement(cust) {
+    // 🔁 بناء 108: مرتجعات «رد نقدية» ملهاش حركة على الحساب — سطر توضيحي ما يغيّرش الرصيد
+    const memoRows = saleReturns
+      .filter((r) => r.settlement === "refund" && Number(r.customerId) === Number(cust.id))
+      .map((r) => ({
+        date: retDateOf(r),
+        desc: "↩️ مرتجع مبيعات رقم " + retNo(r) + " — رد نقدية بقيمة " + fmt(r.grandTotal) + " ج.م",
+        debit: 0, credit: 0
+      }));
     const rows = txs
-      .filter((t) => t.customerId === cust.id)
+      .filter((t) => Number(t.customerId) === Number(cust.id))
+      .concat(memoRows)
       .sort((a, b) => new Date(a.date) - new Date(b.date));
     let run = 0;
     return rows.map((t) => {
@@ -2034,14 +2131,18 @@
   // الأجهزة المتعددة). عند الحفظ بنثبّت الرقم ونرفع الحد الأعلى للسحابة.
   function parseInvNo(r) {
     if (!r) return 0;
-    const s = String(r.invoiceNumber != null ? r.invoiceNumber : (r.invoiceNo != null ? r.invoiceNo : ""));
+    const s = String(r.invoiceNumber != null ? r.invoiceNumber : (r.invoiceNo != null ? r.invoiceNo
+      : (r.returnNumber != null ? r.returnNumber : (r.returnNo != null ? r.returnNo : ""))));
     const m = s.match(/\d+/g);
     if (!m || !m.length) return 0;
     // آخر مجموعة أرقام هي رقم الفاتورة (يتجاهل الأرقام داخل أي بادئة تاريخ)
     return parseInt(m[m.length - 1], 10) || 0;
   }
   function seqBase(kind) {
-    const arr = (kind === "purchase" ? purchases : sales) || [];
+    const arr = (kind === "purchase" ? purchases
+      : kind === "sale_return" ? saleReturns
+      : kind === "purchase_return" ? purchaseReturns
+      : sales) || [];
     let localMax = 0;
     arr.forEach(function (r) { const n = parseInvNo(r); if (n > localMax) localMax = n; });
     const stored = Number((settings && settings.invSeq && settings.invSeq[kind])) || 0;
@@ -2065,7 +2166,7 @@
       if (!map) return;
       if (!settings.invSeq || typeof settings.invSeq !== "object") settings.invSeq = {};
       let dirty = false;
-      ["sale", "purchase"].forEach(function (k) {
+      ["sale", "purchase", "sale_return", "purchase_return"].forEach(function (k) {
         const c = Number(map[k]) || 0;
         if (c > (Number(settings.invSeq[k]) || 0)) { settings.invSeq[k] = c; dirty = true; }
       });
@@ -2074,6 +2175,10 @@
   }
   function nextInvoiceNumber() {
     return String(seqBase("sale") + 1);
+  }
+  // رقم المرتجع: تسلسل مستقل لكل نوع (بيع/شراء) على نفس عدّاد السحابة
+  function nextReturnNumber(kind) {
+    return String(seqBase(kind || "sale_return") + 1);
   }
 
   function activeDiscountPct(p) {
@@ -2477,7 +2582,7 @@
       const tr = document.createElement("tr");
       tr.innerHTML =
         '<td>' + esc(it.code) + '</td>' +
-        '<td style="text-align:right">' + esc(it.nameAr) + '</td>' +
+        '<td style="text-align:right">' + esc(it.nameAr) + returnedBadge(true, inv.id, it) + '</td>' +
         '<td>' + esc(it.unit) + '</td>' +
         '<td>' + esc(Number(it.qty).toLocaleString("en-US")) + '</td>' +
         '<td>' + fmt(it.price) + '</td>' +
@@ -2490,6 +2595,7 @@
     if (inv.discountAmount) footStr += " | الخصم الإضافي: <b>" + fmt(inv.discountAmount) + " ج.م</b>";
     if (hasTax) footStr += " | الضريبة: <b>" + fmt(inv.taxAmount) + " ج.م</b>";
     footStr += " | الصافي النهائي: <b>" + fmt(inv.grandTotal) + " ج.م</b>";
+    footStr += retFootNote(true, inv);
     $("#invFootPrint").innerHTML = footStr;
     printSection($("#invoicePage"));
   }
@@ -2959,7 +3065,7 @@
       const tr = document.createElement("tr");
       tr.innerHTML =
         '<td>' + esc(it.code) + '</td>' +
-        '<td style="text-align:right">' + esc(it.nameAr) + '</td>' +
+        '<td style="text-align:right">' + esc(it.nameAr) + returnedBadge(false, inv.id, it) + '</td>' +
         '<td>' + esc(it.unit) + '</td>' +
         '<td>' + esc(Number(it.qty).toLocaleString("en-US")) + '</td>' +
         '<td>' + fmt(it.price) + '</td>' +
@@ -2972,6 +3078,7 @@
     if (inv.discountAmount) footStr += " | الخصم الإضافي: <b>" + fmt(inv.discountAmount) + " ج.م</b>";
     if (hasTax) footStr += " | الضريبة: <b>" + fmt(inv.taxAmount) + " ج.م</b>";
     footStr += " | الصافي النهائي: <b>" + fmt(inv.grandTotal) + " ج.م</b>";
+    footStr += retFootNote(false, inv);
     $("#ppFoot").innerHTML = footStr;
     printSection($("#purchasePage"));
   }
@@ -3155,8 +3262,17 @@
   }
 
   function getSupplierStatement(sup) {
+    // 🔁 بناء 108: سطر توضيحي لمرتجعات المشتريات اللي اتسلّمت فلوسها (رد من الخزينة)
+    const memoRows = purchaseReturns
+      .filter((r) => r.settlement === "refund" && Number(r.supplierId) === Number(sup.id))
+      .map((r) => ({
+        date: retDateOf(r),
+        desc: "↩️ مرتجع مشتريات رقم " + retNo(r) + " — استلام نقدية بقيمة " + fmt(r.grandTotal) + " ج.م",
+        debit: 0, credit: 0
+      }));
     const rows = supplierTxs
-      .filter((t) => t.supplierId === sup.id)
+      .filter((t) => Number(t.supplierId) === Number(sup.id))
+      .concat(memoRows)
       .sort((a, b) => new Date(a.date) - new Date(b.date));
     let run = (parseFloat(sup.openingBalance) || 0);
     return rows.map((t) => {
@@ -3319,6 +3435,7 @@
     const fromP = $("#dtpFromP").value || "2000-01-01";
     const toP = $("#dtpToP").value || "2999-12-31";
     const canDel = canDeleteInvoices();
+    const canRet = canManageReturns();
 
     const inRange = (d, from, to) => (d || "") >= from && (d || "") <= to;
 
@@ -3329,15 +3446,19 @@
         return;
       }
       list.forEach((inv) => {
+        const hasRet = invoiceHasReturns(isSales, inv);
+        const allRet = hasRet && invoiceAllReturned(isSales, inv);
         const tr = document.createElement("tr");
         tr.innerHTML =
           '<td hidden></td>' +
-          '<td>' + esc(inv.invoiceNumber || inv.invoiceNo || "-") + '</td>' +
+          '<td>' + esc(inv.invoiceNumber || inv.invoiceNo || "-") +
+          (hasRet ? (' <span class="ret-tag' + (allRet ? ' ret-tag-done' : '') + '">↩️ مرتجع' + (allRet ? " كامل" : "") + '</span>') : '') + '</td>' +
           '<td>' + esc(inv.invoiceDate || inv.date || "-") + '</td>' +
           '<td>' + esc(isSales ? (inv.customerName || inv.customer || "-") : (inv.supplierName || inv.supplier || "-")) + '</td>' +
           '<td>' + fmt(inv.grandTotal) + ' ج.م</td>' +
           '<td>' + esc(inv.paymentMethod) + '</td>' +
           '<td class="cell-actions"><button class="btn small sky" type="button" data-act="print">🖨️ طباعة</button>' +
+          (canRet && !allRet ? ' <button class="btn small green" type="button" data-act="ret">🔁 مرتجع</button>' : '') +
           (canDel ? ' <button class="btn small red" type="button" data-act="del">🗑️ حذف</button>' : '') + '</td>';
         tr.dataset.iid = inv.id;
         tr.dataset.typ = isSales ? "s" : "p";
@@ -3361,6 +3482,11 @@
   function deleteInvoiceQuery(inv, isSales) {
     if (!canDeleteInvoices()) { toast("صلاحية حذف الفواتير لصاحب الشركة ومالك البرنامج فقط.", "error"); return; }
     if (!inv) return;
+    // 🔁 الفاتورة اللي عليها مرتجعات محمية: المرتجع مستند مستقل لازم يتلغى الأول (بناء 108)
+    if (invoiceHasReturns(isSales, inv)) {
+      toast("الفاتورة دي عليها مرتجعات مسجّلة في تبويب «🔁 المرتجعات» — احذف المرتجع أولًا، وبعدها تقدر تحذف الفاتورة.", "warning");
+      return;
+    }
     const kind = isSales ? "مبيعات" : "مشتريات";
     const who = isSales ? (inv.customerName || inv.customer || "-") : (inv.supplierName || inv.supplier || "-");
     const wh = inv.warehouse || inv.store || "";
@@ -3436,6 +3562,576 @@
     addActivity("حذف فاتورة", "حذف فاتورة " + kind + " رقم (" + num + ") - " + who + " - بمبلغ " + fmt(amt) + " ج.م (تراجع كامل للمخزون والأرصدة)");
     toast("تم حذف فاتورة (" + num + ") بنجاح وتراجع أثرها بالكامل.", "success");
     renderInvoiceQuery();
+  }
+
+  /* ================== 🔁 المرتجعات (بناء 108) ================== */
+  // كل مرتجع (بيع أو شراء) مستند مستقل في جدول خاص: الفاتورة الأصلية بتفضل زي ما هي،
+  // والمستخدم يستدعي الفاتورة ويكتب الكمية المرتجعة بس — باقي البيانات بتيجي منها.
+  // القيود العكسية: المخزون + التسوية (خصم من الرصيد أو رد نقدية من الخزينة).
+  let retDraft = null;          // { isSales, inv, isAjali, lines:[...] }
+  let retPickIsSales = true;
+  let retActiveTab = "s";
+
+  function retList(isSales) { return isSales ? saleReturns : purchaseReturns; }
+  function retDocs(isSales) { return isSales ? sales : purchases; }
+  function retKind(isSales) { return isSales ? "sale_return" : "purchase_return"; }
+  function retWord(isSales) { return isSales ? "مبيعات" : "مشتريات"; }
+  function retNo(r) { return String((r && (r.returnNumber || r.returnNo)) || (r && r.id) || "-"); }
+  function retDateOf(r) { return (r && (r.returnDate || r.date)) || todayISO(); }
+  function retParty(r, isSales) {
+    if (!r) return "-";
+    return isSales ? (r.customerName || r.customer || "-") : (r.supplierName || r.supplier || "-");
+  }
+  function retLinkedId(r, isSales) {
+    if (!r) return 0;
+    const v = isSales
+      ? (r.saleId != null ? r.saleId : r.sale_local_id)
+      : (r.purchaseId != null ? r.purchaseId : r.purchase_local_id);
+    return Number(v) || 0;
+  }
+  function retInvoiceOf(r, isSales) { return retDocs(isSales).find((x) => Number(x.id) === retLinkedId(r, isSales)) || null; }
+  function retItemKey(it) {
+    if (!it) return "";
+    const pid = (it.productId != null && it.productId !== "") ? it.productId : it.product_id;
+    if (pid != null && pid !== "") return "p" + String(pid);
+    return "n" + String(it.nameAr || it.product_name || it.code || "");
+  }
+  function retInvoiceNo(inv) { return String((inv && (inv.invoiceNumber || inv.invoiceNo)) || "-"); }
+
+  // كمية + تواريخ كل صنف اترجّع من الفاتورة (أكثر من مرتجع بيتجمعوا)
+  function returnedMap(isSales, invId) {
+    const out = {};
+    retList(isSales).forEach((r) => {
+      if (retLinkedId(r, isSales) !== Number(invId)) return;
+      (r.items || []).forEach((it) => {
+        const k = retItemKey(it);
+        const q = Number(it.qty) || 0;
+        if (!out[k]) out[k] = { qty: 0, notes: [] };
+        out[k].qty += q;
+        out[k].notes.push({ no: retNo(r), date: retDateOf(r), qty: q });
+      });
+    });
+    return out;
+  }
+  function returnedQtyOf(isSales, invId, it) {
+    const m = returnedMap(isSales, invId)[retItemKey(it)];
+    return m ? m.qty : 0;
+  }
+  // الوسم اللي بيظهر قدام الصنف في الفاتورة الأصلية (طباعة + استعلام)
+  function returnedBadge(isSales, invId, it) {
+    const m = returnedMap(isSales, invId)[retItemKey(it)];
+    if (!m || !m.qty) return "";
+    const parts = m.notes.map((n) => (n.date || "—") + " (" + Number(n.qty).toLocaleString("en-US") + ")");
+    return ' <span class="ret-tag">↩️ تم استرجاعه بتاريخ ' + esc(parts.join(" ، ")) + '</span>';
+  }
+  function returnableQty(isSales, inv, line) {
+    const sold = Number(line.qty) || 0;
+    const already = returnedQtyOf(isSales, inv.id, line);
+    return Math.max(0, Math.round((sold - already) * 1e6) / 1e6);
+  }
+  function invoiceHasReturns(isSales, inv) {
+    if (!inv) return false;
+    return retList(isSales).some((r) => retLinkedId(r, isSales) === Number(inv.id));
+  }
+  function invoiceAllReturned(isSales, inv) {
+    const items = (inv && inv.items) || [];
+    if (!items.length) return false;
+    return items.every((it) => returnableQty(isSales, inv, it) <= 0);
+  }
+  // قيمة المرتجع: نصيب الكمية من إجمالي الصنف (شامل خصمه وضريبته) − نصيبه من خصم الفاتورة
+  function retLineValue(inv, line, qty) {
+    const sold = Number(line.qty) || 0;
+    const q = Number(qty) || 0;
+    if (!sold || !q) return 0;
+    const ratio = Math.min(q / sold, 1);
+    const lineTotal = Number(line.total) || ((Number(line.price) || 0) * sold);
+    const base = lineTotal * ratio;
+    const items = (inv && inv.items) || [];
+    const invGross = items.reduce((s, x) => s + (Number(x.total) || ((Number(x.price) || 0) * (Number(x.qty) || 0))), 0);
+    const extra = Number(inv && (inv.discountAmount != null ? inv.discountAmount : inv.discount)) || 0;
+    const share = (invGross > 0 && extra > 0) ? (base * extra) / invGross : 0;
+    return Math.max(0, Math.round((base - share) * 100) / 100);
+  }
+  function retSettleText(r) {
+    if (r && r.settlement === "refund") {
+      const tr = treasury.find((x) => Number(x.id) === Number(r.treasuryId));
+      return "رد نقدية" + (tr ? " من " + tr.name : "");
+    }
+    return "خصم من الرصيد";
+  }
+  // إجمالي مرتجعات الفاتورة (عدد المستندات + قيمة + كمية) — للملاحظة أسفل الأصلية
+  function retTotalsFor(isSales, inv) {
+    const out = { count: 0, value: 0, qty: 0 };
+    if (!inv) return out;
+    retList(isSales).forEach((r) => {
+      if (retLinkedId(r, isSales) !== Number(inv.id)) return;
+      out.count++;
+      out.value += Number(r.grandTotal) || 0;
+      (r.items || []).forEach((it) => { out.qty += Number(it.qty) || 0; });
+    });
+    out.value = Math.round(out.value * 100) / 100;
+    return out;
+  }
+  // سطر المرتجعات في تذييل الطباعة: "مرتجعات: 150.00 ج.م — الصافي بعد المرتجعات: 850.00 ج.م"
+  function retFootNote(isSales, inv) {
+    const t = retTotalsFor(isSales, inv);
+    if (!t.count) return "";
+    return ' | المرتجعات (<b>' + t.count + '</b>): <b>' + fmt(t.value) + ' ج.م</b> | الصافي بعد المرتجعات: <b>' +
+      fmt(Math.max(0, (Number(inv.grandTotal) || 0) - t.value)) + ' ج.م</b>';
+  }
+  function nextReturnId(isSales) {
+    return retList(isSales).reduce((m, r) => Math.max(m, Number(r.id) || 0), 0) + 1;
+  }
+
+  /* ---- عرض جدول المرتجعات ---- */
+  function renderReturns() {
+    const fill = (sel, isSales) => {
+      const tbody = $(sel + " tbody");
+      if (!tbody) return;
+      const from = $("#" + (isSales ? "dtpFromRS" : "dtpFromRP")).value || "2000-01-01";
+      const to = $("#" + (isSales ? "dtpToRS" : "dtpToRP")).value || "2999-12-31";
+      const q = normalizeAr($("#" + (isSales ? "txtSearchRetS" : "txtSearchRetP")).value || "");
+      const canDel = canDeleteInvoices();
+      const list = retList(isSales).filter((r) => {
+        const d = retDateOf(r);
+        if (d < from || d > to) return false;
+        if (!q) return true;
+        const inv = retInvoiceOf(r, isSales);
+        return normalizeAr(retNo(r)).includes(q)
+          || normalizeAr(retInvoiceNo(inv)).includes(q)
+          || normalizeAr(retParty(r, isSales)).includes(q)
+          || fmt(r.grandTotal).includes(q);
+      });
+      tbody.innerHTML = "";
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="8">لا توجد مرتجعات في هذه الفترة.</td></tr>';
+        return;
+      }
+      list.slice().sort((a, b) => String(retDateOf(b)).localeCompare(String(retDateOf(a)))).forEach((r) => {
+        const inv = retInvoiceOf(r, isSales);
+        const itemsTxt = (r.items || []).map((it) => (it.nameAr || it.product_name || "-") + " ×" + Number(it.qty || 0).toLocaleString("en-US")).join("، ");
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td hidden></td>' +
+          '<td>' + esc(retNo(r)) + '</td>' +
+          '<td>' + esc(retDateOf(r)) + '</td>' +
+          '<td>' + esc(retInvoiceNo(inv)) + '</td>' +
+          '<td>' + esc(retParty(r, isSales)) + '</td>' +
+          '<td class="ret-items-cell">' + esc(itemsTxt || "-") + '</td>' +
+          '<td>' + fmt(r.grandTotal) + ' ج.م</td>' +
+          '<td class="cell-actions"><span class="ret-settle">' + esc(retSettleText(r)) + '</span> ' +
+          '<button class="btn small sky" type="button" data-act="inv">🧾 الفاتورة</button>' +
+          (canDel ? ' <button class="btn small red" type="button" data-act="del">🗑️ حذف</button>' : '') + '</td>';
+        tr.dataset.rid = r.id;
+        tr.dataset.typ = isSales ? "s" : "p";
+        tbody.appendChild(tr);
+      });
+    };
+    fill("#dgvRetS", true);
+    fill("#dgvRetP", false);
+  }
+
+  /* ---- استدعاء الفاتورة ---- */
+  function openRetPick(isSales) {
+    if (!canManageReturns()) { toast("صلاحية «إدارة المرتجعات» غير مفعّلة لحسابك.", "warning"); return; }
+    retPickIsSales = !!isSales;
+    retActiveTab = isSales ? "s" : "p";
+    $("#retPickTitle").textContent = isSales
+      ? "🔁 اختار فاتورة البيع اللي عليها المرتجع"
+      : "🔁 اختار فاتورة الشراء اللي عليها المرتجع";
+    $("#retPickSearch").value = "";
+    renderRetPick();
+    showModal("mRetPick");
+    $("#retPickSearch").focus();
+  }
+
+  function renderRetPick() {
+    const isSales = retPickIsSales;
+    const q = normalizeAr($("#retPickSearch").value || "");
+    const tbody = $("#dgvRetPick tbody");
+    const all = retDocs(isSales);
+    const list = all.filter((inv) => {
+      if (!q) return true;
+      return normalizeAr(retInvoiceNo(inv)).includes(q) || normalizeAr(retParty(inv, isSales)).includes(q) || fmt(inv.grandTotal).includes(q);
+    });
+    tbody.innerHTML = "";
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="6">' + (all.length ? "لا توجد نتائج مطابقة للبحث." : "مفيش فواتير مسجّلة بعد.") + '</td></tr>';
+      return;
+    }
+    list.slice().sort((a, b) => String(b.invoiceDate || b.date || "").localeCompare(String(a.invoiceDate || a.date || ""))).forEach((inv) => {
+      const done = invoiceAllReturned(isSales, inv);
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td hidden></td>' +
+        '<td>' + esc(retInvoiceNo(inv)) + '</td>' +
+        '<td>' + esc(inv.invoiceDate || inv.date || "-") + '</td>' +
+        '<td>' + esc(retParty(inv, isSales)) + '</td>' +
+        '<td>' + fmt(inv.grandTotal) + ' ج.م</td>' +
+        '<td class="cell-actions">' + (done
+          ? '<span class="ret-muted">✅ كل الأصناف مرجّعة</span>'
+          : '<button class="btn small green" type="button" data-act="pick">اختيار</button>') + '</td>';
+      tr.dataset.iid = inv.id;
+      tbody.appendChild(tr);
+    });
+  }
+
+  /* ---- نافذة تسجيل المرتجع: الفاتورة مستدعاة والكمية بس اللي بتتكتب ---- */
+  function openRetFor(isSales, inv) {
+    if (!canManageReturns()) { toast("صلاحية «إدارة المرتجعات» غير مفعّلة لحسابك.", "warning"); return; }
+    if (!inv) return;
+    const lines = (inv.items || []).map((it) => {
+      const rem = returnableQty(isSales, inv, it);
+      return {
+        line: it,
+        key: retItemKey(it),
+        nameAr: it.nameAr || it.product_name || "-",
+        sold: Number(it.qty) || 0,
+        already: returnedQtyOf(isSales, inv.id, it),
+        remaining: rem,
+        price: Number(it.price) || 0,
+        qty: 0,
+        value: 0
+      };
+    });
+    if (!lines.length) { toast("الفاتورة دي مسجّل عليها مرتجع كامل.", "warning"); return; }
+    if (!lines.some((l) => l.remaining > 0)) { toast("أصناف الفاتورة دي اترجّعت كلها قبل كده.", "warning"); return; }
+    const isAjali = String(inv.paymentMethod || "").includes("آجل");
+    retDraft = { isSales: !!isSales, inv: inv, isAjali: isAjali, lines: lines };
+
+    hideModal("mRetPick");
+    $("#retTitle").textContent = isSales ? "🔁 مرتجع على فاتورة مبيعات" : "🔁 مرتجع على فاتورة مشتريات";
+    const lbl = document.querySelector('#mRetAddBox label[for="retParty"]');
+    if (lbl) lbl.textContent = isSales ? "العميل:" : "المورد:";
+    $("#retInv").value = "رقم " + retInvoiceNo(inv) + " — " + (inv.invoiceDate || inv.date || "-") + " — " + (inv.warehouse || inv.store || "-");
+    $("#retParty").value = retParty(inv, isSales) + " (" + (inv.paymentMethod || "-") + ")";
+    $("#retDate").value = todayISO();
+    $("#retNotes").value = "";
+    const optRefund = $("#retSettle").querySelector('option[value="refund"]');
+    if (optRefund) optRefund.disabled = isAjali;
+    $("#retSettle").value = isAjali ? "balance" : "refund";
+    const pm = String(inv.paymentMethod || "");
+    $("#retMethod").value = (pm.includes("بنك") || pm.includes("تحويل"))
+      ? "تحويل بنكي 🏛️"
+      : (pm.includes("محفظ") ? "محفظة إلكترونية 📱" : "نقداً 💵");
+    applyRetSettleUI();
+    renderRetItems();
+    recalcRetTotal();
+    showModal("mRetAdd");
+  }
+
+  function retMethodType() {
+    const m = String($("#retMethod").value || "");
+    if (m.includes("بنك")) return "bank";
+    if (m.includes("محفظ")) return "wallet";
+    return "cash";
+  }
+
+  function fillRetTreasury() {
+    const sel = $("#retTreasury");
+    if (!sel) return;
+    const wantType = retMethodType();
+    const prev = sel.value;
+    sel.innerHTML = "";
+    const rows = treasury.filter((t) => !t.type || t.type === wantType);
+    (rows.length ? rows : treasury).forEach((t) => {
+      const opt = document.createElement("option");
+      opt.value = t.id;
+      opt.textContent = t.name + " (" + fmt(t.balance) + " ج.م)";
+      sel.appendChild(opt);
+    });
+    if (prev) {
+      const found = Array.prototype.slice.call(sel.options).some((o) => o.value === prev);
+      if (found) sel.value = prev;
+    }
+  }
+
+  function applyRetSettleUI() {
+    const refund = $("#retSettle").value === "refund";
+    const show = refund && !(retDraft && retDraft.isAjali);
+    $("#lblRetMethod").hidden = !show;
+    $("#retMethod").hidden = !show;
+    $("#lblRetTreasury").hidden = !show;
+    $("#retTreasury").hidden = !show;
+    const hint = $("#retSettleHint");
+    if (hint) {
+      hint.textContent = show
+        ? "هيتم تحريك مبلغ فعلي من الخزينة/الحساب."
+        : (retDraft && retDraft.isAjali
+          ? "الفاتورة آجلة — قيمة المرتجع بتتخصم من الرصيد (من غير تحريك فلوس)."
+          : "من غير تحريك فلوس — قيمة المرتجع بتتخصم من الرصيد.");
+    }
+    if (show) fillRetTreasury();
+  }
+
+  function renderRetItems() {
+    const tbody = $("#dgvRetItems tbody");
+    if (!tbody || !retDraft) return;
+    tbody.innerHTML = "";
+    retDraft.lines.forEach((l, i) => {
+      const canPart = l.remaining > 0;
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td style="text-align:right">' + esc(l.nameAr) + (l.already > 0 ? ' <span class="ret-tag">↩️ اترجّع ' + Number(l.already).toLocaleString("en-US") + '</span>' : '') + '</td>' +
+        '<td>' + Number(l.sold).toLocaleString("en-US") + '</td>' +
+        '<td>' + fmt(l.price) + '</td>' +
+        '<td>' + (canPart ? Number(l.remaining).toLocaleString("en-US") : '<span class="ret-muted">خلص</span>') + '</td>' +
+        '<td>' + (canPart
+          ? '<input type="number" class="ret-qty-inp" data-idx="' + i + '" min="0" max="' + l.remaining + '" step="any" value="0" autocomplete="off" />'
+          : '<span class="ret-muted">0</span>') + '</td>' +
+        '<td data-val="' + i + '">' + fmt(0) + ' ج.م</td>';
+      tbody.appendChild(tr);
+    });
+  }
+
+  function readRetLines() {
+    if (!retDraft) return;
+    document.querySelectorAll("#dgvRetItems .ret-qty-inp").forEach((inp) => {
+      const i = Number(inp.dataset.idx);
+      const l = retDraft.lines[i];
+      if (!l) return;
+      let v = parseFloat(String(inp.value).replace(/,/g, "")) || 0;
+      if (v < 0) v = 0;
+      if (v > l.remaining) v = l.remaining;
+      inp.value = v;
+      l.qty = v;
+    });
+  }
+
+  function recalcRetTotal() {
+    readRetLines();
+    let total = 0;
+    if (retDraft) {
+      retDraft.lines.forEach((l, i) => {
+        const v = retLineValue(retDraft.inv, l.line, l.qty);
+        l.value = v;
+        total += v;
+        const cell = document.querySelector('#dgvRetItems td[data-val="' + i + '"]');
+        if (cell) cell.textContent = fmt(v) + " ج.م";
+      });
+    }
+    const t = $("#retTotal");
+    if (t) t.textContent = "قيمة المرتجع: " + fmt(total) + " ج.م";
+  }
+
+  /* ---- تسجيل المرتجع + القيود العكسية ---- */
+  function saveReturn() {
+    if (!canManageReturns()) { toast("صلاحية «إدارة المرتجعات» غير مفعّلة لحسابك.", "error"); return; }
+    if (!retDraft || !retDraft.inv) { toast("استدعي الفاتورة الأول.", "warning"); return; }
+    const isSales = retDraft.isSales;
+    const inv = retDraft.inv;
+    readRetLines();
+    const chosen = retDraft.lines.filter((l) => l.qty > 0);
+    if (!chosen.length) { toast("اكتب الكمية المرتجعة قدام صنف واحد على الأقل.", "warning"); return; }
+    const over = chosen.filter((l) => l.qty > l.remaining + 1e-9);
+    if (over.length) { toast("الكمية أكبر من المتاح للرجوع في: " + over.map((l) => l.nameAr).join("، "), "warning"); return; }
+
+    const wh = inv.warehouse || inv.store || WAREHOUSES[0];
+    const date = ($("#retDate").value || todayISO());
+    const notes = ($("#retNotes").value || "").trim();
+    let settle = $("#retSettle").value === "refund" ? "refund" : "balance";
+    if (retDraft.isAjali) settle = "balance";
+
+    // ---- تحققات قبل أي تنفيذ (من غير لمس البيانات) ----
+    const partyId = Number(isSales ? inv.customerId : inv.supplierId);
+    const party = isSales
+      ? customers.find((c) => Number(c.id) === partyId)
+      : suppliers.find((s) => Number(s.id) === partyId);
+    if (settle === "balance" && !party) {
+      toast("ما لقيناش حساب " + (isSales ? "العميل" : "المورد") + " المرتبط بالفاتورة — اختار «رد نقدية» أو سجّل الحساب الأول.", "warning");
+      return;
+    }
+    let tr = null;
+    if (settle === "refund") {
+      tr = treasury.find((x) => Number(x.id) === Number($("#retTreasury").value));
+      if (!tr) { toast("اختار الخزينة أو الحساب اللي هيتم الرد منه.", "warning"); return; }
+    }
+    if (!isSales) {
+      const negs = chosen.filter((l) => {
+        const p = products.find((x) => Number(x.id) === Number(l.line.productId));
+        return p && stockAt(p, wh) - l.qty < 0;
+      });
+      if (negs.length) {
+        toast("رصيد المخزن (" + wh + ") أقل من الكمية المرتجعة في: " + negs.map((n) => n.nameAr).join("، "), "warning");
+        return;
+      }
+    }
+
+    const items = chosen.map((l, idx) => ({
+      id: idx + 1,
+      productId: l.line.productId,
+      code: l.line.code,
+      nameAr: l.nameAr,
+      unit: l.line.unit,
+      qty: l.qty,
+      price: l.price,
+      total: retLineValue(inv, l.line, l.qty)
+    }));
+    const amt = Math.round(items.reduce((s, x) => s + (Number(x.total) || 0), 0) * 100) / 100;
+    if (amt <= 0) { toast("قيمة المرتجع طلعت صفر — راجع أسعار الأصناف.", "warning"); return; }
+
+    const no = nextReturnNumber(retKind(isSales));
+    const id = nextReturnId(isSales);
+    const rec = {
+      id: id,
+      returnNumber: no,
+      returnNo: no,
+      returnDate: date,
+      date: date,
+      settlement: settle,
+      paymentMethod: settle === "refund" ? ($("#retMethod").value || "نقداً 💵") : "خصم من الرصيد",
+      treasuryId: settle === "refund" ? tr.id : null,
+      warehouse: wh,
+      store: wh,
+      notes: notes,
+      grandTotal: amt,
+      items: items,
+      status: "posted",
+      txId: null,
+      voucherId: null
+    };
+    if (isSales) {
+      rec.saleId = inv.id;
+      rec.customerId = partyId;
+      rec.customerName = retParty(inv, true);
+      rec.customer = retParty(inv, true);
+    } else {
+      rec.purchaseId = inv.id;
+      rec.supplierId = partyId;
+      rec.supplierName = retParty(inv, false);
+      rec.supplier = retParty(inv, false);
+    }
+
+    // 1) المخزون عكسي: مرتجع البيع بيرجّع الكمية للمخزن، ومرتجع المشتريات بينقصها
+    items.forEach((it) => {
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
+      if (p) addStockAt(p, wh, isSales ? (Number(it.qty) || 0) : -(Number(it.qty) || 0));
+    });
+    saveProducts();
+
+    // 2) التسوية: رد نقدية = حركة خزينة (سند)، خصم من الرصيد = حركة على الحساب
+    if (settle === "refund") {
+      const v = {
+        id: vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+        type: isSales ? "out" : "in",
+        treasuryId: tr.id,
+        date: date,
+        amount: amt,
+        desc: (isSales ? "رد قيمة مرتجع مبيعات رقم " : "استلام قيمة مرتجع مشتريات رقم ") + no,
+        refType: isSales ? "sale_return" : "purchase_return",
+        refId: id
+      };
+      vouchers.push(v);
+      saveVouchers();
+      recalculateTreasuryBalances();
+      rec.voucherId = v.id;
+    } else {
+      const desc = "مرتجع " + retWord(isSales) + " رقم " + no + " — خصم من الرصيد";
+      let tx;
+      if (isSales) {
+        tx = { id: nextTxId(), customerId: partyId, date: date, desc: desc, debit: 0, credit: amt };
+        txs.push(tx);
+        recalculateCustomerBalances();
+        saveCustomers();
+        saveTxs();
+      } else {
+        tx = { id: supplierTxs.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1, supplierId: partyId, date: date, desc: desc, debit: 0, credit: amt };
+        supplierTxs.push(tx);
+        recalculateSupplierBalances();
+        saveSuppliers();
+        saveSupplierTxs();
+      }
+      rec.txId = tx.id;
+    }
+
+    // 3) الحفظ + التسلسل + سجل النشاط
+    retList(isSales).push(rec);
+    if (isSales) saveSaleReturns(); else savePurchaseReturns();
+    commitInvoiceSeq(retKind(isSales), Number(no) || 0);
+    addActivity("مرتجع " + retWord(isSales),
+      "مرتجع رقم (" + no + ") على فاتورة " + retInvoiceNo(inv) + " - " + retParty(inv, isSales) +
+      " - " + items.map((x) => x.nameAr + " ×" + Number(x.qty)).join("، ") +
+      " - بقيمة " + fmt(amt) + " ج.م (" + rec.paymentMethod + ")");
+
+    retDraft = null;
+    hideModal("mRetAdd");
+    renderReturns();
+    renderInvoiceQuery();
+    renderDashboard();
+    renderTreasury();
+    renderTreMoves();
+    renderTable();
+    renderSuppliers();
+    toast("تم تسجيل المرتجع رقم (" + no + ") وتحديث المخزون" + (settle === "refund" ? " والخزينة" : " والرصيد") + " — الفاتورة الأصلية فضلت موجودة.", "success");
+  }
+
+  /* ---- حذف المرتجع: تراجع كل القيود العكسية ---- */
+  function deleteReturn(r, isSales) {
+    if (!canManageReturns() || !canDeleteInvoices()) {
+      toast("حذف المرتجع لصاحب الشركة ومالك البرنامج فقط.", "error");
+      return;
+    }
+    if (!r) return;
+    const no = retNo(r);
+    const amt = Math.round((Number(r.grandTotal) || 0) * 100) / 100;
+    const inv = retInvoiceOf(r, isSales);
+    const wh = r.warehouse || r.store || (inv ? (inv.warehouse || inv.store) : "") || WAREHOUSES[0];
+    const items = r.items || [];
+    // حذف مرتجع البيع = الكميات هتخرج من المخزن تاني — ممنوع لو هيطلع سالب
+    if (isSales) {
+      const negs = items.filter((it) => {
+        const p = products.find((x) => Number(x.id) === Number(it.productId));
+        return p && stockAt(p, wh) - (Number(it.qty) || 0) < 0;
+      });
+      if (negs.length) {
+        toast("لا يمكن حذف المرتجع: المخزن (" + wh + ") أقل من الكميات المرتجعة في: " + negs.map((n) => n.nameAr || n.product_name || "-").join("، "), "warning");
+        return;
+      }
+    }
+    if (!confirm("متأكد إنك عايز تحذف مرتجع الـ" + retWord(isSales) + " رقم (" + no + ") الخاص بـ " + retParty(r, isSales) + " بقيمة " + fmt(amt) + " ج.م؟\n\nالحذف بيتراجع عن كل أثره: الأصناف للمخزن، والتسوية (الرصيد أو الخزينة).")) {
+      toast("تم الإلغاء — المرتجع كما هو.", "warning");
+      return;
+    }
+    // 1) عكس المخزون
+    items.forEach((it) => {
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
+      if (p) addStockAt(p, wh, isSales ? -(Number(it.qty) || 0) : (Number(it.qty) || 0));
+    });
+    saveProducts();
+    // 2) عكس التسوية
+    if (r.settlement === "refund") {
+      const vIdx = vouchers.findIndex((v) =>
+        (String(v.refType || "") === (isSales ? "sale_return" : "purchase_return") && Number(v.refId) === Number(r.id)) ||
+        (String(v.desc || "").includes("رجع مبيعات رقم " + no) || String(v.desc || "").includes("رجع مشتريات رقم " + no)));
+      if (vIdx !== -1) { vouchers.splice(vIdx, 1); saveVouchers(); }
+      recalculateTreasuryBalances();
+      renderTreasury();
+      renderTreMoves();
+    } else if (isSales) {
+      let i = txs.findIndex((t) => Number(t.id) === Number(r.txId));
+      if (i === -1) i = txs.findIndex((t) => Number(t.customerId) === Number(r.customerId) && String(t.desc || "").includes("مرتجع مبيعات رقم " + no));
+      if (i !== -1) txs.splice(i, 1);
+      recalculateCustomerBalances();
+      saveCustomers();
+      saveTxs();
+    } else {
+      let i = supplierTxs.findIndex((t) => Number(t.id) === Number(r.txId));
+      if (i === -1) i = supplierTxs.findIndex((t) => Number(t.supplierId) === Number(r.supplierId) && String(t.desc || "").includes("مرتجع مشتريات رقم " + no));
+      if (i !== -1) supplierTxs.splice(i, 1);
+      recalculateSupplierBalances();
+      saveSuppliers();
+      saveSupplierTxs();
+    }
+    // 3) حذف السطر نفسه
+    if (isSales) { saleReturns = saleReturns.filter((x) => x.id !== r.id); saveSaleReturns(); }
+    else { purchaseReturns = purchaseReturns.filter((x) => x.id !== r.id); savePurchaseReturns(); }
+    addActivity("حذف مرتجع", "حذف مرتجع " + retWord(isSales) + " رقم (" + no + ") - " + retParty(r, isSales) + " - بقيمة " + fmt(amt) + " ج.م (تراجع كامل)");
+    toast("تم حذف المرتجع (" + no + ") وتراجع أثره بالكامل.", "success");
+    renderReturns();
+    renderInvoiceQuery();
+    renderDashboard();
+    renderTable();
+    renderSuppliers();
   }
 
   /* ================== الخزينة والمصروفات ================== */
@@ -4084,8 +4780,36 @@
     const from = $("#dtpRepFrom").value || "2000-01-01";
     const to = $("#dtpRepTo").value || "2999-12-31";
     const inRange = (d) => (d || "") >= from && (d || "") <= to;
+    // 🔁 بناء 108: التقارير صافي بعد المرتجعات (الكمية والقيمة بيتخصم منهم)
+    const retByItem = (isSales) => {
+      const map = new Map();
+      retList(isSales).filter((r) => inRange(retDateOf(r))).forEach((r) => {
+        (r.items || []).forEach((it) => {
+          const key = it.nameAr || it.product_name;
+          const cur = map.get(key) || { qty: 0, val: 0 };
+          cur.qty += Number(it.qty) || 0;
+          cur.val += Number(it.total) || 0;
+          map.set(key, cur);
+        });
+      });
+      return map;
+    };
+    const retByParty = (isSales) => {
+      const map = new Map();
+      retList(isSales).filter((r) => inRange(retDateOf(r))).forEach((r) => {
+        const key = retParty(r, isSales);
+        const cur = map.get(key) || { count: 0, val: 0 };
+        cur.count += 1;
+        cur.val += Number(r.grandTotal) || 0;
+        map.set(key, cur);
+      });
+      return map;
+    };
+    const rmS = retByItem(true), rmP = retByItem(false);
+    const rpS = retByParty(true), rpP = retByParty(false);
 
     const agg = (list, isSales) => {
+      const rm = isSales ? rmS : rmP;
       const map = new Map();
       list.filter((i) => inRange(i.invoiceDate)).forEach((inv) => {
         (inv.items || []).forEach((it) => {
@@ -4096,10 +4820,18 @@
           map.set(key, cur);
         });
       });
-      return [...map.entries()].map(([name, v]) => ({ name: name, qty: Math.round(v.qty * 100) / 100, val: Math.round(v.val * 100) / 100 })).sort((a, b) => b.val - a.val);
+      map.forEach((v, key) => {
+        const back = rm.get(key);
+        if (back) { v.qty -= back.qty; v.val -= back.val; }
+      });
+      return [...map.entries()]
+        .map(([name, v]) => ({ name: name, qty: Math.round(v.qty * 100) / 100, val: Math.round(v.val * 100) / 100 }))
+        .filter((r) => r.qty > 0 || r.val > 0)
+        .sort((a, b) => b.val - a.val);
     };
 
     const aggParty = (list, isSales) => {
+      const rp = isSales ? rpS : rpP;
       const map = new Map();
       list.filter((i) => inRange(i.invoiceDate)).forEach((inv) => {
         const name = isSales ? inv.customerName : inv.supplierName;
@@ -4108,7 +4840,14 @@
         cur.val += inv.grandTotal;
         map.set(name, cur);
       });
-      return [...map.entries()].map(([name, v]) => ({ name: name, count: v.count, val: Math.round(v.val * 100) / 100 })).sort((a, b) => b.val - a.val);
+      rp.forEach((back, name) => {
+        const cur = map.get(name) || { count: 0, val: 0 };
+        cur.val -= back.val;
+        map.set(name, cur);
+      });
+      return [...map.entries()]
+        .map(([name, v]) => ({ name: name, count: v.count, val: Math.round(v.val * 100) / 100 }))
+        .sort((a, b) => b.val - a.val);
     };
 
     const fill = (tbodyId, rows, cols) => {
@@ -4132,7 +4871,11 @@
 
     const sTot = sales.filter((i) => inRange(i.invoiceDate)).reduce((m, i) => m + (i.grandTotal || 0), 0);
     const pTot = purchases.filter((i) => inRange(i.invoiceDate)).reduce((m, i) => m + (i.grandTotal || 0), 0);
-    $("#repSummary").textContent = " | إجمالي المبيعات: " + fmt(sTot) + " ج.م | إجمالي المشتريات: " + fmt(pTot) + " ج.م";
+    const rSTot = saleReturns.filter((r) => inRange(retDateOf(r))).reduce((m, r) => m + (Number(r.grandTotal) || 0), 0);
+    const rPTot = purchaseReturns.filter((r) => inRange(retDateOf(r))).reduce((m, r) => m + (Number(r.grandTotal) || 0), 0);
+    let repSum = " | إجمالي المبيعات: " + fmt(Math.max(0, sTot - rSTot)) + " ج.م | إجمالي المشتريات: " + fmt(Math.max(0, pTot - rPTot)) + " ج.م";
+    if (rSTot || rPTot) repSum += " | مرتجعات المبيعات: " + fmt(rSTot) + " ج.م | مرتجعات المشتريات: " + fmt(rPTot) + " ج.م";
+    $("#repSummary").textContent = repSum;
   }
 
   function exportReports() {
@@ -4708,6 +5451,8 @@
       products: products,
       sales: sales,
       purchases: purchases,
+      saleReturns: saleReturns,
+      purchaseReturns: purchaseReturns,
       treasury: treasury,
       suppliers: suppliers,
       supplierTxs: supplierTxs,
@@ -5061,6 +5806,9 @@
       set(LS_PRODUCTS, o.products || []);
       set(LS_SALES, o.sales || []);
       set(LS_PURCHASES, o.purchases || []);
+      // نسخ قديمة (قبل بناء 108) مفيهاش مفاتيح المرتجعات → ما ندهسش الموجودش
+      if (Array.isArray(o.saleReturns)) set(LS_SALE_RETURNS, o.saleReturns);
+      if (Array.isArray(o.purchaseReturns)) set(LS_PURCHASE_RETURNS, o.purchaseReturns);
       set(LS_TREASURY, o.treasury || seedTreasury);
       set(LS_SUPPLIERS, o.suppliers || []);
       set(LS_SUP_TXS, o.supplierTxs || []);
@@ -5379,22 +6127,78 @@
     ["dtpFromP", "dtpToP", "txtSearchInvP"].forEach((id) => $("#" + id).addEventListener("input", renderInvoiceQuery));
     $("#btnRefreshInvoices").addEventListener("click", renderInvoiceQuery);
     $("#dgvInvS tbody").addEventListener("click", (e) => {
-      const btn = e.target.closest('[data-act="print"],[data-act="del"]');
+      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"]');
       if (!btn) return;
       const tr = btn.closest("tr");
       const inv = sales.find((x) => x.id === parseInt(tr.dataset.iid, 10));
       if (!inv) return;
+      if (btn.dataset.act === "ret") { openRetFor(true, inv); return; }
       if (btn.dataset.act === "del") { deleteInvoiceQuery(inv, true); return; }
       printInvoice(inv);
     });
     $("#dgvInvP tbody").addEventListener("click", (e) => {
-      const btn = e.target.closest('[data-act="print"],[data-act="del"]');
+      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"]');
       if (!btn) return;
       const tr = btn.closest("tr");
       const inv = purchases.find((x) => x.id === parseInt(tr.dataset.iid, 10));
       if (!inv) return;
+      if (btn.dataset.act === "ret") { openRetFor(false, inv); return; }
       if (btn.dataset.act === "del") { deleteInvoiceQuery(inv, false); return; }
       printPurchaseInvoice(inv);
+    });
+
+    /* ---- 🔁 المرتجعات (بناء 108) ---- */
+    document.querySelectorAll(".ret-tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".ret-tab-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        retActiveTab = btn.dataset.rett === "p" ? "p" : "s";
+        $("#retTabS").hidden = retActiveTab !== "s";
+        $("#retTabP").hidden = retActiveTab !== "p";
+        renderReturns();
+      });
+    });
+    ["dtpFromRS", "dtpToRS", "txtSearchRetS", "dtpFromRP", "dtpToRP", "txtSearchRetP"].forEach((id) => {
+      const el = $("#" + id);
+      if (el) el.addEventListener("input", renderReturns);
+    });
+    $("#btnRetRefresh").addEventListener("click", () => {
+      renderReturns();
+      toast("تم تحديث جدول المرتجعات.", "success");
+    });
+    $("#btnRetPickSale").addEventListener("click", () => openRetPick(true));
+    $("#btnRetPickPur").addEventListener("click", () => openRetPick(false));
+    $("#btnRetPickCancel").addEventListener("click", () => hideModal("mRetPick"));
+    $("#retPickSearch").addEventListener("input", renderRetPick);
+    $("#dgvRetPick tbody").addEventListener("click", (e) => {
+      const btn = e.target.closest('[data-act="pick"]');
+      if (!btn) return;
+      const iid = parseInt(btn.closest("tr").dataset.iid, 10);
+      const inv = retDocs(retPickIsSales).find((x) => Number(x.id) === iid);
+      if (inv) openRetFor(retPickIsSales, inv);
+    });
+    $("#retSettle").addEventListener("change", applyRetSettleUI);
+    $("#retMethod").addEventListener("change", fillRetTreasury);
+    $("#dgvRetItems").addEventListener("input", (e) => {
+      if (e.target && e.target.classList.contains("ret-qty-inp")) recalcRetTotal();
+    });
+    $("#btnRetSave").addEventListener("click", saveReturn);
+    $("#btnRetCancel").addEventListener("click", () => { retDraft = null; hideModal("mRetAdd"); });
+    [["#dgvRetS", true], ["#dgvRetP", false]].forEach((pair) => {
+      const tb = $(pair[0] + " tbody");
+      if (!tb) return;
+      tb.addEventListener("click", (e) => {
+        const btn = e.target.closest('[data-act="inv"],[data-act="del"]');
+        if (!btn) return;
+        const rid = parseInt(btn.closest("tr").dataset.rid, 10);
+        const isSales = pair[1];
+        const r = retList(isSales).find((x) => Number(x.id) === rid);
+        if (!r) return;
+        if (btn.dataset.act === "del") { deleteReturn(r, isSales); return; }
+        const inv = retInvoiceOf(r, isSales);
+        if (!inv) { toast("الفاتورة الأصلية اتحذفت — المرتجع لسه محفوظ في الجدول.", "warning"); return; }
+        if (isSales) printInvoice(inv); else printPurchaseInvoice(inv);
+      });
     });
 
     /* ---- الخزينة ---- */
@@ -6133,8 +6937,8 @@ const pwEye = document.getElementById("btnShowPass");
       if (!u) { toast("الحساب غير موجود", "error"); return; }
       let opts = "";
       ADMIN_FEATURES.forEach(([k, label]) => {
-        // مستندات العملاء: opt-in — لا تُمنح إلا لو مفعّلة صريحًا (زي clientSettings)
-        const on = k === "docManager"
+        // الصلاحيات opt-in: لا تُمنح إلا لو فُعّلت صريحًا (زي إعدادات المؤسسة والمستندات)
+        const on = OPT_IN_FEATS.indexOf(k) !== -1
           ? (u.features && u.features[k] === true)
           : !(u.features && u.features[k] === false);
         opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-feat\" value=\"" + k + "\" " + (on ? "checked" : "") + " /> " + label + "</label>";
@@ -6169,7 +6973,7 @@ const pwEye = document.getElementById("btnShowPass");
       }
       let opts = "";
       ADMIN_FEATURES.forEach(([k, label]) => {
-        const def = k === "docManager" ? "" : " checked";
+        const def = OPT_IN_FEATS.indexOf(k) !== -1 ? "" : " checked";
         opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-newfeat\" value=\"" + k + "\"" + def + " /> " + label + "</label>";
       });
       const body = "<div class=\"feat-grid\" style=\"grid-template-columns:repeat(3,1fr)\">" +
@@ -6234,6 +7038,34 @@ const pwEye = document.getElementById("btnShowPass");
     return { merged: cloudArr.concat(extras), extras: extras.length };
   }
 
+  // الفواتير القديمة على السحابة كانت بتتخزن باسم العميل/المورد من غير رقمه → الجهاز التاني
+  // بيشوف الاسم بس فترابط الفاتورة بصاحها يضيع (والمتاح للرجوع ووسم المرتجع بيتعطلوا).
+  // إلحقها بالاسم دلوقتي، وأول حفظ جاي يبعت الرقم ويصلح السحابة نفسها.
+  function linkInvoiceParties() {
+    const byName = (arr, name) => {
+      const t = String(name || "").trim();
+      if (!t) return null;
+      for (let i = 0; i < arr.length; i++) {
+        const x = arr[i];
+        if (String(x.nameAr || x.name || "").trim() === t) return x;
+      }
+      return null;
+    };
+    const hasId = (v) => v !== null && v !== undefined && String(v) !== "" && Number(v) > 0;
+    let fixed = 0;
+    sales.forEach((s) => {
+      if (hasId(s.customerId)) return;
+      const c = byName(customers, s.customerName || s.customer);
+      if (c) { s.customerId = c.id; fixed++; }
+    });
+    purchases.forEach((p) => {
+      if (hasId(p.supplierId)) return;
+      const sup = byName(suppliers, p.supplierName || p.supplier);
+      if (sup) { p.supplierId = sup.id; fixed++; }
+    });
+    return fixed;
+  }
+
   function adoptCloud() {
     const S = window.MIZAN_STATE;
     const changed = [];
@@ -6249,10 +7081,13 @@ const pwEye = document.getElementById("btnShowPass");
     step("accounts", S.accounts, accounts, function (v) { accounts = v; });
     step("sales", S.sales, sales, function (v) { sales = v; });
     step("purchases", S.purchases, purchases, function (v) { purchases = v; });
+    step("sale_returns", S.sale_returns, saleReturns, function (v) { saleReturns = v; });
+    step("purchase_returns", S.purchase_returns, purchaseReturns, function (v) { purchaseReturns = v; });
     step("supplier_txs", S.supplier_txs, supplierTxs, function (v) { supplierTxs = v; });
     step("customer_txs", S.customer_txs, txs, function (v) { txs = v; });
     step("vouchers", S.vouchers, vouchers, function (v) { vouchers = v; });
     step("journal_entries", S.journalEntries, journalEntries, function (v) { journalEntries = v; });
+    linkInvoiceParties();
     recalculateCustomerBalances();
     recalculateSupplierBalances();
     recalculateTreasuryBalances();
@@ -6272,6 +7107,8 @@ const pwEye = document.getElementById("btnShowPass");
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
+    localStorage.setItem(LS_SALE_RETURNS, JSON.stringify(saleReturns));
+    localStorage.setItem(LS_PURCHASE_RETURNS, JSON.stringify(purchaseReturns));
   }
 
   /* ================== شاشة "غير متاح" (وقت/قفل/حجب) ================== */
@@ -6308,8 +7145,12 @@ const pwEye = document.getElementById("btnShowPass");
         ["clientSettings", "إعدادات مؤسستك"], ["settings", "الإعدادات (المالك)"],
         ["catTab", "تبويب التصنيفات"], ["unitTab", "تبويب وحدات القياس"], ["whTab", "تبويب المستودعات"],
         ["walletTab", "تبويب المحافظ الإلكترونية"], ["bankTab", "تبويب حسابات البنوك"], ["ownerTab", "تبويب أصحاب المنشأة"],
-        ["docManager", "📁 إدارة مستندات العملاء والموردين"]
+        ["docManager", "📁 إدارة مستندات العملاء والموردين"],
+        ["returnsManager", "🔁 إدارة المرتجعات"]
         ];
+
+  // صلاحيات opt-in: owner/سوبر أدمن عندها دائمًا، والعضو ما عندهاش إلا لو فُعّلت صريحًا
+  const OPT_IN_FEATS = ["clientSettings", "docManager", "returnsManager"];
 
   function fmtDate(d) { return d ? String(d).slice(0, 10) : ""; }
   // تاريخ وساعة محليان (لآخر الاتصال وغيرها) — بصيغة YYYY-MM-DD HH:MM

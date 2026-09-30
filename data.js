@@ -21,7 +21,8 @@
   var EAGER = ["customers", "suppliers", "products", "treasury", "accounts"];
   // الجداول الكبيرة: تُحمَّل عند الطلب فقط
   var LAZY = ["sales", "sale_items", "purchases", "purchase_items", "supplier_txs",
-    "vouchers", "journal_entries", "journal_lines", "audit_logs"];
+    "vouchers", "journal_entries", "journal_lines", "audit_logs",
+    "sale_returns", "sale_return_items", "purchase_returns", "purchase_return_items"];
   var PAGE_SIZE = 500;
   var MAX_PAGES = 5; // حد أقصى 2500 سطر للجداول الكبيرة (مع البحث/الترقيم)
 
@@ -284,11 +285,24 @@
   function loadLazy(table, opts) {
     opts = opts || {};
     var sel = opts.select || "*";
-    // بعض الجداول ليس لها created_at ولا doc_date → جلب بلا ترتيب
-    var noCreated = { customer_txs: 1 };
-    var noDateCol = { sale_items: 1, purchase_items: 1, journal_lines: 1 };
-    var order = opts.order || { col: (noCreated[table] ? "doc_date" : "created_at"), dir: "desc" };
-    var skipOrder = noDateCol[table] ? 1 : 0;
+    // الجداول الكبيرة: الترتيب الثابت مهم جداً لو الصفحة اتقسمت على أكتر من طلب
+    // (من غير ORDER BY ثابت نتأكد إن الـ range مش هيكرر سطر ولا يفوّت سطر بين الصفحات).
+    // بعض الجداول (أسطر الأصناف والأسطر المحاسبية) مالهاش created_at → نرتب بـ local_id.
+    var BIG_DATE_COLS = {
+      customers: "created_at", suppliers: "created_at", products: "created_at",
+      sales: "created_at", purchases: "created_at", vouchers: "created_at",
+      journal_entries: "created_at", sale_returns: "created_at", purchase_returns: "created_at",
+      customer_txs: "created_at", supplier_txs: "created_at", accounts: "created_at",
+      treasury: "created_at", organizations: "created_at", settings: "created_at"
+    };
+    // جداول بلا created_at وبلا doc_date → الترتيب الوحيد المستقر هو local_id
+    var LOCAL_ID_ORDER = {
+      sale_items: 1, purchase_items: 1, journal_lines: 1,
+      sale_return_items: 1, purchase_return_items: 1
+    };
+    var order = opts.order ||
+      (LOCAL_ID_ORDER[table] ? { col: "local_id", dir: "asc" }
+        : { col: BIG_DATE_COLS[table] || "created_at", dir: "desc" });
     var pages = opts.maxPages || MAX_PAGES;
     var rows = [];
     var rangeStart = 0;
@@ -299,18 +313,13 @@
       if (opts.filter) { b = b.or(opts.filter); }
       if (opts.from !== undefined) b = b.gte(order.col, opts.from);
       if (opts.to !== undefined) b = b.lte(order.col, opts.to);
-      if (skipOrder) return b.range(rangeStart, rangeStart + PAGE_SIZE - 1).then(function (res) {
-        if (res.error) throw res.error;
-        var data = res.data || [];
-        rows = rows.concat(data);
-        return data.length === PAGE_SIZE;
-      });
-      return b.order(order.col, { ascending: order.dir === "asc" }).range(rangeStart, rangeStart + PAGE_SIZE - 1).then(function (res) {
-        if (res.error) throw res.error;
-        var data = res.data || [];
-        rows = rows.concat(data);
-        return data.length === PAGE_SIZE;
-      });
+      return b.order(order.col, { ascending: order.dir === "asc" })
+        .range(rangeStart, rangeStart + PAGE_SIZE - 1).then(function (res) {
+          if (res.error) throw res.error;
+          var data = res.data || [];
+          rows = rows.concat(data);
+          return data.length === PAGE_SIZE;
+        });
     }
 
     var step = 0;
