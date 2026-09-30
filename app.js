@@ -6559,16 +6559,19 @@
   function showLogin() {
     // 🛡 تنظيف أي أثر للحساب السابق (الخروج لازم يمسح الهوية مش البيانات فقط)
     resetSessionState();
+    hideLoginExpiry();
     $("#loginScreen").hidden = false;
     $("#orgScreen").hidden = true;
     $("#memberScreen").hidden = true;
   }
   function showOrgScreen() {
+    hideLoginExpiry();
     $("#loginScreen").hidden = true;
     $("#orgScreen").hidden = false;
     $("#memberScreen").hidden = true;
   }
   function hideScreens() {
+    hideLoginExpiry();
     $("#bootSplash").hidden = true;
     $("#loginScreen").hidden = true;
     $("#orgScreen").hidden = true;
@@ -6649,7 +6652,14 @@ const pwEye = document.getElementById("btnShowPass");
             setAuthMsg(m, "هذا ليس حساب شركة. استخدم تبويب «تسجيل دخول مستخدم».", "err");
             return;
           }
-          showMembersScreen();
+          // بوابة الانتهاء (بناء ١١٠): صاحب الشركة المنتهي ما يشوفش شاشة حساباته
+          setAuthMsg(m, "جارٍ التحقق من الصلاحية...", "");
+          DATA.requestAccess().then((acc) => {
+            if (!(acc && acc.allowed)) { showDeny(acc); return; }
+            hideLoginExpiry();
+            setAuthMsg(m, "", "");
+            showMembersScreen();
+          }).catch(() => { showDeny(null); });
           return;
         }
         proceedOnline(m, username);
@@ -6801,7 +6811,17 @@ const pwEye = document.getElementById("btnShowPass");
     // مدير الشركة (غير المالك) حقه يدخل شاشة «حسابات شركتك» قبل البرنامج
     // (bypassMembers = true فقط عند الضغط على زر «دخول البرنامج» من شاشة حسابات الشركة)
     const p0 = DATA.getProfile();
-    if (!bypassMembers && isOrgAdmin(p0)) { showMembersScreen(); return; }
+    if (!bypassMembers && isOrgAdmin(p0)) {
+      // بوابة الصلاحية الأول (بناء ١١٠): المنتهي أو المقفول يشوف رسالة الدعم على شاشة
+      // الدخول — مفيش دخول شاشة «حسابات شركتك» قبل ما نتأكد إن الاشتراك ساري.
+      stage("جاري التحقق من الصلاحية...");
+      DATA.requestAccess().then((acc) => {
+        if (!(acc && acc.allowed)) { showDeny(acc); return; }
+        hideLoginExpiry();
+        showMembersScreen();
+      }).catch(() => { showDeny(null); });
+      return;
+    }
     A.online = true;
     A.adopting = true;
     // 🛡 عزل الشركات: مانبقاش ببيانات أي حساب سابق قبل ما نبدأ التحميل
@@ -7252,26 +7272,54 @@ const pwEye = document.getElementById("btnShowPass");
   }
 
   /* ================== شاشة "غير متاح" (وقت/قفل/حجب) ================== */
+  // صناديق رسالة الانتهاء فوق شاشة الدخول (بناء ١١٠)
+  function showLoginExpiry(text) {
+    const exp = document.getElementById("loginExpiry");
+    if (!exp) return false;
+    const t = document.getElementById("loginExpiryText");
+    if (t && text) t.textContent = text;
+    exp.hidden = false;
+    return true;
+  }
+  function hideLoginExpiry() {
+    const exp = document.getElementById("loginExpiry");
+    if (exp) exp.hidden = true;
+  }
+
   function showDeny(acc) {
     const reasons = {
-      plan: "انتهت مدة اشتراك شركتك. تواصل مع المالك لتجديدها.",
-      locked: "شركتك مقفلة حاليًا من المالك. حاول لاحقًا.",
+      plan: "انتهت فترة إشتراكك تواصل مع الدعم الفنى لشركة ميزان لإعادة تفعيل باقة الإشتراك",
+      locked: "شركتك مقفولة حاليًا من إدارة ميزان — تواصل مع الدعم الفنى لإعادة التفعيل",
       blocked: "عضوك حديثًا محظور. تواصل مع مالك الشركة.",
       noprofile: "لا يوجد حساب مرتبط بشركة.",
       noorganization: "لا توجد شركة مرتبطة بحسابك."
     };
+    const a = DATA.accessInfo();
+    let msg;
+    if (!acc) msg = "تعذّر التحقق من اشتراكك — جرّب الدخول بعد لحظات.";
+    else if (acc.reason === "plan" && acc.plan_end) {
+      msg = "انتهت فترة إشتراكك " + "بتاريخ " + String(acc.plan_end).slice(0, 10) + " — تواصل مع الدعم الفنى لشركة ميزان لإعادة تفعيل باقة الإشتراك";
+    } else msg = reasons[acc.reason] || "لا يمكنك الدخول حاليًا.";
+
+    // المنتهي أو المقفول: يفضل في شاشة تسجيل الدخول وتشوف الرسالة + زر الواتس
+    // (بدل ما يدخل شاشة حسباته وصلاحياتها — ده كان الغلط اللي اتصلّح في بناء ١١٠)
+    const onLogin = !!(acc && (acc.reason === "plan" || acc.reason === "locked"));
+    if (onLogin) {
+      $("#denyScreen").hidden = true;
+      $("#orgScreen").hidden = true;
+      $("#memberScreen").hidden = true;
+      $("#loginScreen").hidden = false;
+      showLoginExpiry(msg);
+      const m = document.getElementById("authMsg");
+      if (m) { m.textContent = ""; m.className = "login-msg"; }
+      return;
+    }
+    hideLoginExpiry();
     $("#loginScreen").hidden = true;
     $("#orgScreen").hidden = true;
     $("#denyScreen").hidden = false;
-    const a = DATA.accessInfo();
     const msgEl = $("#denyMsg");
-    if (!acc) {
-      msgEl.textContent = "تعذّر التحقق من اشتراكك.";
-    } else if (acc.reason === "plan" && acc.plan_end) {
-      msgEl.textContent = "أشتراك شركتك منتهي بتاريخ " + acc.plan_end + ". تواصل مع المالك للتفعيل.";
-    } else {
-      msgEl.textContent = reasons[acc.reason] || "لا يمكنك الدخول حاليًا.";
-    }
+    msgEl.textContent = msg;
     msgEl.className = "login-msg err";
   }
 
@@ -7531,61 +7579,112 @@ const pwEye = document.getElementById("btnShowPass");
     }
   }
 
+  // ===== بحث لوحة الإدارة (بناء 110) =====
+  // التطبيع العربي موجود في normalizeAr — نضيف عليه ضغط المسافات عشان البحث متعدد الكلمات
+  function admNorm(s) {
+    return normalizeAr(s).replace(/\s+/g, " ").trim();
+  }
+  function admDigits(s) {
+    return String(s || "").replace(/\D/g, "");
+  }
+  function admFilterValue(id) {
+    const el = document.getElementById(id);
+    return el ? String(el.value || "") : "";
+  }
+  // صندوق «الاسم أو التليفون»: رقم → يطابق التليفون، حرف → يطابق اسم الشركة أو اسم المسئول
+  function adminOrgMatches(o, qOrg, qUser) {
+    if (qOrg) {
+      const digits = qOrg.replace(/\D/g, "");
+      const text = qOrg.replace(/[0-9\-+().]/g, "").trim();
+      let hit = false;
+      if (digits && admDigits(o.org_phone).indexOf(digits) !== -1) hit = true;
+      if (!hit && text) {
+        if (admNorm(o.org_name).indexOf(text) !== -1) hit = true;
+        else if (admNorm(o.owner_name).indexOf(text) !== -1) hit = true;
+      }
+      if (!hit) return false;
+    }
+    if (qUser && admNorm(o.admin_username).indexOf(qUser) === -1) return false;
+    return true;
+  }
+
+  function paintAdminOrgTable(orgs) {
+    const box = $("#adminList");
+    if (!box) return;
+    const list = orgs || adminOrgsCache || [];
+    const qOrg = admNorm(admFilterValue("admSearchOrg"));
+    const qUser = admNorm(admFilterValue("admSearchUser"));
+    const searching = !!(qOrg || qUser);
+    const filtered = searching ? list.filter((o) => adminOrgMatches(o, qOrg, qUser)) : list;
+    const info = $("#admSearchInfo");
+    if (info) info.textContent = searching ? ("🔎 " + filtered.length + " من " + list.length + " شركة") : "";
+    if (!list.length) {
+      box.innerHTML = '<p class="login-sub">لا توجد شركات بعد.</p>';
+      return;
+    }
+    if (!filtered.length) {
+      box.innerHTML = '<p class="login-sub">لا توجد شركة مطابقة لبيانات البحث — جرّب اسمًا أقصر أو رقم تليفون جزئي.</p>';
+      return;
+    }
+    let h = '<p class="login-sub" style="margin-bottom:8px">💡 اضغط على أي شركة <b>ضغطتين</b> (دبل كليك) لفتح شاشة بياناتها وتعديلها في أي وقت.</p>' +
+      '<table class="data-table"><thead><tr>' +
+      '<th>الشركة</th><th>يوزر نيم</th><th>تليفون المسئول</th><th>المالك</th><th>الأعضاء</th><th>من تاريخ</th><th>إلى تاريخ</th>' +
+      '<th>الحالة</th><th>آخر اتصال</th><th>المزايا</th><th>إجراءات</th></tr></thead><tbody>';
+    filtered.forEach((o) => {
+      const locked = !!o.locked;
+      const until = daysUntil(o.plan_end);
+      let status;
+      if (locked) {
+        status = '<span class="badge-no">🔴 مقفلة</span>';
+      } else if ((o.plan_status === "expired" || until < 0) && o.plan_end) {
+        status = '<span class="badge-no">🔴 منتهية</span>';
+      } else if (until !== null && until >= 0 && until <= 7 && o.plan_end) {
+        status = '<span class="badge-warn">🟠 تنتهي خلال ' + until + " يوم</span>";
+      } else if (o.plan_status === "active" || until === null) {
+        status = '<span class="badge-ok">🟢 نشطة</span>';
+      } else {
+        status = '<span class="badge-no">🔴 ' + (o.plan_status || "متوقفة") + "</span>";
+      }
+      h += "<tr data-org=\"" + o.org_id + "\" onclick=\"window.__admDbl('" + o.org_id + "')\" style=\"cursor:pointer\" title=\"اضغط ضغطتين لتعديل بيانات الشركة\">" +
+        "<td><b>" + (o.org_name || "بدون اسم") + (o.protected ? ' <span class="badge-ok" title="شركة المالك — محمية من الحذف">🔒</span>' : "") + "</b></td>" +
+        "<td><code>" + (o.admin_username || "—") + "</code></td>" +
+        "<td>" + (o.org_phone || "—") + "</td>" +
+        "<td>" + (o.owner_name || "—") + "</td>" +
+        "<td>" + (o.members || 0) + " / " + (o.max_members || 5) + "</td>" +
+        "<td>" + fmtDate(o.plan_start) + "</td>" +
+        "<td>" + fmtDate(o.plan_end) + "</td>" +
+        "<td>" + status + "</td>" +
+        '<td style="white-space:nowrap">' + (o.online
+          ? '<span style="color:var(--success);font-weight:800">🟢 متصل الآن</span>'
+          : '<span style="color:#ff5b5b;font-weight:800">' + (o.last_seen ? fmtDateTime(o.last_seen) : "لم يتصل بعد") + "</span>") + "</td>" +
+        "<td><button class=\"btn small teal\" type=\"button\" onclick=\"event.stopPropagation();window.__admFeats('" + o.org_id + "')\">⚙️ المزايا</button></td>" +
+        "<td><button class=\"btn small blue\" type=\"button\" onclick=\"event.stopPropagation();window.__admDbl('" + o.org_id + "')\">✏️ بيانات الشركة</button> " +
+        (o.protected
+          ? '<span class="login-sub" title="شركة رئيسية تخص المالك">🔒 لا تُحذف</span>'
+          : "<button class=\"btn small red\" type=\"button\" onclick=\"event.stopPropagation();window.__admDel('" + o.org_id + "')\">🗑 حذف</button>") +
+        "</td>" +
+        "</tr>";
+    });
+    h += "</tbody></table>";
+    box.innerHTML = h;
+  }
+
   function renderAdminOrgs() {
     const box = $("#adminList");
     box.innerHTML = '<p class="login-sub">جارٍ تحميل الشركات...</p>';
     DATA.adminOrgs().then((orgs) => {
-      if (!orgs || !orgs.length) {
-        box.innerHTML = '<p class="login-sub">لا توجد شركات بعد.</p>';
-        renderAdminStats(orgs || []);
-        return;
-      }
-      renderAdminStats(orgs);
-      renderAdminAlerts(orgs);
-      let h = '<p class="login-sub" style="margin-bottom:8px">💡 اضغط على أي شركة <b>ضغطتين</b> (دبل كليك) لفتح شاشة بياناتها وتعديلها في أي وقت.</p>' +
-        '<table class="data-table"><thead><tr>' +
-        '<th>الشركة</th><th>يوزر نيم</th><th>تليفون المسئول</th><th>المالك</th><th>الأعضاء</th><th>من تاريخ</th><th>إلى تاريخ</th>' +
-        '<th>الحالة</th><th>آخر اتصال</th><th>المزايا</th><th>إجراءات</th></tr></thead><tbody>';
-      orgs.forEach((o) => {
-        const locked = !!o.locked;
-        const until = daysUntil(o.plan_end);
-        let status;
-        if (locked) {
-          status = '<span class="badge-no">🔴 مقفلة</span>';
-        } else if ((o.plan_status === "expired" || until < 0) && o.plan_end) {
-          status = '<span class="badge-no">🔴 منتهية</span>';
-        } else if (until !== null && until >= 0 && until <= 7 && o.plan_end) {
-          status = '<span class="badge-warn">🟠 تنتهي خلال ' + until + " يوم</span>";
-        } else if (o.plan_status === "active" || until === null) {
-          status = '<span class="badge-ok">🟢 نشطة</span>';
-        } else {
-          status = '<span class="badge-no">🔴 ' + (o.plan_status || "متوقفة") + "</span>";
-        }
-        h += "<tr data-org=\"" + o.org_id + "\" onclick=\"window.__admDbl('" + o.org_id + "')\" style=\"cursor:pointer\" title=\"اضغط ضغطتين لتعديل بيانات الشركة\">" +
-          "<td><b>" + (o.org_name || "بدون اسم") + (o.protected ? ' <span class="badge-ok" title="شركة المالك — محمية من الحذف">🔒</span>' : "") + "</b></td>" +
-          "<td><code>" + (o.admin_username || "—") + "</code></td>" +
-          "<td>" + (o.org_phone || "—") + "</td>" +
-          "<td>" + (o.owner_name || "—") + "</td>" +
-          "<td>" + (o.members || 0) + " / " + (o.max_members || 5) + "</td>" +
-          "<td>" + fmtDate(o.plan_start) + "</td>" +
-          "<td>" + fmtDate(o.plan_end) + "</td>" +
-          "<td>" + status + "</td>" +
-          '<td style="white-space:nowrap">' + (o.online
-            ? '<span style="color:var(--success);font-weight:800">🟢 متصل الآن</span>'
-            : '<span style="color:#ff5b5b;font-weight:800">' + (o.last_seen ? fmtDateTime(o.last_seen) : "لم يتصل بعد") + "</span>") + "</td>" +
-          "<td><button class=\"btn small teal\" type=\"button\" onclick=\"event.stopPropagation();window.__admFeats('" + o.org_id + "')\">⚙️ المزايا</button></td>" +
-          "<td><button class=\"btn small blue\" type=\"button\" onclick=\"event.stopPropagation();window.__admDbl('" + o.org_id + "')\">✏️ بيانات الشركة</button> " +
-          (o.protected
-            ? '<span class="login-sub" title="شركة رئيسية تخص المالك">🔒 لا تُحذف</span>'
-            : "<button class=\"btn small red\" type=\"button\" onclick=\"event.stopPropagation();window.__admDel('" + o.org_id + "')\">🗑 حذف</button>") +
-          "</td>" +
-          "</tr>";
-      });
-      h += "</tbody></table>";
-      box.innerHTML = h;
+      const list = orgs || [];
+      renderAdminStats(list);
+      renderAdminAlerts(list);
+      paintAdminOrgTable(list);
     }).catch((e) => {
       box.innerHTML = '<p class="login-msg err">تعذّر تحميل الشركات: ' + (e.message || e) + "</p>";
     });
+  }
+
+  // الكتابة في صندوق البحث تعيد الرسم من الكاش فقط — بدون طلب شبكة جديد
+  function onAdminSearchInput() {
+    if (document.getElementById("adminList")) paintAdminOrgTable();
   }
 
   window.__admMembers = function (orgId) {
@@ -8977,6 +9076,17 @@ const pwEye = document.getElementById("btnShowPass");
   function setupAdmin() {
     $("#btnAdmin").addEventListener("click", openAdmin);
     $("#btnAdminRefresh").addEventListener("click", renderAdminOrgs);
+    const so = $("#admSearchOrg");
+    const su = $("#admSearchUser");
+    if (so) so.addEventListener("input", onAdminSearchInput);
+    if (su) su.addEventListener("input", onAdminSearchInput);
+    const clearBtn = $("#btnAdminSearchClear");
+    if (clearBtn) clearBtn.addEventListener("click", () => {
+      if (so) so.value = "";
+      if (su) su.value = "";
+      paintAdminOrgTable();
+      if (so) so.focus();
+    });
     const btnAddOrg = $("#btnAdminAddOrg");
     if (btnAddOrg) btnAddOrg.addEventListener("click", () => openOrgModal());
     const btnLog = $("#btnAdminLog");

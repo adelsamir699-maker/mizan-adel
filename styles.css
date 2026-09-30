@@ -1018,6 +1018,13 @@ body {
 .adm-alert.orange{background:#fffbeb;color:#b45309;border-color:#fde68a}
 .adm-alert.green{background:#f0fdf4;color:#15803d;border-color:#bbf7d0}
 .adm-alert code{background:rgba(0,0,0,.06);padding:1px 6px;border-radius:5px;font-size:12px}
+.adm-search{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px dashed #cbd5e1}
+.adm-search-field{display:flex;flex-direction:column;gap:4px;font-size:12.5px;font-weight:700;color:var(--text-secondary)}
+.adm-search-field input{min-width:230px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px;background:#fff}
+.adm-search-field input:focus{outline:2px solid #93c5fd;outline-offset:1px;border-color:#2563eb}
+.adm-search .btn{padding:8px 14px}
+#admSearchInfo{font-weight:800;color:#1d4ed8;white-space:nowrap}
+@media (max-width:760px){.adm-search-field input{min-width:150px;flex:1}}
 @media (max-width:900px){#viewAdmin .kpi-row{grid-template-columns:repeat(4,1fr)}}
 @media (max-width:560px){#viewAdmin .kpi-row{grid-template-columns:repeat(2,1fr)}}
 .feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0;max-height:60vh;overflow:auto}
@@ -1452,5 +1459,39 @@ td.c-tax.tax-hidden {
   .paper-thermal .inv-sign { flex-direction: column; gap: 16px; }
   .paper-thermal .inv-table th, .paper-thermal .inv-table td { padding: 3px; font-size: 10px; }
 }
+
+/* ===== رسالة «انتهت فترة اشتراكك» على شاشة تسجيل الدخول (بناء ١١٠) ===== */
+.login-expiry {
+  margin-top: 12px;
+  padding: 12px 14px;
+  text-align: center;
+  background: #FFF7ED;
+  border: 1px solid #FDBA74;
+  border-radius: 12px;
+}
+.login-expiry-ico { font-size: 22px; line-height: 1; margin-bottom: 6px; }
+.login-expiry-text {
+  font-size: 14px;
+  font-weight: 800;
+  color: #9A3412;
+  line-height: 1.7;
+}
+.login-expiry-wa {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: #25D366;
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  text-decoration: none;
+}
+.login-expiry-wa:hover { background: #1EBE5B; }
+.login-expiry-wa b { direction: ltr; }
+
 
 
