@@ -7294,11 +7294,10 @@ const pwEye = document.getElementById("btnShowPass");
       noprofile: "لا يوجد حساب مرتبط بشركة.",
       noorganization: "لا توجد شركة مرتبطة بحسابك."
     };
-    const a = DATA.accessInfo();
     let msg;
     if (!acc) msg = "تعذّر التحقق من اشتراكك — جرّب الدخول بعد لحظات.";
     else if (acc.reason === "plan" && acc.plan_end) {
-      msg = "انتهت فترة إشتراكك " + "بتاريخ " + String(acc.plan_end).slice(0, 10) + " — تواصل مع الدعم الفنى لشركة ميزان لإعادة تفعيل باقة الإشتراك";
+      msg = "انتهت فترة إشتراكك بتاريخ " + String(acc.plan_end).slice(0, 10) + " — تواصل مع الدعم الفنى لشركة ميزان لإعادة تفعيل باقة الإشتراك";
     } else msg = reasons[acc.reason] || "لا يمكنك الدخول حاليًا.";
 
     // المنتهي أو المقفول: يفضل في شاشة تسجيل الدخول وتشوف الرسالة + زر الواتس
