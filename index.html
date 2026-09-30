@@ -78,6 +78,7 @@
       <button class="nav-btn" data-view="balance">⚖️  قائمة المركز المالي</button>
       <button class="nav-btn" data-view="treasuryStatements">📑  كشوف حسابات الخزائن</button>
       <button class="nav-btn" data-view="reports">📈  تقارير المبيعات والمشتريات</button>
+      <button class="nav-btn" data-view="attendance" hidden>🕐  الحضور والانصراف</button>
       <button class="nav-btn" data-view="users">👤  المستخدمون والصلاحيات</button>
       <button class="nav-btn" data-view="audit">📋  سجل العمليات</button>
       <button class="nav-btn" data-view="clientSettings" hidden>⚙️ إعدادات مؤسستك</button>
@@ -818,6 +819,221 @@
 
       </section>
 
+      <!-- ===== 🆕 شاشة الحضور والانصراف (بناء 115) ===== -->
+      <section class="view view-attendance" id="viewAttendance" data-id="attendance" hidden>
+
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnAddEmp" class="btn blue" type="button">➕ إضافة موظف</button>
+            <button id="btnGoPunch" class="btn green" type="button">🕐 تسجيل حضور / انصراف</button>
+          </div>
+          <h1 class="view-title">🕐 الحضور والانصراف وإدارة الموظفين</h1>
+        </div>
+
+        <div class="tabs" id="attTabs">
+          <button class="tab-btn active" data-att="today">🗓️ لوحة اليوم</button>
+          <button class="tab-btn" data-att="emp">👥 الموظفون</button>
+          <button class="tab-btn" data-att="punch">🕐 تسجيل الحضور</button>
+          <button class="tab-btn" data-att="ledger">📋 سجل الحضور</button>
+          <button class="tab-btn" data-att="reports">📈 التقارير</button>
+          <button class="tab-btn" data-att="set">⏱️ مدة العمل</button>
+        </div>
+
+        <!-- لوحة اليوم -->
+        <div id="attPaneToday">
+          <div class="kpi-row">
+            <div class="kpi-card" style="--accent:#10B981">
+              <div class="kpi-title">✅ حاضرون اليوم</div>
+              <div class="kpi-value" id="attKPresent">0</div>
+            </div>
+            <div class="kpi-card" style="--accent:#EF4444">
+              <div class="kpi-title">🚪 غائبون</div>
+              <div class="kpi-value" id="attKAbsent">0</div>
+            </div>
+            <div class="kpi-card" style="--accent:#F59E0B">
+              <div class="kpi-title">⏰ متأخرون</div>
+              <div class="kpi-value" id="attKLate">0</div>
+            </div>
+            <div class="kpi-card" style="--accent:#2563EB">
+              <div class="kpi-title">🏢 موجودون الآن</div>
+              <div class="kpi-value" id="attKOnSite">0</div>
+            </div>
+          </div>
+          <div class="data-panel">
+            <div class="panel-title">📋 جدول اليوم السريع (من سجل الحضور)</div>
+            <div class="table-wrap">
+              <table id="dgvAttToday" class="dgv">
+                <thead><tr>
+                  <th>الموظف</th><th>القسم</th><th>الحضور</th><th>الانصراف</th><th>التأخير</th><th>الحالة</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- الموظفون -->
+        <div id="attPaneEmp" hidden>
+          <div class="search-bar">
+            <label class="filter-label" for="txtEmpSearch">🔍 بحث (اسم/كود/وظيفة/قسم/معرّف):</label>
+            <input type="text" id="txtEmpSearch" class="search-input" autocomplete="off" />
+            <span id="empSummary" class="stk-summary"></span>
+          </div>
+          <div class="table-wrap">
+            <table id="dgvEmployees" class="dgv">
+              <thead><tr>
+                <th hidden>المعرف</th>
+                <th style="width:9%">الكود</th>
+                <th style="width:20%">اسم الموظف</th>
+                <th style="width:13%">الوظيفة</th>
+                <th style="width:12%">القسم</th>
+                <th style="width:12%">رقم الهاتف</th>
+                <th style="width:10%">تاريخ التعيين</th>
+                <th style="width:10%">معرّف الحضور</th>
+                <th style="width:7%">الحالة</th>
+                <th style="width:7%">تعديل</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- تسجيل الحضور -->
+        <div id="attPanePunch" hidden>
+          <div class="data-panel">
+            <div class="panel-title">🕐 تسجيل سريع — الوقت يُؤخذ من النظام تلقائيًا</div>
+            <div class="search-bar">
+              <label class="filter-label" for="txtPunchBadge">معرّف الموظف (كود/رقم التعيين):</label>
+              <input type="text" id="txtPunchBadge" class="search-input" autocomplete="off" placeholder="امسح الباركود أو اكتب المعرّف ثم Enter" />
+              <label class="filter-label" for="selPunchEmp">أو اختر الموظف:</label>
+              <select id="selPunchEmp" class="filter-select"></select>
+              <button id="btnPunchIn" class="btn green" type="button">🟢 تسجيل حضور</button>
+              <button id="btnPunchOut" class="btn red" type="button">🔴 تسجيل انصراف</button>
+            </div>
+            <div class="search-bar" id="atManBar">
+              <label class="filter-label">⏰ تعديل يدوي (لصاحب صلاحية التعديل فقط):</label>
+              <input type="datetime-local" id="atManIn" class="filter-select" disabled />
+              <input type="datetime-local" id="atManOut" class="filter-select" disabled />
+              <span class="filter-label" id="atManHint">التسجيل الحالي تلقائي من وقت النظام</span>
+            </div>
+          </div>
+          <div class="data-panel">
+            <div class="panel-title">📋 عمليات اليوم</div>
+            <div class="table-wrap">
+              <table id="dgvPunchToday" class="dgv">
+                <thead><tr>
+                  <th>الموظف</th><th>الحضور</th><th>الانصراف</th><th>التأخير</th><th>ساعات العمل</th><th>الحالة</th><th>إجراء</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- سجل الحضور -->
+        <div id="attPaneLedger" hidden>
+          <div class="search-bar">
+            <label class="filter-label" for="selLedEmp">الموظف:</label>
+            <select id="selLedEmp" class="filter-select"><option value="">الكل</option></select>
+            <label class="filter-label" for="selLedDept">القسم:</label>
+            <select id="selLedDept" class="filter-select"><option value="">الكل</option></select>
+            <label class="filter-label" for="dtpLedFrom">من:</label>
+            <input type="date" id="dtpLedFrom" class="filter-select" />
+            <label class="filter-label" for="dtpLedTo">إلى:</label>
+            <input type="date" id="dtpLedTo" class="filter-select" />
+            <label class="filter-label" for="selLedStatus">الحالة:</label>
+            <select id="selLedStatus" class="filter-select"><option value="">كل الحالات</option></select>
+          </div>
+          <div class="search-bar">
+            <label class="filter-label" for="txtLedSearch">🔍 بحث في السجل:</label>
+            <input type="text" id="txtLedSearch" class="search-input" autocomplete="off" />
+            <button id="btnLedCsv" class="btn green" type="button">📥 تصدير Excel (CSV)</button>
+            <button id="btnLedPrint" class="btn sky" type="button">🖨️ طباعة / PDF</button>
+            <span id="ledSummary" class="stk-summary"></span>
+          </div>
+          <div class="table-wrap">
+            <table id="dgvLedger" class="dgv">
+              <thead><tr>
+                <th hidden>المعرف</th>
+                <th style="width:15%">الموظف</th>
+                <th style="width:10%">القسم</th>
+                <th style="width:10%">التاريخ</th>
+                <th style="width:10%">الحضور</th>
+                <th style="width:10%">الانصراف</th>
+                <th style="width:8%">التأخير</th>
+                <th style="width:10%">ساعات العمل</th>
+                <th style="width:9%">الإضافي</th>
+                <th style="width:9%">الحالة</th>
+                <th style="width:9%">تعديل</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- التقارير -->
+        <div id="attPaneReports" hidden>
+          <div class="search-bar">
+            <label class="filter-label" for="selAttRepType">نوع التقرير:</label>
+            <select id="selAttRepType" class="filter-select">
+              <option value="emp">تقرير حضور موظف خلال فترة</option>
+              <option value="all">تقرير حضور جميع الموظفين</option>
+              <option value="absent">تقرير الغياب</option>
+              <option value="late">تقرير التأخير</option>
+              <option value="early">تقرير الانصراف المبكر</option>
+              <option value="hours">تقرير ساعات العمل</option>
+              <option value="ot">تقرير العمل الإضافي</option>
+              <option value="monthly">الشهرية لكل موظف (للمرتبات)</option>
+            </select>
+            <label class="filter-label" for="dtpAttRepFrom">من:</label>
+            <input type="date" id="dtpAttRepFrom" class="filter-select" />
+            <label class="filter-label" for="dtpAttRepTo">إلى:</label>
+            <input type="date" id="dtpAttRepTo" class="filter-select" />
+            <label class="filter-label" for="selAttRepEmp">الموظف:</label>
+            <select id="selAttRepEmp" class="filter-select"><option value="">الكل</option></select>
+            <label class="filter-label" for="selAttRepDept">القسم:</label>
+            <select id="selAttRepDept" class="filter-select"><option value="">الكل</option></select>
+          </div>
+          <div class="search-bar">
+            <button id="btnRunAttRep" class="btn blue" type="button">▶️ عرض التقرير</button>
+            <button id="btnAttRepCsv" class="btn green" type="button">📥 تصدير Excel (CSV)</button>
+            <button id="btnAttRepPrint" class="btn sky" type="button">🖨️ طباعة / PDF</button>
+            <span id="attRepSummary" class="stk-summary"></span>
+          </div>
+          <div class="data-panel">
+            <div class="panel-title" id="attRepTitle">📈 التقرير</div>
+            <div class="table-wrap">
+              <table id="dgvAttReport" class="dgv">
+                <thead><tr id="attRepHead"><th>—</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- مدة العمل -->
+        <div id="attPaneSet" hidden>
+          <div class="data-panel">
+            <div class="panel-title">⏱️ مدة العمل الرسمية لهذه الشركة (تُستخدم في حساب التأخير والانصراف المبكر والإضافي)</div>
+            <div class="form-grid" style="max-width:640px;padding:10px 14px">
+              <label for="atWorkStart">بداية العمل:</label>
+              <input type="time" id="atWorkStart" value="09:00" />
+              <label for="atWorkEnd">نهاية العمل:</label>
+              <input type="time" id="atWorkEnd" value="17:00" />
+              <label for="atGrace">مدة السماح بالتأخير (دقائق):</label>
+              <input type="number" id="atGrace" min="0" step="1" value="10" />
+              <label for="atLunch">الفاصل/الغداء (دقائق، يُخصم من ساعات العمل):</label>
+              <input type="number" id="atLunch" min="0" step="1" value="0" />
+            </div>
+            <div class="modal-actions" style="justify-content:flex-start;padding:6px 14px 12px">
+              <button id="btnSaveAttSet" class="btn blue" type="button">💾 حفظ مدة العمل</button>
+              <span class="filter-label" id="attSetFormula"></span>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
       <!-- ===== شاشة المستخدمون والصلاحيات ===== -->
       <section class="view view-users" id="viewUsers" data-id="users" hidden>
 
@@ -1466,6 +1682,20 @@
         <div class="inv-foot-print" id="trpFoot"></div>
       </section>
 
+      <!-- 🆕 صفحة تقرير الحضور للطباعة/PDF (بناء 115) -->
+      <section class="print-only statement-page" id="attReportPage">
+        <div class="statement-head">
+          <div class="inv-brand-name" id="arpOrgName"></div>
+          <h2 id="arpTitle">📈 تقرير الحضور والانصراف</h2>
+          <p>الفترة: <span id="arpPeriod"></span> | <span id="arpFilter"></span></p>
+        </div>
+        <table class="stmt-table">
+          <thead><tr id="arpHead"><th>—</th></tr></thead>
+          <tbody id="arpBody"></tbody>
+        </table>
+        <div class="inv-foot-print" id="arpFoot"></div>
+      </section>
+
     </main>
   </div>
 
@@ -1502,6 +1732,67 @@
       <div class="modal-actions">
         <button id="btnCancelAdd" class="btn gray" type="button">إلغاء</button>
         <button id="btnSaveCustomer" class="btn blue" type="button">💾 إضافة العميل</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🆕 نافذة إضافة / تعديل موظف (بناء 115) -->
+  <div class="modal-overlay" id="mEmpAddEdit" hidden>
+    <div class="modal m480" id="mEmpAddEditBox">
+      <h3 id="empEditTitle">إضافة موظف جديد</h3>
+      <div class="form-grid">
+        <label for="fEmpCode">كود الموظف: *</label>
+        <input type="text" id="fEmpCode" autocomplete="off" />
+        <label for="fEmpName">اسم الموظف: *</label>
+        <input type="text" id="fEmpName" autocomplete="off" />
+        <label for="fEmpJob">الوظيفة:</label>
+        <input type="text" id="fEmpJob" autocomplete="off" />
+        <label for="fEmpDept">القسم:</label>
+        <input type="text" id="fEmpDept" autocomplete="off" list="attDeptList" />
+        <label for="fEmpPhone">رقم الهاتف (إن وجد):</label>
+        <input type="text" id="fEmpPhone" autocomplete="off" />
+        <label for="fEmpHire">تاريخ التعيين:</label>
+        <input type="date" id="fEmpHire" />
+        <label for="fEmpBadge">معرّف الحضور (رقم/باركود الكارت):</label>
+        <input type="text" id="fEmpBadge" autocomplete="off" />
+        <label for="fEmpActive">حالة الموظف:</label>
+        <select id="fEmpActive"><option value="1">يعمل</option><option value="0">متوقف</option></select>
+        <label for="fEmpNotes">ملاحظات:</label>
+        <input type="text" id="fEmpNotes" autocomplete="off" />
+      </div>
+      <datalist id="attDeptList"></datalist>
+      <div class="modal-actions">
+        <button id="btnEmpCancel" class="btn gray" type="button">إلغاء</button>
+        <button id="btnEmpDelete" class="btn red" type="button" hidden>🗑 حذف الموظف</button>
+        <button id="btnEmpToggle" class="btn gray" type="button" hidden>⏸ إيقاف / تشغيل</button>
+        <button id="btnEmpSave" class="btn blue" type="button">💾 حفظ الموظف</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🆕 نافذة التعديل اليدوي للسجل — يمر عبر mizan_att_edit ويُسجَّل في سجل العمليات (بناء 115) -->
+  <div class="modal-overlay" id="mAttEdit" hidden>
+    <div class="modal m480" id="mAttEditBox">
+      <h3>✏️ تعديل سجل حضور (يُسجَّل في سجل العمليات)</h3>
+      <div class="form-grid">
+        <label>الموظف:</label>
+        <input type="text" id="aeEmp" disabled />
+        <label>التاريخ:</label>
+        <input type="text" id="aeDate" disabled />
+        <label for="aeIn">وقت الحضور:</label>
+        <input type="datetime-local" id="aeIn" />
+        <label for="aeOut">وقت الانصراف:</label>
+        <input type="datetime-local" id="aeOut" />
+        <label for="aeStatus">الحالة:</label>
+        <select id="aeStatus"></select>
+        <label for="aeNote">ملاحظة:</label>
+        <input type="text" id="aeNote" autocomplete="off" />
+        <label for="aeReason">سبب التعديل: *</label>
+        <input type="text" id="aeReason" autocomplete="off" placeholder="مطلوب — يُحفظ مع القديم والجديد في سجل العمليات" />
+      </div>
+      <div class="modal-actions">
+        <button id="btnAttEditCancel" class="btn gray" type="button">إلغاء</button>
+        <button id="btnAttEditSave" class="btn blue" type="button">💾 حفظ التعديل المسجَّل</button>
       </div>
     </div>
   </div>

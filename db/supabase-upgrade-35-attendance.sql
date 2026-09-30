@@ -176,6 +176,8 @@ begin
 
   v_allowed := coalesce(v_is_super,false)
            or v_role = 'admin'
+           or (v_user_feat->>'attendanceEdit') = 'true'
+           or (v_org_feat->>'attendanceEdit') = 'true'
            or (v_user_feat->>'attendance') = 'true'
            or (v_org_feat->>'attendance') = 'true';
   if not v_allowed then

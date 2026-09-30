@@ -186,6 +186,59 @@
           isActive: r.is_active !== false };
       }
     },
+    // 🆕 بناء 115: الموظفون — نفس نمط الهوية (detUuid + local_id) من ترحيل ٣٤/جدول employees في ترحيل ٣٥
+    employees: {
+      local: function () { return W.employees || []; },
+      toCloud: function (r) {
+        return { id: detUuid("employees", r.id), org_id: DATA.orgId(), local_id: r.id,
+          code: r.code || "", name_ar: r.nameAr || "", job_title: r.jobTitle || "",
+          department: r.department || "", phone: r.phone || "", hire_date: r.hireDate || null,
+          is_active: r.isActive !== false, badge: r.badge || "", notes: r.notes || "",
+          deleted: false };
+      },
+      fromCloud: function (r) {
+        var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("employees", r.id);
+        return { id: lid, code: r.code || "", nameAr: r.name_ar || "", jobTitle: r.job_title || "",
+          department: r.department || "", phone: r.phone || "", hireDate: r.hire_date || "",
+          isActive: r.is_active !== false, badge: r.badge || "", notes: r.notes || "" };
+      }
+    },
+    // 🆕 بناء 115: سجل الحضور — سطر لكل موظف/يوم (الفهرس السحابي uq_attendance_empday يمنع المزدوج)
+    attendance: {
+      local: function () { return W.attendance || []; },
+      toCloud: function (r) {
+        return { id: detUuid("attendance", r.id), org_id: DATA.orgId(), local_id: r.id,
+          employee_id: Number(r.employeeId), att_date: r.date,
+          check_in: r.checkIn || null, check_out: r.checkOut || null,
+          status: r.status || "present",
+          late_min: Math.round(Number(r.lateMin) || 0), early_min: Math.round(Number(r.earlyMin) || 0),
+          work_min: Math.round(Number(r.workMin) || 0), ot_min: Math.round(Number(r.otMin) || 0),
+          auto_timed: r.autoTimed !== false, note: r.note || "", user_name: r.userName || "" };
+      },
+      fromCloud: function (r) {
+        var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("attendance", r.id);
+        return { id: lid, employeeId: Number(r.employee_id), date: String(r.att_date || "").slice(0, 10),
+          checkIn: r.check_in || null, checkOut: r.check_out || null,
+          status: r.status || "present",
+          lateMin: Number(r.late_min || 0), earlyMin: Number(r.early_min || 0),
+          workMin: Number(r.work_min || 0), otMin: Number(r.ot_min || 0),
+          autoTimed: r.auto_timed !== false, note: r.note || "", userName: r.user_name || "" };
+      }
+    },
+    // 🆕 بناء 115: مدة العمل — سطر واحد لكل شركة (تلفّه app.js في مصفوفة عند المراية)
+    att_settings: {
+      local: function () { return W.att_settings || []; },
+      toCloud: function (r) {
+        return { id: detUuid("att_settings", r.id || 1), org_id: DATA.orgId(), local_id: r.id || 1,
+          work_start: r.workStart || "09:00", work_end: r.workEnd || "17:00",
+          grace_min: Math.round(Number(r.graceMin) || 0), lunch_min: Math.round(Number(r.lunchMin) || 0) };
+      },
+      fromCloud: function (r) {
+        var lid = (r.local_id != null) ? Number(r.local_id) : (localIdFromUuid("att_settings", r.id) || 1);
+        return { id: lid, workStart: r.work_start || "09:00", workEnd: r.work_end || "17:00",
+          graceMin: Number(r.grace_min || 0), lunchMin: Number(r.lunch_min || 0) };
+      }
+    },
     accounts: {
       local: function () { return W.accounts; },
       toCloud: function (r) {
@@ -719,7 +772,8 @@
   // تحميل كل الجداول إلى الحالة المحلية
   function loadAll() {
     W.idMap = W.idMap || {};
-    var names = ["customers", "suppliers", "products", "treasury", "accounts"];
+    var names = ["customers", "suppliers", "products", "treasury", "accounts",
+      "employees", "attendance", "att_settings"];
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
     var eagerFallback = eagerLoad ? null : function (n) {
       return DATA.client().from(n).select("*").order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });
@@ -741,6 +795,10 @@
         // نعرض واحد منهم بس (اللي عليه local_id صريح) — ما نرقمش التاني من جديد،
         // لأن الترقيم الجديد كان بيولّد سطرًا ثالثًا في كل جلسة (ده كان بيت التكرار).
         if (n === "treasury") pairs = dedupeTreasury(pairs);
+        // 🆕 بناء 115: الموظفون/الإعدادات — نفس منطق التكرار بالرقم المحلي (سطر واحد لكل رقم)
+        if (n === "employees" || n === "att_settings") pairs = dedupeTreasury(pairs);
+        // 🆕 بناء 115: الحضور — تكرار بالرقم المحلي + دمج سطرين لنفس الموظف في نفس اليوم
+        if (n === "attendance") pairs = dedupeAttendance(pairs);
         assignLocalIds(n, pairs.map(function (p) { return p.loc; }));
         W[n] = pairs.map(function (p) { return p.loc; });
       });
@@ -764,6 +822,31 @@
       }
     });
     return kept;
+  }
+
+  // 🆕 بناء ٣٥/115: تنقية سجل الحضور عند القراءة.
+  // 1) سطران بنفس الرقم المحلي = نفس السطر اتكرّر ⇒ نفضّل اللي عليه local_id صريح (نفس منطق الخزنة).
+  // 2) سطران لنفس الموظف في نفس اليوم (جهازان سجّلوا برقمين مختلفين قبل مزامنة بعضهما) ⇒
+  //    نبقي رقمهم الأصغر (ثبات) ونلمّ الأوقات الناقصة من التاني — ما نرميش بيانات سجلت فعلًا.
+  function dedupeAttendance(pairs) {
+    var kept = dedupeTreasury(pairs);
+    var map = {}, order = [];
+    (kept || []).forEach(function (p) {
+      if (!p || p.loc == null) return;
+      var k = Number(p.loc.employeeId) + "|" + String(p.loc.date || "").slice(0, 10);
+      if (!map[k]) { map[k] = p; order.push(k); return; }
+      var cur = map[k];
+      var base = Number(cur.loc.id) <= Number(p.loc.id) ? cur : p;
+      var rest = base === cur ? p : cur;
+      ["checkIn", "checkOut"].forEach(function (f) {
+        if (!base.loc[f] && rest.loc[f]) base.loc[f] = rest.loc[f];
+      });
+      if (base.loc.status === "absent" && rest.loc.status && rest.loc.status !== "absent") {
+        base.loc.status = rest.loc.status;
+      }
+      map[k] = base;
+    });
+    return order.map(function (k) { return map[k]; });
   }
 
   function assignLocalIds(table, arr) {

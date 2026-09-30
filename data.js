@@ -18,7 +18,8 @@
   var lastCreds = null;
 
   // الجداول الصغيرة اللي تُحمَّل مرة واحدة عند الدخول
-  var EAGER = ["customers", "suppliers", "products", "treasury", "accounts"];
+  var EAGER = ["customers", "suppliers", "products", "treasury", "accounts",
+    "employees", "attendance", "att_settings"];
   // الجداول الكبيرة: تُحمَّل عند الطلب فقط
   var LAZY = ["sales", "sale_items", "purchases", "purchase_items", "supplier_txs",
     "vouchers", "journal_entries", "journal_lines", "audit_logs",

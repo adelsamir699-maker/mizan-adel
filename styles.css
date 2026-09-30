@@ -1520,5 +1520,25 @@ td.c-tax.tax-hidden {
 .login-expiry-wa:hover { background: #1EBE5B; }
 .login-expiry-wa b { direction: ltr; }
 
+/* ================== 🆕 بناء 115: الحضور والانصراف ================== */
+/* حالات الحضور — نفس لوحة الألوان الحالية (نفس درجات kpi-card) */
+.att-badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .85rem; font-weight: 700; white-space: nowrap; }
+.att-present { background: #dcfce7; color: #166534; }
+.att-absent  { background: #fee2e2; color: #991b1b; }
+.att-late    { background: #fef3c7; color: #92400e; }
+.att-mission { background: #dbeafe; color: #1e40af; }
+.att-leave   { background: #e9d5ff; color: #6b21a8; }
+.att-permit  { background: #cffafe; color: #155e75; }
+.att-holiday { background: #f1f5f9; color: #334155; }
+.att-now { color: #0e7490; font-weight: 700; }
+.att-stopped { color: #9ca3af; font-weight: 700; }
+#attTabs { margin: 6px 0 10px; }
+.att-ot { color: #7c3aed; font-weight: 700; }
+.att-late-n { color: #b45309; font-weight: 700; }
+.att-early-n { color: #be123c; font-weight: 700; }
+@media print {
+  #attTabs, .view-attendance .view-actions, .view-attendance .search-bar { display: none !important; }
+}
+
 
 

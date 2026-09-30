@@ -28,11 +28,16 @@
   const LS_SALE_RETURNS = "mizan_sale_returns_v1";
   const LS_PURCHASE_RETURNS = "mizan_purchase_returns_v1";
   const LS_SETTINGS = "mizan_settings_v1";
+  // 🆕 بناء 115: الحضور والانصراف
+  const LS_EMPLOYEES = "mizan_employees_v1";
+  const LS_ATTENDANCE = "mizan_attendance_v1";
+  const LS_ATT_SETTINGS = "mizan_att_settings_v1";
   // كل مفاتيح البيانات المحلية (مشتركة بين كل الحسابات في نفس المتصفح)
   const LS_ALL_KEYS = [
     LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_ACTIVITY, LS_SALES, LS_TREASURY,
     LS_SUPPLIERS, LS_SUP_TXS, LS_PURCHASES, LS_ACCOUNTS, LS_JOURNAL,
-    LS_USERS, LS_VOUCHERS, LS_SALE_RETURNS, LS_PURCHASE_RETURNS, LS_SETTINGS
+    LS_USERS, LS_VOUCHERS, LS_SALE_RETURNS, LS_PURCHASE_RETURNS, LS_SETTINGS,
+    LS_EMPLOYEES, LS_ATTENDANCE, LS_ATT_SETTINGS
   ];
   // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
@@ -235,6 +240,10 @@
   let journalEntries = [];
   let users = [];
   let vouchers = [];
+  // 🆕 بناء 115: الحضور والانصراف (موظفون + سجل + مدة العمل)
+  let employees = [];
+  let attendance = [];
+  let attSettings = null;   // كائن واحد لكل شركة: {id, workStart, workEnd, graceMin, lunchMin}
   let settings = {};
   let editingId = null;
 
@@ -481,6 +490,9 @@
           journalEntries,
           users,
           vouchers,
+          employees,
+          attendance,
+          attSettings,
           settings,
           savedAt: new Date().toISOString()
         };
@@ -531,6 +543,12 @@
           take(data.accounts, LS_ACCOUNTS, accounts, seedAccounts, (v) => { accounts = v; }, saveAccounts);
           take(data.vouchers, LS_VOUCHERS, vouchers, seedVouchers, (v) => { vouchers = v; }, saveVouchers);
           take(data.journalEntries, LS_JOURNAL, journalEntries, seedJournal, (v) => { journalEntries = v; }, persistJournal);
+          // 🆕 بناء 115: استرجاع الحضور من الديسك (نفس شرط الفارغ/التجريبي)
+          take(data.employees, LS_EMPLOYEES, employees, undefined, (v) => { employees = v; }, saveEmployees);
+          take(data.attendance, LS_ATTENDANCE, attendance, undefined, (v) => { attendance = v; }, saveAttendance);
+          if (data.attSettings && typeof data.attSettings === "object" && (!attSettings || bootLsPresent[LS_ATT_SETTINGS] === false)) {
+            attSettings = data.attSettings; saveAttSettings(); restored = true;
+          }
           if (!restored) return;
           recalculateCustomerBalances();
           recalculateSupplierBalances();
@@ -557,6 +575,10 @@
     DB.customer_txs = txs;
     DB.vouchers = vouchers;
     DB.journalEntries = journalEntries;
+    // 🆕 بناء 115: الحضور والانصراف — att_settings سطر واحد نلفّه مصفوفة للمزامنة
+    DB.employees = employees;
+    DB.attendance = attendance;
+    DB.att_settings = attSettings ? [Object.assign({}, attSettings)] : [];
   }
 
   function pushTable(name) {
@@ -730,6 +752,10 @@
       vouchers = JSON.parse(localStorage.getItem(LS_VOUCHERS)) || seedVouchers;
       saleReturns = JSON.parse(localStorage.getItem(LS_SALE_RETURNS)) || [];
       purchaseReturns = JSON.parse(localStorage.getItem(LS_PURCHASE_RETURNS)) || [];
+      // 🆕 بناء 115: الحضور والانصراف — بدون بيانات تجريبية (شركة جديدة = قائمة فاضية)
+      employees = JSON.parse(localStorage.getItem(LS_EMPLOYEES)) || [];
+      attendance = JSON.parse(localStorage.getItem(LS_ATTENDANCE)) || [];
+      attSettings = JSON.parse(localStorage.getItem(LS_ATT_SETTINGS)) || defaultAttSettings();
       settings = Object.assign({}, defaultSettings, JSON.parse(localStorage.getItem(LS_SETTINGS)) || {});
       TAX.enabled = settings.taxEnabled == null ? TAX.enabled : Boolean(settings.taxEnabled);
       if (settings.taxRate != null) {
@@ -752,6 +778,9 @@
       vouchers = seedVouchers;
       saleReturns = [];
       purchaseReturns = [];
+      employees = [];
+      attendance = [];
+      attSettings = defaultAttSettings();
       settings = Object.assign({}, defaultSettings);
     }
     if (!localStorage.getItem(LS_CUSTOMERS)) saveCustomers();
@@ -769,6 +798,9 @@
     if (!localStorage.getItem(LS_VOUCHERS)) saveVouchers();
     if (!localStorage.getItem(LS_SALE_RETURNS)) saveSaleReturns();
     if (!localStorage.getItem(LS_PURCHASE_RETURNS)) savePurchaseReturns();
+    if (!localStorage.getItem(LS_EMPLOYEES)) saveEmployees();
+    if (!localStorage.getItem(LS_ATTENDANCE)) saveAttendance();
+    if (!localStorage.getItem(LS_ATT_SETTINGS)) saveAttSettings();
     if (!localStorage.getItem(LS_SETTINGS)) saveSettings();
   }
 
@@ -785,6 +817,23 @@
   function saveTreasury() {
     localStorage.setItem(LS_TREASURY, JSON.stringify(treasury));
     pushTable("treasury"); syncToLocalDisk();
+  }
+
+  /* ================== 🆕 بناء 115: حفظ الحضور والانصراف ================== */
+  function defaultAttSettings() {
+    return { id: 1, workStart: "09:00", workEnd: "17:00", graceMin: 10, lunchMin: 0 };
+  }
+  function saveEmployees() {
+    localStorage.setItem(LS_EMPLOYEES, JSON.stringify(employees));
+    pushTable("employees"); syncToLocalDisk();
+  }
+  function saveAttendance() {
+    localStorage.setItem(LS_ATTENDANCE, JSON.stringify(attendance));
+    pushTable("attendance"); syncToLocalDisk();
+  }
+  function saveAttSettings() {
+    localStorage.setItem(LS_ATT_SETTINGS, JSON.stringify(attSettings));
+    pushTable("att_settings"); syncToLocalDisk();
   }
 
   function saveSuppliers() {
@@ -1085,6 +1134,7 @@
     stockPage: "تقرير المخزون",
     balancePage: "كشف الأرصدة",
     treStmtPage: "كشف الخزينة",
+    attReportPage: "تقرير الحضور والانصراف",
   };
   const PAPER_TITLE_FALLBACK = "مستند"; // بلا اسم منتج ولا اسم شخص
   let screenDocTitle = "";
@@ -1135,7 +1185,7 @@
   }
 
   /* ================== الروترة بين الشاشات ================== */
-  const BUILT_VIEWS = ["dashboard", "customers", "products", "sales", "purchases", "suppliers", "returns", "returnsReg", "treasury", "accounts", "journal", "balance", "treasuryStatements", "reports", "users", "audit", "settings", "clientSettings"];
+  const BUILT_VIEWS = ["dashboard", "customers", "products", "sales", "purchases", "suppliers", "returns", "returnsReg", "treasury", "accounts", "journal", "balance", "treasuryStatements", "reports", "users", "audit", "settings", "clientSettings", "attendance"];
 
   // حساب المستخدم الحالي — المصدر الموثوق هو mizan_access (فيه role + is_superadmin)
   // لأن getProfile() قد يكون null أو ناقصًا لحظة الدخول.
@@ -1187,11 +1237,28 @@
       if (!DE.featureFlag) return false;
       return DE.featureFlag("returnsManager") === true;
     }
+    // 🆕 بناء 115: الحضور والانصراف — صلاحية مستقلة opt-in بنفس نمط المرتجعات
+    if (name === "attendance") {
+      if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+      if (!DE.featureFlag) return false;
+      return DE.featureFlag("attendance") === true;
+    }
     return DE.featureEnabled ? DE.featureEnabled(name) : true;
   }
 
   // صلاحية تسجيل/حذف المرتجعات (نفس بوابة الشاشة + فحص ثانٍ جوه الدوال)
   function canManageReturns() { return canUseView("returnsReg"); }
+  // 🆕 بناء 115: صلاحية الحضور والانصراف (بوابة الشاشة + فحص ثانٍ جوه دوال التسجيل/التعديل)
+  function canManageAttendance() { return canUseView("attendance"); }
+  // التعديل اليدوي لوقت/حالة سجل موجود يحتاج صلاحية مستقلة «attendanceEdit» (opt-in).
+  // التسجيل اليومي العادي ياخد وقت النظام تلقائيًا من غير إدخال.
+  // كل تعديل يدوي بيعدي عبر mizan_att_edit فيتنفَّذ على السحابة ويُسجَّل بالقديم/الجديد/السبب.
+  function canEditAttendance() {
+    if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+    var DE = window.DATA || {};
+    if (!DE.featureFlag) return false;
+    return DE.featureFlag("attendanceEdit") === true;
+  }
 
   // إخفاء أزرار الشاشات غير المفعّلة في اشتراك الشركة الحالية
   function applyFeatureGating() {
@@ -1222,6 +1289,11 @@
     // 🔁 «المرتجعات» نفس النمط: صلاحية مستقلة opt-in لحساب العضو
     if (name === "returnsReg" && !canManageReturns()) {
       toast("صلاحية «إدارة المرتجعات» غير مفعّلة لحسابك", "error");
+      name = "dashboard";
+    }
+    // 🆕 بناء 115: «الحضور والانصراف» — نفس نمط البوابة
+    if (name === "attendance" && !canManageAttendance()) {
+      toast("صلاحية «الحضور والانصراف» غير مفعّلة لحسابك", "error");
       name = "dashboard";
     }
     document.querySelectorAll(".view[data-id]").forEach((v) => {
@@ -1264,6 +1336,7 @@
     if (name === "balance") renderBalance();
     if (name === "treasuryStatements") { recalculateTreasuryBalances(); renderTreStmt(); }
     if (name === "reports") renderReports();
+    if (name === "attendance") renderAttendanceView();
     if (name === "users") renderUsers();
     if (name === "audit") renderAudit();
     if (name === "settings") loadSettingsForm();
@@ -5847,6 +5920,7 @@
     "db/supabase-upgrade-22-admin-online.sql", "db/supabase-upgrade-23-full-backup.sql"];
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "categories", "customer_txs", "customers",
+    "employees", "attendance", "att_settings",
     "journal_entries", "journal_lines", "mizan_created_accounts", "mizan_invoice_seq",
     "mizan_pw_store", "owners", "password_changes", "presence", "products",
     "purchase_items", "purchases", "sale_items", "sales", "supplier_txs", "suppliers",
@@ -6938,7 +7012,8 @@ const pwEye = document.getElementById("btnShowPass");
     const S = window.MIZAN_STATE;
     const checks = [
       ["customers", customers], ["suppliers", suppliers], ["products", products],
-      ["treasury", treasury], ["accounts", accounts]
+      ["treasury", treasury], ["accounts", accounts],
+      ["employees", employees], ["attendance", attendance]
     ];
     checks.forEach(([name, arr]) => {
       if (!arr || !arr.length || (S[name] && S[name].length)) return;
@@ -7388,6 +7463,17 @@ const pwEye = document.getElementById("btnShowPass");
     step("purchase_returns", S.purchase_returns, purchaseReturns, function (v) { purchaseReturns = v; });
     step("supplier_txs", S.supplier_txs, supplierTxs, function (v) { supplierTxs = v; });
     step("customer_txs", S.customer_txs, txs, function (v) { txs = v; });
+    // 🆕 بناء 115: دمج الحضور زي بقية الجداول (بالهوية local_id — درس ترحيل ٣٤)
+    step("employees", S.employees, employees, function (v) { employees = v; });
+    step("attendance", S.attendance, attendance, function (v) { attendance = v; });
+    // att_settings: سطر واحد لكل شركة — لو LOCAL كان افتراضي (مفتاحش غايب لحظة الإقلاع)
+    // والسحابة فيها قيمة حقيقية، السحابة هي المرجع. غير كده المحلية تتثبت فوقها لاحقًا بالـ push.
+    try {
+      if (Array.isArray(S.att_settings) && S.att_settings.length &&
+          bootLsPresent[LS_ATT_SETTINGS] === false) {
+        attSettings = Object.assign(defaultAttSettings(), S.att_settings[0]);
+      }
+    } catch (e) { }
     step("vouchers", S.vouchers, vouchers, function (v) { vouchers = v; });
     step("journal_entries", S.journalEntries, journalEntries, function (v) { journalEntries = v; });
     linkInvoiceParties();
@@ -7412,6 +7498,10 @@ const pwEye = document.getElementById("btnShowPass");
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
     localStorage.setItem(LS_SALE_RETURNS, JSON.stringify(saleReturns));
     localStorage.setItem(LS_PURCHASE_RETURNS, JSON.stringify(purchaseReturns));
+    // 🆕 بناء 115
+    localStorage.setItem(LS_EMPLOYEES, JSON.stringify(employees));
+    localStorage.setItem(LS_ATTENDANCE, JSON.stringify(attendance));
+    localStorage.setItem(LS_ATT_SETTINGS, JSON.stringify(attSettings));
   }
 
   /* ================== شاشة "غير متاح" (وقت/قفل/حجب) ================== */
@@ -7476,11 +7566,13 @@ const pwEye = document.getElementById("btnShowPass");
         ["catTab", "تبويب التصنيفات"], ["unitTab", "تبويب وحدات القياس"], ["whTab", "تبويب المستودعات"],
         ["walletTab", "تبويب المحافظ الإلكترونية"], ["bankTab", "تبويب حسابات البنوك"], ["ownerTab", "تبويب أصحاب المنشأة"],
         ["docManager", "📁 إدارة مستندات العملاء والموردين"],
-        ["returnsManager", "🔁 إدارة المرتجعات"]
+        ["returnsManager", "🔁 إدارة المرتجعات"],
+        ["attendance", "🕐 الحضور والانصراف"],
+        ["attendanceEdit", "✏️ تعديل سجلات الحضور يدويًا"]
         ];
 
-  // صلاحيات opt-in: owner/سوبر أدمن عندها دائمًا، والعضو ما عندهاش إلا لو فُعّلت صريحًا
-  const OPT_IN_FEATS = ["clientSettings", "docManager", "returnsManager"];
+  // صلاحيات opt-in: owner/سوبر أدمن عندهما دائمًا، والعضو ما عندهاش إلا لو فُعّلت صريحًا
+  const OPT_IN_FEATS = ["clientSettings", "docManager", "returnsManager", "attendance", "attendanceEdit"];
 
   function fmtDate(d) { return d ? String(d).slice(0, 10) : ""; }
   // تاريخ وساعة محليان (لآخر الاتصال وغيرها) — بصيغة YYYY-MM-DD HH:MM
