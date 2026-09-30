@@ -7555,6 +7555,838 @@ const pwEye = document.getElementById("btnShowPass");
     msgEl.className = "login-msg err";
   }
 
+  /* ================== 🆕 بناء 115: منطق الحضور والانصراف ================== */
+  // الحالات السبع المعتمدة (نفس قيود CHECK في ترحيل ٣٥ — ماتفكش الاتنين عن بعض)
+  const ATT_STATUSES = {
+    present: "حاضر", absent: "غائب", late: "متأخر", mission: "مأمورية",
+    leave: "إجازة", permit: "إذن", holiday: "عطلة رسمية"
+  };
+  let attBound = false;          // أربطة الأحداث تُعمل مرة واحدة عند أول فتح للتبويب
+  let attTab = "today";
+  let editingEmpId = null;       // local id للموظف محل التعديل (null = جديد)
+  let attEditRow = null;         // السجل اللي مفتوح للتعديل اليدوي
+  let attLastRep = null;         // آخر تقرير: {head:[], rows:[[]], title, period, filter}
+
+  /* ---------- أدوات وقت صغيرة ---------- */
+  function attParseHM(str) {                      // "09:30" → 570 دقيقة من منتصف اليوم
+    var m = /^(\d{1,2}):(\d{2})/.exec(str || "");
+    if (!m) return 0;
+    return Number(m[1]) * 60 + Number(m[2]);
+  }
+  function attMinutesOf(iso) {                    // ISO → دقائق محلية من منتصف اليوم
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    return d.getHours() * 60 + d.getMinutes();
+  }
+  function attHM(iso) {                           // ISO → "HH:MM" للعرض (أو —)
+    if (!iso) return "—";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    var p = function (x) { return String(x).padStart(2, "0"); };
+    return p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function attLocalInput(iso) {                   // ISO → قيمة datetime-local
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var p = function (x) { return String(x).padStart(2, "0"); };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+      "T" + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function attHrs(min) {                          // دقائق → "7.50 س"
+    return (Number(min) || 0) === 0 ? "0.00 س" : ((Number(min) || 0) / 60).toFixed(2) + " س";
+  }
+  function attMin(min) { return (Number(min) || 0) + " د"; }
+  function attMonthStart() { return todayISO().slice(0, 8) + "01"; }
+  function attMonthEnd() {
+    var d = new Date(), p = function (x) { return String(x).padStart(2, "0"); };
+    var last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    return last.getFullYear() + "-" + p(last.getMonth() + 1) + "-" + p(last.getDate());
+  }
+  function attSettingsSafe() {
+    if (!attSettings || !attSettings.workStart || !attSettings.workEnd) attSettings = defaultAttSettings();
+    return attSettings;
+  }
+  function currentAttUser() {
+    try {
+      var p = (window.DATA && DATA.me && DATA.me());
+      if (p && p.full_name) return p.full_name;
+      if (window.DATA && DATA.email && DATA.email()) return DATA.email();
+    } catch (e) { }
+    return "—";
+  }
+  function attEmpById(id) {
+    id = String(id);
+    return employees.filter(function (e) { return String(e.id) === id; })[0] || null;
+  }
+  function attEmpName(id) {
+    var e = attEmpById(id);
+    return e ? (e.nameAr || e.code || ("#" + id)) : ("موظف #" + id);
+  }
+  function attDepartments() {
+    var seen = {};
+    employees.forEach(function (e) { if (e.department) seen[e.department] = 1; });
+    return Object.keys(seen).sort();
+  }
+  function nextEmployeeLocalId() {
+    return employees.reduce(function (m, e) { return Math.max(m, Number(e.id) || 0); }, 0) + 1;
+  }
+  function nextAttLocalId() {
+    return attendance.reduce(function (m, a) { return Math.max(m, Number(a.id) || 0); }, 0) + 1;
+  }
+  function nextEmployeeCode() {
+    var max = 0;
+    employees.forEach(function (e) {
+      var m = /^EMP-(\d+)$/.exec(e.code || "");
+      if (m) max = Math.max(max, +m[1]);
+    });
+    return "EMP-" + String(max + 1).padStart(4, "0");
+  }
+  function findEmployeeByBadge(q) {
+    q = String(q == null ? "" : q).trim();
+    if (!q) return null;
+    var hit = null;
+    employees.forEach(function (e) {
+      if (hit) return;
+      if (String(e.badge || "").trim() === q || String(e.code || "").trim() === q || String(e.id) === q) hit = e;
+    });
+    return hit;
+  }
+  function attBadge(status) {
+    var lbl = ATT_STATUSES[status] || status || "—";
+    return '<span class="att-badge att-' + esc(status || "") + '">' + esc(lbl) + "</span>";
+  }
+  function attIsAttending(a) {
+    return !!(a.checkIn) || a.status === "present" || a.status === "late" || a.status === "mission";
+  }
+
+  /* ---------- حسابات التأخير/الساعات/الإضافي من مدة العمل ---------- */
+  function computeAttTimes(row) {
+    var s = attSettingsSafe();
+    var start = attParseHM(s.workStart), end = attParseHM(s.workEnd);
+    var grace = Math.max(0, Number(s.graceMin) || 0);
+    var lunch = Math.max(0, Number(s.lunchMin) || 0);
+    var res = { lateMin: 0, earlyMin: 0, workMin: 0, otMin: 0 };
+    var inM = row.checkIn ? attMinutesOf(row.checkIn) : null;
+    var outM = row.checkOut ? attMinutesOf(row.checkOut) : null;
+    if (inM != null) res.lateMin = Math.max(0, inM - (start + grace));
+    if (inM != null && outM != null && outM > inM) {
+      res.workMin = Math.max(0, (outM - inM) - lunch);
+      res.earlyMin = Math.max(0, end - outM);
+      var std = Math.max(0, (end - start) - lunch);
+      res.otMin = Math.max(0, res.workMin - std);
+    }
+    return res;
+  }
+  function applyAttCalc(row) {
+    var c = computeAttTimes(row);
+    row.lateMin = c.lateMin; row.earlyMin = c.earlyMin; row.workMin = c.workMin; row.otMin = c.otMin;
+    return row;
+  }
+  function recalcAllAttendance() {
+    attendance.forEach(applyAttCalc);
+    saveAttendance();
+  }
+
+  /* ---------- مصادرة سطر اليوم لموظف ---------- */
+  function attTodayRow(employeeId) {
+    var t = todayISO();
+    return attendance.filter(function (a) {
+      return String(a.employeeId) === String(employeeId) && a.date === t;
+    })[0] || null;
+  }
+
+  /* ---------- تسجيل حضور / انصراف (الوقت من النظام تلقائيًا) ---------- */
+  function resolvePunchEmp() {
+    var badge = $("#txtPunchBadge").value;
+    var e = findEmployeeByBadge(badge);
+    if (!e && String(badge || "").trim()) {
+      toast("معرّف غير موجود: «" + badge + "» — اختر الموظف من القائمة أو صحّح المعرّف", "error");
+      return null;
+    }
+    if (!e) {
+      var selId = $("#selPunchEmp").value;
+      if (!selId) { toast("اختر الموظف أولًا أو امسح معرّفه", "error"); return null; }
+      e = attEmpById(selId);
+      if (!e) { toast("موظف غير موجود", "error"); return null; }
+    }
+    if (e.isActive === false) {
+      toast("«" + (e.nameAr || e.code) + "» متوقف — شغّله من شاشة الموظفين أولًا", "error");
+      return null;
+    }
+    return e;
+  }
+  function punchManualTime(which) {
+    // وقت يدوي قبل التسجيل: مسموح ONLY لصاحب صلاحية التعديل (قاعدة المالك رقم ٢)
+    if (!canEditAttendance()) return null;
+    var el = document.getElementById(which === "in" ? "atManIn" : "atManOut");
+    if (!el || el.disabled || !el.value) return null;
+    var d = new Date(el.value);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  function doPunch(kind) {
+    if (!canManageAttendance()) { toast("صلاحية «الحضور والانصراف» غير مفعّلة لحسابك", "error"); return; }
+    var emp = resolvePunchEmp();
+    if (!emp) return;
+    var row = attTodayRow(emp.id);
+    var manual = punchManualTime(kind);
+    var now = manual || new Date().toISOString();
+    var auto = !manual;
+    if (kind === "in") {
+      if (row && row.checkIn) {
+        toast("⏰ حضور «" + (emp.nameAr || emp.code) + "» مسجّل بالفعل الساعة " + attHM(row.checkIn) +
+          (canEditAttendance() ? " — استخدم ✏️ التعديل اليدوي لو لزم" : ""), "info");
+        return;
+      }
+      if (!row) {
+        row = {
+          id: nextAttLocalId(), employeeId: Number(emp.id), date: todayISO(),
+          checkIn: now, checkOut: null, status: "present",
+          lateMin: 0, earlyMin: 0, workMin: 0, otMin: 0,
+          autoTimed: auto, note: "", userName: currentAttUser()
+        };
+        applyAttCalc(row);
+        if (row.lateMin > 0) row.status = "late";
+        attendance.push(row);
+      } else {
+        row.checkIn = now; row.autoTimed = auto; row.userName = currentAttUser();
+        applyAttCalc(row);
+        if (row.status === "absent") row.status = row.lateMin > 0 ? "late" : "present";
+        else if (row.lateMin > 0 && row.status === "present") row.status = "late";
+      }
+      saveAttendance();
+      addActivity("تسجيل حضور", (emp.nameAr || emp.code) + " — " + attHM(now) + (auto ? " (وقت النظام)" : " (يدوي)"));
+      toast("🟢 تم تسجيل حضور «" + (emp.nameAr || emp.code) + "» الساعة " + attHM(now) +
+        (row.lateMin > 0 ? " — متأخر " + row.lateMin + " دقيقة" : ""), "success");
+    } else {
+      if (!row || !row.checkIn) {
+        toast("لا يوجد حضور مسجّل اليوم لـ«" + (emp.nameAr || emp.code) + "» — سجّل الحضور أولًا", "error");
+        return;
+      }
+      if (row.checkOut) {
+        toast("⏰ انصراف «" + (emp.nameAr || emp.code) + "» مسجّل بالفعل الساعة " + attHM(row.checkOut) +
+          (canEditAttendance() ? " — استخدم ✏️ التعديل اليدوي لو لزم" : ""), "info");
+        return;
+      }
+      var inM = attMinutesOf(row.checkIn), outM = attMinutesOf(now);
+      if (outM != null && inM != null && outM < inM) {
+        toast("وقت الانصراف (" + attHM(now) + ") قبل وقت الحضور (" + attHM(row.checkIn) + ") — صحّح الوقت أولًا", "error");
+        return;
+      }
+      row.checkOut = now; row.autoTimed = auto; row.userName = currentAttUser();
+      applyAttCalc(row);
+      saveAttendance();
+      addActivity("تسجيل انصراف", (emp.nameAr || emp.code) + " — " + attHM(now) + (auto ? " (وقت النظام)" : " (يدوي)"));
+      toast("🔴 تم تسجيل انصراف «" + (emp.nameAr || emp.code) + "» — " + attHrs(row.workMin) +
+        (row.otMin > 0 ? " (إضافي " + attMin(row.otMin) + ")" : "") +
+        (row.earlyMin > 0 ? " — منصرف مبكرًا " + row.earlyMin + " دقيقة" : ""), "success");
+    }
+    $("#txtPunchBadge").value = "";
+    $("#atManIn").value = ""; $("#atManOut").value = "";
+    attRenderPunchToday(); attRenderToday();
+  }
+
+  /* ---------- التبويبات الداخلية ---------- */
+  function attSwitchTab(tab) {
+    attTab = tab;
+    document.querySelectorAll("#attTabs .tab-btn").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.att === tab);
+    });
+    var panes = { today: "attPaneToday", emp: "attPaneEmp", punch: "attPanePunch", ledger: "attPaneLedger", reports: "attPaneReports", set: "attPaneSet" };
+    Object.keys(panes).forEach(function (k) {
+      var el = document.getElementById(panes[k]);
+      if (el) el.hidden = (k !== tab);
+    });
+    if (tab === "today") attRenderToday();
+    if (tab === "emp") attRenderEmployees();
+    if (tab === "punch") { attRenderPunchToday(); $("#txtPunchBadge").focus(); }
+    if (tab === "ledger") attRenderLedger();
+    if (tab === "set") attLoadSetForm();
+  }
+
+  /* ---------- لوحة اليوم ---------- */
+  function attRenderToday() {
+    var t = todayISO();
+    var rows = attendance.filter(function (a) { return a.date === t; });
+    var actives = employees.filter(function (e) { return e.isActive !== false; });
+    var present = 0, late = 0, onSite = 0, attendingIds = {};
+    rows.forEach(function (a) {
+      if (attIsAttending(a)) { present++; attendingIds[String(a.employeeId)] = 1; }
+      if (a.status === "late" || (Number(a.lateMin) || 0) > 0) late++;
+      if (a.checkIn && !a.checkOut) onSite++;
+    });
+    var absent = 0;
+    actives.forEach(function (e) { if (!attendingIds[String(e.id)]) absent++; });
+    $("#attKPresent").textContent = present;
+    $("#attKAbsent").textContent = absent;
+    $("#attKLate").textContent = late;
+    $("#attKOnSite").textContent = onSite;
+    var tb = document.querySelector("#dgvAttToday tbody");
+    var html = "";
+    actives.slice().sort(function (x, y) { return String(x.nameAr || "").localeCompare(String(y.nameAr || ""), "ar"); })
+      .forEach(function (e) {
+        var a = rows.filter(function (r) { return String(r.employeeId) === String(e.id); })[0];
+        html += "<tr><td>" + esc(e.nameAr || e.code) + "</td><td>" + esc(e.department || "—") + "</td>" +
+          "<td>" + (a ? esc(attHM(a.checkIn)) : "—") + "</td>" +
+          "<td>" + (a && a.checkOut ? esc(attHM(a.checkOut)) : (a && a.checkIn ? '<span class="att-now">موجود الآن</span>' : "—")) + "</td>" +
+          "<td>" + (a && a.lateMin > 0 ? '<span class="att-late-n">' + a.lateMin + " د</span>" : "—") + "</td>" +
+          "<td>" + (a ? attBadge(a.status) : '<span class="att-badge att-absent">لم يسجّل</span>') + "</td></tr>";
+      });
+    tb.innerHTML = html || '<tr><td colspan="6">لا يوجد موظفون نشطون — أضف موظفًا من تبويب «👥 الموظفون».</td></tr>';
+  }
+
+  /* ---------- الموظفون ---------- */
+  function attRenderEmployees() {
+    var q = normalizeAr($("#txtEmpSearch").value || "");
+    var list = employees.filter(function (e) {
+      if (!q) return true;
+      return normalizeAr([e.nameAr, e.code, e.jobTitle, e.department, e.badge, e.phone].join(" ")).indexOf(q) >= 0;
+    });
+    list.sort(function (x, y) { return String(x.code || "").localeCompare(String(y.code || ""), "ar"); });
+    var working = list.filter(function (e) { return e.isActive !== false; }).length;
+    $("#empSummary").textContent = list.length + " موظف — يعمل " + working + " — متوقف " + (list.length - working);
+    var tb = document.querySelector("#dgvEmployees tbody");
+    tb.innerHTML = list.map(function (e) {
+      return '<tr><td hidden>' + esc(e.id) + "</td><td>" + esc(e.code) + "</td><td>" + esc(e.nameAr) + "</td><td>" + esc(e.jobTitle || "—") +
+        "</td><td>" + esc(e.department || "—") + "</td><td>" + esc(e.phone || "—") + "</td><td>" + esc(e.hireDate || "—") +
+        "</td><td>" + esc(e.badge || "—") + "</td>" +
+        "<td>" + (e.isActive !== false ? '<span class="att-now">يعمل</span>' : '<span class="att-stopped">متوقف</span>') + "</td>" +
+        '<td><button class="btn gray sm" type="button" data-edit-emp="' + esc(e.id) + '">✏️ تعديل</button></td></tr>';
+    }).join("") || '<tr><td colspan="10">لا يوجد موظفون — اضغط «➕ إضافة موظف».</td></tr>';
+  }
+
+  /* ---------- نافذة الموظف ---------- */
+  function openEmpModal(emp) {
+    if (!canManageAttendance()) { toast("صلاحية «الحضور والانصراف» غير مفعّلة لحسابك", "error"); return; }
+    editingEmpId = emp ? Number(emp.id) : null;
+    $("#mEmpAddEdit").hidden = false;
+    document.getElementById("mEmpAddEditBox").querySelector("h3").textContent = emp ? "✏️ تعديل بيانات موظف" : "➕ إضافة موظف جديد";
+    $("#fEmpCode").value = emp ? (emp.code || "") : nextEmployeeCode();
+    $("#fEmpName").value = emp ? (emp.nameAr || "") : "";
+    $("#fEmpJob").value = emp ? (emp.jobTitle || "") : "";
+    $("#fEmpDept").value = emp ? (emp.department || "") : "";
+    $("#fEmpPhone").value = emp ? (emp.phone || "") : "";
+    $("#fEmpHire").value = emp ? (emp.hireDate || "") : "";
+    $("#fEmpBadge").value = emp ? (emp.badge || "") : "";
+    $("#fEmpActive").value = emp ? (emp.isActive !== false ? "1" : "0") : "1";
+    $("#fEmpNotes").value = emp ? (emp.notes || "") : "";
+    $("#btnEmpDelete").hidden = !emp;
+    $("#btnEmpToggle").hidden = !emp;
+    $("#btnEmpToggle").textContent = emp && emp.isActive === false ? "▶️ تشغيل الموظف" : "⏸ إيقاف الموظف";
+    $("#fEmpName").focus();
+  }
+  function closeEmpModal() { $("#mEmpAddEdit").hidden = true; editingEmpId = null; }
+  function saveEmpFromModal() {
+    if (!canManageAttendance()) { toast("صلاحية «الحضور والانصراف» غير مفعّلة لحسابك", "error"); return; }
+    var name = $("#fEmpName").value.trim(), code = $("#fEmpCode").value.trim();
+    if (!name) { toast("اسم الموظف مطلوب", "error"); return; }
+    if (!code) { code = nextEmployeeCode(); }
+    var dup = employees.filter(function (e) { return String(e.code).trim() === code && String(e.id) !== String(editingEmpId); })[0];
+    if (dup) { toast("كود «" + code + "» مستخدم بالفعل للموظف «" + dup.nameAr + "»", "error"); return; }
+    var badge = $("#fEmpBadge").value.trim();
+    if (badge) {
+      var dupB = employees.filter(function (e) { return String(e.badge || "").trim() === badge && String(e.id) !== String(editingEmpId); })[0];
+      if (dupB) { toast("معرّف الحضور «" + badge + "» مرتبط بالفعل بـ«" + dupB.nameAr + "»", "error"); return; }
+    }
+    var rec = {
+      code: code, nameAr: name, jobTitle: $("#fEmpJob").value.trim(),
+      department: $("#fEmpDept").value.trim(), phone: $("#fEmpPhone").value.trim(),
+      hireDate: $("#fEmpHire").value, badge: badge,
+      isActive: $("#fEmpActive").value !== "0", notes: $("#fEmpNotes").value.trim()
+    };
+    if (editingEmpId != null) {
+      var e = attEmpById(editingEmpId);
+      if (!e) { toast("لم يتم العثور على الموظف", "error"); return; }
+      Object.keys(rec).forEach(function (k) { e[k] = rec[k]; });
+      addActivity("تعديل موظف", name + " (" + code + ")");
+      toast("✔ تم حفظ بيانات «" + name + "»", "success");
+    } else {
+      rec.id = nextEmployeeLocalId();
+      employees.push(rec);
+      addActivity("إضافة موظف", name + " (" + code + ")");
+      toast("✔ تمت إضافة الموظف «" + name + "»", "success");
+    }
+    saveEmployees();
+    closeEmpModal();
+    attFillSelects(); attRenderEmployees(); attRenderToday();
+  }
+  function toggleEmpActive(id) {
+    var e = attEmpById(id);
+    if (!e) return;
+    e.isActive = e.isActive === false;
+    saveEmployees();
+    addActivity(e.isActive ? "تشغيل موظف" : "إيقاف موظف", (e.nameAr || e.code));
+    attFillSelects(); attRenderEmployees(); attRenderToday();
+    toast(e.isActive ? "▶️ تم تشغيل «" + (e.nameAr || e.code) + "»" : "⏸ تم إيقاف «" + (e.nameAr || e.code) + "» — سجلاته محفوظة", "success");
+  }
+  function deleteEmpFromModal() {
+    if (editingEmpId == null) return;
+    var e = attEmpById(editingEmpId);
+    if (!e) return;
+    var hasRows = attendance.some(function (a) { return String(a.employeeId) === String(e.id); });
+    if (hasRows) {
+      toast("لا يمكن حذف «" + (e.nameAr || e.code) + "» لأنه له سجلات حضور — استخدم «⏸ إيقاف» للحفاظ على التاريخ", "error");
+      return;
+    }
+    if (!confirm("هل أنت متأكد من حذف الموظف «" + (e.nameAr || e.code) + "» نهائيًا؟")) return;
+    employees = employees.filter(function (x) { return String(x.id) !== String(e.id); });
+    saveEmployees();
+    addActivity("حذف موظف", (e.nameAr || e.code) + " (" + e.code + ")");
+    toast("🗑 تم حذف الموظف «" + (e.nameAr || e.code) + "»", "success");
+    closeEmpModal();
+    attFillSelects(); attRenderEmployees(); attRenderToday();
+  }
+
+  /* ---------- تبويب التسجيل ---------- */
+  function attRenderPunchToday() {
+    var t = todayISO();
+    var rows = attendance.filter(function (a) { return a.date === t; });
+    rows.sort(function (x, y) { return String(attEmpName(x.employeeId)).localeCompare(String(attEmpName(y.employeeId)), "ar"); });
+    var canEdit = canEditAttendance();
+    var tb = document.querySelector("#dgvPunchToday tbody");
+    tb.innerHTML = rows.map(function (a) {
+      var act;
+      if (!a.checkOut) act = '<button class="btn red sm" type="button" data-punch-out="' + esc(a.employeeId) + '">🔴 انصراف</button> ';
+      else act = "";
+      if (canEdit) act += '<button class="btn gray sm" type="button" data-edit-att="' + esc(a.id) + '">✏️ تعديل</button>';
+      return "<tr><td>" + esc(attEmpName(a.employeeId)) + "</td><td>" + esc(attHM(a.checkIn)) + "</td><td>" + esc(attHM(a.checkOut)) + "</td>" +
+        "<td>" + (a.lateMin > 0 ? '<span class="att-late-n">' + a.lateMin + " د</span>" : "—") + "</td>" +
+        "<td>" + esc(attHrs(a.workMin)) + "</td><td>" + attBadge(a.status) + "</td><td>" + act + "</td></tr>";
+    }).join("") || '<tr><td colspan="7">لم تُسجَّل أي عمليات اليوم.</td></tr>';
+    // حقل الوقت اليدوي يظهر فقط لصاحب صلاحية التعديل
+    var man = canEdit && $("#atManIn") && !$("#atManIn").disabled;
+    if (!man) {
+      $("#atManIn").disabled = !canEdit; $("#atManOut").disabled = !canEdit;
+      $("#atManHint").textContent = canEdit
+        ? "اختر موظفًا ثم (اختياري) اكتب وقتًا يدويًا قبل الضغط على التسجيل"
+        : "التسجيل تلقائي من وقت النظام — التعديل اليدوي يحتاج صلاحية «تعديل سجلات الحضور»";
+    }
+  }
+
+  /* ---------- سجل الحضور ---------- */
+  function attLedgerRows() {
+    var empId = $("#selLedEmp").value, dept = $("#selLedDept").value;
+    var from = $("#dtpLedFrom").value, to = $("#dtpLedTo").value;
+    var st = $("#selLedStatus").value;
+    var q = normalizeAr($("#txtLedSearch").value || "");
+    var list = attendance.filter(function (a) {
+      var e = attEmpById(a.employeeId);
+      if (empId && String(a.employeeId) !== empId) return false;
+      if (dept && (!e || (e.department || "") !== dept)) return false;
+      if (from && a.date < from) return false;
+      if (to && a.date > to) return false;
+      if (st && a.status !== st) return false;
+      if (q) {
+        var hay = normalizeAr((e ? [e.nameAr, e.code, e.department].join(" ") : "") + " " +
+          a.date + " " + (ATT_STATUSES[a.status] || a.status) + " " + (a.note || ""));
+        if (hay.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+    list.sort(function (x, y) {
+      if (x.date !== y.date) return x.date < y.date ? 1 : -1;
+      return String(attEmpName(x.employeeId)).localeCompare(String(attEmpName(y.employeeId)), "ar");
+    });
+    return list;
+  }
+  function attRenderLedger() {
+    var list = attLedgerRows();
+    var canEdit = canEditAttendance();
+    $("#ledSummary").textContent = list.length + " سجل — " +
+      list.filter(function (a) { return a.status === "absent"; }).length + " غياب، " +
+      list.filter(function (a) { return (Number(a.lateMin) || 0) > 0; }).length + " تأخير";
+    var tb = document.querySelector("#dgvLedger tbody");
+    tb.innerHTML = list.map(function (a) {
+      var e = attEmpById(a.employeeId);
+      return '<tr><td hidden>' + esc(a.id) + "</td><td>" + esc(attEmpName(a.employeeId)) + "</td><td>" + esc(e ? (e.department || "—") : "—") + "</td>" +
+        "<td>" + esc(a.date) + "</td><td>" + esc(attHM(a.checkIn)) + "</td><td>" + esc(attHM(a.checkOut)) + "</td>" +
+        "<td>" + (a.lateMin > 0 ? '<span class="att-late-n">' + a.lateMin + " د</span>" : "—") + "</td>" +
+        "<td>" + esc(attHrs(a.workMin)) + "</td>" +
+        "<td>" + (a.otMin > 0 ? '<span class="att-ot">' + esc(attMin(a.otMin)) + "</span>" : "—") + "</td>" +
+        "<td>" + attBadge(a.status) + "</td>" +
+        "<td>" + (canEdit ? '<button class="btn gray sm" type="button" data-edit-att="' + esc(a.id) + '">✏️</button>' : "—") + "</td></tr>";
+    }).join("") || '<tr><td colspan="11">لا توجد سجلات مطابقة للفلاتر الحالية.</td></tr>';
+  }
+  function exportLedgerCsv() {
+    var list = attLedgerRows();
+    var rows = [["التاريخ", "الموظف", "القسم", "الحضور", "الانصراف", "التأخير (د)", "ساعات العمل", "الإضافي (د)", "الحالة", "ملاحظة"]];
+    list.forEach(function (a) {
+      var e = attEmpById(a.employeeId);
+      rows.push([a.date, attEmpName(a.employeeId), e ? (e.department || "") : "", attHM(a.checkIn), attHM(a.checkOut),
+      a.lateMin || 0, (Number(a.workMin) || 0) / 60 === 0 ? "0.00" : ((a.workMin) / 60).toFixed(2),
+      a.otMin || 0, ATT_STATUSES[a.status] || a.status, a.note || ""]);
+    });
+    downloadCSV("سجل-الحضور-" + todayISO() + ".csv", rows);
+    toast("📥 تم تصدير " + list.length + " سجلًا إلى Excel (CSV)", "success");
+  }
+  function printLedger() {
+    var list = attLedgerRows();
+    attFillPrintPage(
+      ["التاريخ", "الموظف", "القسم", "الحضور", "الانصراف", "التأخير", "ساعات العمل", "الإضافي", "الحالة"],
+      list.map(function (a) {
+        var e = attEmpById(a.employeeId);
+        return [a.date, attEmpName(a.employeeId), e ? (e.department || "—") : "—", attHM(a.checkIn), attHM(a.checkOut),
+        a.lateMin > 0 ? a.lateMin + " د" : "—", attHrs(a.workMin), a.otMin > 0 ? attMin(a.otMin) : "—",
+        ATT_STATUSES[a.status] || a.status];
+      }),
+      "📋 سجل الحضور",
+      ($("#dtpLedFrom").value || "البداية") + " إلى " + ($("#dtpLedTo").value || todayISO()),
+      "فلترة: " +
+      ($("#selLedEmp").value ? "موظف=" + attEmpName($("#selLedEmp").value) + " " : "") +
+      ($("#selLedDept").value ? "قسم=" + $("#selLedDept").value + " " : "") +
+      ($("#selLedStatus").value ? "حالة=" + (ATT_STATUSES[$("#selLedStatus").value] || "") : "")
+    );
+  }
+
+  /* ---------- صفحة الطباعة ---------- */
+  function attFillPrintPage(head, rows, title, period, filter) {
+    document.getElementById("arpOrgName").textContent = invOrgName();
+    document.getElementById("arpTitle").textContent = title;
+    document.getElementById("arpPeriod").textContent = period || "—";
+    document.getElementById("arpFilter").textContent = filter || "";
+    document.getElementById("arpHead").innerHTML = head.map(function (h) { return "<th>" + esc(h) + "</th>"; }).join("");
+    document.getElementById("arpBody").innerHTML = rows.map(function (r) {
+      return "<tr>" + r.map(function (c) { return "<td>" + esc(c) + "</td>"; }).join("") + "</tr>";
+    }).join("") || '<tr><td colspan="' + head.length + '">لا توجد بيانات للتقرير.</td></tr>';
+    document.getElementById("arpFoot").innerHTML = "عدد السطور: <b>" + rows.length +
+      "</b> — تاريخ الطباعة: " + todayISO();
+    printSection(document.getElementById("attReportPage"));
+  }
+
+  /* ---------- التقارير ---------- */
+  function attReportHead(type) {
+    if (type === "hours") return ["الموظف", "القسم", "أيام الحضور", "إجمالي ساعات العمل", "متوسط الساعات اليومية"];
+    if (type === "ot") return ["الموظف", "القسم", "أيام فيها إضافي", "إجمالي الإضافي (دقائق)", "إجمالي الإضافي (ساعات)"];
+    if (type === "monthly") return ["الموظف", "القسم", "أيام حضور", "أيام غياب", "إجمالي التأخير (د)", "إجمالي الانصراف المبكر (د)", "إجمالي ساعات العمل", "إجمالي الإضافي (س)"];
+    return ["التاريخ", "الموظف", "القسم", "الحضور", "الانصراف", "التأخير", "الانصراف المبكر", "ساعات العمل", "الإضافي", "الحالة", "ملاحظة"];
+  }
+  function attDetailRow(a) {
+    var e = attEmpById(a.employeeId);
+    return [a.date, attEmpName(a.employeeId), e ? (e.department || "—") : "—", attHM(a.checkIn), attHM(a.checkOut),
+    a.lateMin > 0 ? a.lateMin + " د" : "—", a.earlyMin > 0 ? a.earlyMin + " د" : "—",
+    attHrs(a.workMin), a.otMin > 0 ? attMin(a.otMin) : "—", ATT_STATUSES[a.status] || a.status, a.note || ""];
+  }
+  function attInRange(from, to, empId, dept) {
+    return attendance.filter(function (a) {
+      if (from && a.date < from) return false;
+      if (to && a.date > to) return false;
+      var e = attEmpById(a.employeeId);
+      if (empId && String(a.employeeId) !== empId) return false;
+      if (dept && (!e || (e.department || "") !== dept)) return false;
+      return true;
+    });
+  }
+  function attAggByEmp(list) {
+    var by = {};
+    list.forEach(function (a) {
+      var k = String(a.employeeId);
+      if (!by[k]) by[k] = { present: 0, absent: 0, lateMin: 0, earlyMin: 0, workMin: 0, otMin: 0, otDays: 0 };
+      var g = by[k];
+      if (attIsAttending(a)) g.present++;
+      if (a.status === "absent") g.absent++;
+      g.lateMin += Number(a.lateMin) || 0;
+      g.earlyMin += Number(a.earlyMin) || 0;
+      g.workMin += Number(a.workMin) || 0;
+      g.otMin += Number(a.otMin) || 0;
+      if ((Number(a.otMin) || 0) > 0) g.otDays++;
+    });
+    return by;
+  }
+  function attRunReport() {
+    var type = $("#selAttRepType").value;
+    var from = $("#dtpAttRepFrom").value, to = $("#dtpAttRepTo").value;
+    var empId = $("#selAttRepEmp").value, dept = $("#selAttRepDept").value;
+    if (!from || !to) { toast("حدد الفترة (من / إلى) أولًا", "error"); return; }
+    if (from > to) { toast("تاريخ «من» أكبر من «إلى»", "error"); return; }
+    if (type === "emp" && !empId) { toast("اختر الموظف أولًا لتقرير موظف خلال فترة", "error"); return; }
+    var list = attInRange(from, to, empId, dept);
+    var head = attReportHead(type), rows = [], summary = "", title = "";
+    if (type === "emp") {
+      title = "تقرير حضور: " + attEmpName(empId);
+      rows = list.map(attDetailRow);
+      summary = rows.length + " يومًا مسجلًا";
+    } else if (type === "all") {
+      title = "تقرير حضور جميع الموظفين";
+      rows = list.map(attDetailRow);
+      summary = rows.length + " سجل";
+    } else if (type === "absent") {
+      title = "تقرير الغياب";
+      rows = list.filter(function (a) { return a.status === "absent"; }).map(attDetailRow);
+      summary = rows.length + " يوم غياب";
+    } else if (type === "late") {
+      title = "تقرير التأخير";
+      rows = list.filter(function (a) { return (Number(a.lateMin) || 0) > 0 || a.status === "late"; }).map(attDetailRow);
+      summary = rows.length + " حالة تأخير — " +
+        rows.reduce(function (s, r) { return s + (parseInt(r[5], 10) || 0); }, 0) + " دقيقة إجمالًا";
+    } else if (type === "early") {
+      title = "تقرير الانصراف المبكر";
+      rows = list.filter(function (a) { return (Number(a.earlyMin) || 0) > 0; }).map(attDetailRow);
+      summary = rows.length + " حالة انصراف مبكر";
+    } else if (type === "hours") {
+      title = "تقرير ساعات العمل";
+      var byH = attAggByEmp(list);
+      rows = Object.keys(byH).map(function (k) {
+        var e = attEmpById(k), g = byH[k];
+        return [attEmpName(k), e ? (e.department || "—") : "—", g.present, attHrs(g.workMin),
+        g.present ? attHrs(Math.round(g.workMin / g.present)) : "—"];
+      });
+      summary = rows.length + " موظف";
+    } else if (type === "ot") {
+      title = "تقرير العمل الإضافي";
+      var byO = attAggByEmp(list.filter(function (a) { return (Number(a.otMin) || 0) > 0; }));
+      rows = Object.keys(byO).map(function (k) {
+        var e = attEmpById(k), g = byO[k];
+        return [attEmpName(k), e ? (e.department || "—") : "—", g.otDays, g.otMin, ((g.otMin) / 60).toFixed(2)];
+      });
+      summary = rows.length + " موظف لديهم إضافي — " +
+        rows.reduce(function (s, r) { return s + (Number(r[3]) || 0); }, 0) + " دقيقة إجمالًا";
+    } else if (type === "monthly") {
+      title = "التقرير الشهري لكل موظف (للمرتبات)";
+      var byM = attAggByEmp(list);
+      rows = Object.keys(byM).map(function (k) {
+        var e = attEmpById(k), g = byM[k];
+        return [attEmpName(k), e ? (e.department || "—") : "—", g.present, g.absent, g.lateMin,
+        g.earlyMin, attHrs(g.workMin), ((g.otMin) / 60).toFixed(2)];
+      });
+      rows.sort(function (x, y) { return String(x[0]).localeCompare(String(y[0]), "ar"); });
+      summary = rows.length + " موظف — الفترة: " + from + " إلى " + to;
+    }
+    if (dept) title += " — قسم: " + dept;
+    attLastRep = { head: head, rows: rows, title: title, period: from + " → " + to, summary: summary };
+    $("#attRepTitle").textContent = "📈 " + title;
+    $("#attRepSummary").textContent = summary + " (" + rows.length + " سطر)";
+    document.getElementById("attRepHead").innerHTML = head.map(function (h) { return "<th>" + esc(h) + "</th>"; }).join("");
+    document.querySelector("#dgvAttReport tbody").innerHTML = rows.map(function (r) {
+      return "<tr>" + r.map(function (c, i) {
+        if (i === head.length - 1 && type !== "emp") return "<td>" + esc(c) + "</td>";
+        return "<td>" + esc(c) + "</td>";
+      }).join("") + "</tr>";
+    }).join("") || '<tr><td colspan="' + head.length + '">لا توجد بيانات في هذه الفترة/الفلاتر.</td></tr>';
+  }
+  function attExportRepCsv() {
+    if (!attLastRep) { toast("اعرض التقرير أولًا ثم صدّره", "error"); return; }
+    downloadCSV(attLastRep.title.replace(/[^\u0600-\u06FF0-9 ]+/g, "").trim().replace(/ /g, "-") + "-" + todayISO() + ".csv",
+      [attLastRep.head].concat(attLastRep.rows));
+    toast("📥 تم تصدير التقرير إلى Excel (CSV)", "success");
+  }
+  function attPrintRep() {
+    if (!attLastRep) { toast("اعرض التقرير أولًا ثم اطبعه", "error"); return; }
+    attFillPrintPage(attLastRep.head, attLastRep.rows, "📈 " + attLastRep.title,
+      attLastRep.period, "نوع: " + $("#selAttRepType").selectedOptions[0].textContent +
+      ($("#selAttRepEmp").value ? " — موظف: " + attEmpName($("#selAttRepEmp").value) : "") +
+      ($("#selAttRepDept").value ? " — قسم: " + $("#selAttRepDept").value : ""));
+  }
+
+  /* ---------- مدة العمل ---------- */
+  function attLoadSetForm() {
+    var s = attSettingsSafe();
+    $("#atWorkStart").value = s.workStart;
+    $("#atWorkEnd").value = s.workEnd;
+    $("#atGrace").value = s.graceMin;
+    $("#atLunch").value = s.lunchMin;
+    attUpdateFormula();
+  }
+  function attUpdateFormula() {
+    var s = attSettingsSafe();
+    var std = Math.max(0, attParseHM(s.workEnd) - attParseHM(s.workStart) - (Number(s.lunchMin) || 0));
+    $("#attSetFormula").textContent =
+      "اليوم الرسمي = " + (std / 60).toFixed(2) + " س | التأخير بعد " + s.workStart + " + " + s.graceMin + " د سماح";
+  }
+  function attSaveSetForm() {
+    if (!canManageAttendance()) { toast("صلاحية «الحضور والانصراف» غير مفعّلة لحسابك", "error"); return; }
+    var ws = $("#atWorkStart").value, we = $("#atWorkEnd").value;
+    var gr = Math.max(0, Math.round(Number($("#atGrace").value) || 0));
+    var lc = Math.max(0, Math.round(Number($("#atLunch").value) || 0));
+    if (!ws || !we) { toast("حدد بداية العمل ونهايته أولًا", "error"); return; }
+    if (attParseHM(we) <= attParseHM(ws)) { toast("نهاية العمل يجب أن تكون بعد بداية العمل", "error"); return; }
+    attSettings = { id: (attSettings && attSettings.id) || 1, workStart: ws, workEnd: we, graceMin: gr, lunchMin: lc };
+    saveAttSettings();
+    recalcAllAttendance();     // كل السجلات تعاد حساباتها بالمدة الجديدة
+    attUpdateFormula();
+    addActivity("مدة العمل", ws + " → " + we + " | سماح " + gr + " د | فاصل " + lc + " د");
+    toast("✔ تم حفظ مدة العمل وإعادة حساب جميع السجلات", "success");
+    if (attTab === "today" || attTab === "ledger") attRenderToday();
+  }
+
+  /* ---------- التعديل اليدوي المسجَّل (mizan_att_edit) ---------- */
+  function openAttEdit(attId) {
+    if (!canEditAttendance()) { toast("التعديل اليدوي يحتاج صلاحية «✏️ تعديل سجلات الحضور يدويًا»", "error"); return; }
+    var a = attendance.filter(function (x) { return String(x.id) === String(attId); })[0];
+    if (!a) { toast("سجل غير موجود", "error"); return; }
+    attEditRow = a;
+    $("#mAttEdit").hidden = false;
+    $("#aeEmp").value = attEmpName(a.employeeId);
+    $("#aeDate").value = a.date;
+    $("#aeIn").value = attLocalInput(a.checkIn);
+    $("#aeOut").value = attLocalInput(a.checkOut);
+    $("#aeStatus").innerHTML = Object.keys(ATT_STATUSES).map(function (k) {
+      return '<option value="' + k + '"' + (k === a.status ? " selected" : "") + ">" + ATT_STATUSES[k] + "</option>";
+    }).join("");
+    $("#aeNote").value = a.note || "";
+    $("#aeReason").value = "";
+    $("#aeIn").focus();
+  }
+  function closeAttEdit() { $("#mAttEdit").hidden = true; attEditRow = null; }
+  function saveAttEdit() {
+    if (!attEditRow) return;
+    if (!canEditAttendance()) { toast("لا تملك صلاحية التعديل اليدوي", "error"); return; }
+    var reason = $("#aeReason").value.trim();
+    if (!reason) { toast("سبب التعديل مطلوب — يُحفظ مع القديم والجديد في سجل العمليات", "error"); return; }
+    var inVal = $("#aeIn").value ? new Date($("#aeIn").value) : null;
+    var outVal = $("#aeOut").value ? new Date($("#aeOut").value) : null;
+    if (inVal && isNaN(inVal.getTime())) { toast("وقت الحضور غير صحيح", "error"); return; }
+    if (outVal && isNaN(outVal.getTime())) { toast("وقت الانصراف غير صحيح", "error"); return; }
+    if (inVal && outVal && outVal < inVal) { toast("الانصراف لا يصح أن يسبق الحضور", "error"); return; }
+    if (!(window.DATA && DATA.isOnline && DATA.isOnline() && DATA.client && DATA.client())) {
+      toast("التعديل اليدوي يُنفَّذ على السحابة ويسجل في سجل العمليات — يحتاج اتصالًا بالإنترنت. التسجيل اليومي التلقائي لا يتأثر.", "info");
+      return;
+    }
+    var a = attEditRow;
+    var draft = {
+      checkIn: inVal ? inVal.toISOString() : a.checkIn,
+      checkOut: outVal ? outVal.toISOString() : a.checkOut
+    };
+    var calc = computeAttTimes(draft);
+    var status = $("#aeStatus").value;
+    var note = $("#aeNote").value.trim();
+    var btn = $("#btnAttEditSave");
+    btn.disabled = true;
+    DATA.client().rpc("mizan_att_edit", {
+      p_id: (window.CLOUD && CLOUD.detUuid) ? CLOUD.detUuid("attendance", a.id) : null,
+      p_check_in: draft.checkIn || null,
+      p_check_out: draft.checkOut || null,
+      p_status: status,
+      p_note: note || null,
+      p_late_min: calc.lateMin,
+      p_early_min: calc.earlyMin,
+      p_work_min: calc.workMin,
+      p_ot_min: calc.otMin,
+      p_reason: reason
+    }).then(function (r) {
+      btn.disabled = false;
+      if (r && r.error) {
+        var msg = String(r.error.message || "");
+        if (/permit|غير مصرح/i.test(msg)) toast("لا تملك صلاحية التعديل على السحابة — راجع صاحب الشركة", "error");
+        else if (/غير موجود/i.test(msg)) toast("هذا السجل لم يصل للسحابة بعد — انتظر المزامنة ثم أعد المحاولة", "error");
+        else toast("تعذّر الحفظ: " + (msg || "حاول مرة أخرى"), "error");
+        return;
+      }
+      // نجح على السحابة → الحديث المحلي يطابقها
+      a.checkIn = draft.checkIn; a.checkOut = draft.checkOut;
+      a.status = status; a.note = note;
+      a.lateMin = calc.lateMin; a.earlyMin = calc.earlyMin; a.workMin = calc.workMin; a.otMin = calc.otMin;
+      a.autoTimed = false; a.userName = currentAttUser();
+      saveAttendance();
+      addActivity("تعديل سجل حضور", attEmpName(a.employeeId) + " " + a.date + " — السبب: " + reason);
+      closeAttEdit();
+      attRenderLedger(); attRenderToday(); attRenderPunchToday();
+      toast("✔ تم الحفظ — والسجل دُوُّن في سجل العمليات (القديم والجديد والسبب)", "success");
+    }).catch(function (err) {
+      btn.disabled = false;
+      toast("تعذّر الوصول للسحابة: " + ((err && err.message) || "تحقق من الاتصال"), "error");
+    });
+  }
+
+  /* ---------- تعبئة القوائم ---------- */
+  function attFillSelects() {
+    var emps = employees.slice().sort(function (x, y) { return String(x.nameAr || "").localeCompare(String(y.nameAr || ""), "ar"); });
+    [["selPunchEmp", false], ["selLedEmp", true], ["selAttRepEmp", true]].forEach(function (pair) {
+      var el = document.getElementById(pair[0]);
+      if (!el) return;
+      var cur = el.value;
+      el.innerHTML = (pair[1] ? '<option value="">الكل</option>' : '<option value="">— اختر —</option>') +
+        emps.map(function (e) {
+          return '<option value="' + esc(e.id) + '">' + esc((e.nameAr || e.code) + (e.isActive === false ? " (متوقف)" : "")) + "</option>";
+        }).join("");
+      el.value = cur;
+      if (el.value !== cur) el.value = pair[1] ? "" : "";
+    });
+    var depts = attDepartments();
+    [["selLedDept"], ["selAttRepDept"]].forEach(function (pair) {
+      var el = document.getElementById(pair[0]);
+      if (!el) return;
+      var cur = el.value;
+      el.innerHTML = '<option value="">الكل</option>' + depts.map(function (d) {
+        return '<option value="' + esc(d) + '">' + esc(d) + "</option>";
+      }).join("");
+      el.value = cur;
+    });
+    var dl = document.getElementById("attDeptList");
+    if (dl) dl.innerHTML = depts.map(function (d) { return '<option value="' + esc(d) + '"></option>'; }).join("");
+    var ls = document.getElementById("selLedStatus");
+    if (ls) {
+      var curS = ls.value;
+      ls.innerHTML = '<option value="">كل الحالات</option>' + Object.keys(ATT_STATUSES).map(function (k) {
+        return '<option value="' + k + '">' + ATT_STATUSES[k] + "</option>";
+      }).join("");
+      ls.value = curS;
+    }
+  }
+
+  /* ---------- الربط والأول ---------- */
+  function attBindOnce() {
+    if (attBound) return;
+    attBound = true;
+    $("#attTabs").addEventListener("click", function (ev) {
+      var b = ev.target.closest("[data-att]");
+      if (b) attSwitchTab(b.dataset.att);
+    });
+    $("#btnAddEmp").addEventListener("click", function () { openEmpModal(null); });
+    $("#btnGoPunch").addEventListener("click", function () { attSwitchTab("punch"); });
+    $("#txtEmpSearch").addEventListener("input", attRenderEmployees);
+    $("#btnEmpCancel").addEventListener("click", closeEmpModal);
+    $("#btnEmpSave").addEventListener("click", saveEmpFromModal);
+    $("#btnEmpDelete").addEventListener("click", deleteEmpFromModal);
+    $("#btnEmpToggle").addEventListener("click", function () {
+      if (editingEmpId != null) toggleEmpActive(editingEmpId);
+    });
+    $("#btnPunchIn").addEventListener("click", function () { doPunch("in"); });
+    $("#btnPunchOut").addEventListener("click", function () { doPunch("out"); });
+    $("#txtPunchBadge").addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") { ev.preventDefault(); doPunch("in"); }   // سكنر الباركود يضغط Enter بعد المسح
+    });
+    // جدول الموظفيون + جداول السجل: تفويض أزرار التعديل
+    document.getElementById("viewAttendance").addEventListener("click", function (ev) {
+      var b = ev.target.closest("[data-edit-emp]");
+      if (b) { openEmpModal(attEmpById(b.dataset.editEmp)); return; }
+      b = ev.target.closest("[data-edit-att]");
+      if (b) { openAttEdit(b.dataset.editAtt); return; }
+      b = ev.target.closest("[data-punch-out]");
+      if (b) {
+        var emp = attEmpById(b.dataset.punchOut);
+        if (emp) { $("#selPunchEmp").value = String(emp.id); $("#txtPunchBadge").value = ""; doPunch("out"); }
+      }
+    });
+    ["selLedEmp", "selLedDept", "dtpLedFrom", "dtpLedTo", "selLedStatus"].forEach(function (id) {
+      document.getElementById(id).addEventListener("change", attRenderLedger);
+    });
+    $("#txtLedSearch").addEventListener("input", attRenderLedger);
+    $("#btnLedCsv").addEventListener("click", exportLedgerCsv);
+    $("#btnLedPrint").addEventListener("click", printLedger);
+    $("#btnRunAttRep").addEventListener("click", attRunReport);
+    $("#btnAttRepCsv").addEventListener("click", attExportRepCsv);
+    $("#btnAttRepPrint").addEventListener("click", attPrintRep);
+    $("#btnSaveAttSet").addEventListener("click", attSaveSetForm);
+    $("#btnAttEditCancel").addEventListener("click", closeAttEdit);
+    $("#btnAttEditSave").addEventListener("click", saveAttEdit);
+  }
+
+  function renderAttendanceView() {
+    attSettingsSafe();
+    attBindOnce();
+    attFillSelects();
+    // تواريخ افتراضية مريحة: السجل والتقارير من أول الشهر إلى اليوم (والشهري لآخر الشهر)
+    if (!$("#dtpLedFrom").value) $("#dtpLedFrom").value = attMonthStart();
+    if (!$("#dtpLedTo").value) $("#dtpLedTo").value = todayISO();
+    if (!$("#dtpAttRepFrom").value) $("#dtpAttRepFrom").value = attMonthStart();
+    if (!$("#dtpAttRepTo").value) $("#dtpAttRepTo").value = attMonthEnd();
+    var canEdit = canEditAttendance();
+    $("#atManIn").disabled = !canEdit;
+    $("#atManOut").disabled = !canEdit;
+    attSwitchTab(attTab);
+    attRenderToday();
+  }
+
   /* ================== لوحة إدارة المالك ================== */
   const ADMIN_FEATURES = [
     ["sales", "المبيعات (POS)"], ["purchases", "المشتريات"], ["returns", "الاستعلام عن الفواتير"],
