@@ -216,8 +216,7 @@
     taxRate: TAX.rate,
     plan: "فردي (مستخدم واحد)",
     planEnd: "",
-    planStatus: "تجربة 🧪",
-    publishUrl: "https://adelsamir699-maker.github.io/"
+    planStatus: "تجربة 🧪"
   };
 
   /* ================== الحالة ================== */
@@ -1066,9 +1065,12 @@
     el.classList.add("paper-" + z);
     let st = document.getElementById("mizanPrintPageSize");
     if (!st) { st = document.createElement("style"); st.id = "mizanPrintPageSize"; document.head.appendChild(st); }
-    st.textContent = z === "a5" ? "@page { size: A5; margin: 8mm; }"
+    // هامش فوق/تحت 5mm عمدًا: كروم/إيدچ بيحتاجوا ≈7mm فوق وتحت عشان يرسموا «رأس وتذييل الصفحة»
+    // (العنوان/التاريخ/عنوان الموقع/أرقام الصفحات) — بأقل من كده ما بيظهروش على الورقة خالص.
+    // التعويض الرأسي بيحصل جوه المستند نفسه (padding في styles.css) عشان الشكل ما يتأثرش.
+    st.textContent = z === "a5" ? "@page { size: A5; margin: 5mm 8mm; }"
       : z === "thermal" ? "@page { size: 80mm auto; margin: 3mm; }"
-      : "@page { size: A4; margin: 10mm; }";
+      : "@page { size: A4; margin: 5mm 10mm; }";
     return z;
   }
 

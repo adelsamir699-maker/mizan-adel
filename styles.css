@@ -460,6 +460,10 @@ body {
   .content { padding: 0; overflow: visible; }
   .print-only { display: none !important; }
   .print-only.print-target { display: block !important; }
+  /* تعويض الهامش الرأسي الصغير (5mm) اللي بيخفي رأس/تذييل كروم عن الورقة —
+     مسافة التنفس تبقى جوه المستند نفسه، والحراري سيبناه مظبوط على مقاسه */
+  .print-only.print-target { padding-top: 5mm; padding-bottom: 5mm; }
+  .print-only.print-target.paper-thermal { padding-top: 0; padding-bottom: 0; }
   body.printing .view:not(.print-target) { display: none !important; }
   .statement-page {
     direction: rtl;
