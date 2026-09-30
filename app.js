@@ -4033,11 +4033,48 @@
       const l = retDraft.lines[i];
       if (!l) return;
       let v = parseFloat(String(inp.value).replace(/,/g, "")) || 0;
-      if (v < 0) v = 0;
-      if (v > l.remaining) v = l.remaining;
-      inp.value = v;
+      if (v < 0) { v = 0; inp.value = 0; }   // السالب مالوش معنى — يتصفّر من غير رسالة
+      // بناء 113: الكمية الزيادة ما تتقصّش في صمت — بتفضل زي ما كتبها المستخدم،
+      // والتحذير + قفل زرار الحفظ هما اللي بيمنعوا التنفيذ لحد ما يعدّلها بنفسه.
       l.qty = v;
     });
+  }
+
+  // الأسطر اللي كميتها المكتوبة أكبر من المتبقي للرجوع من الفاتورة (بناء 113)
+  function retOverLines() {
+    if (!retDraft) return [];
+    return retDraft.lines.filter((l) => (Number(l.qty) || 0) > (Number(l.remaining) || 0) + 1e-9);
+  }
+  const retQfmt = (n) => Number(n || 0).toLocaleString("en-US");
+  function retOverLineMsg(l) {
+    return "⚠️ صنف «" + l.nameAr + "»: الكمية في الفاتورة " + retQfmt(l.sold) +
+      (l.already > 0 ? "، اترجّع منها قبل كده " + retQfmt(l.already) : "") +
+      "، فالمتبقي للرجوع " + retQfmt(l.remaining) + " — والمكتوب دلوقتي " + retQfmt(l.qty) + ". عدّل الكمية الأول.";
+  }
+  // تلوين الأسطر الزيادة + لافتة التحذير جوه النافذة + قفل زرار الحفظ (بناء 113)
+  function paintRetOver() {
+    const over = retOverLines();
+    document.querySelectorAll("#dgvRetItems .ret-qty-inp").forEach((inp) => {
+      const l = retDraft ? retDraft.lines[Number(inp.dataset.idx)] : null;
+      const tr = inp.closest ? inp.closest("tr") : null;
+      const bad = !!l && (Number(l.qty) || 0) > (Number(l.remaining) || 0) + 1e-9;
+      if (tr) tr.classList.toggle("ret-over", bad);
+      inp.classList.toggle("ret-over-inp", bad);
+    });
+    const ban = $("#retOverWarn");
+    if (ban) {
+      if (over.length) {
+        ban.innerHTML = "الكمية المرتجعة أكبر من الكمية المتبقية من الفاتورة — المرتجع مش هيتسجل غير لما تعدّل الكمية:<br>" +
+          over.map(retOverLineMsg).join("<br>");
+        ban.hidden = false;
+      } else {
+        ban.innerHTML = "";
+        ban.hidden = true;
+      }
+    }
+    const btn = $("#btnRetSave");
+    if (btn) btn.disabled = over.length > 0;
+    return over;
   }
 
   function recalcRetTotal() {
@@ -4045,15 +4082,19 @@
     let total = 0;
     if (retDraft) {
       retDraft.lines.forEach((l, i) => {
-        const v = retLineValue(retDraft.inv, l.line, l.qty);
+        const bad = (Number(l.qty) || 0) > (Number(l.remaining) || 0) + 1e-9;
+        // السطر الزيادة: قيمته «—» وما يدخلش في الإجمالي — عشان مفيش أي رقم على الشاشة
+        // يوحي إن المرتجع هيتنفذ بالكمية الغلط (بناء 113)
+        const v = bad ? 0 : retLineValue(retDraft.inv, l.line, l.qty);
         l.value = v;
-        total += v;
+        if (!bad) total += v;
         const cell = document.querySelector('#dgvRetItems td[data-val="' + i + '"]');
-        if (cell) cell.textContent = fmt(v) + " ج.م";
+        if (cell) cell.textContent = bad ? "—" : fmt(v) + " ج.م";
       });
     }
     const t = $("#retTotal");
     if (t) t.textContent = "قيمة المرتجع: " + fmt(total) + " ج.م";
+    paintRetOver();
   }
 
   /* ---- تسجيل المرتجع + القيود العكسية ---- */
@@ -4065,8 +4106,15 @@
     readRetLines();
     const chosen = retDraft.lines.filter((l) => l.qty > 0);
     if (!chosen.length) { toast("اكتب الكمية المرتجعة قدام صنف واحد على الأقل.", "warning"); return; }
-    const over = chosen.filter((l) => l.qty > l.remaining + 1e-9);
-    if (over.length) { toast("الكمية أكبر من المتاح للرجوع في: " + over.map((l) => l.nameAr).join("، "), "warning"); return; }
+    const over = retOverLines().filter((l) => (Number(l.qty) || 0) > 0);
+    if (over.length) {
+      // حصانة ثانية (بناء 113): لو لأي سبب اللافتة ما ظهرتش، التنفيذ بالكمية الزيادة ممنوع نهائيًا
+      paintRetOver();
+      toast("مش هيتسجل المرتجع: الكمية المرتجعة أكبر من المتبقي من الفاتورة في: " +
+        over.map((l) => "«" + l.nameAr + "» (المتبقي للرجوع " + retQfmt(l.remaining) + " والمكتوب " + retQfmt(l.qty) + ")").join("، ") +
+        " — عدّل الكمية الأول.", "warning");
+      return;
+    }
 
     const wh = inv.warehouse || inv.store || WAREHOUSES[0];
     const date = ($("#retDate").value || todayISO());
