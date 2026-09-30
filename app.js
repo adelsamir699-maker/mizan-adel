@@ -968,20 +968,125 @@
     $("#" + id).hidden = true;
   }
 
+  /* ========== «انشر على الفاتورة» — اختيار صاحب الشركة (ترحيل ٣٣) ========== */
+  const INV_FIELD_KEYS = ["name", "address", "phone", "tax_number"];
+  const INV_FIELD_DEFAULT = { name: true, address: true, phone: true, tax_number: true };
+
+  function normalizeInvFields(raw) {
+    const src = raw || {};
+    const out = {};
+    INV_FIELD_KEYS.forEach((k) => {
+      const v = src[k];
+      out[k] = (v === undefined || v === null)
+        ? INV_FIELD_DEFAULT[k]
+        : (v === true || v === "true" || v === 1 || v === "1");
+    });
+    return out;
+  }
+
+  // المصدر: بيانات الشركة من الضبط (سحابية إن وجدت) ← مرآة settings.invFields ← الافتراضي
+  function invoicePublishFields() {
+    let raw = null;
+    try { raw = orgSettValue("invoice_fields", null); } catch (e) { raw = null; }
+    if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+    if (!raw || typeof raw !== "object") raw = (settings && settings.invFields) || null;
+    return normalizeInvFields(raw && typeof raw === "object" ? raw : null);
+  }
+
+  // اسم المنشأة للمطبوعات (نفس ترتيب printSection القديم)
+  function invOrgName() {
+    const settOrg = (csetData && csetData.org) || (ssetData && ssetData.org);
+    return (settOrg && settOrg.name) || (settings && settings.orgName) ||
+      (DATA.org && DATA.org() && DATA.org().name) || "مؤسستي التجارية";
+  }
+
+  // تعبئة ترويسة الفاتورة ببيانات المنشأة حسب الصناديق المختارة
+  function fillInvoiceOrgHead(prefix) {
+    const f = invoicePublishFields();
+    const ids = prefix === "inv"
+      ? { name: "invOrgName", address: "invOrgAddress", phone: "invOrgPhone", vat: "invOrgVat" }
+      : { name: "ppOrgName", address: "ppOrgAddress", phone: "ppOrgPhone", vat: "ppOrgVat" };
+    const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+    set(ids.name, f.name ? String(invOrgName()) : "");
+    const addr = f.address ? String(orgSettValue("address", (settings && settings.orgAddress) || "") || "").trim() : "";
+    const phone = f.phone ? String(orgSettValue("phone", (settings && settings.orgPhone) || "") || "").trim() : "";
+    const vat = f.tax_number ? String(orgSettValue("tax_number", (settings && settings.orgVat) || "") || "").trim() : "";
+    set(ids.address, addr ? "العنوان: " + addr : "");
+    set(ids.phone, phone ? "هاتف: " + phone : "");
+    set(ids.vat, vat ? "الرقم الضريبي: " + vat : "");
+    return f;
+  }
+
+  // ملاحظات وشروط تطبع أسفل الفاتورة (سطر المنشأة + الضمان)
+  function invNotesHtml(isSale) {
+    const note = String(orgSettValue("org_note", (settings && settings.orgNote) || "") || "").trim();
+    const warranty = String(orgSettValue("warranty_terms", (settings && settings.orgWarranty) || "") || "").trim();
+    let h = "";
+    if (note) h += '<p><span class="inv-notes-title">ملاحظات: </span>' + esc(note) + '</p>';
+    if (warranty) h += '<p><span class="inv-notes-title">شروط الضمان: </span>' + esc(warranty) + '</p>';
+    if (!h) h = '<p class="inv-empty">' + (isSale ? "شكراً لتعاملكم معنا." : "رجاءً التأكد من البضاعة عند الاستلام.") + '</p>';
+    return h;
+  }
+
+  // بلوك الإجماليات (بدل سطر « | » القديم)
+  function invTotalsHtml(rows) {
+    return rows.map((r) =>
+      '<div class="inv-total-row' + (r.grand ? " grand" : "") + '"><span>' + esc(r.label) +
+      '</span><b>' + r.value + '</b></div>').join("");
+  }
+
+  function invTotalRows(isSale, inv) {
+    const taxLabel = String(orgSettValue("tax_title", "") || "الضريبة").trim() || "الضريبة";
+    const rows = [{ label: "المجموع", value: fmt(inv.subTotal) + " ج.م" }];
+    if (Number(inv.discountAmount)) rows.push({ label: "الخصم الإضافي", value: fmt(inv.discountAmount) + " ج.م" });
+    if ((inv.taxAmount > 0) || (TAX.enabled && TAX.rate > 0)) rows.push({ label: taxLabel, value: fmt(inv.taxAmount) + " ج.م" });
+    const rt = retTotalsFor(isSale, inv);
+    if (rt.count) {
+      rows.push({ label: "الصافي النهائي", value: fmt(inv.grandTotal) + " ج.م" });
+      rows.push({ label: "المرتجعات (" + rt.count + ")", value: fmt(rt.value) + " ج.م" });
+      rows.push({ label: "الصافي بعد المرتجعات", value: fmt(Math.max(0, (Number(inv.grandTotal) || 0) - rt.value)) + " ج.م", grand: true });
+    } else {
+      rows.push({ label: "الصافي النهائي", value: fmt(inv.grandTotal) + " ج.م", grand: true });
+    }
+    return rows;
+  }
+
+  /* ===== حجم ورق الطباعة من الضبط (A4 / A5 / حراري 80mm) ===== */
+  function printPaperSize() {
+    let p = "";
+    try { p = String(orgSettValue("paper_size", (settings && settings.paperSize) || "A4") || "A4").toLowerCase().trim(); } catch (e) { p = "a4"; }
+    if (p === "a5") return "a5";
+    if (p.indexOf("thermal") === 0 || p.indexOf("حراري") === 0 || p === "80mm") return "thermal";
+    return "a4";
+  }
+
+  function applyPrintPaper(el) {
+    const z = printPaperSize();
+    el.classList.remove("paper-a4", "paper-a5", "paper-thermal");
+    el.classList.add("paper-" + z);
+    let st = document.getElementById("mizanPrintPageSize");
+    if (!st) { st = document.createElement("style"); st.id = "mizanPrintPageSize"; document.head.appendChild(st); }
+    st.textContent = z === "a5" ? "@page { size: A5; margin: 8mm; }"
+      : z === "thermal" ? "@page { size: 80mm auto; margin: 3mm; }"
+      : "@page { size: A4; margin: 10mm; }";
+    return z;
+  }
+
   function printSection(el) {
     // اسم الشركة من الضبط (لكل شركة على حدة) يظهر في كل صفحات الطباعة
-    const settOrg = (csetData && csetData.org) || (ssetData && ssetData.org);
-    const settName = settOrg && settOrg.name;
-    const org = settName || (settings && settings.orgName ? settings.orgName : (DATA.org() && DATA.org().name) || "مؤسستي التجارية");
-    [["invOrgName"], ["ppOrgName"], ["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"]].forEach(([id]) => {
+    // ملاحظة: صفحتا الفاتورة (بيع/شراء) تملآن ترويستهما بنفسها احترامًا لصناديق «على الفاتورة».
+    const org = invOrgName();
+    [["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"]].forEach(([id]) => {
       const x = document.getElementById(id);
       if (x) x.textContent = org;
     });
+    applyPrintPaper(el);
     document.querySelectorAll(".print-only").forEach((s) => s.classList.remove("print-target"));
     el.classList.add("print-target");
     document.body.classList.add("printing");
     const cleanup = () => {
       el.classList.remove("print-target");
+      el.classList.remove("paper-a4", "paper-a5", "paper-thermal");
       document.body.classList.remove("printing");
       window.removeEventListener("afterprint", cleanup);
     };
@@ -1601,8 +1706,10 @@
         csetData = p;
         csetData.__online = true;
         if (p.org) {
-          if (p.org.name) settings.orgName = p.org.name;
-          if (!settings.orgAddress && p.org.address) settings.orgAddress = p.org.address;
+          // بيانات المنشأة (بما فيها «انشر على الفاتورة») تتخزن محليًا كمرآة سريعة للمطبوعات
+          try { mirrorOrgToSettings(p.org); } catch (e) {
+            if (p.org.name) settings.orgName = p.org.name;
+          }
         }
       }
       applyTaxSettingsFromSett(p);
@@ -2591,12 +2698,10 @@
         '<td>' + fmt(it.total) + '</td>';
       tb.appendChild(tr);
     });
-    let footStr = "المجموع: <b>" + fmt(inv.subTotal) + " ج.م</b>";
-    if (inv.discountAmount) footStr += " | الخصم الإضافي: <b>" + fmt(inv.discountAmount) + " ج.م</b>";
-    if (hasTax) footStr += " | الضريبة: <b>" + fmt(inv.taxAmount) + " ج.م</b>";
-    footStr += " | الصافي النهائي: <b>" + fmt(inv.grandTotal) + " ج.م</b>";
-    footStr += retFootNote(true, inv);
-    $("#invFootPrint").innerHTML = footStr;
+    fillInvoiceOrgHead("inv");
+    const nt = $("#invNotesPrint");
+    if (nt) nt.innerHTML = invNotesHtml(true);
+    $("#invFootPrint").innerHTML = invTotalsHtml(invTotalRows(true, inv));
     printSection($("#invoicePage"));
   }
 
@@ -3074,12 +3179,10 @@
         '<td>' + fmt(it.total) + '</td>';
       tb.appendChild(tr);
     });
-    let footStr = "المجموع: <b>" + fmt(inv.subTotal) + " ج.م</b>";
-    if (inv.discountAmount) footStr += " | الخصم الإضافي: <b>" + fmt(inv.discountAmount) + " ج.م</b>";
-    if (hasTax) footStr += " | الضريبة: <b>" + fmt(inv.taxAmount) + " ج.م</b>";
-    footStr += " | الصافي النهائي: <b>" + fmt(inv.grandTotal) + " ج.م</b>";
-    footStr += retFootNote(false, inv);
-    $("#ppFoot").innerHTML = footStr;
+    fillInvoiceOrgHead("pp");
+    const pnt = $("#ppNotesPrint");
+    if (pnt) pnt.innerHTML = invNotesHtml(false);
+    $("#ppFoot").innerHTML = invTotalsHtml(invTotalRows(false, inv));
     printSection($("#purchasePage"));
   }
 
@@ -5158,6 +5261,12 @@
     toast("تم الحذف محليًا. اضغط «حفظ جميع تبويبات» لحفظه.", "info");
   };
 
+  // مُحوّل معرّفات حقول الضبط: شاشة العميل بادئتها «c» (csetOrgName) وشاشة المالك
+  // بلا بادئة (setOrgName). المحاولة بالبادئة ثم بدونها تصلح الحقل في الشاشتين.
+  function settFieldEl(prefix, name) {
+    return document.getElementById(prefix + name) || document.getElementById(name);
+  }
+
   // تعبئة حقول بيانات المنشأة / الضريبة من كائن org (سحابة)
   function settFillOrgFields(prefix) {
     const p = settPayload(prefix);
@@ -5169,37 +5278,66 @@
       let sr = Number(settings.taxRate);
       rt = sr > 1 ? sr : Math.round(sr * 100);
     }
-    const g = (sel, val) => { const el = document.querySelector(sel); if (el) el.value = val == null ? "" : String(val); };
-    g("#" + prefix + "setOrgName", org.name || "");
-    g("#" + prefix + "setOrgPhone", org.phone || "");
-    g("#" + prefix + "setOrgAddress", org.address || "");
-    g("#" + prefix + "setOrgVat", org.tax_number || "");
-    g("#" + prefix + "setOrgNote", org.org_note || "");
-    g("#" + prefix + "setTaxEnabled", en ? "1" : "0");
-    g("#" + prefix + "setTaxRate", rt || (en ? "14" : "0"));
-    g("#" + prefix + "setTaxTitle", org.tax_title || "");
-    g("#" + prefix + "setPaper", org.paper_size || "A4");
-    g("#" + prefix + "setWarranty", org.warranty_terms || "");
+    const g = (name, val) => { const el = settFieldEl(prefix, name); if (el) el.value = val == null ? "" : String(val); };
+    g("setOrgName", org.name || "");
+    g("setOrgPhone", org.phone || "");
+    g("setOrgAddress", org.address || "");
+    g("setOrgVat", org.tax_number || "");
+    g("setOrgNote", org.org_note || "");
+    g("setTaxEnabled", en ? "1" : "0");
+    g("setTaxRate", rt || (en ? "14" : "0"));
+    g("setTaxTitle", org.tax_title || "");
+    g("setPaper", org.paper_size || "A4");
+    g("setWarranty", org.warranty_terms || "");
+    // صناديق «على الفاتورة» (ترحيل ٣٣)
+    const f = normalizeInvFields(org.invoice_fields);
+    [["setInvName", "name"], ["setInvPhone", "phone"], ["setInvAddress", "address"], ["setInvVat", "tax_number"]]
+      .forEach(([id, k]) => { const el = settFieldEl(prefix, id); if (el) el.checked = !!f[k]; });
   }
 
   // قراءة حقول بيانات المنشأة / الضريبة إلى كائن org (قبل الحفظ)
   function settReadOrgFields(prefix) {
     const p = settPayload(prefix);
     const org = p.org || {};
-    const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
-    org.name = v(prefix + "setOrgName");
-    org.phone = v(prefix + "setOrgPhone");
-    org.address = v(prefix + "setOrgAddress");
-    org.tax_number = v(prefix + "setOrgVat");
-    org.org_note = v(prefix + "setOrgNote");
-    org.tax_enabled = (v(prefix + "setTaxEnabled") === "1");
-    const rawRate = parseFloat(String(v(prefix + "setTaxRate")).replace(/[^\d.-]/g, "")) || 0;
-    org.tax_rate = rawRate;
-    org.tax_title = v(prefix + "setTaxTitle");
-    org.paper_size = v(prefix + "setPaper") || "A4";
-    org.warranty_terms = v(prefix + "setWarranty");
+    const v = (name) => { const el = settFieldEl(prefix, name); return el ? el.value.trim() : null; };
+    // لو الحقل مش موجود في الواجهة نترك القيمة كما هي (ولا نمسحها بإرسال فاضي)
+    const put = (key, name) => { const val = v(name); if (val !== null) org[key] = val; };
+    put("name", "setOrgName");
+    put("phone", "setOrgPhone");
+    put("address", "setOrgAddress");
+    put("tax_number", "setOrgVat");
+    put("org_note", "setOrgNote");
+    const taxSel = v("setTaxEnabled");
+    if (taxSel !== null) org.tax_enabled = (taxSel === "1");
+    const rawRateStr = v("setTaxRate");
+    if (rawRateStr !== null) org.tax_rate = parseFloat(String(rawRateStr).replace(/[^\d.-]/g, "")) || 0;
+    put("tax_title", "setTaxTitle");
+    const paper = v("setPaper");
+    org.paper_size = paper || org.paper_size || "A4";
+    put("warranty_terms", "setWarranty");
+    const chk = (id) => { const el = settFieldEl(prefix, id); return el ? el.checked === true : true; };
+    org.invoice_fields = {
+      name: chk("setInvName"),
+      address: chk("setInvAddress"),
+      phone: chk("setInvPhone"),
+      tax_number: chk("setInvVat")
+    };
     p.org = org;
     return org;
+  }
+
+  // مرآة محلية داخل settings: أي جهاز يقرأ نفس الاختيار حتى من غير شبكة
+  function mirrorOrgToSettings(org) {
+    if (!org) return;
+    if (org.name != null) settings.orgName = org.name;
+    if (org.phone != null) settings.orgPhone = org.phone;
+    if (org.address != null) settings.orgAddress = org.address;
+    if (org.tax_number != null) settings.orgVat = org.tax_number;
+    if (org.org_note != null) settings.orgNote = org.org_note;
+    if (org.warranty_terms != null) settings.orgWarranty = org.warranty_terms;
+    if (org.paper_size != null) settings.paperSize = org.paper_size;
+    if (org.invoice_fields) settings.invFields = normalizeInvFields(org.invoice_fields);
+    try { saveSettings(); } catch (e) {}
   }
 
   // ================== العميل: تحميل وحفظ تبويبات شركته ==================
@@ -5214,6 +5352,8 @@
           if (csetData.org.tax_enabled !== undefined && csetData.org.tax_enabled !== null) {
             applyTaxSettings(csetData.org.tax_enabled, csetData.org.tax_rate);
           }
+          // مرآة محلية: الفاتورة تقرأ بيانات المنشأة واختيار «على الفاتورة» من نفس المصدر
+          try { mirrorOrgToSettings(csetData.org); } catch (e) {}
         }
         applySettFeatureGatingClient();
         renderAllSettPanes("c");
@@ -5222,7 +5362,7 @@
       return;
     }
     csetData = {
-      org: { name: settings.orgName || "", phone: settings.orgPhone || "", address: settings.orgAddress || "", tax_number: settings.orgVat || "", org_note: settings.orgNote || "", tax_enabled: !!settings.taxEnabled, tax_rate: Math.round((settings.taxRate || 0) * 100), tax_title: "", paper_size: "A4", warranty_terms: "" },
+      org: { name: settings.orgName || "", phone: settings.orgPhone || "", address: settings.orgAddress || "", tax_number: settings.orgVat || "", org_note: settings.orgNote || "", tax_enabled: !!settings.taxEnabled, tax_rate: Math.round((settings.taxRate || 0) * 100), tax_title: "", paper_size: settings.paperSize || "A4", warranty_terms: settings.orgWarranty || "", invoice_fields: normalizeInvFields(settings.invFields) },
       categories: [], units: [], warehouses: [], owners: [], wallets: [], banks: []
     };
     renderAllSettPanes("c");
@@ -5237,8 +5377,7 @@
     const payload = gatherSettPayload("c");
     const doAfter = () => {
       applyTaxSettings(payload.org.tax_enabled, payload.org.tax_rate);
-      settings.orgName = payload.org.name;
-      saveSettings();
+      mirrorOrgToSettings(payload.org);
       addActivity("إعدادات", "تعديل إعدادات المؤسسة");
       toast("تم حفظ إعدادات مؤسستك بنجاح.", "success");
     };
@@ -5293,8 +5432,9 @@
     const after = () => {
       if (payload.org) {
         applyTaxSettings(payload.org.tax_enabled, payload.org.tax_rate);
-        settings.orgName = payload.org.name;
-        saveSettings();
+        // المرآة المحلية بتاعة الفاتورة بتاعة «شاشة العميل بشركته» بس —
+        // مفيش منطق إن إعدادات شركة تانية تدخل في إعدادات المالك المحلي.
+        if (prefix === "c") mirrorOrgToSettings(payload.org);
       }
       renderAllSettPanes(prefix);
       // الضبط هو المرجع → حدّث القوائم الحية بعد الحفظ مباشرة

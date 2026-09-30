@@ -1371,3 +1371,86 @@ td.c-tax.tax-hidden {
   #mRetAddBox .ret-qty-inp { width: 68px; }
   .ret-tag { font-size: 9.8px; padding: 1px 5px; }
 }
+
+/* ===== صناديق «على الفاتورة» في تبويب بيانات المنشأة (بناء ١١٠) ===== */
+.invf-hint {
+  font-size: 12px;
+  color: #475569;
+  background: #F8FAFC;
+  border: 1px dashed #CBD5E1;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 6px 0 10px;
+}
+.invf-cell { display: flex; gap: 8px; align-items: center; }
+.invf-cell input[type="text"] { flex: 1; min-width: 0; }
+.invf-chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: bold;
+  color: #123a5c;
+  background: #EEF4FB;
+  border: 1px solid #CBD5E1;
+  border-radius: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.invf-chk input { width: 15px; height: 15px; accent-color: #123a5c; cursor: pointer; }
+@media (max-width: 860px) { .invf-cell { flex-wrap: wrap; } }
+
+/* ===== فاتورة احترافية للطباعة — بيع وشراء (بناء ١١٠) ===== */
+@media print {
+  .inv-page { direction: rtl; color: #0F172A; font-size: 12px; }
+  .inv-head {
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+    border-bottom: 2px solid #123a5c; padding-bottom: 10px; margin-bottom: 12px;
+  }
+  .inv-org-name { font-size: 20px; font-weight: 800; color: #123a5c; margin-bottom: 2px; }
+  .inv-org-line { font-size: 12px; color: #334155; margin-top: 3px; }
+  .inv-doc { text-align: left; min-width: 190px; }
+  .inv-doctype {
+    font-size: 15px; font-weight: 800; color: #0F172A; background: #F1F5F9;
+    border: 1px solid #CBD5E1; border-radius: 6px; padding: 5px 12px; margin-bottom: 6px;
+  }
+  .inv-meta-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; margin-top: 3px; }
+  .inv-meta-row span { color: #64748B; }
+  .inv-meta-row b { direction: ltr; }
+  .inv-parties { display: flex; gap: 10px; margin-bottom: 12px; }
+  .inv-party { flex: 1; border: 1px solid #CBD5E1; border-radius: 6px; padding: 6px 9px; background: #fff; }
+  .inv-party span { display: block; font-size: 10px; color: #64748B; margin-bottom: 2px; }
+  .inv-party b { font-size: 13px; }
+  .inv-table th { background: #123a5c; color: #fff; border-color: #123a5c; }
+  .inv-table td { font-size: 11.5px; }
+  .inv-table tr:nth-child(even) td { background: #F8FAFC; }
+  .inv-bottom { display: flex; gap: 16px; margin-top: 12px; align-items: flex-start; }
+  .inv-notes { flex: 2; font-size: 11px; color: #334155; }
+  .inv-notes p { margin: 2px 0; }
+  .inv-notes .inv-notes-title { font-weight: 800; color: #123a5c; }
+  .inv-totals { flex: 1; min-width: 215px; border: 1px solid #CBD5E1; border-radius: 6px; overflow: hidden; }
+  .inv-total-row { display: flex; justify-content: space-between; padding: 5px 10px; border-bottom: 1px solid #E2E8F0; font-size: 12px; font-weight: bold; }
+  .inv-total-row span { color: #475569; font-weight: normal; }
+  .inv-total-row.grand { background: #123a5c; color: #fff; border-bottom: none; font-size: 13px; }
+  .inv-total-row.grand span { color: #DBEAFE; }
+  .inv-sign { display: flex; gap: 24px; margin-top: 22px; }
+  .inv-sign-box { flex: 1; border-top: 1px dashed #94A3B8; padding-top: 5px; font-size: 11px; color: #475569; text-align: center; }
+  .inv-empty { color: #94A3B8; font-size: 11px; }
+
+  /* أحجام الورق من الضبط (A4 / A5 / حراري 80mm) */
+  .paper-a5 { max-width: 148mm; margin: 0 auto; }
+  .paper-a5 .inv-org-name { font-size: 17px; }
+  .paper-a5 .inv-totals { min-width: 150px; }
+  .paper-thermal { max-width: 76mm; margin: 0 auto; font-size: 11px; }
+  .paper-thermal .inv-head { flex-direction: column; gap: 8px; }
+  .paper-thermal .inv-doc { text-align: right; min-width: 0; }
+  .paper-thermal .inv-parties { flex-direction: column; gap: 6px; }
+  .paper-thermal .inv-bottom { flex-direction: column; gap: 10px; }
+  .paper-thermal .inv-totals { min-width: 0; width: 100%; }
+  .paper-thermal .inv-sign { flex-direction: column; gap: 16px; }
+  .paper-thermal .inv-table th, .paper-thermal .inv-table td { padding: 3px; font-size: 10px; }
+}
+
+

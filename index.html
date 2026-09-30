@@ -904,15 +904,28 @@
         <div class="sett-pane" data-pane="sorg">
           <div class="sett-box">
             <div class="panel-title">🏢 بيانات المنشأة</div>
+            <div class="invf-hint">☑ «على الفاتورة» = البيان ده بيطبع أعلى فاتورة البيع والشراء — اختار اللي تشوفه، وشركتك هي اللي تتحكم فيه.</div>
             <div class="form-grid">
               <label for="setOrgName">اسم المنشأة:</label>
-              <input type="text" id="setOrgName" autocomplete="off" />
+              <div class="invf-cell">
+                <input type="text" id="setOrgName" autocomplete="off" />
+                <label class="invf-chk" for="setInvName" title="يطبع اسم الشركة على الفاتورة"><input type="checkbox" id="setInvName" /> على الفاتورة</label>
+              </div>
               <label for="setOrgPhone">رقم الهاتف:</label>
-              <input type="text" id="setOrgPhone" autocomplete="off" />
+              <div class="invf-cell">
+                <input type="text" id="setOrgPhone" autocomplete="off" />
+                <label class="invf-chk" for="setInvPhone" title="يطبع تليفون الشركة على الفاتورة"><input type="checkbox" id="setInvPhone" /> على الفاتورة</label>
+              </div>
               <label for="setOrgAddress">العنوان:</label>
-              <input type="text" id="setOrgAddress" autocomplete="off" />
+              <div class="invf-cell">
+                <input type="text" id="setOrgAddress" autocomplete="off" />
+                <label class="invf-chk" for="setInvAddress" title="يطبع عنوان الشركة على الفاتورة"><input type="checkbox" id="setInvAddress" /> على الفاتورة</label>
+              </div>
               <label for="setOrgVat">الرقم الضريبي (VAT):</label>
-              <input type="text" id="setOrgVat" autocomplete="off" />
+              <div class="invf-cell">
+                <input type="text" id="setOrgVat" autocomplete="off" />
+                <label class="invf-chk" for="setInvVat" title="يطبع الرقم الضريبي على الفاتورة"><input type="checkbox" id="setInvVat" /> على الفاتورة</label>
+              </div>
               <label for="setOrgNote">سطر مطبوع أسفل الفواتير:</label>
               <input type="text" id="setOrgNote" autocomplete="off" />
             </div>
@@ -1106,15 +1119,28 @@
         <div class="sett-pane" data-pane="corg">
           <div class="sett-box">
             <div class="panel-title">🏢 بيانات المنشأة</div>
+            <div class="invf-hint">☑ «على الفاتورة» = البيان ده بيطبع أعلى فاتورة البيع والشراء — اختار اللي تشوفه، وشركتك هي اللي تتحكم فيه.</div>
             <div class="form-grid">
               <label for="csetOrgName">اسم المنشأة:</label>
-              <input type="text" id="csetOrgName" autocomplete="off" />
+              <div class="invf-cell">
+                <input type="text" id="csetOrgName" autocomplete="off" />
+                <label class="invf-chk" for="csetInvName" title="يطبع اسم شركتك على الفاتورة"><input type="checkbox" id="csetInvName" /> على الفاتورة</label>
+              </div>
               <label for="csetOrgPhone">رقم الهاتف:</label>
-              <input type="text" id="csetOrgPhone" autocomplete="off" />
+              <div class="invf-cell">
+                <input type="text" id="csetOrgPhone" autocomplete="off" />
+                <label class="invf-chk" for="csetInvPhone" title="يطبع تليفون شركتك على الفاتورة"><input type="checkbox" id="csetInvPhone" /> على الفاتورة</label>
+              </div>
               <label for="csetOrgAddress">العنوان:</label>
-              <input type="text" id="csetOrgAddress" autocomplete="off" />
+              <div class="invf-cell">
+                <input type="text" id="csetOrgAddress" autocomplete="off" />
+                <label class="invf-chk" for="csetInvAddress" title="يطبع عنوان شركتك على الفاتورة"><input type="checkbox" id="csetInvAddress" /> على الفاتورة</label>
+              </div>
               <label for="csetOrgVat">الرقم الضريبي (VAT):</label>
-              <input type="text" id="csetOrgVat" autocomplete="off" />
+              <div class="invf-cell">
+                <input type="text" id="csetOrgVat" autocomplete="off" />
+                <label class="invf-chk" for="csetInvVat" title="يطبع رقمك الضريبي على الفاتورة"><input type="checkbox" id="csetInvVat" /> على الفاتورة</label>
+              </div>
               <label for="csetOrgNote">سطر مطبوع أسفل الفواتير:</label>
               <input type="text" id="csetOrgNote" autocomplete="off" />
             </div>
@@ -1323,12 +1349,26 @@
       </section>
 
       <!-- ====== صفحة فاتورة المبيعات للطباعة ====== -->
-      <section class="print-only statement-page" id="invoicePage">
-        <div class="statement-head">
-          <div class="inv-brand-name" id="invOrgName"></div>
-          <h2>🧾 فاتورة مبيعات رقم: <span id="invNoPrint"></span></h2>
-          <p>التاريخ: <span id="invDatePrint"></span> | العميل: <span id="invCustPrint"></span> | المستودع: <span id="invWhPrint"></span> | الدفع: <span id="invPayPrint"></span></p>        </div>
-        <table class="stmt-table">
+      <section class="print-only statement-page inv-page" id="invoicePage">
+        <div class="inv-head">
+          <div class="inv-org">
+            <div class="inv-org-name" id="invOrgName"></div>
+            <div class="inv-org-line" id="invOrgAddress"></div>
+            <div class="inv-org-line" id="invOrgPhone"></div>
+            <div class="inv-org-line" id="invOrgVat"></div>
+          </div>
+          <div class="inv-doc">
+            <div class="inv-doctype">فاتورة مبيعات</div>
+            <div class="inv-meta-row"><span>رقم الفاتورة</span><b id="invNoPrint"></b></div>
+            <div class="inv-meta-row"><span>التاريخ</span><b id="invDatePrint"></b></div>
+          </div>
+        </div>
+        <div class="inv-parties">
+          <div class="inv-party"><span>فاتورة إلى (العميل)</span><b id="invCustPrint"></b></div>
+          <div class="inv-party"><span>المستودع</span><b id="invWhPrint"></b></div>
+          <div class="inv-party"><span>طريقة الدفع</span><b id="invPayPrint"></b></div>
+        </div>
+        <table class="stmt-table inv-table">
           <thead>
             <tr>
               <th>كود الصنف</th><th>اسم الصنف</th><th>الوحدة</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th id="thPrintTax">الضريبة</th><th>الإجمالي</th>
@@ -1336,16 +1376,37 @@
           </thead>
           <tbody id="invBodyPrint"></tbody>
         </table>
-        <div class="inv-foot-print" id="invFootPrint"></div>
+        <div class="inv-bottom">
+          <div class="inv-notes" id="invNotesPrint"></div>
+          <div class="inv-totals" id="invFootPrint"></div>
+        </div>
+        <div class="inv-sign">
+          <div class="inv-sign-box">اسم مستلم البضاعة وتوقيعه:</div>
+          <div class="inv-sign-box">عن المنشأة — التوقيع والختم:</div>
+        </div>
       </section>
 
       <!-- ====== صفحة فاتورة المشتريات للطباعة ====== -->
-      <section class="print-only statement-page" id="purchasePage">
-        <div class="statement-head">
-          <div class="inv-brand-name" id="ppOrgName"></div>
-          <h2>🧾 فاتورة مشتريات رقم: <span id="ppInvNo"></span></h2>
-          <p>التاريخ: <span id="ppDate"></span> | المورد: <span id="ppSuppPrint"></span> | المستودع: <span id="ppWhPrint"></span> | الدفع: <span id="ppPayPrint"></span></p>        </div>
-        <table class="stmt-table">
+      <section class="print-only statement-page inv-page" id="purchasePage">
+        <div class="inv-head">
+          <div class="inv-org">
+            <div class="inv-org-name" id="ppOrgName"></div>
+            <div class="inv-org-line" id="ppOrgAddress"></div>
+            <div class="inv-org-line" id="ppOrgPhone"></div>
+            <div class="inv-org-line" id="ppOrgVat"></div>
+          </div>
+          <div class="inv-doc">
+            <div class="inv-doctype">فاتورة مشتريات</div>
+            <div class="inv-meta-row"><span>رقم الفاتورة</span><b id="ppInvNo"></b></div>
+            <div class="inv-meta-row"><span>التاريخ</span><b id="ppDate"></b></div>
+          </div>
+        </div>
+        <div class="inv-parties">
+          <div class="inv-party"><span>فاتورة من (المورد)</span><b id="ppSuppPrint"></b></div>
+          <div class="inv-party"><span>المستودع</span><b id="ppWhPrint"></b></div>
+          <div class="inv-party"><span>طريقة الدفع</span><b id="ppPayPrint"></b></div>
+        </div>
+        <table class="stmt-table inv-table">
           <thead>
             <tr>
               <th>كود الصنف</th><th>اسم الصنف</th><th>الوحدة</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th id="thPPPrintTax">الضريبة</th><th>الإجمالي</th>
@@ -1353,7 +1414,14 @@
           </thead>
           <tbody id="ppBody"></tbody>
         </table>
-        <div class="inv-foot-print" id="ppFoot"></div>
+        <div class="inv-bottom">
+          <div class="inv-notes" id="ppNotesPrint"></div>
+          <div class="inv-totals" id="ppFoot"></div>
+        </div>
+        <div class="inv-sign">
+          <div class="inv-sign-box">اسم مستلم البضاعة وتوقيعه:</div>
+          <div class="inv-sign-box">عن المنشأة — التوقيع والختم:</div>
+        </div>
       </section>
 
       <!-- ====== صفحة قائمة المركز المالي للطباعة ====== -->
