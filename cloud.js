@@ -19,6 +19,18 @@
     var tail = Number(localId).toString(16).padStart(12, "0").slice(-12);
     return a.slice(0, 8) + "-" + b.slice(0, 4) + "-4" + b.slice(4, 7) + "-" + c.slice(0, 4) + "-" + tail;
   }
+  // 🆕 ترحيل ٣٤: استرجاع الرقم المحلي من الـ uuid.detUuid رقم حتمي آخر ١٢ خانة فيه = الرقم المحلي.
+  //    لو السطر فقد local_id على السحابة (ده كان بيحصل من شاشة الضبط)، بنعيد الرقم من الـ id
+  //    ourselves — بس بعد ما نتأكد إن الـ id فعلاً متولّد من نفس الرقم (مش uuid عشوائي).
+  function localIdFromUuid(table, id) {
+    if (!id || typeof id !== "string") return null;
+    var parts = id.split("-");
+    var tail = parts[parts.length - 1];
+    if (!/^[0-9a-f]{12}$/.test(tail)) return null;
+    var n = parseInt(tail, 16);
+    if (!isFinite(n) || n <= 0 || n > 1000000) return null;      // الأرقام العشوائية بتبقى ضخمة
+    return detUuid(table, n) === id.toLowerCase() ? n : null;     // إثبات إن الرقم ده مصدر الـ id
+  }
 
   // تاريخ المستند: النص الفاضي بيكسر عمود date في السحابة (والدورة كلها بتفشل) → بلا تاريخ = null
   function docDate(r) {
@@ -166,7 +178,10 @@
           is_active: r.isActive !== false };
       },
       fromCloud: function (r) {
-        return { id: r.local_id, name: r.name, type: r.type || "cash", accountNo: r.account_no || "",
+        // ترحيل ٣٤: السطر اللي فقد local_id على السحابة يسترجعه من الـ uuid بدل ما يتشال
+        // من القائمة ويعاد ترقيمه من جديد في كل تحميل (ده كان بيولّد التكرار).
+        var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("treasury", r.id);
+        return { id: lid, name: r.name, type: r.type || "cash", accountNo: r.account_no || "",
           openingBalance: Number(r.opening_balance || 0), balance: Number(r.balance || 0),
           isActive: r.is_active !== false };
       }
@@ -604,8 +619,22 @@
       }
       if (rows.length) {
         chain = chain.then(function () {
-          return client.from(name).upsert(rows, { onConflict: "org_id,local_id" }).then(function (u) {
-            if (u && u.error) throw u.error;
+          // 🆕 ترحيل ٣٤: الحكم هو المفتاح الأساسي (id). السطور اللي فقدت local_id على السحابة
+          // ما بتتطابقش مع on conflict (org_id, local_id) فتتحول لـ INSERT بيصطدم بـ treasury_pkey
+          // (خطأ 23505) ⇒ الدفعة كلها تفشل ⇒ رسالة «رفع «الخزائن» للسحابة مكملش دلوقتي».
+          // بـ "id": نفس السطر بيتحدّث وlocal_id المرجّح بيتكتب من جديد (السطر بيقوم بصلح نفسه).
+          // ولو حصل تصادم على فهرس تاني (نفس org_id+local_id برقمين مختلفين) نرجع للطريقة القديمة.
+          return client.from(name).upsert(rows, { onConflict: "id" }).then(function (u) {
+            if (u && u.error) {
+              var code = String((u.error && u.error.code) || "");
+              var msg = String((u.error && u.error.message) || "");
+              if (code === "23505" || /duplicate key/i.test(msg)) {
+                return client.from(name).upsert(rows, { onConflict: "org_id,local_id" }).then(function (u2) {
+                  if (u2 && u2.error) throw u2.error;
+                });
+              }
+              throw u.error;
+            }
           });
         });
       }
@@ -701,16 +730,40 @@
       if (!eagerLoad && all) { all.forEach(function (pair) { arr[pair[0]] = pair[1]; }); }
       names.forEach(function (n) {
         var rows = arr[n] || [];
-        var out = rows.map(function (r) { return META[n].fromCloud(r); }).filter(function (x) { return x.id != null; });
-        // تسجيل الخريطة local_id -> uuid للسطور الموجودة فعلًا
+        var pairs = [];
         rows.forEach(function (r) {
+          var loc = META[n].fromCloud(r);
+          if (loc && loc.id != null) pairs.push({ loc: loc, raw: r });
+          // تسجيل الخريطة local_id -> uuid للسطور الموجودة فعلًا
           if (r.local_id != null) { W.idMap[n] = W.idMap[n] || {}; W.idMap[n][Number(r.local_id)] = r.id; }
         });
-        assignLocalIds(n, out);
-        W[n] = out;
+        // 🆕 ترحيل ٣٤: سطران الخزنة بنفس الرقم المحلي = نفس الحساب اتكرّر على السحابة.
+        // نعرض واحد منهم بس (اللي عليه local_id صريح) — ما نرقمش التاني من جديد،
+        // لأن الترقيم الجديد كان بيولّد سطرًا ثالثًا في كل جلسة (ده كان بيت التكرار).
+        if (n === "treasury") pairs = dedupeTreasury(pairs);
+        assignLocalIds(n, pairs.map(function (p) { return p.loc; }));
+        W[n] = pairs.map(function (p) { return p.loc; });
       });
       return loadLazyAll().then(function () { return true; });
     });
+  }
+
+  // 🆕 ترحيل ٣٤: إزالة تكرار أسطر الخزينة عند القراءة.
+  // pairs = [{ loc: السطر المحلي, raw: سطر السحابة }] — بنفضّل السطر اللي عليه local_id صريح.
+  function dedupeTreasury(pairs) {
+    var byId = {}, kept = [];
+    (pairs || []).forEach(function (p) {
+      var k = Number(p.loc.id);
+      var prev = byId[k];
+      if (!prev) { byId[k] = p; kept.push(p); return; }
+      var curExplicit = prev.raw && p.raw && p.raw.local_id != null && prev.raw.local_id == null;
+      if (curExplicit) {
+        var at = kept.indexOf(prev);
+        if (at >= 0) kept[at] = p;
+        byId[k] = p;
+      }
+    });
+    return kept;
   }
 
   function assignLocalIds(table, arr) {

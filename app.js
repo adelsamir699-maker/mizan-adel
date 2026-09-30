@@ -4331,6 +4331,17 @@
   // الضبط هو المرجع: نبني قائمة الخزائن من بيانات الضبط (بنوك + محافظ) مع إبقاء
   // الخزائن النقدية الموجودة، ونحافظ على معرفات الأصناف الشبيهة حتى لا تنكسر الفواتير.
   // إن لم تصل بيانات ضبط فعلية من السحابة (غير محمّلة/فارغة) نحتفظ بالقائمة الحالية دون مساس.
+  // 🆕 ترحيل ٣٤: أول رقم محلي فاضي لخزينة جديدة (بينظر لأرقام الخزائن الحالية
+  // وأرقام تبويب البنوك/المحافظ في شاشة الضبط — عملة واحدة عشان ما نتصادمش).
+  function nextTreasuryLocalId(prefix) {
+    let max = 0;
+    const bump = (v) => { const n = Number(v); if (isFinite(n) && n > max) max = n; };
+    if (prefix !== "s") (treasury || []).forEach((t) => bump(t && t.id));
+    const p = settPayload(prefix);
+    if (p) ["banks", "wallets"].forEach((k) => (p[k] || []).forEach((r) => bump(r && r.local_id)));
+    return max + 1;
+  }
+
   function syncTreasuryFromSett() {
     try {
       const banks = (csetData && csetData.banks) || null;
@@ -4344,8 +4355,22 @@
       let nextId = treasury.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
       const built = [];
       const used = {};
+      let changed = false;
       const norm = (s) => (s || "").replace(/[\s\-_()]/g, "").toLowerCase();
-      const match = (type, name, acct) => {
+      // 🆕 ترحيل ٣٤: رقم السطر (uuid) المحلي الثابت — نفس اللي بستخدمه طبقة المزامنة،
+      //    فسطر الضبط الجديد ورفعة للسحابة يبقى ليهم رقم واحد (مافيش سطر تاني بمقابلوه).
+      const uuidFor = (n) => {
+        try { return (window.CLOUD && CLOUD.detUuid) ? CLOUD.detUuid("treasury", n) : null; } catch (e) { return null; }
+      };
+      // 🆕 ترحيل ٣٤: الهوية أولًا. لو سطر الضبط جايب local_id، ده هو نفس حساب الخزينة
+      //    بالرقم ده — الاسم ممكن يتبدّل لكن الرقم ما بيتبدّلش. المطابقة بالاسم بقت
+      //    احتياطية للقديم بس، لأن كانت هي سبب التكرار (٧ محافظ بنفس الاسم في «المجد»).
+      const byIdentity = (localId) => {
+        const n = Number(localId);
+        if (!isFinite(n) || n <= 0) return null;
+        return treasury.find((t) => Number(t.id) === n && !used[t.id] && t.type !== "cash") || null;
+      };
+      const byName = (type, name, acct) => {
         const nName = norm(name);
         const nAcct = norm(acct);
         for (const t of treasury) {
@@ -4353,47 +4378,63 @@
           if (t.type !== type) continue;
           const tnName = norm(t.name);
           const tnAcct = norm(t.accountNo);
-          if (t.name === name || tnName === nName) { used[t.id] = true; return t; }
-          if (nAcct && tnAcct && (nAcct === tnAcct || tnName.includes(nAcct))) { used[t.id] = true; return t; }
-          if (tnName && nName && (tnName.includes(nName) || nName.includes(tnName))) { used[t.id] = true; return t; }
+          if (t.name === name || tnName === nName) return t;
+          if (nAcct && tnAcct && (nAcct === tnAcct || tnName.includes(nAcct))) return t;
+          if (tnName && nName && (tnName.includes(nName) || nName.includes(tnName))) return t;
         }
         return null;
       };
-      (banks || []).forEach((b) => {
-        const name = (b.name || "").trim(); if (!name) return;
-        const prev = match("bank", name, b.account_no);
-        const liveBal = prev && prev.balance != null ? Number(prev.balance) : (b.balance != null ? Number(b.balance) : Number(b.opening_balance || 0));
-        b.balance = liveBal;
-        built.push({
-          id: prev ? prev.id : nextId++,
-          name: name,
-          type: "bank",
-          accountNo: (b.account_no || "").trim(),
-          openingBalance: Number(b.opening_balance || (prev ? prev.openingBalance : 0) || 0),
-          balance: liveBal,
-          isActive: b.is_active !== false
+      const claim = (row) => { if (row) used[row.id] = true; return row; };
+
+      // بناء قائمة محلية من تبويب (بنوك أو محافظ) + تنقية الحمولة من أي تكرار بنفس الرقم
+      const place = (list, key, type) => {
+        if (!Array.isArray(list)) return list;
+        const out = [];
+        const takenUuid = {};
+        list.forEach((row) => {
+          if (!row) return;
+          const name = (row.name || "").trim();
+          const uuidKey = String(row.id || "").toLowerCase();
+          if (uuidKey && takenUuid[uuidKey]) { changed = true; return; }   // سطر مكرر بنفس الرقم → نسخة واحدة
+          if (!name) { out.push(row); return; }
+          let prev = claim(byIdentity(row.local_id)) || claim(byName(type, name, row.account_no));
+          if (!prev) { prev = { id: nextId++, type: type, balance: null, openingBalance: 0, accountNo: "" }; changed = true; }
+          if (uuidKey) takenUuid[uuidKey] = 1;
+          // نرجّع الهوية للحمولة نفسها: كده «حفظ الضبط» بيكتب local_id والرقم الصح على السحابة
+          if (Number(row.local_id) !== Number(prev.id)) { row.local_id = prev.id; changed = true; }
+          if (!row.id) { row.id = uuidFor(prev.id); changed = true; }
+          if (prev.type !== type) { prev.type = type; changed = true; }
+          const liveBal = prev.balance != null ? Number(prev.balance) : (row.balance != null ? Number(row.balance) : Number(row.opening_balance || 0));
+          row.balance = liveBal;
+          built.push({
+            id: prev.id,
+            name: name,
+            type: type,
+            accountNo: (row.account_no || "").trim(),
+            openingBalance: Number(row.opening_balance || (prev.openingBalance != null ? prev.openingBalance : 0) || 0),
+            balance: liveBal,
+            isActive: row.is_active !== false
+          });
+          out.push(row);
         });
-      });
-      (wallets || []).forEach((w) => {
-        const name = (w.name || "").trim(); if (!name) return;
-        const prev = match("wallet", name, w.account_no);
-        const liveBal = prev && prev.balance != null ? Number(prev.balance) : (w.balance != null ? Number(w.balance) : Number(w.opening_balance || 0));
-        w.balance = liveBal;
-        built.push({
-          id: prev ? prev.id : nextId++,
-          name: name,
-          type: "wallet",
-          accountNo: (w.account_no || "").trim(),
-          openingBalance: Number(w.opening_balance || (prev ? prev.openingBalance : 0) || 0),
-          balance: liveBal,
-          isActive: w.is_active !== false
-        });
-      });
+        if (out.length !== list.length) csetData[key] = out;
+        return out;
+      };
+
+      place(banks, "banks", "bank");
+      place(wallets, "wallets", "wallet");
+
       treasury.forEach((t) => {
         if (used[t.id]) return;
         built.push(t);
       });
       treasury = built;
+      // 🆕 ترحيل ٣٤: لو وصلنا هوية أو نقّينا تكرار، نثبّت ده على القرص ونرفعه للسحابة
+      //    (بالمفتاح الجديد في cloud.js نفس السطر بيتحدّث ما بيتضايفش).
+      if (changed) {
+        try { saveTreasury(); } catch (e) {}
+        try { pushTable("treasury"); } catch (e) {}
+      }
       return true;
     } catch (e) { return false; }
   }
@@ -5287,6 +5328,14 @@
       const key = SETT_TYPES[root.__type].key;
       const list = data[key] || [];
       const rec = existing ? Object.assign({}, existing) : { id: null, name: "", created_at: new Date().toISOString() };
+      // 🆕 ترحيل ٣٤: الخزينة الجديدة بتاخد هويتها من الآن (رقم محلي + رقم سحابي ثابت).
+      //    لو سِبناها فاضية، دالة الحفظ كانت بتعمل سطرًا بلا local_id ⇒ التطبيق يترقمه
+      //    جديد ⇒ سطر تاني على السحابة ⇒ «فودافون كاش مكررة» + فشل رفع الخزائن.
+      if (!existing && (root.__type === "wallet" || root.__type === "bank")) {
+        const lid = nextTreasuryLocalId(root.__prefix);
+        rec.local_id = lid;
+        try { rec.id = (window.CLOUD && CLOUD.detUuid) ? CLOUD.detUuid("treasury", lid) : null; } catch (e) { rec.id = null; }
+      }
       def.fields.forEach(([f]) => {
         if (f === "is_active") { rec[f] = document.getElementById("setF_is_active").value === "1"; return; }
         const el = document.getElementById("setF_" + f);
@@ -5443,8 +5492,9 @@
           try { mirrorOrgToSettings(csetData.org); } catch (e) {}
         }
         applySettFeatureGatingClient();
-        renderAllSettPanes("c");
+        // 🆕 ترحيل ٣٤: نصلّح الهويات وننقّي التكرار قبل الرسم، عشان العميل يشوف حسابه مرة واحدة
         syncTreasuryFromSett();
+        renderAllSettPanes("c");
       }).catch((e) => toast("تعذّر تحميل إعدادات مؤسستك: " + (e.message || e), "error"));
       return;
     }
@@ -5526,9 +5576,15 @@
       renderAllSettPanes(prefix);
       // الضبط هو المرجع → حدّث القوائم الحية بعد الحفظ مباشرة
       try {
-        if (csetData && csetData.units) csetData = payload;
-        syncOpenListsAfterSett();
+        // 🆕 ترحيل ٣٤: دمج الجزء المحفوظ في الحمولة الحالية (بدل استبدالها بكائن ناقص
+        // كان بيطير منه __online وبقية التبويبات)، وبعدين نصلّح الهويات ونعيد الرسم.
+        if (prefix === "c" && csetData && payload && Object.keys(payload).length) {
+          Object.keys(payload).forEach((k) => { csetData[k] = payload[k]; });
+          csetData.__online = true;
+        }
         syncTreasuryFromSett();
+        syncOpenListsAfterSett();
+        renderAllSettPanes(prefix);
         if (!document.getElementById("viewTreasury").hidden) renderTreasury();
       } catch (e) {}
       addActivity("إعدادات", "حفظ تبويب «" + ttl + "»");
