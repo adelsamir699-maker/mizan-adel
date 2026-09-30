@@ -7768,8 +7768,9 @@ const pwEye = document.getElementById("btnShowPass");
           (canEditAttendance() ? " — استخدم ✏️ التعديل اليدوي لو لزم" : ""), "info");
         return;
       }
-      var inM = attMinutesOf(row.checkIn), outM = attMinutesOf(now);
-      if (outM != null && inM != null && outM < inM) {
+      var inMs = row.checkIn ? new Date(row.checkIn).getTime() : null;
+      var outMs = new Date(now).getTime();
+      if (inMs != null && outMs < inMs) {
         toast("وقت الانصراف (" + attHM(now) + ") قبل وقت الحضور (" + attHM(row.checkIn) + ") — صحّح الوقت أولًا", "error");
         return;
       }
