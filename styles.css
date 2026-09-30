@@ -455,6 +455,8 @@ body {
 @media print {
   body { background: #fff; }
   .app-header, .sidebar, .app-footer, .modal-overlay, .toast { display: none !important; }
+  /* توقيع المبرمج/رقمه/رابط الموقع: على الشاشات بس — ممنوع يظهر في أي طباعة */
+  .screen-only { display: none !important; }
   .content { padding: 0; overflow: visible; }
   .print-only { display: none !important; }
   .print-only.print-target { display: block !important; }

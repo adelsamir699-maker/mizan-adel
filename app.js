@@ -1072,7 +1072,41 @@
     return z;
   }
 
+  // 🚫 متصفحات كروم/إيدچ «رأس وتذييل الصفحة» (متفعّل افتراضيًا) بتطبع document.title على الورقة.
+  // لذلك وقت الطباعة بنستبدل العنوان باسم نوع المستند (نظيف) ونرجّعه أول ما تخلص —
+  // وعبر beforeprint/afterprint كمان عشان مسار Ctrl+P من المتصفح بدون زرار البرنامج.
+  // عشان اسم المبرمج ورقمه وتوقيع البرنامج ما يطلعوش على ورقة العميل أبدًا (قاعدة المالك: البراند على الشاشات بس).
+  const PRINT_DOC_TITLES = {
+    invoicePage: "فاتورة بيع",
+    purchasePage: "فاتورة شراء",
+    statementPage: "كشف حساب",
+    stockPage: "تقرير المخزون",
+    balancePage: "كشف الأرصدة",
+    treStmtPage: "كشف الخزينة",
+  };
+  const PAPER_TITLE_FALLBACK = "مستند"; // بلا اسم منتج ولا اسم شخص
+  let screenDocTitle = "";
+  let paperDocTitle = "";
+  let paperTitleOn = false;
+
+  function enterPaperTitle(docId) {
+    if (paperTitleOn) return;
+    try { screenDocTitle = document.title; } catch (e) { screenDocTitle = ""; }
+    paperDocTitle = (docId && PRINT_DOC_TITLES[docId]) || PAPER_TITLE_FALLBACK;
+    document.title = paperDocTitle;
+    paperTitleOn = true;
+  }
+  function exitPaperTitle() {
+    if (!paperTitleOn) return;
+    if (document.title === paperDocTitle) document.title = screenDocTitle;
+    paperTitleOn = false;
+  }
+  // يغطّي كمان Ctrl+P من المتصفح مباشرة (من غير زرار الطباعة في البرنامج)
+  window.addEventListener("beforeprint", function () { enterPaperTitle(null); });
+  window.addEventListener("afterprint", exitPaperTitle);
+
   function printSection(el) {
+    if (!el) return;
     // اسم الشركة من الضبط (لكل شركة على حدة) يظهر في كل صفحات الطباعة
     // ملاحظة: صفحتا الفاتورة (بيع/شراء) تملآن ترويستهما بنفسها احترامًا لصناديق «على الفاتورة».
     const org = invOrgName();
@@ -1084,7 +1118,10 @@
     document.querySelectorAll(".print-only").forEach((s) => s.classList.remove("print-target"));
     el.classList.add("print-target");
     document.body.classList.add("printing");
+    enterPaperTitle(el.id); // عنوان نظيف طول فترة الطباعة، ويرجع عنوان الشاشة أول ما تخلص
+
     const cleanup = () => {
+      exitPaperTitle();
       el.classList.remove("print-target");
       el.classList.remove("paper-a4", "paper-a5", "paper-thermal");
       document.body.classList.remove("printing");
