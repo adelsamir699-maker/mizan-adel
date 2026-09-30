@@ -7,8 +7,8 @@
 (function () {
   "use strict";
 
-  // رقم الإصدار المعروض للمستخدم — يُحدَّث مع كل مراجعة
-  const APP_VERSION = "1.4";
+  // رقم الإصدار المعروض للمستخدم — مصدره window.MIZAN_VERSION في index.html (تعديل هناك بس)
+  const APP_VERSION = window.MIZAN_VERSION || "1.4.1";
 
   /* ================== التخزين ================== */
   const LS_CUSTOMERS = "mizan_customers_v1";
