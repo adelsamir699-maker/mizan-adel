@@ -5213,10 +5213,10 @@
     $("#trAmount").value = "";
     $("#trNotes").value = "";
     $("#trDate").value = todayISO();
-    const list = fillTreasurySelect("#trFrom");
-    fillTreasurySelect("#trTo");
-    if (list[1]) $("#trTo").value = list[1].id;
-    else if (list[0]) $("#trTo").value = list[0].id;
+    const list = fillTreasurySelect("#trAccFrom");
+    fillTreasurySelect("#trAccTo");
+    if (list[1]) $("#trAccTo").value = list[1].id;
+    else if (list[0]) $("#trAccTo").value = list[0].id;
     $("#trHint").textContent = "💡 التحويل بين حسابات الخزينة (نقدية / بنك / محفظة) يُسجَّل كسند صرف وسند قبض بنفس المبلغ مع قيد واحد — فرصيد كل حساب بيتحدّث تلقائيًا.";
     showModal("mSimpleTransfer");
     $("#trAmount").focus();
@@ -5224,8 +5224,8 @@
 
   function saveTransfer() {
     if (!simpleGate()) return;
-    const fromId = parseInt($("#trFrom").value, 10);
-    const toId = parseInt($("#trTo").value, 10);
+    const fromId = parseInt($("#trAccFrom").value, 10);
+    const toId = parseInt($("#trAccTo").value, 10);
     const amount = Math.round((parseFloat($("#trAmount").value) || 0) * 100) / 100;
     const date = $("#trDate").value || todayISO();
     const from = treasury.find((x) => Number(x.id) === fromId);
@@ -5306,7 +5306,7 @@
   }
 
   function renderLedger() {
-    const tbody = $("#dgvLedger tbody");
+    const tbody = $("#dgvJLedger tbody");
     if (!tbody) return;
     const info = $("#ledgerInfo");
     const text = ($("#txtLedgerAcc").value || "").trim();
@@ -7061,7 +7061,7 @@
     $("#btnSaveSimple").addEventListener("click", saveSimpleEntry);
     $("#btnCancelSimple").addEventListener("click", () => hideModal("mSimpleEntry"));
     $("#btnSaveTransfer").addEventListener("click", saveTransfer);
-    $("#btnCancelTransfer").addEventListener("click", () => hideModal("mSimpleTransfer"));
+    $("#btnCancelJTransfer").addEventListener("click", () => hideModal("mSimpleTransfer"));
     $("#txtLedgerAcc").addEventListener("input", renderLedger);
     $("#txtLedgerAcc").addEventListener("focus", () => ensureDatalist("ledgerAccountsList", accounts.filter((a) => Number(a.parentId) !== 0 && a.isActive).map((a) => a.code + " - " + a.nameAr)));
     $("#btnLedgerPrint").addEventListener("click", printLedger);

@@ -703,7 +703,7 @@
           <span id="ledgerInfo" class="stk-summary"></span>
         </div>
         <div class="table-wrap">
-          <table id="dgvLedger" class="dgv stmt-table">
+          <table id="dgvJLedger" class="dgv stmt-table">
             <thead>
               <tr>
                 <th style="width:12%">التاريخ</th>
@@ -2352,10 +2352,10 @@
     <div class="modal m520" id="mSimpleTransferBox">
       <h3>🔁 تحويل من حساب إلى حساب</h3>
       <div class="form-grid">
-        <label for="trFrom">من حساب: *</label>
-        <select id="trFrom"></select>
-        <label for="trTo">إلى حساب: *</label>
-        <select id="trTo"></select>
+        <label for="trAccFrom">من حساب: *</label>
+        <select id="trAccFrom"></select>
+        <label for="trAccTo">إلى حساب: *</label>
+        <select id="trAccTo"></select>
         <label for="trAmount">المبلغ (ج.م): *</label>
         <input type="text" id="trAmount" autocomplete="off" />
         <label for="trDate">التاريخ:</label>
@@ -2365,7 +2365,7 @@
       </div>
       <div class="ret-hint" id="trHint"></div>
       <div class="modal-actions">
-        <button id="btnCancelTransfer" class="btn gray" type="button">إلغاء</button>
+        <button id="btnCancelJTransfer" class="btn gray" type="button">إلغاء</button>
         <button id="btnSaveTransfer" class="btn green" type="button">💾 تنفيذ التحويل</button>
       </div>
     </div>
