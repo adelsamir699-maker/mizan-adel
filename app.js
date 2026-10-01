@@ -1244,6 +1244,8 @@
       if (!DE.featureFlag) return false;
       return DE.featureFlag("attendance") === true;
     }
+    // 🆕 بناء 115: القيود اليومية (اليدوي المحاسبي + التسجيل المبسط) — لصاحب الشركة والمالك فقط
+    if (name === "journal") return isSuperAcct() || isCompanyOwnerAcct();
     return DE.featureEnabled ? DE.featureEnabled(name) : true;
   }
 
@@ -1297,6 +1299,11 @@
       toast("صلاحية «الحضور والانصراف» غير مفعّلة لحسابك", "error");
       name = "dashboard";
     }
+    // 🆕 بناء 115: «القيود اليومية» لصاحب الشركة والمالك فقط (طلب المالك: مش أي حد يسجل قيود)
+    if (name === "journal" && !canUseView("journal")) {
+      toast("شاشة «القيود اليومية» متاحة لصاحب الشركة والمالك فقط", "error");
+      name = "dashboard";
+    }
     document.querySelectorAll(".view[data-id]").forEach((v) => {
       v.hidden = v.dataset.id !== name;
     });
@@ -1333,7 +1340,7 @@
     if (name === "returnsReg") renderReturns();
     if (name === "treasury") { syncTreasuryFromSett(); recalculateTreasuryBalances(); renderTreasury(); renderTreMoves(); }
     if (name === "accounts") renderAccounts();
-    if (name === "journal") renderJournal();
+    if (name === "journal") { renderJournal(); renderLedger(); } // 🆕 بناء 115: + دفتر الحركة
     if (name === "balance") renderBalance();
     if (name === "treasuryStatements") { recalculateTreasuryBalances(); renderTreStmt(); }
     if (name === "reports") renderReports();
@@ -4991,6 +4998,430 @@
     renderJournal();
   }
 
+  /* ================== 🆕 بناء 115: تبسيط القيود اليومية ==================
+     أزرار «تسجيل مصروفات / تسجيل إيرادات / تحويل من حساب إلى حساب» يترجمها
+     البرنامج تلقائيًا إلى: سند خزينة (out/in) + قيد يومية بسطرين + تسوية
+     أرصدة دليل الحسابات — بنفس آليات saveVoucher/saveJournal القديمة تمامًا،
+     بدون تعديل أي دالة موجودة. البند = حساب ورقي تحت جذر المصروفات/الإيرادات،
+     فبيتزامن مع كل أجهزة الشركة وبيدخل النسخ الاحتياطي من غير جداول جديدة. */
+
+  let simpleMode = "expense"; // "expense" | "income"
+
+  // البوابة الثانية جوه الدوال نفسها (نمط المرتجعات/الحضور): حصانة حتى لو اتنادت الدالة مباشرة
+  function canUseSimpleJournal() {
+    return isSuperAcct() || isCompanyOwnerAcct();
+  }
+  function simpleGate(msg) {
+    if (canUseSimpleJournal()) return true;
+    toast(msg || "التسجيل في القيود متاح لصاحب الشركة والمالك فقط.", "error");
+    return false;
+  }
+
+  // أوراق المصروفات/الإيرادات (بنود التسجيل المبسط): نوعها expense/revenue، ليست جذرًا ولا أبًا لحساب آخر
+  function leafItemAccounts(type) {
+    return accounts.filter((a) => a.type === type && a.parentId !== 0 && a.isActive &&
+      !accounts.some((x) => Number(x.parentId) === Number(a.id)));
+  }
+
+  // جذر شجرة الإيرادات (4) أو المصروفات (5): حساب النوع بدون أب
+  function itemRootAccount(type) {
+    return accounts.find((a) => a.type === type && Number(a.parentId) === 0) || null;
+  }
+
+  // كود جديد تحت الأب (5 → 5.3 مثلًا): أكبر لاحقة عددية مستخدمة + 1
+  function nextItemCode(parent) {
+    const base = String(parent.code || (parent.type === "revenue" ? "4" : "5"));
+    let n = 1;
+    accounts.forEach((a) => {
+      if (Number(a.parentId) !== Number(parent.id)) return;
+      const c = String(a.code || "");
+      if (c.indexOf(base + ".") !== 0) return;
+      const num = parseInt(c.slice(base.length + 1), 10);
+      if (!isNaN(num) && num >= n) n = num + 1;
+    });
+    return base + "." + n;
+  }
+
+  // خزينة → حساب الدليل المقابل (نقدية 1.1.1 / بنك 1.1.2 / محفظة 1.1.3) مع احتياطي بالاسم ثم بالنقدية
+  function accForTreasuryAcc(t) {
+    const byCode = { cash: "1.1.1", bank: "1.1.2", wallet: "1.1.3" };
+    const byName = { cash: "صناديق", bank: "البنوك", wallet: "المحافظ" };
+    const key = t && byCode[t.type] ? t.type : "cash";
+    let a = accounts.find((x) => String(x.code) === byCode[key] && x.isActive);
+    if (a) return a;
+    a = accounts.find((x) => x.type === "asset" && Number(x.parentId) !== 0 && x.isActive && (x.nameAr || "").includes(byName[key]));
+    if (a) return a;
+    return accounts.find((x) => String(x.code) === "1.1.1" && x.isActive) || null;
+  }
+
+  // قائمة خزائن بملصق الرصيد، والنقدية أولًا (المفضل) ثم البنوك فالمحافظ
+  function fillTreasurySelect(selId) {
+    const el = $(selId);
+    el.innerHTML = "";
+    const ORD = { cash: 0, bank: 1, wallet: 2 };
+    const rank = (t) => (ORD[t.type] !== undefined ? ORD[t.type] : 3);
+    const list = treasury.slice().sort((a, b) => rank(a) - rank(b) || String(a.name || "").localeCompare(String(b.name || ""), "ar"));
+    list.forEach((t) => {
+      const opt = document.createElement("option");
+      opt.value = t.id;
+      const typeLbl = t.type === "bank" ? "بنك" : t.type === "wallet" ? "محفظة" : "نقدية";
+      opt.textContent = t.name + " (" + typeLbl + ") — رصيد " + fmt(t.balance || 0) + " ج.م";
+      el.appendChild(opt);
+    });
+    return list;
+  }
+
+  // datalist حيّ لأي حقل نصي (بنود / حسابات دفتر الحركة)
+  function ensureDatalist(dlId, values) {
+    let dl = document.getElementById(dlId);
+    if (!dl) {
+      dl = document.createElement("datalist");
+      dl.id = dlId;
+      document.body.appendChild(dl);
+    }
+    dl.innerHTML = "";
+    values.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = v;
+      dl.appendChild(opt);
+    });
+    return dl;
+  }
+
+  function openSimpleEntry(mode) {
+    if (!simpleGate()) return;
+    simpleMode = mode === "income" ? "income" : "expense";
+    const income = simpleMode === "income";
+    const type = income ? "revenue" : "expense";
+    $("#simpleTitle").textContent = income ? "➕ تسجيل إيرادات" : "➖ تسجيل مصروفات";
+    $("#lblSimpleItem").textContent = income ? "بند الإيراد: *" : "البند المنصرف عليه: *";
+    $("#lblSimpleTreasury").textContent = income ? "قبض في: *" : "دفع من: *";
+    $("#simpleItem").value = "";
+    $("#simpleAmount").value = "";
+    $("#simpleNotes").value = "";
+    $("#simpleDate").value = todayISO();
+    ensureDatalist("simpleItemList", leafItemAccounts(type).map((a) => a.nameAr));
+    $("#simpleItem").setAttribute("list", "simpleItemList");
+    fillTreasurySelect("#simpleTreasury");
+    $("#simpleHint").textContent = income
+      ? "✅ المبلغ هينزل فعليًا في الحساب اللي هتختاره، والبرنامج يسجّل السند والقيد والترحيل تلقائيًا."
+      : "✅ المبلغ هيطلع فعليًا من الحساب اللي هتختاره (المُفضّل النقدية، ويتغير لبنك أو محفظة)، والبرنامج يسجّل السند والقيد والترحيل تلقائيًا.";
+    showModal("mSimpleEntry");
+    $("#simpleItem").focus();
+  }
+
+  // حسم نص البند إلى حساب بنود صحيح من نوعه؛ بند جديد تمامًا ⇒ اقتراح إضافته تلقائيًا
+  function resolveItemAccount(text, type) {
+    const q = String(text || "").trim();
+    if (!q) return null;
+    const leaves = leafItemAccounts(type);
+    let hit = leaves.find((a) => normalizeAr(a.nameAr) === normalizeAr(q)) ||
+      leaves.find((a) => normalizeAr(a.nameAr).includes(normalizeAr(q))) ||
+      leaves.find((a) => normalizeAr(q).includes(normalizeAr(a.nameAr)));
+    return hit || null;
+  }
+
+  function saveSimpleEntry() {
+    if (!simpleGate()) return;
+    const income = simpleMode === "income";
+    const type = income ? "revenue" : "expense";
+    const date = $("#simpleDate").value || todayISO();
+    const amount = Math.round((parseFloat($("#simpleAmount").value) || 0) * 100) / 100;
+    const itemText = $("#simpleItem").value.trim();
+    const tid = parseInt($("#simpleTreasury").value, 10);
+    const t = treasury.find((x) => Number(x.id) === tid);
+    if (!itemText) { toast("اكتب اسم البند أو اختاره من القائمة.", "warning"); return; }
+    if (!(amount > 0)) { toast("اكتب مبلغًا صحيحًا أكبر من الصفر.", "warning"); return; }
+    if (!t) { toast("اختار الحساب: خزينة نقدية أو بنك أو محفظة.", "warning"); return; }
+
+    let itemAcc = resolveItemAccount(itemText, type);
+    if (!itemAcc) {
+      const root = itemRootAccount(type);
+      const lbl = income ? "إيراد" : "مصروف";
+      if (!root) { toast("لا يوجد حساب جذر لـ" + (income ? "الإيرادات" : "المصروفات") + " في دليل الحسابات — أضفه من شاشة الحسابات أولًا.", "error"); return; }
+      if (!confirm("البند «" + itemText + "» مش ضمن بنود الـ" + lbl + " الموجودة.\nإضافه كبند جديد تحت «" + root.nameAr + "»؟")) return;
+      itemAcc = {
+        id: nextAccountId(),
+        code: nextItemCode(root),
+        nameAr: itemText,
+        type: type,
+        parentId: root.id,
+        openingBalance: 0,
+        isActive: true
+      };
+      accounts.push(itemAcc);
+      saveAccounts();
+    }
+
+    const cashAcc = accForTreasuryAcc(t);
+    if (!cashAcc) { toast("لا يوجد حساب خزينة مطابق في دليل الحسابات.", "error"); return; }
+
+    // تحذير الرصيد: واضح بالأرقام، والمالك قرر الحفظ يتم بعد موافقته (يروح بالسالب)
+    if (!income) {
+      const bal = Math.round((Number(t.balance || 0)) * 100) / 100;
+      if (amount > bal) {
+        if (!confirm("تنبيه: رصيد «" + t.name + "» (" + fmt(bal) + " ج.م) أقل من المبلغ (" + fmt(amount) + " ج.م).\nالتسجيل هيخلي الرصيد بالسالب — هل تريد المتابعة؟")) return;
+      }
+    }
+
+    const note = $("#simpleNotes").value.trim();
+    const vDesc = (income ? "إيراد: " : "مصروف: ") + itemAcc.nameAr + (note ? " — " + note : "");
+    vouchers.push({
+      id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+      type: income ? "in" : "out",
+      treasuryId: Number(t.id),
+      date: date,
+      amount: amount,
+      desc: vDesc
+    });
+    saveVouchers();
+    recalculateTreasuryBalances(); // نفس معادلة الأرصدة القديمة: السند اتضاف فبيتحسب تلقائيًا
+
+    const lines = income
+      ? [{ accountId: cashAcc.id, debit: amount, credit: 0 }, { accountId: itemAcc.id, debit: 0, credit: amount }]
+      : [{ accountId: itemAcc.id, debit: amount, credit: 0 }, { accountId: cashAcc.id, debit: 0, credit: amount }];
+    const j = {
+      id: journalEntries.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      date: date,
+      desc: vDesc,
+      ref: income ? "تسجيل إيرادات" : "تسجيل مصروفات",
+      debit: amount,
+      credit: amount,
+      lines: lines
+    };
+    // نفس تسوية saveJournal لأرصدة الدليل: الطرف المدين +، والدائن − (لو الحسابان مختلفان)
+    const dAcc = accounts.find((a) => Number(a.id) === lines[0].accountId);
+    const cAcc = accounts.find((a) => Number(a.id) === lines[lines.length - 1].accountId);
+    if (dAcc) dAcc.openingBalance = Math.round(((dAcc.openingBalance || 0) + amount) * 100) / 100;
+    if (cAcc && Number(cAcc.id) !== Number(dAcc.id)) cAcc.openingBalance = Math.round(((cAcc.openingBalance || 0) - amount) * 100) / 100;
+    journalEntries.push(j);
+    persistJournal();
+    saveAccounts();
+
+    hideModal("mSimpleEntry");
+    addActivity(j.ref, vDesc + " (" + t.name + ")");
+    toast("تم التسجيل (" + j.number + ") وترحيله على حساب «" + t.name + "\".", "success");
+    renderJournal();
+    renderLedger();
+    renderCItems();
+    try { renderTreasury(); renderTreMoves(); } catch (e) { }
+  }
+
+  function openTransferEntry() {
+    if (!simpleGate()) return;
+    $("#trAmount").value = "";
+    $("#trNotes").value = "";
+    $("#trDate").value = todayISO();
+    const list = fillTreasurySelect("#trFrom");
+    fillTreasurySelect("#trTo");
+    if (list[1]) $("#trTo").value = list[1].id;
+    else if (list[0]) $("#trTo").value = list[0].id;
+    $("#trHint").textContent = "💡 التحويل بين حسابات الخزينة (نقدية / بنك / محفظة) يُسجَّل كسند صرف وسند قبض بنفس المبلغ مع قيد واحد — فرصيد كل حساب بيتحدّث تلقائيًا.";
+    showModal("mSimpleTransfer");
+    $("#trAmount").focus();
+  }
+
+  function saveTransfer() {
+    if (!simpleGate()) return;
+    const fromId = parseInt($("#trFrom").value, 10);
+    const toId = parseInt($("#trTo").value, 10);
+    const amount = Math.round((parseFloat($("#trAmount").value) || 0) * 100) / 100;
+    const date = $("#trDate").value || todayISO();
+    const from = treasury.find((x) => Number(x.id) === fromId);
+    const to = treasury.find((x) => Number(x.id) === toId);
+    if (!from || !to) { toast("اختار الحساب المنقول منه والحساب المنقول إليه.", "warning"); return; }
+    if (Number(from.id) === Number(to.id)) { toast("لا يمكن التحويل من الحساب إلى نفس الحساب.", "warning"); return; }
+    if (!(amount > 0)) { toast("اكتب مبلغًا صحيحًا أكبر من الصفر.", "warning"); return; }
+    const bal = Math.round((Number(from.balance || 0)) * 100) / 100;
+    if (amount > bal) {
+      if (!confirm("تنبيه: رصيد «" + from.name + "» (" + fmt(bal) + " ج.م) أقل من مبلغ التحويل (" + fmt(amount) + " ج.م).\nالتنفيذ هيخلي الرصيد بالسالب — هل تريد المتابعة؟")) return;
+    }
+    const note = $("#trNotes").value.trim();
+    const tag = "تحويل من «" + from.name + "» إلى «" + to.name + "»" + (note ? " — " + note : "");
+    const baseId = vouchers.reduce((m, x) => Math.max(m, x.id), 0);
+    // سندان مرتبطان بنفس الوصف: صرف من الأول وقبض في التاني — معادلة recalculateTreasuryBalances بتمشي زي ما هي
+    vouchers.push({ id: baseId + 1, type: "out", treasuryId: Number(from.id), date: date, amount: amount, desc: "سند صرف — " + tag });
+    vouchers.push({ id: baseId + 2, type: "in", treasuryId: Number(to.id), date: date, amount: amount, desc: "سند قبض — " + tag });
+    saveVouchers();
+    recalculateTreasuryBalances();
+
+    let jNumber = "";
+    const aFrom = accForTreasuryAcc(from);
+    const aTo = accForTreasuryAcc(to);
+    if (aFrom && aTo) {
+      const lines = [{ accountId: aTo.id, debit: amount, credit: 0 }, { accountId: aFrom.id, debit: 0, credit: amount }];
+      const j = {
+        id: journalEntries.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+        number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+        date: date,
+        desc: tag,
+        ref: "تحويل بين الحسابات",
+        debit: amount,
+        credit: amount,
+        lines: lines
+      };
+      const dAcc = accounts.find((a) => Number(a.id) === lines[0].accountId);
+      const cAcc = accounts.find((a) => Number(a.id) === lines[lines.length - 1].accountId);
+      if (dAcc) dAcc.openingBalance = Math.round(((dAcc.openingBalance || 0) + amount) * 100) / 100;
+      if (cAcc && Number(cAcc.id) !== Number(dAcc.id)) cAcc.openingBalance = Math.round(((cAcc.openingBalance || 0) - amount) * 100) / 100;
+      journalEntries.push(j);
+      persistJournal();
+      saveAccounts();
+      jNumber = j.number;
+    }
+    hideModal("mSimpleTransfer");
+    addActivity("تحويل بين الحسابات", tag + " بمبلغ " + fmt(amount) + " ج.م");
+    toast("تم التحويل" + (jNumber ? " (قيد " + jNumber + ")" : "") + " بين «" + from.name + "» و«" + to.name + "\".", "success");
+    renderJournal();
+    renderLedger();
+    try { renderTreasury(); renderTreMoves(); } catch (e) { }
+  }
+
+  /* ---- دفتر حركة الحسابات: كل الحركات اللي تمت جوه أي حساب ---- */
+  function computeLedger() {
+    const el = $("#txtLedgerAcc");
+    const text = el ? String(el.value || "").trim() : "";
+    if (!text) return null;
+    const acc = resolveJournalAccount(text);
+    if (!acc) return null;
+    const rows = [];
+    journalEntries.slice()
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)) || (Number(a.id) - Number(b.id)))
+      .forEach((j) => {
+        (j.lines || []).forEach((l) => {
+          if (Number(l.accountId) === Number(acc.id)) {
+            rows.push({ date: j.date, number: j.number, desc: j.desc, debit: Number(l.debit) || 0, credit: Number(l.credit) || 0 });
+          }
+        });
+      });
+    let net = 0;
+    rows.forEach((r) => { net += r.debit - r.credit; });
+    // النمود القديم بيحدّث openingBalance مع كل قيد (هو الرصيد الجاري فعليًا) —
+    // فالافتتاحي الصحيح = الجاري − محصل كل القيود، وبعدها الجاري من جديد سطر بسطر بلا ازدواج.
+    let run = Math.round((Number(acc.openingBalance || 0) - net) * 100) / 100;
+    const opening = run;
+    rows.forEach((r) => { run = Math.round((run + r.debit - r.credit) * 100) / 100; r.run = run; });
+    return { acc: acc, rows: rows, opening: opening, final: run };
+  }
+
+  function renderLedger() {
+    const tbody = $("#dgvLedger tbody");
+    if (!tbody) return;
+    const info = $("#ledgerInfo");
+    const text = ($("#txtLedgerAcc").value || "").trim();
+    if (!text) {
+      tbody.innerHTML = '<tr><td colspan="6">اكتب كود أو اسم الحساب لعرض كل الحركات اللي تمت جوه.</td></tr>';
+      if (info) info.textContent = "";
+      return;
+    }
+    const led = computeLedger();
+    if (!led) {
+      tbody.innerHTML = '<tr><td colspan="6">الحساب غير موجود في دليل الحسابات.</td></tr>';
+      if (info) info.textContent = "";
+      return;
+    }
+    tbody.innerHTML = "";
+    if (led.opening) {
+      const tr0 = document.createElement("tr");
+      tr0.innerHTML = '<td>—</td><td>—</td><td style="text-align:right">رصيد افتتاحي</td><td>-</td><td>-</td><td>' + fmt(led.opening) + '</td>';
+      tbody.appendChild(tr0);
+    }
+    led.rows.forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td>' + esc(r.date) + '</td>' +
+        '<td>' + esc(r.number) + '</td>' +
+        '<td style="text-align:right">' + esc(r.desc) + '</td>' +
+        '<td>' + (r.debit ? fmt(r.debit) : "-") + '</td>' +
+        '<td>' + (r.credit ? fmt(r.credit) : "-") + '</td>' +
+        '<td>' + fmt(r.run) + '</td>';
+      tbody.appendChild(tr);
+    });
+    if (!led.rows.length) tbody.innerHTML = '<tr><td colspan="6">لا توجد حركات على هذا الحساب بعد.</td></tr>';
+    if (info) info.textContent = "الحساب: " + led.acc.nameAr + " (" + led.acc.code + ") — الحركات: " + led.rows.length + " — الرصيد النهائي: " + fmt(led.final) + " ج.م";
+  }
+
+  function printLedger() {
+    if (!simpleGate("الاستعلام عن حركة الحسابات متاح لصاحب الشركة والمالك فقط.")) return;
+    const led = computeLedger();
+    if (!led) { toast("اختار حسابًا صحيحًا من دليل الحسابات أولًا.", "warning"); return; }
+    if (!confirm("هل تريد طباعة كشف حساب «" + led.acc.nameAr + "»؟")) return;
+    printStatementDoc({
+      name: "كشف حساب: " + led.acc.nameAr,
+      code: led.acc.code,
+      range: led.rows.length ? led.rows[0].date + " ← " + led.rows[led.rows.length - 1].date : todayISO(),
+      balance: led.final,
+      rows: led.rows.map((r) => ({ date: r.date, desc: r.number + " — " + r.desc, debit: r.debit, credit: r.credit, balance: r.run }))
+    });
+  }
+
+  /* ---- تبويب «بنود المصروفات والإيرادات» في إعدادات مؤسستك (بناء 115) ---- */
+  function renderCItems() {
+    const box = $("#cGridItems");
+    if (!box) return;
+    const usedCount = {};
+    journalEntries.forEach((j) => {
+      (j.lines || []).forEach((l) => {
+        const k = Number(l.accountId);
+        usedCount[k] = (usedCount[k] || 0) + 1;
+      });
+    });
+    box.innerHTML = "";
+    const tbl = document.createElement("table");
+    tbl.className = "dgv";
+    tbl.innerHTML = '<thead><tr><th style="width:12%">الكود</th><th style="width:40%">البند</th><th style="width:14%">النوع</th><th style="width:16%">مستخدم في قيود</th><th style="width:18%">حذف</th></tr></thead>';
+    const tb = document.createElement("tbody");
+    const items = accounts.filter((a) => (a.type === "expense" || a.type === "revenue") && Number(a.parentId) !== 0 &&
+      !accounts.some((x) => Number(x.parentId) === Number(a.id)));
+    items.forEach((a) => {
+      const tr = document.createElement("tr");
+      const n = usedCount[Number(a.id)] || 0;
+      tr.innerHTML = '<td>' + esc(a.code) + '</td><td style="text-align:right">' + esc(a.nameAr) + (a.isActive ? '' : ' 🔴') + '</td><td>' + (a.type === "revenue" ? "إيراد" : "مصروف") + '</td><td>' + (n ? n + " حركة" : "—") + '</td>';
+      const td = document.createElement("td");
+      const btn = document.createElement("button");
+      btn.className = "btn small red"; btn.type = "button"; btn.textContent = "🗑️ حذف";
+      btn.addEventListener("click", () => {
+        if (!simpleGate()) return;
+        const uses = journalEntries.reduce((m, j) => m + ((j.lines || []).some((l) => Number(l.accountId) === Number(a.id)) ? 1 : 0), 0);
+        if (uses) { toast("ممنوع حذف بند مستخدم في القيود («" + a.nameAr + "» عليه " + uses + " قيد).", "error"); return; }
+        if (!confirm("حذف البند «" + a.nameAr + "»؟ لن يؤثر على أي قيد محفوظ.")) return;
+        const idx = accounts.findIndex((x) => Number(x.id) === Number(a.id));
+        if (idx >= 0) accounts.splice(idx, 1);
+        saveAccounts();
+        renderCItems();
+        toast("تم حذف البند «" + a.nameAr + "\".", "success");
+      });
+      td.appendChild(btn);
+      tr.appendChild(td);
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    box.appendChild(tbl);
+    if (!items.length) {
+      const note = document.createElement("p");
+      note.className = "stk-hint";
+      note.textContent = "لا توجد بنود بعد — أضف بندًا من الزرار فوق، أو سجّل مصروفًا/إيرادًا باسم جديد والبرنامج يقترح إضافته.";
+      box.appendChild(note);
+    }
+  }
+
+  function addCItem() {
+    if (!simpleGate()) return;
+    const name = ($("#cItemNewName").value || "").trim();
+    const kind = $("#cItemNewKind").value === "revenue" ? "revenue" : "expense";
+    if (!name) { toast("اكتب اسم البند.", "warning"); return; }
+    const dup = accounts.find((a) => (a.type === "expense" || a.type === "revenue") && Number(a.parentId) !== 0 && normalizeAr(a.nameAr) === normalizeAr(name));
+    if (dup) { toast("البند «" + dup.nameAr + "» (" + (dup.type === "revenue" ? "إيراد" : "مصروف") + ") موجود بالفعل.", "info"); return; }
+    const root = itemRootAccount(kind);
+    if (!root) { toast("لا يوجد حساب جذر لـ" + (kind === "revenue" ? "الإيرادات" : "المصروفات") + " في دليل الحسابات.", "error"); return; }
+    accounts.push({ id: nextAccountId(), code: nextItemCode(root), nameAr: name, type: kind, parentId: root.id, openingBalance: 0, isActive: true });
+    saveAccounts();
+    $("#cItemNewName").value = "";
+    renderCItems();
+    toast("تمت إضافة البند «" + name + "» وهو متاح الآن في التسجيل المبسط.", "success");
+  }
+
   /* ================== قائمة المركز المالي ================== */
   function renderBalance() {
     const d = new Date();
@@ -5601,6 +6032,7 @@
         // 🆕 ترحيل ٣٤: نصلّح الهويات وننقّي التكرار قبل الرسم، عشان العميل يشوف حسابه مرة واحدة
         syncTreasuryFromSett();
         renderAllSettPanes("c");
+        renderCItems(); // 🆕 بناء 115: بنود المصروفات والإيرادات (من دليل الحسابات مش من payload الضبط)
       }).catch((e) => toast("تعذّر تحميل إعدادات مؤسستك: " + (e.message || e), "error"));
       return;
     }
@@ -5609,6 +6041,7 @@
       categories: [], units: [], warehouses: [], owners: [], wallets: [], banks: []
     };
     renderAllSettPanes("c");
+    renderCItems(); // 🆕 بناء 115
   }
 
   function gatherSettPayload(prefix) {
@@ -6621,6 +7054,18 @@
     /* ---- القيود اليومية ---- */
     $("#btnAddJournal").addEventListener("click", openJournal);
     $("#txtJournalSearch").addEventListener("input", renderJournal);
+    // 🆕 بناء 115: تبسيط القيود — الأزرار الثلاثة + دفتر الحركة + بنود الضبط
+    $("#btnExpEntry").addEventListener("click", () => openSimpleEntry("expense"));
+    $("#btnIncEntry").addEventListener("click", () => openSimpleEntry("income"));
+    $("#btnTransferEntry").addEventListener("click", openTransferEntry);
+    $("#btnSaveSimple").addEventListener("click", saveSimpleEntry);
+    $("#btnCancelSimple").addEventListener("click", () => hideModal("mSimpleEntry"));
+    $("#btnSaveTransfer").addEventListener("click", saveTransfer);
+    $("#btnCancelTransfer").addEventListener("click", () => hideModal("mSimpleTransfer"));
+    $("#txtLedgerAcc").addEventListener("input", renderLedger);
+    $("#txtLedgerAcc").addEventListener("focus", () => ensureDatalist("ledgerAccountsList", accounts.filter((a) => Number(a.parentId) !== 0 && a.isActive).map((a) => a.code + " - " + a.nameAr)));
+    $("#btnLedgerPrint").addEventListener("click", printLedger);
+    $("#btnCItemAdd").addEventListener("click", addCItem);
     $("#btnAddJLine").addEventListener("click", () => {
       jrnLines.push({ accountId: "0", accountText: "", debit: "", credit: "" });
       renderJrnLines();

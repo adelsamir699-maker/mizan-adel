@@ -663,7 +663,11 @@
 
         <div class="view-header">
           <div class="view-actions">
-            <button id="btnAddJournal" class="btn blue" type="button">➕ قيد جديد</button>
+            <!-- 🆕 بناء 115: تسجيل مبسط (مصروفات/إيرادات/تحويل) — القيد اليدوي المحاسبي يفضل زي ما هو -->
+            <button id="btnExpEntry" class="btn red" type="button">➖ تسجيل مصروفات</button>
+            <button id="btnIncEntry" class="btn green" type="button">➕ تسجيل إيرادات</button>
+            <button id="btnTransferEntry" class="btn blue" type="button">🔁 تحويل من حساب إلى حساب</button>
+            <button id="btnAddJournal" class="btn gray" type="button">➕ قيد يدوي (محاسبي)</button>
           </div>
           <h1 class="view-title">📝 القيود اليومية (المبيعات والمشتريات العامة)</h1>
         </div>
@@ -684,6 +688,30 @@
                 <th style="width:14%">المديون (ج.م)</th>
                 <th style="width:14%">الدائن (ج.م)</th>
                 <th style="width:14%">مرجع</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <!-- 🆕 بناء 115: دفتر حركة الحسابات — بحث في أي حساب لمعرفة كل الحركات التي تمت داخله -->
+        <div class="panel-title">🔎 دفتر حركة الحسابات — اختار حسابًا لعرض كل حركاته داخله</div>
+        <div class="search-bar">
+          <label class="filter-label" for="txtLedgerAcc">الحساب:</label>
+          <input type="text" id="txtLedgerAcc" class="search-input" autocomplete="off" placeholder="اكتب كود أو اسم الحساب..." />
+          <button id="btnLedgerPrint" class="btn sky" type="button">🖨️ طباعة كشف الحساب</button>
+          <span id="ledgerInfo" class="stk-summary"></span>
+        </div>
+        <div class="table-wrap">
+          <table id="dgvLedger" class="dgv stmt-table">
+            <thead>
+              <tr>
+                <th style="width:12%">التاريخ</th>
+                <th style="width:14%">رقم القيد</th>
+                <th style="width:36%">البيان</th>
+                <th style="width:12%">مدين (ج.م)</th>
+                <th style="width:12%">دائن (ج.م)</th>
+                <th style="width:14%">الرصيد (ج.م)</th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -1330,6 +1358,7 @@
           <button class="tab-btn" data-tab="cwal">📱 المحافظ الإلكترونية</button>
           <button class="tab-btn" data-tab="cbnk">🏦 حسابات البنوك</button>
           <button class="tab-btn" data-tab="cown">👥 أصحاب المنشأة</button>
+          <button class="tab-btn" data-tab="citems">🧾 بنود المصروفات والإيرادات</button>
         </div>
 
         <div class="sett-pane" data-pane="corg">
@@ -1472,6 +1501,23 @@
               <button class="btn orange" type="button" data-csave="owner">💾 حفظ الأصحاب</button>
             </div>
             <div class="tbl-wrap" id="cGridOwner"></div>
+          </div>
+        </div>
+
+        <!-- 🆕 بناء 115: بنود المصروفات والإيرادات للتسجيل المبسط (تُخزَّن كأوراق في دليل الحسابات فتزامن مع كل أجهزة الشركة) -->
+        <div class="sett-pane" data-pane="citems" hidden>
+          <div class="sett-box">
+            <div class="panel-title">🧾 بنود المصروفات والإيرادات</div>
+            <div class="sett-toolbar">
+              <input type="text" id="cItemNewName" autocomplete="off" placeholder="اسم البند الجديد..." />
+              <select id="cItemNewKind">
+                <option value="expense">مصروف</option>
+                <option value="revenue">إيراد</option>
+              </select>
+              <button class="btn green" type="button" id="btnCItemAdd">➕ إضافة بند</button>
+            </div>
+            <div class="tbl-wrap" id="cGridItems"></div>
+            <p class="stk-hint">💡 البند حساب فرعي داخل دليل الحسابات، فكل أجهزة الشركة تشوف نفس البنود. ممنوع حذف بند مستخدم في قيود — عشان ما يسيبش أثرًا رجعيا ناقصًا.</p>
           </div>
         </div>
 
@@ -2273,6 +2319,54 @@
       <div class="modal-actions">
         <button id="btnCancelJournal" class="btn gray" type="button">إلغاء</button>
         <button id="btnSaveJournal" class="btn blue" type="button">💾 حفظ القيد</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🆕 بناء 115: نافذة التسجيل المبسط (مصروفات / إيرادات) — البرنامج يترجمها لترحيل حسابات -->
+  <div class="modal-overlay" id="mSimpleEntry" hidden>
+    <div class="modal m520" id="mSimpleEntryBox">
+      <h3 id="simpleTitle">➖ تسجيل مصروفات</h3>
+      <div class="form-grid">
+        <label for="simpleItem" id="lblSimpleItem">البند المنصرف عليه: *</label>
+        <input type="text" id="simpleItem" autocomplete="off" placeholder="اكتب اسم البند أو اختاره من القائمة..." />
+        <label for="simpleAmount">المبلغ (ج.م): *</label>
+        <input type="text" id="simpleAmount" autocomplete="off" />
+        <label for="simpleTreasury" id="lblSimpleTreasury">من: *</label>
+        <select id="simpleTreasury"></select>
+        <label for="simpleDate">التاريخ:</label>
+        <input type="date" id="simpleDate" autocomplete="off" />
+        <label for="simpleNotes">ملاحظات:</label>
+        <input type="text" id="simpleNotes" autocomplete="off" placeholder="اختياري" />
+      </div>
+      <div class="ret-hint" id="simpleHint"></div>
+      <div class="modal-actions">
+        <button id="btnCancelSimple" class="btn gray" type="button">إلغاء</button>
+        <button id="btnSaveSimple" class="btn green" type="button">💾 تسجيل</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🆕 بناء 115: تحويل بين حسابات الخزينة (نقدية / بنك / محفظة) -->
+  <div class="modal-overlay" id="mSimpleTransfer" hidden>
+    <div class="modal m520" id="mSimpleTransferBox">
+      <h3>🔁 تحويل من حساب إلى حساب</h3>
+      <div class="form-grid">
+        <label for="trFrom">من حساب: *</label>
+        <select id="trFrom"></select>
+        <label for="trTo">إلى حساب: *</label>
+        <select id="trTo"></select>
+        <label for="trAmount">المبلغ (ج.م): *</label>
+        <input type="text" id="trAmount" autocomplete="off" />
+        <label for="trDate">التاريخ:</label>
+        <input type="date" id="trDate" autocomplete="off" />
+        <label for="trNotes">ملاحظات:</label>
+        <input type="text" id="trNotes" autocomplete="off" placeholder="اختياري" />
+      </div>
+      <div class="ret-hint" id="trHint"></div>
+      <div class="modal-actions">
+        <button id="btnCancelTransfer" class="btn gray" type="button">إلغاء</button>
+        <button id="btnSaveTransfer" class="btn green" type="button">💾 تنفيذ التحويل</button>
       </div>
     </div>
   </div>
