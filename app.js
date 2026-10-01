@@ -1668,6 +1668,7 @@
   /* ================== نافذة: خيارات العميل ================== */
   let actionsCust = null;
   let statementCtx = null;
+  let stmFilter = { from: "", to: "" }; // 🆕 مهمة 96: فترة كشف الحساب (فاضي = بالكامل)
 
   function openActions(cust) {
     actionsCust = cust;
@@ -1722,10 +1723,64 @@
   }
 
   function fillStatementTable(tbodyEl, cust) {
+    // 🆕 مهمة 96: طباعة صفحة الكشف تحترم فلتر الفترة لو مضبوط
+    renderStmRows(tbodyEl, stmVisibleRows(getStatement(cust)), "لا توجد حركات على حساب هذا العميل في هذه الفترة.");
+  }
+
+  function dateRange() {
+    const from = new Date();
+    from.setDate(from.getDate() - 30);
+    const p = (x) => String(x).padStart(2, "0");
+    return (
+      p(from.getDate()) + "/" + p(from.getMonth() + 1) + "/" + from.getFullYear() +
+      " - " +
+      p(new Date().getDate()) + "/" + p(new Date().getMonth() + 1) + "/" + new Date().getFullYear()
+    );
+  }
+
+  /* ================== 🆕 مهمة 96: فلترة كشف الحساب بالفترة (من/إلى) أو بالكامل ==================
+     الرصيد الجاري في كل سطر محسوب من أول السجل — الفلترة تعرض سطور الفترة فقط،
+     ولو «من» موجودة بنضيف سطر «رصيد مرحّل» برصيد آخر حركة قبل البداية عشان الرقم يفضل مفهوم.
+     ما بيتغيرش أي سلوك لما الفترة فاضية (الافتراضي = عرض بالكامل زي زمان). */
+  function stmPeriodLabel() {
+    const p = (x) => String(x).padStart(2, "0");
+    const ar = (iso) => { const d = new Date(iso); return p(d.getDate()) + "/" + p(d.getMonth() + 1) + "/" + d.getFullYear(); };
+    if (!stmFilter.from && !stmFilter.to) return "بلا فلترة (كامل السجل)";
+    if (stmFilter.from && stmFilter.to) return "من " + ar(stmFilter.from) + " إلى " + ar(stmFilter.to);
+    if (stmFilter.from) return "من " + ar(stmFilter.from) + " وحتى اليوم";
+    return "من أول السجل إلى " + ar(stmFilter.to);
+  }
+
+  function stmVisibleRows(rows) {
+    const from = stmFilter.from, to = stmFilter.to;
+    if (!from && !to) return rows;
+    const out = rows.filter((r) => (!from || r.date >= from) && (!to || r.date <= to));
+    if (from) {
+      const before = rows.filter((r) => r.date < from);
+      if (before.length) {
+        out.unshift({
+          date: from,
+          desc: "▷ رصيد مرحّل من قبل هذه الفترة",
+          debit: 0, credit: 0,
+          balance: before[before.length - 1].balance
+        });
+      }
+    }
+    return out;
+  }
+
+  function stmRowsNow() {
+    if (!statementCtx) return [];
+    const all = statementCtx.type === "supplier"
+      ? getSupplierStatement(statementCtx.obj)
+      : getStatement(statementCtx.obj);
+    return stmVisibleRows(all);
+  }
+
+  function renderStmRows(tbodyEl, rows, emptyMsg) {
     tbodyEl.innerHTML = "";
-    const rows = getStatement(cust);
-    if (rows.length === 0) {
-      tbodyEl.innerHTML = '<tr><td colspan="5">لا توجد حركات على حساب هذا العميل.</td></tr>';
+    if (!rows.length) {
+      tbodyEl.innerHTML = '<tr><td colspan="5">' + emptyMsg + '</td></tr>';
       return;
     }
     rows.forEach((r) => {
@@ -1740,31 +1795,50 @@
     });
   }
 
-  function dateRange() {
-    const from = new Date();
-    from.setDate(from.getDate() - 30);
-    const p = (x) => String(x).padStart(2, "0");
-    return (
-      p(from.getDate()) + "/" + p(from.getMonth() + 1) + "/" + from.getFullYear() +
-      " - " +
-      p(new Date().getDate()) + "/" + p(new Date().getMonth() + 1) + "/" + new Date().getFullYear()
-    );
+  function refreshStatementView() {
+    if (!statementCtx) return;
+    const o = statementCtx.obj;
+    $("#stmHeadMini").innerHTML =
+      "الكود: <b>" + esc(o.code) + "</b> | الفترة: <b>" + stmPeriodLabel() + "</b> | " +
+      "الرصيد الحالي: <b class=\"" + (o.currentBalance > 0 ? "balance-debit" : "balance-credit") + "\">" + fmt(o.currentBalance) + " ج.م</b>";
+    const rows = stmRowsNow();
+    renderStmRows($("#stmBodyMini"), rows, "لا توجد حركات على هذا الحساب في هذه الفترة.");
+    const moves = rows.filter((r) => String(r.desc).indexOf("رصيد مرحّل") === -1).length;
+    $("#stmPeriodInfo").textContent = (!stmFilter.from && !stmFilter.to)
+      ? (moves + " حركة")
+      : (moves + " حركة في الفترة المحددة");
+  }
+
+  function applyStmFilter() {
+    const f = $("#stmFrom").value || "";
+    const t = $("#stmTo").value || "";
+    if (f && t && f > t) {
+      toast("تاريخ البداية «" + f + "» بعد تاريخ النهاية «" + t + "» — صحّح الفترة علشان الفلترة تتظبط.", "warning");
+      return;
+    }
+    stmFilter = { from: f, to: t };
+    refreshStatementView();
+  }
+
+  function resetStmFilter() {
+    stmFilter = { from: "", to: "" };
+    if ($("#stmFrom")) $("#stmFrom").value = "";
+    if ($("#stmTo")) $("#stmTo").value = "";
+    if ($("#stmPeriodInfo")) $("#stmPeriodInfo").textContent = "";
   }
 
   function openStatement(cust) {
     statementCtx = { type: "customer", obj: cust };
+    resetStmFilter(); // 🆕 مهمة 96: كل كشف يفتح بفلتر نظيف (بالكامل)
     $("#stmTitle").textContent = "📋 كشف حساب تفصيلي: " + cust.nameAr;
-    $("#stmHeadMini").innerHTML =
-      "الكود: <b>" + esc(cust.code) + "</b> | الفترة: <b>" + dateRange() + "</b> | " +
-      "الرصيد الحالي: <b class=\"" + (cust.currentBalance > 0 ? "balance-debit" : "balance-credit") + "\">" + fmt(cust.currentBalance) + " ج.م</b>";
-    fillStatementTable($("#stmBodyMini"), cust);
+    refreshStatementView();
     showModal("mStatement");
   }
 
   function printStatement(cust) {
     $("#stmName").textContent = cust.nameAr;
     $("#stmCode").textContent = cust.code;
-    $("#stmRange").textContent = dateRange();
+    $("#stmRange").textContent = stmPeriodLabel(); // 🆕 مهمة 96: الفترة المعروضة = الفلتر الفعلي
     const bal = $("#stmBal");
     bal.textContent = fmt(cust.currentBalance);
     bal.className = cust.currentBalance > 0 ? "balance-debit" : "balance-credit";
@@ -3531,27 +3605,9 @@
 
   function openSupplierStatement(s) {
     statementCtx = { type: "supplier", obj: s };
-    const rows = getSupplierStatement(s);
-    const mini = $("#stmBodyMini");
+    resetStmFilter(); // 🆕 مهمة 96: كل كشف يفتح بفلتر نظيف (بالكامل)
     $("#stmTitle").textContent = "📋 كشف حساب تفصيلي: " + s.nameAr;
-    $("#stmHeadMini").innerHTML =
-      "الكود: <b>" + esc(s.code) + "</b> | الفترة: <b>" + dateRange() + "</b> | " +
-      "الرصيد الحالي: <b class=\"" + (s.currentBalance > 0 ? "balance-debit" : "balance-credit") + "\">" + fmt(s.currentBalance) + " ج.م</b>";
-    mini.innerHTML = "";
-    if (!rows.length) {
-      mini.innerHTML = '<tr><td colspan="5">لا توجد حركات على حساب هذا المورد.</td></tr>';
-    } else {
-      rows.forEach((r) => {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          '<td>' + esc(r.date) + '</td>' +
-          '<td style="text-align:right">' + esc(r.desc) + '</td>' +
-          '<td>' + (r.debit ? fmt(r.debit) : "-") + '</td>' +
-          '<td>' + (r.credit ? fmt(r.credit) : "-") + '</td>' +
-          '<td class="' + (r.balance > 0 ? "balance-debit" : "balance-credit") + '">' + fmt(r.balance) + '</td>';
-        mini.appendChild(tr);
-      });
-    }
+    refreshStatementView(); // 🆕 مهمة 96: رندر مشترك بين العميل والمورد مع احترام فلتر الفترة
     showModal("mStatement");
   }
 
@@ -3559,9 +3615,9 @@
     printStatementDoc({
       name: s.nameAr,
       code: s.code,
-      range: dateRange(),
+      range: stmPeriodLabel(), // 🆕 مهمة 96: الفترة على الورقة = الفلتر الفعلي
       balance: s.currentBalance,
-      rows: getSupplierStatement(s)
+      rows: stmVisibleRows(getSupplierStatement(s)) // 🆕 مهمة 96: الطباعة تحترم فلتر الفترة
     });
   }
 
@@ -6754,6 +6810,11 @@
       }
     });
     $("#btnCloseStmt").addEventListener("click", () => hideModal("mStatement"));
+
+    // 🆕 مهمة 96: فلترة كشف الحساب بالفترة (من/إلى) أو بالكامل
+    $("#stmFrom").addEventListener("change", applyStmFilter);
+    $("#stmTo").addEventListener("change", applyStmFilter);
+    $("#btnStmAll").addEventListener("click", () => { resetStmFilter(); refreshStatementView(); });
 
     $("#btnAddProduct").addEventListener("click", () => openProductDialog(null));
     $("#btnStockTake").addEventListener("click", openStockTake);

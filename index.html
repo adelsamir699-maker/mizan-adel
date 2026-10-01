@@ -2441,6 +2441,15 @@
   <div class="modal-overlay" id="mStatement" hidden>
     <div class="modal m640 modal-tall">
       <h3 id="stmTitle">📋 كشف حساب تفصيلي</h3>
+      <!-- 🆕 مهمة 96: فلترة الكشف بالفترة (من/إلى) أو عرض بالكامل -->
+      <div class="search-bar" style="margin:6px 0 10px">
+        <label class="filter-label" for="stmFrom">من:</label>
+        <input type="date" id="stmFrom" class="search-input" />
+        <label class="filter-label" for="stmTo">إلى:</label>
+        <input type="date" id="stmTo" class="search-input" />
+        <button id="btnStmAll" class="btn gray" type="button">📅 عرض بالكامل</button>
+        <span id="stmPeriodInfo" class="stk-summary"></span>
+      </div>
       <div class="stmt-scroll">
         <div class="stmt-head-mini" id="stmHeadMini"></div>
         <table class="dgv stmt-table">
