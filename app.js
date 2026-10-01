@@ -955,6 +955,30 @@
     return Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
+  /* 🆕 بناء 118: قارئ المبالغ اللي في الخانات.
+   * المشكلة الأصلية: الخانات دي بتتملأ بـ fmt() اللي بيفصل الآلاف بفاصلة («1,200.00»)،
+   * وparseFloat بياقرأ لحد أول فاصلة بس ⇒ «1,200.00» كان بيترجع 1، و«25,000.00» بيرجع 25.
+   * يعني أي تعديل على صنف أو خزينة أو عميل كان بيرمّ المبلغ لأقل من قيمته بصمت.
+   * moneyVal بيشفّ الفواصل وبيطبّع الأرقام العربية، وبيرجع العدد مقسّط لخانتين. */
+  function parseMoney(s) {
+    const t = String(s == null ? "" : s)
+      .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+      .replace(/[\s,\u060C\u202B\u202C]/g, "")
+      .replace(/[^\d.\-]/g, "")
+      .trim();
+    const n = Number(t);
+    if (!isFinite(n)) return 0;
+    return Math.round(n * 100) / 100;
+  }
+  function moneyVal(selId) {
+    const el = typeof selId === "string" ? $(selId) : selId;
+    return parseMoney(el ? el.value : "");
+  }
+  // نص مبلغ نضيف للحانات اللي المستخدم بيكتب فيها (بلا فواصل — عشان fmt+parseFloat كانا باگ)
+  function moneyStr(n) {
+    return String(Math.round((Number(n) || 0) * 100) / 100);
+  }
+
   function normalizeAr(s) {
     return (s || "")
       .replace(/[أإآٱ]/g, "ا")
@@ -1540,7 +1564,7 @@
       $("#fWallet").value = customer.walletPhone || "";
       $("#fAddress").value = customer.address || "";
       $("#fNotes").value = customer.notes || "";
-      $("#fBalance").value = fmt(customer.openingBalance);
+      $("#fBalance").value = moneyStr(customer.openingBalance);
       $("#fBalance").disabled = true;
     } else {
       $("#addEditTitle").textContent = "إضافة عميل جديد";
@@ -1554,7 +1578,7 @@
       $("#fWallet").value = "";
       $("#fAddress").value = "";
       $("#fNotes").value = "";
-      $("#fBalance").value = "0.00";
+      $("#fBalance").value = "0";
       $("#fBalance").disabled = false;
     }
     showModal("mAddEdit");
@@ -1568,7 +1592,7 @@
       return;
     }
 
-    const bal = parseFloat($("#fBalance").value) || 0;
+    const bal = moneyVal("#fBalance") || 0;
 
     if (editingId == null) {
       const cust = {
@@ -1665,7 +1689,7 @@
       toast("يرجى اختيار العميل.", "warning");
       return;
     }
-    const amount = parseFloat($("#pAmount").value);
+    const amount = moneyVal("#pAmount");
     if (!(amount > 0)) {
       toast("يرجى كتابة مبلغ صحيح أكبر من الصفر.", "warning");
       return;
@@ -2198,11 +2222,11 @@
       $("#fPBarcode").value = product.barcode || "";
       $("#fPNameAr").value = product.nameAr;
       $("#fPNameEn").value = product.nameEn || "";
-      $("#fPPurchase").value = fmt(product.purchasePrice);
-      $("#fPSale").value = fmt(product.salePrice);
+      $("#fPPurchase").value = moneyStr(product.purchasePrice);
+      $("#fPSale").value = moneyStr(product.salePrice);
       $("#fPStock").value = Number(product.qty).toLocaleString("en-US");
       $("#fPStock").disabled = true;
-      $("#fPDiscount").value = Number(product.discountPercent || 0).toLocaleString("en-US");
+      $("#fPDiscount").value = moneyStr(product.discountPercent || 0);
       $("#fPDiscStart").value = product.discountStart || "";
       $("#fPDiscEnd").value = product.discountEnd || "";
       $("#fPStatus").value = product.isActive ? "1" : "0";
@@ -2214,8 +2238,8 @@
       $("#fPBarcode").value = "";
       $("#fPNameAr").value = "";
       $("#fPNameEn").value = "";
-      $("#fPPurchase").value = "0.00";
-      $("#fPSale").value = "0.00";
+      $("#fPPurchase").value = "0";
+      $("#fPSale").value = "0";
       $("#fPStock").value = "0";
       $("#fPStock").disabled = false;
       $("#fPDiscount").value = "0";
@@ -2251,10 +2275,10 @@
       return;
     }
 
-    const purchase = parseFloat($("#fPPurchase").value) || 0;
-    const sale = parseFloat($("#fPSale").value) || 0;
+    const purchase = moneyVal("#fPPurchase") || 0;
+    const sale = moneyVal("#fPSale") || 0;
     const opening = parseFloat(String($("#fPStock").value).replace(/,/g, "")) || 0;
-    const discount = parseFloat($("#fPDiscount").value) || 0;
+    const discount = moneyVal("#fPDiscount") || 0;
     const status = $("#fPStatus").value === "1";
 
     if (editingProductId == null) {
@@ -2694,7 +2718,7 @@
     if (p) {
       posUpdateBadge(p);
       const input = $("#txtPosPrice");
-      if (input) input.value = fmt(p.salePrice);
+      if (input) input.value = moneyStr(p.salePrice);
     }
   }
 
@@ -2705,7 +2729,7 @@
     if (p) {
       posUpdateBadge(p);
       const input = $("#txtPosPrice");
-      if (input) input.value = fmt(p.salePrice);
+      if (input) input.value = moneyStr(p.salePrice);
     } else {
       posUpdateBadge(null);
     }
@@ -2742,7 +2766,7 @@
       toast("الكمية المطلوبة أكبر من المتوفر في مخزن (" + wh + ").\nالمتوفر: " + Number(availableStock - alreadyInInvoice).toLocaleString("en-US") + " " + prod.unit, "warning");
       return;
     }
-    let price = parseFloat(String($("#txtPosPrice").value).replace(/,/g, ""));
+    let price = moneyVal("#txtPosPrice");
     if (isNaN(price) || price <= 0) {
       toast("اكتب سعر البيع المتفق عليه مع العميل في خانة «سعر البيع».", "warning");
       $("#txtPosPrice").focus();
@@ -3011,10 +3035,10 @@
       toast("اسم الصنف مطلوب.", "warning");
       return;
     }
-    const purchase = parseFloat($("#qCost").value) || 0;
-    const sale = parseFloat($("#qSale").value) || 0;
-    const qty = parseFloat($("#qQty").value) || 0;
-    const disc = parseFloat($("#qDisc").value) || 0;
+    const purchase = moneyVal("#qCost") || 0;
+    const sale = moneyVal("#qSale") || 0;
+    const qty = moneyVal("#qQty") || 0;
+    const disc = moneyVal("#qDisc") || 0;
     const p = {
       id: nextProductId(),
       code: nextProductCode(),
@@ -3042,7 +3066,7 @@
     fillPosDatalist();
     fillPPDatalist();
     $("#txtPosSearch").value = p.nameAr;
-    $("#txtPosPrice").value = fmt(p.salePrice);
+    $("#txtPosPrice").value = moneyStr(p.salePrice);
     posUpdateBadge(p);
     toast("تم حفظ الصنف (" + p.nameAr + ") برصيد " + qty + " في المخزن.", "success");
   }
@@ -3592,7 +3616,7 @@
     $("#fSWallet").value = supplier ? (supplier.walletPhone || "") : "";
     $("#fSAddress").value = supplier ? (supplier.address || "") : "";
     $("#fSNotes").value = supplier ? (supplier.notes || "") : "";
-    $("#fSOpening").value = supplier ? fmt(supplier.openingBalance || 0) : "0.00";
+    $("#fSOpening").value = supplier ? moneyStr(supplier.openingBalance || 0) : "0";
     showModal("mSuppAddEdit");
     $("#fSName").focus();
   }
@@ -3611,12 +3635,12 @@
       s.walletPhone = $("#fSWallet").value.trim();
       s.address = $("#fSAddress").value.trim();
       s.notes = $("#fSNotes").value.trim();
-      s.openingBalance = parseFloat($("#fSOpening").value) || 0;
+      s.openingBalance = moneyVal("#fSOpening") || 0;
       saveSuppliers();
       addActivity("تعديل مورد", "تعديل بيانات المورد: " + s.nameAr);
       toast("تم حفظ التعديلات بنجاح.", "success");
     } else {
-      const opening = parseFloat($("#fSOpening").value) || 0;
+      const opening = moneyVal("#fSOpening") || 0;
       const s = {
         id: nextSupplierId(),
         code: $("#fSCode").value.trim() || nextSupplierCode(),
@@ -3741,7 +3765,7 @@
       toast("يرجى اختيار المورد.", "warning");
       return;
     }
-    const amount = parseFloat($("#psAmount").value);
+    const amount = moneyVal("#psAmount");
     if (!(amount > 0)) {
       toast("يرجى كتابة مبلغ صحيح أكبر من الصفر.", "warning");
       return;
@@ -4748,7 +4772,7 @@
     $("#tName").value = t ? t.name : "";
     $("#tType").value = t ? t.type : "cash";
     $("#tAccountNo").value = t ? (t.accountNo || "") : "";
-    $("#tOpening").value = t ? fmt(t.openingBalance || 0) : "0.00";
+    $("#tOpening").value = t ? moneyStr(t.openingBalance || 0) : "0";
     showModal("mTreasury");
     $("#tName").focus();
   }
@@ -4760,23 +4784,35 @@
       return;
     }
     const type = $("#tType").value;
+    // 🆕 بناء 118: الرصيد الافتتاحي كان بيتمر في التعديل (الخانة بتتعرض بـ fmt و«تم حفظ
+    // التعديلات» بتقول نجاح، بس الرقم ما كان بيتخزنش) ⇒ صاحب الخزينة كان فاكر إن فيها
+    // فلوس والبرنامج بيحسب من صفر — وده بالظبط سبب تحذير «رصيد الخزينة أقل من المصروف» الكاذب.
+    const opening = moneyVal("#tOpening");
     if (treasuryEditingId) {
       const t = treasury.find((x) => x.id === treasuryEditingId);
+      const oldOp = Math.round((Number(t.openingBalance) || 0) * 100) / 100;
+      const opChanged = Math.abs(oldOp - opening) > 0.001;
       t.name = name;
       t.type = type;
       t.accountNo = $("#tAccountNo").value.trim();
+      if (opChanged) t.openingBalance = opening;
       saveTreasury();
       syncTreasuryItemToSett(t);
-      addActivity("تعديل خزينة", "تعديل بيانات الخزينة: " + name);
-      toast("تم حفظ التعديلات بنجاح.", "success");
+      // الرصيد الجاري = الافتتاحي + الحركة: أي تغيير في الافتتاحي لازم يعيد الحساب فورًا
+      if (opChanged) recalculateTreasuryBalances();
+      addActivity("تعديل خزينة", "تعديل بيانات الخزينة: " + name +
+        (opChanged ? " — الرصيد الافتتاحي من " + fmt(oldOp) + " إلى " + fmt(opening) + " ج.م" : ""));
+      toast(opChanged
+        ? "تم حفظ التعديلات، والرصيد بقى " + fmt((treasury.find((x) => x.id === treasuryEditingId) || {}).balance) + " ج.م."
+        : "تم حفظ التعديلات بنجاح.", "success");
     } else {
       const t = {
         id: treasury.reduce((m, x) => Math.max(m, x.id), 0) + 1,
         name: name,
         type: type,
         accountNo: $("#tAccountNo").value.trim(),
-        openingBalance: parseFloat($("#tOpening").value) || 0,
-        balance: parseFloat($("#tOpening").value) || 0
+        openingBalance: opening,
+        balance: opening
       };
       treasury.push(t);
       saveTreasury();
@@ -4791,24 +4827,23 @@
   function openVoucher(mode) {
     voucherMode = mode;
     $("#voucherTitle").textContent = mode === "in" ? "➕ سند قبض (إيراد)" : "➖ سند صرف (مصروف)";
-    const sel = $("#vTreasury");
-    sel.innerHTML = "";
-    treasury.forEach((t) => {
-      const opt = document.createElement("option");
-      opt.value = t.id;
-      opt.textContent = t.name;
-      sel.appendChild(opt);
-    });
+    fillTreasurySelect("#vTreasury"); // 🆕 بناء 118: الأرصدة تبان في القائمة (النقدية أولًا) بدل اسم بس
     $("#vDate").value = todayISO();
     $("#vAmount").value = "";
     $("#vDesc").value = mode === "in" ? "إيراد (سند قبض)" : "مصروف (سند صرف)";
+    $("#vHint").textContent = mode === "in"
+      ? "✅ المبلغ هينزل في الحساب اللي هتختاره، والرصيد بيتحدّث تلقائيًا."
+      : "✅ المبلغ هيطلع من الحساب اللي هتختاره، والرصيد بيتحدّث تلقائيًا.";
+    rememberHintBase("#vHint");
+    wireLiveBalanceHint("voucher", [{ amount: "#vAmount", treasury: "#vTreasury", hint: "#vHint", mode: () => (voucherMode === "in" ? "income" : "expense") }]);
+    liveBalanceHint("#vAmount", "#vTreasury", "#vHint", voucherMode === "in" ? "income" : "expense");
     showModal("mVoucher");
     $("#vAmount").focus();
   }
 
   function saveVoucher() {
     const tid = parseInt($("#vTreasury").value, 10);
-    const amount = parseFloat($("#vAmount").value);
+    const amount = moneyVal("#vAmount");
     if (!tid) {
       toast("يرجى اختيار الخزينة.", "warning");
       return;
@@ -4818,8 +4853,16 @@
       return;
     }
     const t = treasury.find((x) => x.id === tid);
+    if (!t) { toast("اختار الحساب: خزينة نقدية أو بنك أو محفظة.", "warning"); return; }
+    // 🆕 بناء 118: سند الصرف كباقي الشاشات — تحذير بالأرقام قبل ما الرصيد يروح بالسالب
+    if (voucherMode !== "in") {
+      const bal = round2(t.balance);
+      if (amount > bal) {
+        if (!confirm(shortfallText(t, amount) + "\n\nهل تريد تسجيل سند الصرف من «" + t.name + "» رغم ذلك؟")) return;
+      }
+    }
     const sign = voucherMode === "in" ? 1 : -1;
-    t.balance = Math.round((t.balance + sign * amount) * 100) / 100;
+    t.balance = round2(t.balance + sign * amount);
     vouchers.push({
       id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
       type: voucherMode,
@@ -4913,7 +4956,7 @@
       sel.appendChild(opt);
     });
     sel.value = a ? String(a.parentId || 0) : "0";
-    $("#aOpening").value = a ? fmt(a.openingBalance || 0) : "0.00";
+    $("#aOpening").value = a ? moneyStr(a.openingBalance || 0) : "0";
     $("#aActive").value = a ? (a.isActive ? "1" : "0") : "1";
     showModal("mAccount");
     $("#aName").focus();
@@ -4926,7 +4969,7 @@
       return;
     }
     const type = $("#aType").value;
-    const opening = parseFloat($("#aOpening").value) || 0;
+    const opening = moneyVal("#aOpening") || 0;
     if (editingAccountId) {
       const a = accounts.find((x) => x.id === editingAccountId);
       a.code = $("#aCode").value.trim();
@@ -5208,6 +5251,104 @@
     return list;
   }
 
+  /* 🆕 بناء 118: شفافية نقص الرصيد (بأمر المالك: «قال لي الرصيد أقل مع إن الخزينة فيها فلوس أعلى»).
+   * الرسالة القديمة كانت بتقول اسم حساب واحد ورصيد وحيد — فلو الفلوس في حساب تاني أو لو
+   * الخانة كانت بترّم المبلغ (باگ الفواصل اللي اتصلّح) كانت بتبان غلط.
+   * الدالة دي بتلمّ الأرقام اللي العميل محتاجها: رصيد الحساب المختار + أعلى حسابات فيها فلوس + إجمالي الكل. */
+  function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+
+  function treasuryTypeLabel(t) {
+    return (t && t.type) === "bank" ? "بنك" : (t && t.type) === "wallet" ? "محفظة" : "نقدية";
+  }
+
+  // الحسابات التانية اللي فيها فلوس (بالترتيب النزولي) + إجمالي أرصدة كل الحسابات
+  function fundedAccounts(excludeId, limit) {
+    const rows = treasury.filter((t) => Number(t.id) !== Number(excludeId) && round2(t.balance) > 0);
+    rows.sort((a, b) => round2(b.balance) - round2(a.balance));
+    const total = treasury.reduce((s, t) => s + round2(t.balance), 0);
+    return { list: rows.slice(0, limit || 3), others: rows.length, total: round2(total) };
+  }
+
+  function linesForFunded(f) {
+    if (!f.list.length) return [];
+    return f.list.map((x) => "• " + x.name + " (" + treasuryTypeLabel(x) + ") — " + fmt(round2(x.balance)) + " ج.م");
+  }
+
+  // نص تحذير نقص الرصيد — ودّي بالعربي ومحمّل بالأرقام، من غير أي تشخيص تقني للعميل
+  function shortfallText(t, amount, verb) {
+    const bal = round2(t.balance);
+    const f = fundedAccounts(t.id, 3);
+    const v = verb === "transfer" ? "التحويل" : "الصرف";
+    const out = ["رصيد «" + t.name + "» (" + treasuryTypeLabel(t) + ") حاليًا " + fmt(bal) + " ج.م، والمبلغ المطلوب " + fmt(amount) + " ج.م."];
+    const lines = linesForFunded(f);
+    if (lines.length) {
+      out.push("", "حسابات تانية فيها فلوس:", lines.join("\n"));
+      out.push("", "مجموع أرصدة كل الحسابات: " + fmt(f.total) + " ج.م");
+    } else {
+      out.push("", "مافيش حساب تاني فيه رصيد حاليًا — مجموع أرصدة كل الحسابات " + fmt(f.total) + " ج.م");
+    }
+    out.push("", "لو الفلوس دي كانت داخلة الشركة، ممكن تكون مسجّلة في حساب تاني أو جوه الرصيد الافتتاحي.");
+    out.push(lines.length
+      ? "تقدر تختار الحساب المناسب من القائمة، أو تكمّل من «" + t.name + "» فيفضل رصيدها " + fmt(round2(bal - amount)) + " ج.م بعد " + v + "."
+      : "لو كمّلت من «" + t.name + "» هيكون رصيدها " + fmt(round2(bal - amount)) + " ج.م بعد " + v + ".");
+    return out.join("\n");
+  }
+
+  // اللايف hint: يتحدّث وهو بيكتب — والنص الأصلي للنافذة بيرجع لما مافيش سبب للتحذير
+  function rememberHintBase(hintSelId) {
+    const h = $(hintSelId);
+    if (h) h.dataset.base = h.textContent || "";
+  }
+
+  function liveBalanceHint(amountSelId, treasurySelId, hintSelId, mode) {
+    const hint = $(hintSelId);
+    if (!hint) return;
+    const m = typeof mode === "function" ? mode() : mode;
+    const base = hint.dataset.base !== undefined ? hint.dataset.base : (hint.textContent || "");
+    const amount = round2(moneyVal(amountSelId));
+    const tid = parseInt((($(treasurySelId) || {})).value, 10);
+    const t = treasury.find((x) => Number(x.id) === tid);
+    if (!(amount > 0) || !t) { hint.style.color = ""; hint.textContent = base; return; }
+    const bal = round2(t.balance);
+    if (m === "income") {
+      hint.style.color = "";
+      hint.textContent = "✅ رصيد «" + t.name + "» " + fmt(bal) + " ج.م — بعد القبض يبقى " + fmt(round2(bal + amount)) + " ج.م.";
+      return;
+    }
+    if (amount <= bal) {
+      hint.style.color = "";
+      hint.textContent = "✅ رصيد «" + t.name + "» " + fmt(bal) + " ج.م — " +
+        (m === "transfer" ? "بعد التحويل يبقى " : "بعد الصرف يبقى ") + fmt(round2(bal - amount)) + " ج.م.";
+      return;
+    }
+    const f = fundedAccounts(t.id, 3);
+    let msg = "⚠️ «" + t.name + "» رصيدها " + fmt(bal) + " ج.م والمبلغ " + fmt(amount) + " ج.م.";
+    if (f.list.length) {
+      msg += " أكتر حساب فيه فلوس: «" + f.list[0].name + "» (" + fmt(round2(f.list[0].balance)) + " ج.م) — تقدر تختاره من القائمة.";
+    } else {
+      msg += " مافيش حساب تاني فيه رصيد حاليًا.";
+    }
+    msg += " مجموع أرصدة كل الحسابات " + fmt(f.total) + " ج.م.";
+    msg += " ولو كمّلت منها هيكون رصيدها " + fmt(round2(bal - amount)) + " ج.م.";
+    hint.style.color = "#c0392b";
+    hint.textContent = msg;
+  }
+
+  // ربط ليزنرات اللايف مرة واحدة بس لكل نافذة (العناصر ثابتة في DOM)
+  const LIVE_HINT_DONE = {};
+  function wireLiveBalanceHint(key, specs) {
+    if (LIVE_HINT_DONE[key]) return;
+    LIVE_HINT_DONE[key] = true;
+    specs.forEach((sp) => {
+      [sp.amount, sp.treasury].forEach((selId) => {
+        const el = $(selId);
+        if (!el) { LIVE_HINT_DONE[key] = false; return; }
+        el.addEventListener("input", () => liveBalanceHint(sp.amount, sp.treasury, sp.hint, sp.mode));
+        el.addEventListener("change", () => liveBalanceHint(sp.amount, sp.treasury, sp.hint, sp.mode));
+      });
+    });
+  }
+
   // datalist حيّ لأي حقل نصي (بنود / حسابات دفتر الحركة)
   function ensureDatalist(dlId, values) {
     let dl = document.getElementById(dlId);
@@ -5243,6 +5384,9 @@
     $("#simpleHint").textContent = income
       ? "✅ المبلغ هينزل فعليًا في الحساب اللي هتختاره، والبرنامج يسجّل السند والقيد والترحيل تلقائيًا."
       : "✅ المبلغ هيطلع فعليًا من الحساب اللي هتختاره (المُفضّل النقدية، ويتغير لبنك أو محفظة)، والبرنامج يسجّل السند والقيد والترحيل تلقائيًا.";
+    rememberHintBase("#simpleHint");
+    wireLiveBalanceHint("simple", [{ amount: "#simpleAmount", treasury: "#simpleTreasury", hint: "#simpleHint", mode: () => simpleMode }]);
+    liveBalanceHint("#simpleAmount", "#simpleTreasury", "#simpleHint", income ? "income" : "expense");
     showModal("mSimpleEntry");
     $("#simpleItem").focus();
   }
@@ -5263,7 +5407,7 @@
     const income = simpleMode === "income";
     const type = income ? "revenue" : "expense";
     const date = $("#simpleDate").value || todayISO();
-    const amount = Math.round((parseFloat($("#simpleAmount").value) || 0) * 100) / 100;
+    const amount = Math.round((moneyVal("#simpleAmount") || 0) * 100) / 100;
     const itemText = $("#simpleItem").value.trim();
     const tid = parseInt($("#simpleTreasury").value, 10);
     const t = treasury.find((x) => Number(x.id) === tid);
@@ -5293,11 +5437,12 @@
     const cashAcc = accForTreasuryAcc(t);
     if (!cashAcc) { toast("لا يوجد حساب خزينة مطابق في دليل الحسابات.", "error"); return; }
 
-    // تحذير الرصيد: واضح بالأرقام، والمالك قرر الحفظ يتم بعد موافقته (يروح بالسالب)
+    // تحذير الرصيد: بالأرقام الكاملة (رصيد الحساب + الحسابات اللي فيها فلوس + الإجمالي)
+    // والمالك قرر الحفظ يتم بعد موافقته (يروح بالسالب) — بلا أي قصّ صامت
     if (!income) {
-      const bal = Math.round((Number(t.balance || 0)) * 100) / 100;
+      const bal = round2(t.balance);
       if (amount > bal) {
-        if (!confirm("تنبيه: رصيد «" + t.name + "» (" + fmt(bal) + " ج.م) أقل من المبلغ (" + fmt(amount) + " ج.م).\nالتسجيل هيخلي الرصيد بالسالب — هل تريد المتابعة؟")) return;
+        if (!confirm(shortfallText(t, amount) + "\n\nهل تريد المتابعة من «" + t.name + "» رغم ذلك؟")) return;
       }
     }
 
@@ -5355,6 +5500,9 @@
     if (list[1]) $("#trAccTo").value = list[1].id;
     else if (list[0]) $("#trAccTo").value = list[0].id;
     $("#trHint").textContent = "💡 التحويل بين حسابات الخزينة (نقدية / بنك / محفظة) يُسجَّل كسند صرف وسند قبض بنفس المبلغ مع قيد واحد — فرصيد كل حساب بيتحدّث تلقائيًا.";
+    rememberHintBase("#trHint");
+    wireLiveBalanceHint("transfer", [{ amount: "#trAmount", treasury: "#trAccFrom", hint: "#trHint", mode: "transfer" }]);
+    liveBalanceHint("#trAmount", "#trAccFrom", "#trHint", "transfer");
     showModal("mSimpleTransfer");
     $("#trAmount").focus();
   }
@@ -5363,16 +5511,16 @@
     if (!simpleGate()) return;
     const fromId = parseInt($("#trAccFrom").value, 10);
     const toId = parseInt($("#trAccTo").value, 10);
-    const amount = Math.round((parseFloat($("#trAmount").value) || 0) * 100) / 100;
+    const amount = Math.round((moneyVal("#trAmount") || 0) * 100) / 100;
     const date = $("#trDate").value || todayISO();
     const from = treasury.find((x) => Number(x.id) === fromId);
     const to = treasury.find((x) => Number(x.id) === toId);
     if (!from || !to) { toast("اختار الحساب المنقول منه والحساب المنقول إليه.", "warning"); return; }
     if (Number(from.id) === Number(to.id)) { toast("لا يمكن التحويل من الحساب إلى نفس الحساب.", "warning"); return; }
     if (!(amount > 0)) { toast("اكتب مبلغًا صحيحًا أكبر من الصفر.", "warning"); return; }
-    const bal = Math.round((Number(from.balance || 0)) * 100) / 100;
+    const bal = round2(from.balance);
     if (amount > bal) {
-      if (!confirm("تنبيه: رصيد «" + from.name + "» (" + fmt(bal) + " ج.م) أقل من مبلغ التحويل (" + fmt(amount) + " ج.م).\nالتنفيذ هيخلي الرصيد بالسالب — هل تريد المتابعة؟")) return;
+      if (!confirm(shortfallText(from, amount, "transfer") + "\n\nهل تريد تنفيذ التحويل من «" + from.name + "» رغم ذلك؟")) return;
     }
     const note = $("#trNotes").value.trim();
     const tag = "تحويل من «" + from.name + "» إلى «" + to.name + "»" + (note ? " — " + note : "");
@@ -5601,8 +5749,8 @@
   }
   // الإهلاك أكبر من التكلفة = خطأ إدخال (الصافي هيبقى سالب) — بنمنع الحفظ وبنوضّح الأرقام
   function faOverDep() {
-    const cost = parseFloat($("#fxFCost").value);
-    const dep = parseFloat($("#fxFDep").value);
+    const cost = moneyVal("#fxFCost");
+    const dep = moneyVal("#fxFDep");
     if (isNaN(cost) || isNaN(dep)) return null;
     if (dep <= cost) return null;
     return { cost: bsRound(cost), dep: bsRound(dep), over: bsRound(dep - cost) };
@@ -5619,7 +5767,7 @@
       btn.disabled = true;
     } else {
       box.hidden = true; box.innerHTML = "";
-      $("#fxFNet").value = fmt(faNet({ cost: parseFloat($("#fxFCost").value) || 0, accumDep: parseFloat($("#fxFDep").value) || 0 }));
+      $("#fxFNet").value = fmt(faNet({ cost: moneyVal("#fxFCost") || 0, accumDep: moneyVal("#fxFDep") || 0 }));
       $("#fxFDep").classList.remove("input-bad");
       btn.disabled = false;
     }
