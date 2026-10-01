@@ -1,0 +1,72 @@
+-- ============================================================
+-- ترحيل ٤٢: حساب المالك (عادل / is_superadmin) يفضل مفتوح دائمًا
+-- طلب المالك 2026-10-01: «عايز حساب عادل يكون بكل الصلاحيات دائمًا
+--  ومفيش أي شاشة مقفولة عليه» + «الضبط الخاص بيا والنسخة الاحتياطية
+--  يظهرا فورًا ومتخفيهمش تاني نهائي».
+--
+-- الغلط اللي بيتصلّح: mizan_access كان بيرجع allowed=false لأي حساب
+--  شركة مقفولة أو منتهية — بما فيهم المالك نفسه. يعني لو عادل قفل
+--  شركته بالخطأ أو حط تاريخ انتهاء لشركته، هو نفسه يتقفل بره برنامجه
+--  ومافيش شاشة ولا نسخ احتياطي. كمان blocked بيقفل المالك لو هو عملها
+--  لحسابه (مستحيل يرجّعها لنفسه).
+--
+-- القرار: استثناء صريح لصاحب is_superadmin من قفل الشركة/الاشتراك/الحجب.
+-- ملاحظات أمان مهمة:
+--  • ده استثناء على «الواجهة والوقت والقفل» بس. مافيش أي قراءة/كتابة
+--    بتتجاوز عزل الشركات: RLS على current_org() فاضلة زي ما هي، والمالك
+--    ما يشوفش بيانات شركة غيرها إلا من دوال المالمصرّحة (mizan_admin_*).
+--  • باقي الحسابات: نفس السلوك بالحرف (allowed/reason/features).
+--  • نفس عدد الأعمدة وترتيبها (13) عشان data.js/accessInfo ما يتكسروش.
+-- ============================================================
+
+drop function if exists public.mizan_access();
+create or replace function public.mizan_access()
+returns table (
+  allowed boolean,
+  reason text,
+  role text,
+  org_id uuid,
+  org_name text,
+  plan_start date,
+  plan_end date,
+  locked boolean,
+  blocked boolean,
+  is_superadmin boolean,
+  features jsonb,
+  org_max_members integer,
+  org_members_count bigint
+) language sql stable security definer set search_path = public
+as $$
+  select
+    -- 🔓 المالك: مافيش قفل شركة، مافيش انتهاء اشتراك، مافيش حجب يقفله بره برنامجه
+    case when p.id is null then false
+         when p.is_superadmin is true then true
+         when p.blocked is not true
+           and o.id is not null and o.locked is not true
+           and o.plan_status = 'active'
+           and (o.plan_end is null or o.plan_end >= current_date)
+         then true else false end,
+    case when p.id is null then 'noprofile'
+         when p.is_superadmin is true then 'ok'
+         when p.blocked then 'blocked'
+         when o.id is null then 'noorganization'
+         when o.locked then 'locked'
+         when o.plan_status <> 'active' or (o.plan_end is not null and o.plan_end < current_date) then 'plan'
+         else 'ok' end,
+    p.role, o.id, o.name, o.plan_start, o.plan_end, o.locked, p.blocked, p.is_superadmin,
+    coalesce(p.features, '{}'::jsonb) || coalesce(o.features, '{}'::jsonb),
+    coalesce(o.max_members, 5),
+    (select count(*) from public.profiles pc where pc.org_id = p.org_id)
+  from auth.users u
+  left join public.profiles p on p.id = u.id
+  left join public.organizations o on o.id = p.org_id
+  where u.id = auth.uid();
+$$;
+
+grant execute on function public.mizan_access() to authenticated;
+revoke all on function public.mizan_access() from anon;
+
+-- فحص بعد التنفيذ (قراءة فقط): نفس الناتج القديم لغير المالك، و open للمالك
+-- select p.email, p.is_superadmin, o.locked, o.plan_end,
+--        (case when p.is_superadmin then 'expected open' else 'expected same as before' end) note
+--   from public.profiles p join public.organizations o on o.id = p.org_id;

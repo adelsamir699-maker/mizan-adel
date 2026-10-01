@@ -228,9 +228,14 @@
     treasury: {
       local: function () { return W.treasury; },
       toCloud: function (r) {
+        // 🛡 بناء 119: الرصيد الافتتاحي مش بيمشي مع الرفع الجماعي.
+        // الرفع الجماعي بيبعت الجدول كامل من لقطة الجهاز، فأي جهاز تاني لسه
+        // ماسك قيمة قديم كان بيرجع يكتبها فوق تعديل المستخدم (شكوى المالك:
+        // يخلي البنك صفر → «تم الحفظ» → يرجع 50,000). الرصيد الافتتاحي بيتكتب
+        // دلوقتي بأمر مباشر لسطره هو فقط في setTreasuryOpening.
         return { id: detUuid("treasury", r.id), org_id: DATA.orgId(), local_id: r.id,
           name: r.name, type: r.type || "cash", account_no: r.accountNo || "",
-          opening_balance: r.openingBalance || 0, balance: r.balance || 0,
+          balance: r.balance || 0,
           is_active: r.isActive !== false };
       },
       fromCloud: function (r) {
@@ -1043,8 +1048,43 @@
       }).catch(function () { return null; });
   }
 
+  // 🛡 بناء 119: الرصيد الافتتاحي للخزينة — كتابة مباشرة لسطره هو فقط، ثم قراءة للتأكيد.
+  // ليه دالة مستقلة؟ لأن الرفع الجماعي (syncOne) بيبعت الجدول كامل من لقطة الجهاز،
+  // فأي جهاز تاني لسه ماسك رقم قديم كان بيرجع يكتبه فوق تعديل المستخدم
+  // (شكوى المالك: يخلي البنك صفر → «تم الحفظ» → يرجع 50,000).
+  // بنستخدم نفس هوية السطر (detUuid + local_id + org_id) عشان upsert يحدّث سطره هو
+  // وما ينشأش سطر تاني، وبعدين بنقري العمود من السحابة نفسها: لو المرجّع غير الرقم
+  // ⇒ ok:false والواجهة ترجّع القيمة القديمة وتقول للمستخدم بصراحة (ممنوع «تم الحفظ» كاذبة).
+  function setTreasuryOpening(row, value) {
+    if (!_online()) return Promise.resolve({ ok: true, skipped: true });
+    if (!row || !DATA.orgId()) return Promise.resolve({ ok: false, error: "لا يوجد حساب متصل بالسحابة" });
+    var amt = Math.round((Number(value) || 0) * 100) / 100;
+    var payload = META.treasury.toCloud(row);
+    payload.opening_balance = amt;
+    return Promise.resolve(_sb().from("treasury").upsert([payload], { onConflict: "id" }))
+      .then(function (u) {
+        if (u && u.error) return { ok: false, error: (u.error.message || String(u.error)) };
+        return Promise.resolve(_sb().from("treasury")
+          .select("local_id, opening_balance")
+          .eq("org_id", DATA.orgId()).eq("local_id", Number(row.id)))
+          .then(function (s) {
+            if (s && s.error) return { ok: false, error: (s.error.message || String(s.error)) };
+            var rows = (s && s.data) || [];
+            if (!rows.length) return { ok: false, error: "السحابة ما رجّعتش السطر" };
+            for (var i = 0; i < rows.length; i++) {
+              if (Math.abs(Number(rows[i].opening_balance) - amt) > 0.001) {
+                return { ok: false, error: "السحابة رجّعت " + Number(rows[i].opening_balance) + " بدل " + amt };
+              }
+            }
+            return { ok: true, value: amt };
+          });
+      })
+      .catch(function (e) { return { ok: false, error: (e && e.message) || String(e) }; });
+  }
+
   window.CLOUD = {
     push: push,
+    setTreasuryOpening: setTreasuryOpening,
     loadAll: loadAll,
     detUuid: detUuid,
     bumpInvoiceSeq: bumpInvoiceSeq,

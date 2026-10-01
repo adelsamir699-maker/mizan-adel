@@ -425,6 +425,11 @@ body {
 
 .stmt-table tbody td { padding: 6px; text-align: center; white-space: nowrap; }
 
+/* ===== 🔁 بناء 119: عمود «إجراءات» في كشف الحساب (الشاشة فقط — الورقة 5 أعمدة) ===== */
+.stmt-table th.stm-act, .stmt-table td.stm-act { width: 84px; min-width: 84px; }
+.stmt-table td.stm-act .btn.stm-del-btn { padding: 4px 8px; font-size: 11.5px; margin: 0; }
+.stmt-table .stm-act-locked { opacity: .5; cursor: help; font-size: 13px; }
+
 /* ===== 🆕 شاشة «كشف حساب الحسابات» (من القيود اليومية) ===== */
 .acs-code { flex: 0 1 170px; min-width: 130px; }
 .acs-pick {
@@ -518,6 +523,8 @@ body {
   .app-header, .sidebar, .app-footer, .modal-overlay, .toast { display: none !important; }
   /* توقيع المبرمج/رقمه/رابط الموقع: على الشاشات بس — ممنوع يظهر في أي طباعة */
   .screen-only { display: none !important; }
+  /* 🗑️ عمود «إجراءات» في كشف الحساب: على الشاشة بس — ورق العميل يفضل 5 أعمدة (build 119) */
+  .stm-act { display: none !important; }
   .content { padding: 0; overflow: visible; }
   .print-only { display: none !important; }
   .print-only.print-target { display: block !important; }

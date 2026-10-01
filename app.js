@@ -44,6 +44,10 @@
   // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
   const LS_SRC_ORG = "mizan_src_org";
+  // 🆕 بناء 119: «الملكية» الفعلية للحالة المحلية الحالية — مين كتب اللي في المتصفح ده.
+  // بتتدمغ فقط داخل جلسة سحابية بعد الدمج، فأي حالة مجهولة المصدر (وضع تجريبي،
+  // لقطة ديسك، أو جهاز كان شغال لحساب تاني) تتمسح قبل ما شركة جديدة تسحب بياناتها.
+  const LS_STATE_ORG = "mizan_state_org_v1";
 
   // 🛡 حالة وجود مفاتيح localStorage لحظة بداية الإقلاع (قبل loadData).
   // تُستخدم في loadFromLocalDisk للتمييز بين "origin جديد/كاش اتمسح"
@@ -226,8 +230,94 @@
     planStatus: "تجربة 🧪"
   };
 
-  /* ================== الحالة ================== */
-  let customers = [];
+  /* ================== 🛡 بناء 119: شركة جديدة = بيور ================== */
+  // البيانات التجريبية (seed) للعرض المحلي بدون حساب فقط. قبل أي دخول على شركة سحابية
+  // أي صف مطابق حرفيًا لسطر تجريبي يُشال من الذاكرة والكاش، فلا يظهر للعميل ولا يُرفع
+  // للسحابة (شكوى المالك 01/10: شركة «امين» الجديدة ظهرت فيها «شركة جهينة» و«مؤسسة الخير»).
+  // البيانات الحقيقية اللي أدخلها المستخدم بنفسه ما تتلمسش: المطابقة بكل الأعمدة المميزة،
+  // والعميل/المورد النقدي المحمي (رصيد صفر) يفضل لأنه كيان نظامي مش محتوى تجريبي.
+  const SEED_SIGN_FIELDS = {
+    customers: ["code", "nameAr", "phone", "openingBalance"],
+    suppliers: ["code", "nameAr", "phone", "openingBalance"],
+    products: ["code", "barcode", "nameAr", "purchasePrice", "salePrice"],
+    txs: ["customerId", "date", "desc", "debit", "credit"]
+  };
+  const SEED_ROWS = {
+    customers: seedCustomers, suppliers: seedSuppliers, products: seedProducts, txs: seedTxs
+  };
+  function isSystemCashRow(row) {
+    if (!row) return false;
+    if (row.protected === true) return true;
+    if (String(row.code || "").trim() === "1") return true;
+    return /نقدي|كاش/.test(String(row.nameAr || ""));
+  }
+  function seedSignature(table, row) {
+    const fields = SEED_SIGN_FIELDS[table] || [];
+    return fields.map((f) => {
+      const v = row ? row[f] : null;
+      if (v === null || v === undefined || v === "") return "∅";
+      const n = Number(v);
+      return (typeof v === "number" || (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v.trim())))
+        ? "n:" + (isNaN(n) ? 0 : n)
+        : "s:" + String(v).trim();
+    }).join("|");
+  }
+  function stripSeedRows(table, arr) {
+    const seed = SEED_ROWS[table];
+    if (!Array.isArray(arr) || !seed || !seed.length) return Array.isArray(arr) ? arr : [];
+    const dict = {};
+    seed.forEach((r) => { dict[seedSignature(table, r)] = 1; });
+    return arr.filter((r) => isSystemCashRow(r) || !dict[seedSignature(table, r)]);
+  }
+  // يشيل الأسطر التجريبية من الذاكرة والكاش (بلا أي رفع للسحابة) — يرجع عدد المحذوف
+  function purgeDemoForCloudSession() {
+    const pairs = [["customers", "customers"], ["suppliers", "suppliers"], ["products", "products"], ["txs", "txs"]];
+    const before = { customers: customers, suppliers: suppliers, products: products, txs: txs };
+    customers = stripSeedRows("customers", customers);
+    suppliers = stripSeedRows("suppliers", suppliers);
+    products = stripSeedRows("products", products);
+    txs = stripSeedRows("txs", txs);
+    const keys = { customers: LS_CUSTOMERS, suppliers: LS_SUPPLIERS, products: LS_PRODUCTS, txs: LS_TXS };
+    let removed = 0;
+    A.cleaning = true;   // منع أي رفع أثناء التنظيف (pushTable بيرجع أول حاجة)
+    try {
+      pairs.forEach(([name]) => {
+        const arr = name === "customers" ? customers : name === "suppliers" ? suppliers : name === "products" ? products : txs;
+        removed += Math.max(0, before[name].length - arr.length);
+        try { localStorage.setItem(keys[name], JSON.stringify(arr)); } catch (e) { }
+      });
+      mirror();
+    } finally { A.cleaning = false; }
+    return removed;
+  }
+
+  // مين كتب الحالة المحلية في المتصفح ده؟ (null = مجهولة/تجريبية)
+  function localStateOrg() { try { return localStorage.getItem(LS_STATE_ORG); } catch (e) { return null; } }
+  function stampStateOrg(org) { try { localStorage.setItem(LS_STATE_ORG, org || ""); } catch (e) { } }
+
+  // 🛡 بناء 119: الصفر الحقيقي لشركة جديدة — نمسح كل الجداول من الذاكرة والكاش
+  // (بلا أي رفع للسحابة: A.cleaning بيطفّئ pushTable) قبل سحب بيانات الشركة.
+  // ده الحل الجذري مش حارس تطابق: السطور اللي مش تبع الشركة — لا تجريبية ولا
+  // بتاعت حساب تاني ولا لقطة ديسك — مابقاش لها وجود وقت الدمج، فـ adoptCloud
+  // ما يلاقيش «سطور محلية زيادة» يرفعها للشركة الجديدة.
+  function wipeLocalTables() {
+    A.cleaning = true;
+    try {
+      LS_ALL_KEYS.forEach((k) => { try { localStorage.removeItem(k); } catch (e) { } });
+      customers = []; txs = []; products = []; activity = []; sales = [];
+      treasury = []; suppliers = []; supplierTxs = []; purchases = [];
+      accounts = []; journalEntries = []; users = []; vouchers = [];
+      saleReturns = []; purchaseReturns = []; employees = []; attendance = [];
+      attSettings = defaultAttSettings(); fixedAssets = [];
+      openingBaseline = null;
+      // خريطة معرّفات السحابة بتاعت الشركة السابقة لو فضلت ممكن تُنسب سطر جديد
+      // لـ uuid قديم من شركة تانية — تفضى معاهم.
+      if (window.MIZAN_STATE) window.MIZAN_STATE.idMap = {};
+      mirror();
+    } finally { A.cleaning = false; }
+  }
+
+  /* ================== الحالة ================== */  let customers = [];
   let txs = [];
   let products = [];
   let activity = [];
@@ -362,12 +452,19 @@
       if (!src) return;
       const list = tr.type === "bank" ? src.banks : tr.type === "wallet" ? src.wallets : null;
       if (Array.isArray(list)) {
-        const item = list.find((x) => {
+        // 🆕 بناء 119: الهوية أولًا (local_id) — المطابقة بالاسم احتياطية للقديم بس
+        const byId = Number(tr.id) > 0 ? list.find((x) => Number(x.local_id) === Number(tr.id)) : null;
+        const item = byId || list.find((x) => {
           const xn = norm(x.name);
           return xn === trName || (x.account_no && tr.accountNo && norm(x.account_no) === norm(tr.accountNo)) || (xn && trName && (xn.includes(trName) || trName.includes(xn)));
         });
         if (item) {
           item.balance = tr.balance;
+          // 🛡 بناء 119: الرصيد الافتتاحي كمان. كان الجاري بس هو اللي بيتمرّ، فسطر
+          // «إعدادات مؤسستك» يفضل ماسك 50,000 و syncTreasuryFromSett (الضبط هو المرجع
+          // للافتتاحي) كان بيرجع يكتبه فوق الرقم اللي المستخدم صيّره صفر — ده جذر
+          // الشكوى: «خليت رصيد البنك صفر وحفظت، لما رجعت لقيته 50,000».
+          if (tr.openingBalance != null) item.opening_balance = Math.round((Number(tr.openingBalance) || 0) * 100) / 100;
         }
       }
     });
@@ -513,6 +610,9 @@
           attSettings,
           fixedAssets,
           settings,
+          // 🛡 بناء 119: اللقطة المحلية ملك شركة واحدة — بدون ختم الأصل كان ملف
+          // الديسك (مش متقسّم على الشركات) يرجّع أرصدة شركة قديمة لشركة جديدة.
+          orgId: (DATA && DATA.org && DATA.org() ? DATA.org().id : null),
           savedAt: new Date().toISOString()
         };
         fetch("/api/save", {
@@ -531,6 +631,15 @@
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (!data) return;
+          // 🛡 بناء 119: الجلسة السحابية شغالة ⇒ السحابة هي المرجع، ولقطة الديسك
+          // القديمة ما ترجّعش رصيدًا عدّله المستخدم فعلًا (شكوى: الرصيد الافتتاحي
+          // صفر → يرجع 50,000). كمان اللقطة لازم تكون لنفس الشركة.
+          if (A.online) return;
+          const nowOrg = (DATA && DATA.org && DATA.org() ? DATA.org().id : null);
+          if (data.orgId && nowOrg && String(data.orgId) !== String(nowOrg)) {
+            console.log("mizan: لقطة الديسك لشركة تانية — تتجاهل (بناء 119)");
+            return;
+          }
           // 🛡 الاسترجاع من ملف الديسك (مخزن مستقل عن المتصفح/الـ origin):
           // نُحمّل الجدول من الديسك فقط لو الحالة الحالية في الذاكرة فاضية
           // أو لسه بيانات تجريبية (seed) — عشان ما ندهسش بيانات حقيقية أحدث.
@@ -649,7 +758,7 @@
       setSubInfo(acc);
       setDbStatus("🟢 متصل بالسحابة");
       if (!acc) return;
-      if (!acc.allowed) {
+      if (!accessGranted(acc)) {
         showDeny(acc);
       } else if (!$("#denyScreen").hidden) {
         // كان العميل على شاشة "لا يمكنك الدخول" وأصبح الاشتراك مفعّلًا → ندخله فورًا
@@ -681,6 +790,9 @@
     stopPresence();
     if (!isPresenceEligible()) return;
     presenceTimer = setInterval(() => {
+      // 🆕 بناء 119: الشركة تتقفل أو اشتراكها ينتهي ⇒ النبض يقطع في نفس اللحظة،
+      // فبطاقة «متصلون الآن» ما تضلش خضرا على حساب شركة مامشيهاش.
+      if (!isPresenceEligible()) { stopPresence(); return; }
       DATA.presenceHeartbeat().catch(() => {});
     }, 15000);
     DATA.presenceHeartbeat().catch(() => {});
@@ -691,14 +803,28 @@
       presenceTimer = null;
     }
   }
-  // مؤقت تحديث بطاقة (متصلون الآن) في لوحة الإدارة كل 15 ثانية
+  // 🆕 بناء 119: لوحة الإدارة بتتحدث كل 5 ثوانٍ — البطاقات + جدول الشركات + بطاقة المتصلين.
+  // كان 15 ثانية بيحدّث البطاقة وحدها، فجدول الشركات كان بيفضل «🟢 متصل الآن» بعد ما
+  // المستخدم يقفل البرنامج (شكوى المالك: «التحديث مش لحظي»). نافذة «متصل» على السحابة
+  // نفسها 110 ثانية (ترحيل ٢٢) ⇒ الشركة المقفولة بتتحول للأحمر خلال دقيقتين على الأكثر.
   let presenceViewTimer = null;
   function startPresenceView() {
     stopPresenceView();
     presenceViewTimer = setInterval(() => {
       const av = document.getElementById("viewAdmin");
-      if (av && !av.hidden) refreshPresenceCard();
-    }, 15000);
+      if (!av || av.hidden) return;
+      refreshAdminLive();
+    }, 5000);
+  }
+  // جلب جديد للشركات ورسمه مكان القديم (صناديق البحث بره الجدول، فالكتابة ما تتكسرش)
+  function refreshAdminLive() {
+    if (!DATA || !DATA.adminOrgs) return;
+    DATA.adminOrgs().then((orgs) => {
+      const list = orgs || [];
+      renderAdminStats(list);        // بتنادي refreshPresenceCard جوه
+      try { renderAdminAlerts(list); } catch (e) {}
+      paintAdminOrgTable(list);
+    }).catch(() => {});
   }
   function stopPresenceView() {
     if (presenceViewTimer !== null) {
@@ -1274,6 +1400,16 @@
     return !!(r && r.is_superadmin);
   }
 
+  // 🔓 قرار المالك النهائي (build 119): حساب عادل = المالك — كل الصلاحيات دائمًا،
+  // ومفيش أي شاشة أو تبويب يقفل عليه بسبب قفل الشركة أو انتهاء الاشتراك أو قائمة المزايا.
+  // دي بوابة الواجهة فقط: عزل البيانات على السحابة (RLS/current_org) ما اتغيرش.
+  function ownerHasAllAccess() { return isSuperAcct(); }
+
+  // هل الوصول مُسمح بهيكلة الواجهة؟ المالك استثناء ثابت من القفل/الانتهاء.
+  function accessGranted(acc) {
+    return !!(acc && (acc.allowed || acc.is_superadmin));
+  }
+
   // 🔑 زر تغيير الرقم السري في الشريط العلوي — لصاحب الشركة والسوبر أدمن
   function enforceChangePwBtn() {
     var btn = document.getElementById("btnChangePw");
@@ -1292,6 +1428,8 @@
   // المالك العام وصاحب الشركة مسموح لهما دائمًا لأن البيانات شركتهما.
   function canUseView(name) {
     var DE = window.DATA || {};
+    // 🔓 المالك (عادل) يفتح أي شاشة بلا استثناء — قرار المالك build 119
+    if (ownerHasAllAccess()) return true;
     if (name === "clientSettings") {
       if (isSuperAcct() || isCompanyOwnerAcct()) return true;
       if (!DE.featureFlag) return true; // احتياطي: لو الدالة غير موجودة نسمح
@@ -1338,14 +1476,51 @@
     return DE.featureFlag("attendanceEdit") === true;
   }
 
+  // 🔓 «الضبط الخاص بيا» + «💾 النسخ الاحتياطي»: يظهران لحساب المالك دائمًا وأبدًا.
+  // بتتردّد بعد كل بوابة/تبويب/دخول، فمافيش مسار يخفيهم تاني (طلب المالك 2026-10-01).
+  // الحسابات التانية: التبويب مش بس مخفي — متشال من الـ DOM (سياسة build 94).
+  function enforceOwnerSettings() {
+    const isOwner = ownerHasAllAccess() || !!window.__isOwner;
+    const sb = document.querySelector(".sidebar");
+    const nav = document.querySelector('.nav-btn[data-view="settings"]');
+    if (nav && sb) {
+      if (isOwner) {
+        nav.hidden = false;
+        if (!nav.parentNode) sb.appendChild(nav);
+      } else if (nav.parentNode) {
+        nav.parentNode.removeChild(nav);
+      }
+    }
+    // زرار لوحة الإدارة + تبويب النسخ الاحتياطي جوه الضبط
+    const ba = document.getElementById("btnAdmin");
+    if (ba) ba.hidden = !isOwner;
+    const bkTab = document.querySelector('#setTabs .tab-btn[data-tab="sbak"]');
+    if (bkTab) bkTab.hidden = false;
+    const bkPane = document.querySelector('#viewSettings .sett-pane[data-pane="sbak"]');
+    if (bkPane && !bkPane.parentNode && bkTab && bkTab.parentNode && bkTab.parentNode.parentNode) {
+      // لو اتشال بالغلط من الشجرة يرجّع آخر تبويب في الشريط
+      bkTab.parentNode.parentNode.appendChild(bkPane);
+    }
+    ["btnBackupAll", "btnBackupAll2"].forEach((id) => {
+      const b = document.getElementById(id);
+      if (b) b.hidden = !isOwner;
+    });
+    return isOwner;
+  }
+
   // إخفاء أزرار الشاشات غير المفعّلة في اشتراك الشركة الحالية
   function applyFeatureGating() {
+    enforceOwnerSettings();
     var fe = window.DATA && window.DATA.featureEnabled;
     if (!fe) return;
     document.querySelectorAll(".nav-btn").forEach((b) => {
       const n = b.dataset.view;
       b.hidden = !canUseView(n);
     });
+    // 🔓 حصانة أخيرة: ضبط المالك مانلغيش عنه بـ featureEnabled مهما حصل
+    const own = ownerHasAllAccess();
+    const svO = document.querySelector('.nav-btn[data-view="settings"]');
+    if (svO && own) svO.hidden = false;
     // لو الشاشة الحالية أصبحت معطّلة → عد للوحة
     const cur = document.querySelector(".view:not([hidden])");
     if (cur && !canUseView(cur.dataset.id)) showView("dashboard");
@@ -1354,7 +1529,7 @@
   function showView(name) {
     // حماية: تبويب «إعدادات ونسخ احتياطي المالك» للمالك (سوبر أدمن) وحده.
     // أي حساب تاني — حتى لو حاول فتحه برمجيًا — يتحوّل لـ«إعدادات مؤسستك».
-    const isOwner = !!window.__isOwner;
+    const isOwner = ownerHasAllAccess() || !!window.__isOwner;
     if (name === "settings" && !isOwner) {
       name = "clientSettings";
       toast("هذا القسم للمالك فقط", "error");
@@ -1437,7 +1612,9 @@
     if (name === "audit") renderAudit();
     if (name === "settings") loadSettingsForm();
     if (name === "clientSettings") loadClientSettingsForm();
-    if (name === "admin") { if (window.refreshPresenceCard) { startPresenceView(); refreshPresenceCard(); } }
+    // 🆕 بناء 119: كان الشرط بيقرأ window.refreshPresenceCard (محدّتش معروفة) ⇒ السطر
+    // ده كان ما ينفّذش حاجة. الدالتين في نفس النطاق، فنناديهم على طول.
+    if (name === "admin") { startPresenceView(); refreshPresenceCard(); }
     if (name !== "admin") stopPresenceView();
   }
 
@@ -1805,7 +1982,11 @@
         desc: t.desc,
         debit: t.debit,
         credit: t.credit,
-        balance: run
+        balance: run,
+        // 🔁 بناء 119: السطر التوضيحي (مرتجع) ملوش id ومانحذفوش من هنا
+        id: t.id == null ? null : t.id,
+        paymentMethod: t.paymentMethod || "",
+        treasuryId: t.treasuryId == null ? null : t.treasuryId
       };
     });
   }
@@ -1865,10 +2046,24 @@
     return stmVisibleRows(all);
   }
 
-  function renderStmRows(tbodyEl, rows, emptyMsg) {
+  // 🔁 بناء 119 (طلب المالك): عمود «إجراءات» اختياري — يظهر على الشاشة بس.
+  // الطباعة (fillStatementTable) بتنادي من غير actKind ⇒ الورقة بتفضل 5 أعمدة بالحرف.
+  function actKindForStm() {
+    if (!statementCtx) return "";
+    if (!isSuperAcct() && !isCompanyOwnerAcct()) return ""; // نفس بوابة حذف الفاتورة
+    return statementCtx.type === "supplier" ? "supplier" : "customer";
+  }
+  function stmRowDeletable(r) { return !!(r && r.id != null && r.paymentMethod); }
+  function stmRowWhyLocked(r) {
+    if (!r || r.id == null) return "سطر توضيحي لمرتجع — بيتشال من شاشة المرتجعات.";
+    if (/رصيد افتتاحي/.test(String(r.desc || ""))) return "الرصيد الافتتاحي بيتعدّل من بطاقة العميل/المورد نفسه، مش بيتم حذفه من الكشف.";
+    return "دي حركة جاية من فاتورة — تتحذف من زر 🗑️ في الفاتورة نفسها علشان المخزون والقيود تتراجع صح.";
+  }
+  function renderStmRows(tbodyEl, rows, emptyMsg, actKind) {
     tbodyEl.innerHTML = "";
+    const cols = actKind ? 6 : 5;
     if (!rows.length) {
-      tbodyEl.innerHTML = '<tr><td colspan="5">' + emptyMsg + '</td></tr>';
+      tbodyEl.innerHTML = '<tr><td colspan="' + cols + '">' + emptyMsg + '</td></tr>';
       return;
     }
     rows.forEach((r) => {
@@ -1879,9 +2074,82 @@
         '<td>' + (r.debit ? fmt(r.debit) : "-") + '</td>' +
         '<td>' + (r.credit ? fmt(r.credit) : "-") + '</td>' +
         '<td class="' + (r.balance > 0 ? "balance-debit" : "balance-credit") + '">' + fmt(r.balance) + '</td>';
+      if (actKind) {
+        const td = document.createElement("td");
+        td.className = "stm-act";
+        if (stmRowDeletable(r)) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "btn small red stm-del-btn";
+          b.textContent = "🗑️ حذف";
+          b.title = "حذف حركة " + (actKind === "supplier" ? "الدفع للمورد" : "السداد من العميل") +
+            " («" + (r.paymentMethod || "") + "» " + fmt(Math.max(r.debit, r.credit)) + " ج.م) — ترجّع المبلغ للخزينة/الحساب.";
+          b.addEventListener("click", () => window.__stmDelTx(actKind, r.id));
+          td.appendChild(b);
+        } else {
+          const s = document.createElement("span");
+          s.className = "stm-act-locked";
+          s.title = stmRowWhyLocked(r);
+          s.textContent = "🔒";
+          td.appendChild(s);
+        }
+        tr.appendChild(td);
+      }
       tbodyEl.appendChild(tr);
     });
   }
+
+  // 🔁 بناء 119: حذف حركة سداد/دفع نقدية من كشف الحساب — مع سندها المرتبط،
+  // وإعادة حساب أرصدة العميل/المورد والخزائن، وبعدها حفظ ورفع للسحابة.
+  window.__stmDelTx = function (kind, txId) {
+    if (!isSuperAcct() && !isCompanyOwnerAcct()) {
+      toast("حذف حركات العملاء والموردين لصاحب الشركة والمالك فقط.", "error");
+      return;
+    }
+    const isSup = kind === "supplier";
+    const pool = isSup ? supplierTxs : txs;
+    const idx = pool.findIndex((t) => Number(t.id) === Number(txId));
+    if (idx < 0) { toast("الحركة مش موجودة — حدّث الصفحة.", "warning"); return; }
+    const tx = pool[idx];
+    if (!stmRowDeletable(tx)) { toast(stmRowWhyLocked(tx), "warning"); return; }
+    const party = isSup
+      ? suppliers.find((s) => Number(s.id) === Number(tx.supplierId))
+      : customers.find((c) => Number(c.id) === Number(tx.customerId));
+    const partyName = party ? party.nameAr : (isSup ? "المورد" : "العميل");
+    const accName = (() => {
+      const tr = treasury.find((x) => Number(x.id) === Number(tx.treasuryId));
+      return tr ? tr.name : null;
+    })();
+    const amount = Math.max(Number(tx.debit) || 0, Number(tx.credit) || 0);
+    const msg = "تحذف حركة «" + (tx.desc || (isSup ? "دفع نقدي للمورد" : "سداد نقدي من العميل")) + "»؟\n\n" +
+      "الحساب: " + partyName + "\nالمبلغ: " + fmt(amount) + " ج.م" + (accName ? ("\nالحساب: " + accName) : "") +
+      "\nالتاريخ: " + (tx.date || "") +
+      "\n\nالمبلغ هيرجع لرصيد «" + (accName || "الحساب") + "»، والسند المرتبط بيتحذف معاه.";
+    if (!confirm(msg)) return;
+    // السند المرتبط بنفس الحركة (customer_tx / supplier_tx)
+    const vBefore = vouchers.length;
+    vouchers = vouchers.filter((v) => !(v.refType === (isSup ? "supplier_tx" : "customer_tx") && Number(v.refId) === Number(tx.id)));
+    pool.splice(idx, 1);
+    if (isSup) {
+      recalculateSupplierBalances();
+      addActivity("حذف حركة مورد", "حذف حركة " + tx.desc + " — " + fmt(amount) + " ج.م (" + partyName + ")");
+    } else {
+      recalculateCustomerBalances();
+      addActivity("حذف حركة عميل", "حذف حركة " + tx.desc + " — " + fmt(amount) + " ج.م (" + partyName + ")");
+    }
+    recalculateTreasuryBalances();
+    // حفظ (الحفظ هو اللي بيرفع للسحابة)
+    if (isSup) { saveSupplierTxs(); saveVouchers(); saveSuppliers(); }
+    else { saveTxs(); saveVouchers(); saveCustomers(); }
+    saveTreasury();
+    toast("تم حذف الحركة — " + fmt(amount) + " ج.م رجع لـ«" + (accName || "الحساب") + "»." +
+      (vBefore !== vouchers.length ? " والسند المرتبط اتشال معاه." : ""), "success");
+    // تحديث الشاشات المفتوحة
+    try { if (statementCtx) refreshStatementView(); } catch (e) { }
+    try { if (isSup) renderSuppliers(); else renderTable(); } catch (e) { }
+    try { renderTreasury(); } catch (e) { }
+    try { renderDashboard(); } catch (e) { }
+  };
 
   function refreshStatementView() {
     if (!statementCtx) return;
@@ -1890,7 +2158,12 @@
       "الكود: <b>" + esc(o.code) + "</b> | الفترة: <b>" + stmPeriodLabel() + "</b> | " +
       "الرصيد الحالي: <b class=\"" + (o.currentBalance > 0 ? "balance-debit" : "balance-credit") + "\">" + fmt(o.currentBalance) + " ج.م</b>";
     const rows = stmRowsNow();
-    renderStmRows($("#stmBodyMini"), rows, "لا توجد حركات على هذا الحساب في هذه الفترة.");
+    // 🔁 بناء 119: عمود الإجراءات على الشاشة فقط (المالك/صاحب الشركة)، والورقة 5 أعمدة
+    const canAct = !!actKindForStm();
+    renderStmRows($("#stmBodyMini"), rows, "لا توجد حركات على هذا الحساب في هذه الفترة.", canAct);
+    const th = document.querySelector("#stmBodyMini") &&
+      document.querySelector("#stmBodyMini").closest("table").querySelector("thead th.stm-act");
+    if (th) th.hidden = !canAct;
     const moves = rows.filter((r) => String(r.desc).indexOf("رصيد مرحّل") === -1).length;
     $("#stmPeriodInfo").textContent = (!stmFilter.from && !stmFilter.to)
       ? (moves + " حركة")
@@ -3682,7 +3955,10 @@
     let run = (parseFloat(sup.openingBalance) || 0);
     return rows.map((t) => {
       run = Math.round((run + t.debit - t.credit) * 100) / 100;
-      return { date: t.date, desc: t.desc, debit: t.debit, credit: t.credit, balance: run };
+      // 🔁 بناء 119: نفس كشف العميل — id + وسيلة الدفع عشان سطر «الدفع النقدي» يتحذف
+      return { date: t.date, desc: t.desc, debit: t.debit, credit: t.credit, balance: run,
+        id: t.id == null ? null : t.id, paymentMethod: t.paymentMethod || "",
+        treasuryId: t.treasuryId == null ? null : t.treasuryId };
     });
   }
 
@@ -4680,12 +4956,20 @@
           if (prev.type !== type) { prev.type = type; changed = true; }
           const liveBal = prev.balance != null ? Number(prev.balance) : (row.balance != null ? Number(row.balance) : Number(row.opening_balance || 0));
           row.balance = liveBal;
+          // 🛡 بناء 119: الافتتاحي صفر = قيمة مقصودة، مش «ناقص». القديم كان
+          // `row.opening_balance || prev.openingBalance || 0` ⇒ الصفر كان بيقع
+          // ويرجع الرقم القديم اللي في الضبط (50,000). دلوقتي الصفر بيتحترم،
+          // ولو سطر الضبط مالوش افتتاحي أصلًا بنثبّت فيه رقم الخزينة الحالي.
+          const settOp = (row.opening_balance != null && isFinite(Number(row.opening_balance))) ? Number(row.opening_balance) : null;
+          const prevOp = (prev.openingBalance != null && isFinite(Number(prev.openingBalance))) ? Number(prev.openingBalance) : null;
+          const openFinal = settOp != null ? settOp : (prevOp != null ? prevOp : 0);
+          if (Number(row.opening_balance) !== openFinal) { row.opening_balance = openFinal; changed = true; }
           built.push({
             id: prev.id,
             name: name,
             type: type,
             accountNo: (row.account_no || "").trim(),
-            openingBalance: Number(row.opening_balance || (prev.openingBalance != null ? prev.openingBalance : 0) || 0),
+            openingBalance: openFinal,
             balance: liveBal,
             isActive: row.is_active !== false
           });
@@ -4777,6 +5061,73 @@
     $("#tName").focus();
   }
 
+  // 🛡 بناء 119: جزّة «إعدادات مؤسستك» (بنوك/محافظ) مع نفس رقم الخزينة.
+  // الضبط هو المصدر اللي بيبني منه جدول الخزينة (syncTreasuryFromSett)، فلو ضلّ
+  // فيه رقم قديم كان بيرجع يكتبه فوق الرصيد اللي المستخدم عدّله.
+  function saveSettMirrorForTreasury(t) {
+    if (!A.online || !csetData || csetData.__online !== true) return Promise.resolve(true);
+    const key = t.type === "bank" ? "banks" : t.type === "wallet" ? "wallets" : null;
+    if (!key || !Array.isArray(csetData[key])) return Promise.resolve(true);
+    syncTreasuryItemToSett(t);
+    const payload = {}; payload[key] = csetData[key];
+    return DATA.saveClientSett(payload).then(() => true).catch((e) => {
+      toast("تعذّر تحديث «إعدادات مؤسستك»: " + (e.message || e), "warning");
+      return false;
+    });
+  }
+
+  // 🛡 بناء 119: الرصيد الافتتاحي يتكتب على السحابة بسطره هو، ثم يُقري منها للتأكيد.
+  // لو المراجعة ما طابقتش ⇒ نرجّع القيمة القديمة ونصارح المستخدم بالرقم اللي رجعت
+  // به السحابة (ممنوع «تم الحفظ» اللي بتبقى كاذبة).
+  function verifyTreasuryOpening(t, oldOp, newOp) {
+    if (!A.online || !window.CLOUD || !CLOUD.setTreasuryOpening) return;
+    const nm = t.name;
+    CLOUD.setTreasuryOpening(t, newOp).then((res) => {
+      if (res && res.ok) {
+        if (openingBaseline) openingBaseline[Number(t.id)] = newOp;   // المرجع يتثبّت على الرقم الجديد
+        toast("تم حفظ الرصيد الافتتاحي لـ «" + nm + "» = " + fmt(newOp) + " ج.م، وتأكدنا منه على السحابة.", "success");
+        return;
+      }
+      const back = treasury.find((x) => x.id === t.id) || t;
+      back.openingBalance = oldOp;
+      if (openingBaseline) openingBaseline[Number(t.id)] = oldOp;
+      recalculateTreasuryBalances();
+      saveTreasury();
+      syncTreasuryItemToSett(back);
+      renderTreasury();
+      toast("مقدرناش نحفظ الرصيد الافتتاحي على السحابة" + (res && res.error ? " (" + res.error + ")" : "") +
+        " — رجّعناه لـ " + fmt(oldOp) + " ج.م زي ما كان. اتأكد من الاتصال وحاول تاني.", "error");
+    });
+  }
+
+  // 🛡 بناء 119: مواءمة الأرصدة الافتتاحية مع السحابة بعد أي تعديل من تبويب
+  // «إعدادات مؤسستك» (بنوك/محافظ) — بنكتب بس السطور اللي المستخدم غيّرها فعلًا.
+  // ليه مش كل اختلاف؟ لأن الجهاز اللي فتح التبويب من بدري ولسه ماسك رقم قديم
+  // لازم مايرفعوش فوق رقم جهاز تاني. بنقارن بـ«مرجع اللحظة اللي فتح فيها التبويب»
+  // (openingBaseline)، وبنحدّث المرجع بعد كل كتابة ناجحة.
+  let openingBaseline = null;
+  function captureOpeningBaseline() {
+    openingBaseline = {};
+    (treasury || []).forEach((t) => {
+      openingBaseline[Number(t.id)] = Math.round((Number(t.openingBalance) || 0) * 100) / 100;
+    });
+  }
+  function syncOpeningsWithCloud() {
+    if (!A.online || !window.CLOUD || !CLOUD.setTreasuryOpening) return Promise.resolve({ fixed: 0 });
+    if (!DATA || !DATA.client || !DATA.client() || !DATA.orgId()) return Promise.resolve({ fixed: 0 });
+    if (!openingBaseline) { captureOpeningBaseline(); return Promise.resolve({ fixed: 0, first: true }); }
+    const jobs = [];
+    (treasury || []).forEach((t) => {
+      const localOp = Math.round((Number(t.openingBalance) || 0) * 100) / 100;
+      const baseOp = openingBaseline[Number(t.id)];
+      if (baseOp != null && Math.abs(baseOp - localOp) <= 0.001) return;  // ما اتغيّرش ⇒ مافيش كتابة
+      jobs.push(CLOUD.setTreasuryOpening(t, localOp)
+        .then((res) => { if (res && res.ok) openingBaseline[Number(t.id)] = localOp; return res && res.ok ? 1 : 0; }));
+    });
+    if (!jobs.length) return Promise.resolve({ fixed: 0 });
+    return Promise.all(jobs).then((oks) => ({ fixed: oks.reduce((a, b) => a + b, 0) }));
+  }
+
   function saveTreasuryModal() {
     const name = $("#tName").value.trim();
     if (!name) {
@@ -4797,14 +5148,26 @@
       t.accountNo = $("#tAccountNo").value.trim();
       if (opChanged) t.openingBalance = opening;
       saveTreasury();
-      syncTreasuryItemToSett(t);
       // الرصيد الجاري = الافتتاحي + الحركة: أي تغيير في الافتتاحي لازم يعيد الحساب فورًا
       if (opChanged) recalculateTreasuryBalances();
+      syncTreasuryItemToSett(t);
       addActivity("تعديل خزينة", "تعديل بيانات الخزينة: " + name +
         (opChanged ? " — الرصيد الافتتاحي من " + fmt(oldOp) + " إلى " + fmt(opening) + " ج.م" : ""));
-      toast(opChanged
-        ? "تم حفظ التعديلات، والرصيد بقى " + fmt((treasury.find((x) => x.id === treasuryEditingId) || {}).balance) + " ج.م."
-        : "تم حفظ التعديلات بنجاح.", "success");
+      if (opChanged) {
+        // 🛡 بناء 119: الحفظ في تلات أماكن (الخزينة / تبويب الضبط / سطر السحابة)
+        // والمراجعة من السحابة هي اللي بتقول «تم» — مش الكلام قبل ما نتأكد.
+        saveSettMirrorForTreasury(t);
+        if (A.online) {
+          toast("بنحدّث الرصيد الافتتاحي على السحابة…", "info");
+          verifyTreasuryOpening(t, oldOp, opening);
+        } else {
+          toast(opChanged
+            ? "تم حفظ التعديلات، والرصيد بقى " + fmt((treasury.find((x) => x.id === treasuryEditingId) || {}).balance) + " ج.م."
+            : "تم حفظ التعديلات بنجاح.", "success");
+        }
+      } else {
+        toast("تم حفظ التعديلات بنجاح.", "success");
+      }
     } else {
       const t = {
         id: treasury.reduce((m, x) => Math.max(m, x.id), 0) + 1,
@@ -4818,7 +5181,11 @@
       saveTreasury();
       syncTreasuryItemToSett(t);
       addActivity("إضافة خزينة", "إضافة خزينة جديدة: " + name);
-      toast("تمت إضافة الخزينة بنجاح.", "success");
+      // 🛡 بناء 119: الافتتاحي مالوش مكان في الرفع الجماعي ⇒ كتابة مباشرة لسطره هو
+      if (A.online && Math.abs(opening) > 0.001) {
+        saveSettMirrorForTreasury(t);
+        verifyTreasuryOpening(t, 0, opening);
+      } else toast("تمت إضافة الخزينة بنجاح.", "success");
     }
     hideModal("mTreasury");
     renderTreasury();
@@ -6765,7 +7132,9 @@
         if (f === "is_active") { rec[f] = document.getElementById("setF_is_active").value === "1"; return; }
         const el = document.getElementById("setF_" + f);
         const v = el ? el.value : "";
-        if (f === "balance" || f === "opening_balance" || f === "capital" || f === "withdrawals") rec[f] = parseFloat(v) || 0;
+        // 🆕 بناء 119: المبالغ في تبويب الضبط كانت بتقري بـ parseFloat مباشرة ⇒
+        // «50,000.00» بتبقى 50 (نفس عائلة خطأ بناء 118). parseMoney بتتنى الفواصل.
+        if (f === "balance" || f === "opening_balance" || f === "capital" || f === "withdrawals") rec[f] = parseMoney(v);
         else rec[f] = v;
       });
       if (root.__idx >= 0) list[root.__idx] = rec; else list.push(rec);
@@ -6919,6 +7288,8 @@
         applySettFeatureGatingClient();
         // 🆕 ترحيل ٣٤: نصلّح الهويات وننقّي التكرار قبل الرسم، عشان العميل يشوف حسابه مرة واحدة
         syncTreasuryFromSett();
+        // 🛡 بناء 119: المرجع اللي بنقارن بيه بعد كده = اللي ظهر قدام المستخدم الآن
+        try { captureOpeningBaseline(); } catch (e) {}
         renderAllSettPanes("c");
         renderCItems(); // 🆕 بناء 115: بنود المصروفات والإيرادات (من دليل الحسابات مش من payload الضبط)
       }).catch((e) => toast("تعذّر تحميل إعدادات مؤسستك: " + (e.message || e), "error"));
@@ -7010,6 +7381,11 @@
           csetData.__online = true;
         }
         syncTreasuryFromSett();
+        // 🛡 بناء 119: الرصيد الافتتاحي اللي كتبه في التبويب يمشي للسحابة بسطره هو
+        // (بعد ما يشال من الرفع الجماعي) — بس للسطور اللي غيّرها فعلًا.
+        if (prefix === "c" && (type === "bank" || type === "wallet")) {
+          try { syncOpeningsWithCloud(); } catch (e) {}
+        }
         syncOpenListsAfterSett();
         renderAllSettPanes(prefix);
         if (!document.getElementById("viewTreasury").hidden) renderTreasury();
@@ -7613,11 +7989,23 @@
         toast("لا يمكن حذف العميل النقدي (كاش) - محمي بالنظام.", "warning");
         return;
       }
-      if (txs.some((t) => t.customerId === cust.id && t.credit > 0)) {
-        toast("لا يمكن حذف العميل لوجود حركات على حسابه.", "warning");
+      // 🟢 قرار المالك (build 119): الحذف بـ «الرصيد» مش بـ «الحركة».
+      // العميل اللي رصيده صفر يتحذف حتى لو عليه فواتير وتحصيلات — لأن الاتفاق
+      // «صفر = يتحذف»، والرسالة القديمة («لوجود حركات على حسابه») كانت ترفض
+      // عميل سدد آخر مليم وقفله. الحركات والفواتير المستندية بتفضل محفوظة.
+      const bal = Math.round((parseFloat(cust.currentBalance) || 0) * 100) / 100;
+      if (Math.abs(bal) > 0.005) {
+        toast("رصيد العميل «" + cust.nameAr + "» دلوقتي " + fmt(bal) +
+          " ج.م — خلّص المديونية أو عدّل الحركة الأولى، وبعدين تحذفه. (الحذف برصيد صفر)", "warning");
         return;
       }
-      if (confirm("هل أنت متأكد من حذف العميل (" + cust.nameAr + ")؟")) {
+      const txCount = txs.filter((t) => Number(t.customerId) === Number(cust.id)).length;
+      const invCount = sales.filter((s) => String(s.customerName || "").trim() === String(cust.nameAr || "").trim()).length;
+      const extra = (txCount || invCount)
+        ? "\n\nحركاته: " + txCount + " حركة | فواتير باسمه: " + invCount +
+          "\nكلهم هيفضلوا محفوظات في السجلات وفي كشف الخزينة — اللي هيتم حذفه اسم العميل بس."
+        : "";
+      if (confirm("هل تحذف العميل «" + cust.nameAr + "» (رصيد صفر)؟" + extra)) {
         customers = customers.filter((c) => c.id !== cust.id);
         saveCustomers();
         // تقاعد الرقم: لا يُعاد استخدامه لعميل آخر (عشان مستندات Clients\<num>) + الملفات لا تُمس
@@ -7807,11 +8195,22 @@
         toast("لا يمكن حذف المورد النقدي (كاش) - محمي بالنظام.", "warning");
         return;
       }
-      if (supplierTxs.some((t) => t.supplierId === s.id)) {
-        toast("لا يمكن حذف المورد لوجود حركات على حسابه.", "warning");
+      // 🟢 قرار المالك (build 119): المورد كمان الحذف بـ «الرصيد» مش بـ «الحركة» —
+      // سددت المديونية وصار الرصيد صفر ⇒ يتحذف. الرفض القديم كان «لأي حركة»
+      // فكل مورد سابق محليًا حتى لو حسابه تسدّد بالكامل.
+      const sBal = Math.round((parseFloat(s.currentBalance) || 0) * 100) / 100;
+      if (Math.abs(sBal) > 0.005) {
+        toast("رصيد المورد «" + s.nameAr + "» دلوقتي " + fmt(sBal) +
+          " ج.م — سدّد المتبقي أو عدّل الحركة، وبعدين تحذفه. (الحذف برصيد صفر)", "warning");
         return;
       }
-      if (confirm("هل أنت متأكد من حذف المورد (" + s.nameAr + ")؟")) {
+      const sTx = supplierTxs.filter((t) => Number(t.supplierId) === Number(s.id)).length;
+      const sPur = purchases.filter((p) => String(p.supplierName || "").trim() === String(s.nameAr || "").trim()).length;
+      const sExtra = (sTx || sPur)
+        ? "\n\nحركاته: " + sTx + " حركة | فواتير شراء باسمه: " + sPur +
+          "\nكلهم هيفضلوا محفوظات في السجلات وفي كشف الخزينة — اللي هيتم حذفه اسم المورد بس."
+        : "";
+      if (confirm("هل تحذف المورد «" + s.nameAr + "» (رصيد صفر)؟" + sExtra)) {
         suppliers = suppliers.filter((x) => x.id !== s.id);
         saveSuppliers();
         retireLocal("supplier", s.code);
@@ -8245,7 +8644,7 @@ const pwEye = document.getElementById("btnShowPass");
           // بوابة الانتهاء (بناء ١١٠): صاحب الشركة المنتهي ما يشوفش شاشة حساباته
           setAuthMsg(m, "جارٍ التحقق من الصلاحية...", "");
           DATA.requestAccess().then((acc) => {
-            if (!(acc && acc.allowed)) { showDeny(acc); return; }
+            if (!accessGranted(acc)) { showDeny(acc); return; }
             hideLoginExpiry();
             setAuthMsg(m, "", "");
             showMembersScreen();
@@ -8349,6 +8748,9 @@ const pwEye = document.getElementById("btnShowPass");
     lastOrgMembers = null;
     // خريطة معرّفات السحابة تخص الشركة السابقة → نفضيها
     if (window.MIZAN_STATE) window.MIZAN_STATE.idMap = {};
+    // 🔑 build 119: الحالة المحلية بقت «غير مختومة» = مجهولة الملكية ⇒ الدخول
+    // الجاي يمسحها قبل أي رفع (مافيش بقايا الحساب ده تنسب لحساب تاني)
+    try { localStorage.removeItem(LS_STATE_ORG); } catch (e) { }
     // 🛡 نرجّع الجداول لحالة تجريبية نظيفة (مفيش بقايا بيانات شركة في الذاكرة)
     // مع منع أي رفع للسحابة أثناء التنظيف
     A.cleaning = true;
@@ -8358,43 +8760,41 @@ const pwEye = document.getElementById("btnShowPass");
     document.querySelectorAll(".view").forEach((v) => { v.hidden = true; });
   }
 
-  // 🛡 عزل الشركات: لو البيانات المحلية كتبها حساب من شركة أخرى معروفة
-  // (علامة أصل موجودة ومختلفة) → نمسحها ونرجع لحالة جهاز جديد.
-  // أول دخول (بلا علامة أصل) لا يمسح شيئًا — انظر guardOrgSwitch بالأسفل.
+  // 🛡 عزل الشركات: أي حالة محلية (ذاكرة + localStorage) مش مختومة بالشركة اللي
+  // بنفتحها دلوقتي = حالة من حساب/شركة تانية ⇒ تُمسح قبل أي رفع للسحابة.
+  // build 119: «ختم ملكية الحالة» (LS_STATE_ORG) هو الحكم — السبب الجذري إن
+  // عملاء/موردين من حساب المالك اترفعوا لشركة «امين» اللي اتعملت فاضية.
+  // البيانات الحقيقية بأمان على السحابة وبتنزل تاني في adoptCloud، فمسح حالة
+  // غير مختومة لا يُفقد أحد شيئًا (وممنوع يرفعه لشركة تانية).
   function guardOrgSwitch() {
     const org = DATA && DATA.org && DATA.org() ? DATA.org().id : null;
     if (!org) return;
     let src = null;
     try { src = localStorage.getItem(LS_SRC_ORG); } catch (e) { }
-    // 🛡 نمسح بيانات المتصفح فقط عند "تبديل شركة حقيقي":
-    // src معروف (مش null) ومختلف عن الشركة الحالية.
-    // أول دخول على هذا المتصفح (src = null) مفيهوش بيانات شركة تانية
-    // لنحمي منها، فالمسح وقتها يدمّر بيانات محلية/كاش (وأي شيء لسه ما
-    // اتزامَنش للسحابة) بلا داعي — وعزل الشركة بيتحقّق أصلًا بتحميل
-    // بيانات السحابة واستبدال الكاش بعدها (adoptCloud + persistLocalFromCloud).
-    if (src && src !== org) {
-      LS_ALL_KEYS.forEach((k) => { try { localStorage.removeItem(k); } catch (e) { } });
-      loadData(); // يعيد البيانات التجريبية زي أي جهاز جديد
-      toast("تم مسح بيانات الحساب السابق من هذا المتصفح", "ok");
+    const owned = localStateOrg();
+    // نمسح لو: الحالة مختومة بشركة تانية، أو بلا ختم أصلًا (بقايا حساب سابق/
+    // لقطة قرص/جهاز جديد) — الختم بيتحط بعد كل دخول ناجح من السحابة.
+    if (owned !== org) {
+      wipeLocalTables();
+      try { localStorage.removeItem(LS_SRC_ORG); } catch (e) { }
+      // الختم الجديد: من لحظة المسح الحالة المحلية في المتصفح ده «تاعة» الشركة
+      // اللي داخلين ليها (فاضية لحد ما السحابة تنزل) — كذا أي نداء تاني
+      // لحارس العزل ما يمسحش بيانات الشركة اللي اتسحبت للتو.
+      stampStateOrg(org);
+      toast(owned ? "تم مسح بيانات الشركة السابقة من هذا المتصفح"
+                  : "بدء نظيف: مفيش أي بيانات شركة تانية على هذا المتصفح", "ok");
     }
     try { localStorage.setItem(LS_SRC_ORG, org); } catch (e) { }
   }
 
   function seedPushFromLocal() {
-    // لو السحابة فاضية والتطبيق لسه فيه بيانات تجريبية محلية → نرفعها للشركة الجديدة
-    const S = window.MIZAN_STATE;
-    const checks = [
-      ["customers", customers], ["suppliers", suppliers], ["products", products],
-      ["treasury", treasury], ["accounts", accounts],
-      ["employees", employees], ["attendance", attendance]
-    ];
-    checks.forEach(([name, arr]) => {
-      if (!arr || !arr.length || (S[name] && S[name].length)) return;
-      // 🛡 مانرفعش بيانات تجريبية إلا بعد التأكد من أن الجدول فاضي فعلًا في القاعدة
-      // (السحاب ممكن يحتوي سطورًا أُنشئت من أداة أخرى بلا local_id والتطبيق ما يقرأهاش)
-      if (!DATA.countRows) { pushTable(name); return; }
-      DATA.countRows(name).then((n) => { if (!n) pushTable(name); }).catch(() => { });
-    });
+    // 🛡 بناء 119: كان بيرفع البيانات التجريبية لأي شركة جديدة على السحابة
+    // («شركة جهينة» و«مؤسسة الخير» ظهوروا في شركة «امين» اللي اتعملت فاضية).
+    // قرار المالك: الشركة الجديدة تبدأ بيور والأرصدة يعملها المستخدم بنفسه،
+    // فممنوع رفع أي seed. الشغل المحلي الحقيقي لسه بيترفع عاديين عن طريق
+    // adoptCloud (السطور اللي مالهاش مثيل على السحابة) — دي مش تجريبية لأنها
+    // اتشالت من الأساس في purgeDemoForCloudSession.
+    return 0;
   }
 
   function proceedOnline(stageEl, stageUser, bypassMembers) {
@@ -8407,7 +8807,7 @@ const pwEye = document.getElementById("btnShowPass");
       // الدخول — مفيش دخول شاشة «حسابات شركتك» قبل ما نتأكد إن الاشتراك ساري.
       stage("جاري التحقق من الصلاحية...");
       DATA.requestAccess().then((acc) => {
-        if (!(acc && acc.allowed)) { showDeny(acc); return; }
+        if (!accessGranted(acc)) { showDeny(acc); return; }
         hideLoginExpiry();
         showMembersScreen();
       }).catch(() => { showDeny(null); });
@@ -8417,15 +8817,20 @@ const pwEye = document.getElementById("btnShowPass");
     A.adopting = true;
     // 🛡 عزل الشركات: مانبقاش ببيانات أي حساب سابق قبل ما نبدأ التحميل
     guardOrgSwitch();
+    // 🛡 بناء 119: شركة جديدة = بيور — تشيل أي سطر تجريبي من الذاكرة والكاش قبل
+    // ما السحابة تُسحب، فـ adoptCloud ما يلاقيش «سطور محلية زيادة» يرفعها للشركة.
+    purgeDemoForCloudSession();
     // 🛡 فحص الصلاحيات الأول: ما نحمّلش أي بيانات من السحابة قبل تأكيد حق الدخول
     stage("جاري التحميل: فحص الصلاحيات...");
     DATA.requestAccess().then((acc) => {
-      if (!(acc && acc.allowed)) { A.adopting = false; showDeny(acc); return; }
+      if (!accessGranted(acc)) { A.adopting = false; showDeny(acc); return; }
       stage("جاري التحميل: سحب بيانات السحابة...");
       return window.CLOUD.loadAll().then(() => {
         const changed = adoptCloud();
         A.adopting = false;
         persistLocalFromCloud();
+        // 🔑 ختم ملكية الحالة: اللي في المتصفح ده دلوقتي = بيانات هذه الشركة بالذات
+        try { stampStateOrg(DATA.org && DATA.org() ? DATA.org().id : null); } catch (e) { }
         seedPushFromLocal();
         // ارفع الجداول اللي فيها سجلات محلية لسه مش في السحابة (عشان ما تضلش معلّقة للأبد)
         if (changed && changed.length) changed.forEach((t) => pushTable(t));
@@ -8455,31 +8860,18 @@ const pwEye = document.getElementById("btnShowPass");
           // هل المالك (سوبر أدمن)؟ → زرار الإدارة + شاشة إعدادات المالك
           const isAdmin = !!(acc && acc.is_superadmin);
           window.__isOwner = isAdmin;
-          $("#btnAdmin").hidden = !isAdmin;
           $("#viewAdmin").hidden = !isAdmin;
           $("#viewSettings").hidden = !isAdmin;
+          // 🔓 قرار المالك (build 119): «الضبط الخاص بيا» + «💾 النسخ الاحتياطي»
+          // يظهرا لحساب عادل فورًا، وممنوع أي مسار تاني يخفيهم أو يشيلهم من الـ DOM.
+          enforceOwnerSettings();
           // 🔑 زر تغيير الرقم السري: لصاحب الشركة (admin) وللسوبر أدمن فقط.
           enforceChangePwBtn();
           // شاشة «إعدادات مؤسستك»: يُفتح فقط لو صاحب الشركة فعّلها لهذا الحساب
           // (أو المالك العام / صاحب الشركة نفسه).
           const csAllowed = canUseView("clientSettings");
           $("#viewClientSettings").hidden = !csAllowed;
-          const svO = document.querySelector('.sidebar .nav-btn[data-view="settings"]');
           const svC = document.querySelector('.sidebar .nav-btn[data-view="clientSettings"]');
-          // تبويب «إعدادات ونسخ احتياطي المالك» للمالك وحده.
-          // بنحذفه من الـ DOM تمامًا (مش hidden بس) عشان ما يظهرش لحد ولا ينكشف بالفحص.
-          // ولو محذوف وكان داخل المالك، بنرجّعه تاني (بعد تبديل الحساب مثلًا).
-          if (svO) {
-            if (isAdmin) {
-              svO.hidden = false;
-              if (!svO.parentNode) {
-                const sb = document.querySelector(".sidebar");
-                if (sb) sb.appendChild(svO);
-              }
-            } else if (svO.parentNode) {
-              svO.parentNode.removeChild(svO);
-            }
-          }
           // «إعدادات مؤسستك» تختفي تمامًا لو صاحب الشركة قفلها لهذا الحساب
           if (svC) {
             if (csAllowed) {
@@ -10131,6 +10523,11 @@ const pwEye = document.getElementById("btnShowPass");
     if (document.getElementById("adminList")) paintAdminOrgTable();
   }
 
+  // 🆕 بناء 119: كاش أعضاء آخر شاشة أعضاء مفتوحة (السوبر أدمن/اليوزر نيم) — عشان
+  // تأكيد الحذف يذكر الحساب بالاسم، واللوحة تتحدث بعد الحذف في مكانها.
+  let adminMembersCache = [];
+  let lastAdminMembersOrg = null;
+
   window.__admMembers = function (orgId) {
     const box = $("#adminDetail");
     $("#adminDetail").hidden = false;
@@ -10139,15 +10536,24 @@ const pwEye = document.getElementById("btnShowPass");
     const cont = $("#adminMembers");
     cont.innerHTML = '<p class="login-sub">جارٍ تحميل الأعضاء...</p>';
     DATA.adminMembers(orgId).then((users) => {
-      if (!users || !users.length) { cont.innerHTML = '<p class="login-sub">لا يوجد أعضاء.</p>'; return; }
-      let h = '<table class="data-table"><thead><tr><th>العضو</th><th>الصلاحية</th><th>الحالة</th><th></th></tr></thead><tbody>';
+      if (!users || !users.length) { adminMembersCache = []; lastAdminMembersOrg = orgId; cont.innerHTML = '<p class="login-sub">لا يوجد أعضاء.</p>'; return; }
+      adminMembersCache = users; lastAdminMembersOrg = orgId;
+      // 🆕 بناء 119: لوحة الأعضاء كانت بالحظر بس ⇒ أضفنا اليوزر نيم وزرار الحذف النهائي
+      // (نفس زرار شاشة بيانات الشركة) عشان المالك يلاقيه من أول مكان.
+      let h = '<table class="data-table"><thead><tr><th>العضو</th><th>يوزر نيم</th><th>الصلاحية</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>';
       const myUid = (DATA.me && DATA.me()) ? DATA.me().id : null;
       users.forEach((u) => {
         const isMe = myUid && u.user_id === myUid;
-        h += "<tr><td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td><td>" + (u.role || "member") + "</td>" +
+        const canDel = !isMe && !u.is_superadmin;
+        h += "<tr><td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
+          "<td><code>" + (u.username || "—") + "</code></td>" +
+          "<td>" + (u.role || "member") + (u.is_superadmin ? " 🔑" : "") + "</td>" +
           "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
-          (isMe ? "<td><span class=\"login-sub\">لا يمكنك حظر نفسك</span></td>"
-            : "<td><button class=\"btn small " + (u.blocked ? "green" : "red") + "\" type=\"button\" onclick=\"window.__admUser('" + u.user_id + "'," + (u.blocked ? "false" : "true") + ")\">" + (u.blocked ? "إلغاء الحظر" : "حظر") + "</button></td>") + "</tr>";
+          "<td style=\"white-space:nowrap\">" +
+          (isMe ? "<span class=\"login-sub\">لا يمكنك حظر نفسك</span>"
+            : "<button class=\"btn small " + (u.blocked ? "green" : "red") + "\" type=\"button\" onclick=\"window.__admUser('" + u.user_id + "'," + (u.blocked ? "false" : "true") + ")\">" + (u.blocked ? "✅ إلغاء الحظر" : "⛔ حظر") + "</button> ") +
+          (canDel ? "<button class=\"btn small red\" type=\"button\" onclick=\"window.__admDelMember('" + u.user_id + "')\">🗑️ حذف الحساب</button>" : "") +
+          "</td></tr>";
       });
       h += "</tbody></table>";
       cont.innerHTML = h;
@@ -10290,6 +10696,7 @@ const pwEye = document.getElementById("btnShowPass");
     if (!box) return;
     box.innerHTML = '<p class="login-sub">جارٍ تحميل الأعضاء...</p>';
     DATA.adminMembers(orgId).then((users) => {
+      adminMembersCache = users || []; lastAdminMembersOrg = orgId;
       if (!users || !users.length) { box.innerHTML = '<p class="login-sub">لا يوجد أعضاء.</p>'; return; }
       const adminUser = users.find((u) => u.role === "admin");
       if (dlg) dlg.__adminId = adminUser ? adminUser.user_id : null;
@@ -10430,11 +10837,17 @@ const pwEye = document.getElementById("btnShowPass");
   // حذف عضو واحد نهائيًا من القاعدة (يتحرر اسمه بعد الحذف ويمكن إعادة استخدامه)
   window.__admDelMember = function (userId) {
     if (!userId) return;
-    if (!confirm("حذف هذا العضو نهائيًا من قاعدة النظام؟\nبعد الحذف يمكنك إضافة حساب جديد بنفس اليوزر نيم أو كلمة المرور.\nلا يمكن التراجع عن هذه العملية.")) return;
+    const u = (adminMembersCache || []).find((x) => x.user_id === userId) || {};
+    const who = (u.username || u.full_name || "هذا الحساب");
+    if (!confirm("حذف حساب «" + who + "» نهائيًا من قاعدة النظام؟\nبعد الحذف يمكنك إضافة حساب جديد بنفس اليوزر نيم أو كلمة المرور.\nلا يمكن التراجع عن هذه العملية.")) return;
     DATA.adminDeleteMember(userId).then(() => {
-      toast("تم حذف العضو نهائيًا", "ok");
+      toast("تم حذف الحساب نهائيًا: " + who, "ok");
       const om = document.getElementById("orgModal");
       if (om && om.__orgId) loadOrgMembers(om.__orgId, "#omMembers", om);
+      // 🆕 بناء 119: لو لوحة الأعضاء تحت جدول الشركات مفتوحة، تتحدّث هي كمان
+      if (lastAdminMembersOrg && !document.getElementById("adminDetail").hidden) {
+        __admMembers(lastAdminMembersOrg);
+      }
       renderAdminOrgs();
     }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
   };
