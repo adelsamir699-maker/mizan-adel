@@ -111,6 +111,31 @@
     try { if (DATA.onSyncError) DATA.onSyncError(what, err); } catch (e) { }
   }
 
+  // 🆕 إصلاح «الوحدة فاضية في الفاتورة»: الوحدة كانت بتضيع لأن جدول products على السحابة
+  // مالوش عمود unit، فـ fromCloud كانت بترجعلها "" ثابت → كل صنف بيفقد وحدته بعد أول
+  // تنزيل، والفواتير الجديدة بتتسجّل بوحدة فاضية. الحلول:
+  //   1) ترحيل ٣ٻ بيضيف العمود، و toCloud بيبعت unit بس لما HAS_PRODUCT_UNIT=true (فحص مرّة).
+  //   2) لحد العمود يتنفّذ: fromCloud بياخد الوحدة من النسخة اللي في الذاكرة (localUnitOf)
+  //      بدل ما يمسيحها — فاللي مسجّله المستخدم على الجهاز ده ما يضيعش.
+  var HAS_PRODUCT_UNIT = false;
+  function localUnitOf(localId) {
+    var list = (typeof W !== "undefined" && W.products) || [];
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].id) === String(localId)) return list[i].unit || "";
+    }
+    return "";
+  }
+  // فحص وجود العمود على السحابة: select لنفس العمود → لو مرجّعش خطأ = موجود.
+  // بينادي مرة واحدة قبل loadAll عشان أول رفع للأصناف في الجلسة يعرف يبعث unit ولا لأ.
+  function probeProductUnit() {
+    return Promise.resolve().then(function () {
+      return DATA.client().from("products").select("unit").limit(1);
+    }).then(function (r) {
+      HAS_PRODUCT_UNIT = !(r && r.error);
+      return HAS_PRODUCT_UNIT;
+    }).catch(function () { HAS_PRODUCT_UNIT = false; return false; });
+  }
+
   // خريطة تحويل (محلي → سماوي / سماوي → محلي)
   var META = {
     customers: {
@@ -147,11 +172,16 @@
     products: {
       local: function () { return W.products; },
       toCloud: function (r) {
-        return { id: detUuid("products", r.id), org_id: DATA.orgId(), local_id: r.id,
+        var row = { id: detUuid("products", r.id), org_id: DATA.orgId(), local_id: r.id,
           code: r.code, barcode: r.barcode || "", name_ar: r.nameAr, name_en: r.nameEn || "",
           category: r.category || "عام", purchase_price: r.purchasePrice || 0,
           sale_price: r.salePrice || 0, stock_qty: r.qty || 0, min_stock: r.reorder || 0,
           stock: r.stock || {}, is_active: r.isActive !== false };
+        // 🆕 إصلاح «الوحدة فاضية في الفاتورة»: عمود unit بيترفع للسحابة (ترحيل ٣٩) —
+        // بس بعد ما نتأكد إن العمود موجود فعلًا، لأن رفع عمود غير معروف بيرفض طلب
+        // المزامنة كله (42703) ويوقف رفع الأصناف. الفحص بيجري مرة واحدة جوه loadAll.
+        if (HAS_PRODUCT_UNIT) row.unit = r.unit || "";
+        return row;
       },
       fromCloud: function (r) {
         var stock = r.stock; // jsonb -> object {warehouse: qty}
@@ -161,7 +191,10 @@
           if (Number(r.stock_qty || 0) > 0) stock["المخزن الرئيسي"] = Number(r.stock_qty || 0);
         }
         return { id: r.local_id, code: r.code, barcode: r.barcode || "", nameAr: r.name_ar,
-          nameEn: r.name_en || "", category: r.category || "عام", unit: "",
+          nameEn: r.name_en || "", category: r.category || "عام",
+          // 🆕 الوحدة: من العمود السحابي إن وجد، وإلا من النسخة المحلية الموجودة في الذاكرة
+          // (كانت بتتكتب "" ثابت → كل صنف بيفقد وحدته بعد أي تحميل من السحابة والفاتورة تطلع فاضية)
+          unit: String(r.unit || localUnitOf(r.local_id) || ""),
           defaultWarehouse: "المخزن الرئيسي", purchasePrice: Number(r.purchase_price || 0),
           weightedAvgCost: Number(r.purchase_price || 0), salePrice: Number(r.sale_price || 0),
           discountPercent: 0, discountStart: "", discountEnd: "",
@@ -772,6 +805,7 @@
   // تحميل كل الجداول إلى الحالة المحلية
   function loadAll() {
     W.idMap = W.idMap || {};
+    probeProductUnit(); // 🆕 نعرف هل عمود unit موجود على السحابة قبل أول رفع أصناف
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
       "employees", "attendance", "att_settings"];
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;

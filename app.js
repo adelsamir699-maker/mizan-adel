@@ -32,12 +32,14 @@
   const LS_EMPLOYEES = "mizan_employees_v1";
   const LS_ATTENDANCE = "mizan_attendance_v1";
   const LS_ATT_SETTINGS = "mizan_att_settings_v1";
+  // 🆕 مهمة 98: سجل الأصول الثابتة (غير المتداولة / غير الملموسة)
+  const LS_FIXED_ASSETS = "mizan_fixed_assets_v1";
   // كل مفاتيح البيانات المحلية (مشتركة بين كل الحسابات في نفس المتصفح)
   const LS_ALL_KEYS = [
     LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_ACTIVITY, LS_SALES, LS_TREASURY,
     LS_SUPPLIERS, LS_SUP_TXS, LS_PURCHASES, LS_ACCOUNTS, LS_JOURNAL,
     LS_USERS, LS_VOUCHERS, LS_SALE_RETURNS, LS_PURCHASE_RETURNS, LS_SETTINGS,
-    LS_EMPLOYEES, LS_ATTENDANCE, LS_ATT_SETTINGS
+    LS_EMPLOYEES, LS_ATTENDANCE, LS_ATT_SETTINGS, LS_FIXED_ASSETS
   ];
   // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
@@ -244,6 +246,8 @@
   let employees = [];
   let attendance = [];
   let attSettings = null;   // كائن واحد لكل شركة: {id, workStart, workEnd, graceMin, lunchMin}
+  // 🆕 مهمة 98: سجل الأصول الثابتة — لكل أصل: اسم/تصنيف (noncurrent|intangible)/فئة/تاريخ/تكلفة/إهلاك
+  let fixedAssets = [];
   let settings = {};
   let editingId = null;
 
@@ -493,6 +497,7 @@
           employees,
           attendance,
           attSettings,
+          fixedAssets,
           settings,
           savedAt: new Date().toISOString()
         };
@@ -546,6 +551,8 @@
           // 🆕 بناء 115: استرجاع الحضور من الديسك (نفس شرط الفارغ/التجريبي)
           take(data.employees, LS_EMPLOYEES, employees, undefined, (v) => { employees = v; }, saveEmployees);
           take(data.attendance, LS_ATTENDANCE, attendance, undefined, (v) => { attendance = v; }, saveAttendance);
+          // 🆕 مهمة 98: استرجاع سجل الأصول من الديسك (نفس شرط الفارغ/التجريبي)
+          take(data.fixedAssets, LS_FIXED_ASSETS, fixedAssets, undefined, (v) => { fixedAssets = v; }, saveFixedAssets);
           if (data.attSettings && typeof data.attSettings === "object" && (!attSettings || bootLsPresent[LS_ATT_SETTINGS] === false)) {
             attSettings = data.attSettings; saveAttSettings(); restored = true;
           }
@@ -579,6 +586,8 @@
     DB.employees = employees;
     DB.attendance = attendance;
     DB.att_settings = attSettings ? [Object.assign({}, attSettings)] : [];
+    // 🆕 مهمة 98: الأصول الثابتة
+    DB.fixed_assets = fixedAssets;
   }
 
   function pushTable(name) {
@@ -756,6 +765,8 @@
       employees = JSON.parse(localStorage.getItem(LS_EMPLOYEES)) || [];
       attendance = JSON.parse(localStorage.getItem(LS_ATTENDANCE)) || [];
       attSettings = JSON.parse(localStorage.getItem(LS_ATT_SETTINGS)) || defaultAttSettings();
+      // 🆕 مهمة 98: سجل الأصول الثابتة — شركة جديدة تبدأ بقائمة فاضية (مافيش بيانات تجريبية)
+      fixedAssets = JSON.parse(localStorage.getItem(LS_FIXED_ASSETS)) || [];
       settings = Object.assign({}, defaultSettings, JSON.parse(localStorage.getItem(LS_SETTINGS)) || {});
       TAX.enabled = settings.taxEnabled == null ? TAX.enabled : Boolean(settings.taxEnabled);
       if (settings.taxRate != null) {
@@ -781,6 +792,7 @@
       employees = [];
       attendance = [];
       attSettings = defaultAttSettings();
+      fixedAssets = [];
       settings = Object.assign({}, defaultSettings);
     }
     if (!localStorage.getItem(LS_CUSTOMERS)) saveCustomers();
@@ -801,6 +813,7 @@
     if (!localStorage.getItem(LS_EMPLOYEES)) saveEmployees();
     if (!localStorage.getItem(LS_ATTENDANCE)) saveAttendance();
     if (!localStorage.getItem(LS_ATT_SETTINGS)) saveAttSettings();
+    if (!localStorage.getItem(LS_FIXED_ASSETS)) saveFixedAssets();
     if (!localStorage.getItem(LS_SETTINGS)) saveSettings();
   }
 
@@ -834,6 +847,19 @@
   function saveAttSettings() {
     localStorage.setItem(LS_ATT_SETTINGS, JSON.stringify(attSettings));
     pushTable("att_settings"); syncToLocalDisk();
+  }
+
+  /* ================== 🆕 مهمة 98: الأصول الثابتة ================== */
+  function saveFixedAssets() {
+    localStorage.setItem(LS_FIXED_ASSETS, JSON.stringify(fixedAssets));
+    pushTable("fixed_assets"); syncToLocalDisk();
+  }
+
+  /* ================== 🆕 مهمة 98: حفظ سجل الأصول الثابتة ================== */
+  // نفس مسار بقية الجداول: محلي أولًا (لا يتLost)، ثم رفع للسحابة لو متصل، ثم لقطة الديسك.
+  function saveFixedAssets() {
+    localStorage.setItem(LS_FIXED_ASSETS, JSON.stringify(fixedAssets));
+    pushTable("fixed_assets"); syncToLocalDisk();
   }
 
   function saveSuppliers() {
@@ -983,7 +1009,8 @@
     treasury: "الخزائن", accounts: "حسابات الشجرة", vouchers: "السندات",
     journal_entries: "القيود المحاسبية", journal_lines: "أسطر القيود",
     customer_txs: "حركة العملاء", supplier_txs: "حركة الموردين", settings: "ضبط الشركة",
-    employees: "الموظفون", attendance: "سجل الحضور", att_settings: "مدة العمل"
+    employees: "الموظفون", attendance: "سجل الحضور", att_settings: "مدة العمل",
+    fixed_assets: "الأصول الثابتة"
   };
   let lastSyncWarnAt = 0;
   DATA.onSyncError = function (what, err) {
@@ -1244,6 +1271,12 @@
       if (!DE.featureFlag) return false;
       return DE.featureFlag("attendance") === true;
     }
+    // 🆕 مهمة 98: سجل الأصول الثابتة — نفس نمط الحضور: المالك وصاحب الشركة دائمًا، والعضو عند التفعيل الصريح
+    if (name === "fixedAssets") {
+      if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+      if (!DE.featureFlag) return false;
+      return DE.featureFlag("fixedAssets") === true;
+    }
     // 🆕 بناء 115: القيود اليومية (اليدوي المحاسبي + التسجيل المبسط) — لصاحب الشركة والمالك فقط
     if (name === "journal") return isSuperAcct() || isCompanyOwnerAcct();
     return DE.featureEnabled ? DE.featureEnabled(name) : true;
@@ -1253,6 +1286,8 @@
   function canManageReturns() { return canUseView("returnsReg"); }
   // 🆕 بناء 115: صلاحية الحضور والانصراف (بوابة الشاشة + فحص ثانٍ جوه دوال التسجيل/التعديل)
   function canManageAttendance() { return canUseView("attendance"); }
+  // 🆕 مهمة 98: صلاحية «سجل الأصول الثابتة» (بوابة الشاشة + فحص ثانٍ جوه دوال التسجيل/الحذف)
+  function canManageFixedAssets() { return canUseView("fixedAssets"); }
   // التعديل اليدوي لوقت/حالة سجل موجود يحتاج صلاحية مستقلة «attendanceEdit» (opt-in).
   // التسجيل اليومي العادي ياخد وقت النظام تلقائيًا من غير إدخال.
   // كل تعديل يدوي بيعدي عبر mizan_att_edit فيتنفَّذ على السحابة ويُسجَّل بالقديم/الجديد/السبب.
@@ -1297,6 +1332,11 @@
     // 🆕 بناء 115: «الحضور والانصراف» — نفس نمط البوابة
     if (name === "attendance" && !canManageAttendance()) {
       toast("صلاحية «الحضور والانصراف» غير مفعّلة لحسابك", "error");
+      name = "dashboard";
+    }
+    // 🆕 مهمة 98: «الأصول الثابتة» — نفس نمط بوابة الحضور
+    if (name === "fixedAssets" && !canManageFixedAssets()) {
+      toast("صلاحية «الأصول الثابتة» غير مفعّلة لحسابك", "error");
       name = "dashboard";
     }
     // 🆕 بناء 115: «القيود اليومية» لصاحب الشركة والمالك فقط (طلب المالك: مش أي حد يسجل قيود)
@@ -2007,6 +2047,23 @@
       }).catch(() => {});
     }
   }
+
+  // 🆕 إصلاح «خانة الوحدة فاضية في الفاتورة»: الوحدة بتتحل بالترتيب —
+  // سطر الفاتورة نفسه ← الصنف بالكود/الآيدي/الاسم. (السبب الجذري: طبقة السحابة
+  // كانت بترجّع products بدون عمود وحدة، فكل صنف بيصبح unit:"" وكل فاتورة جديدة بتطبع فاضي.)
+  function lineUnit(it) {
+    const direct = String((it && it.unit) || "").trim();
+    if (direct) return direct;
+    let p = null;
+    if (it && it.productId !== undefined && it.productId !== null && it.productId !== "") {
+      p = products.filter((x) => String(x.id) === String(it.productId))[0] || null;
+    }
+    if (!p && it && it.code) p = products.filter((x) => String(x.code) === String(it.code))[0] || null;
+    if (!p && it && it.nameAr) p = products.filter((x) => String((x.nameAr || "").trim()) === String(it.nameAr).trim())[0] || null;
+    return (p && p.unit) ? String(p.unit).trim() : "";
+  }
+  // على الورقة والشاشة: الخانة ما تفضلش بيضا — لو مفيش وحدة مسجلة خالص تظهر «—»
+  function lineUnitText(it) { return lineUnit(it) || "—"; }
 
   function discountStatusText(p) {
     const pct = Number(p.discountPercent) || 0;
@@ -2735,7 +2792,7 @@
       tr.innerHTML =
         '<td>' + esc(it.code) + '</td>' +
         '<td style="text-align:right">' + esc(it.nameAr) + '</td>' +
-        '<td>' + esc(it.unit) + '</td>' +
+        '<td>' + esc(lineUnitText(it)) + '</td>' +
         '<td><input class="cell-input" data-f="qty" type="text" value="' + esc(it.qty) + '" /></td>' +
         '<td class="c-fixed">' + fmt(it.price) + '</td>' +
         '<td><input class="cell-input" data-f="discount" type="text" value="' + fmt(it.discount) + '" /></td>' +
@@ -2809,7 +2866,7 @@
         productId: it.productId,
         code: it.code,
         nameAr: it.nameAr,
-        unit: it.unit,
+        unit: lineUnit(it),          // 🆕 الوحدة بتتحل من الصنف لو السطر فاضي — بتُخزن على الفاتورة نفسها
         qty: it.qty,
         price: it.price,
         discount: it.discount,
@@ -2887,7 +2944,7 @@
       tr.innerHTML =
         '<td>' + esc(it.code) + '</td>' +
         '<td style="text-align:right">' + esc(it.nameAr) + returnedBadge(true, inv.id, it) + '</td>' +
-        '<td>' + esc(it.unit) + '</td>' +
+        '<td>' + esc(lineUnitText(it)) + '</td>' +
         '<td>' + esc(Number(it.qty).toLocaleString("en-US")) + '</td>' +
         '<td>' + fmt(it.price) + '</td>' +
         '<td>' + fmt(it.discount) + '</td>' +
@@ -3222,7 +3279,7 @@
       tr.innerHTML =
         '<td>' + esc(it.code) + '</td>' +
         '<td style="text-align:right">' + esc(it.nameAr) + '</td>' +
-        '<td>' + esc(it.unit) + '</td>' +
+        '<td>' + esc(lineUnitText(it)) + '</td>' +
         '<td><input class="cell-input" data-f="qty" type="text" value="' + esc(it.qty) + '" /></td>' +
         '<td><input class="cell-input" data-f="price" type="text" value="' + fmt(it.price) + '" /></td>' +
         '<td><input class="cell-input" data-f="discount" type="text" value="' + fmt(it.discount) + '" /></td>' +
@@ -3284,7 +3341,7 @@
         productId: it.productId,
         code: it.code,
         nameAr: it.nameAr,
-        unit: it.unit,
+        unit: lineUnit(it),          // 🆕 الوحدة تتحل من الصنف لو السطر فاضي — بتُخزن على الفاتورة نفسها
         qty: it.qty,
         price: it.price,
         discount: it.discount,
@@ -3368,7 +3425,7 @@
       tr.innerHTML =
         '<td>' + esc(it.code) + '</td>' +
         '<td style="text-align:right">' + esc(it.nameAr) + returnedBadge(false, inv.id, it) + '</td>' +
-        '<td>' + esc(it.unit) + '</td>' +
+        '<td>' + esc(lineUnitText(it)) + '</td>' +
         '<td>' + esc(Number(it.qty).toLocaleString("en-US")) + '</td>' +
         '<td>' + fmt(it.price) + '</td>' +
         '<td>' + fmt(it.discount) + '</td>' +
@@ -4321,7 +4378,7 @@
       productId: l.line.productId,
       code: l.line.code,
       nameAr: l.nameAr,
-      unit: l.line.unit,
+      unit: lineUnit(l.line),        // 🆕 المرتجع ياخد نفس وحدة سطر الفاتورة (متحلة من الصنف لو فاضية)
       qty: l.qty,
       price: l.price,
       total: retLineValue(inv, l.line, l.qty)
@@ -5478,6 +5535,277 @@
     toast("تمت إضافة البند «" + name + "» وهو متاح الآن في التسجيل المبسط.", "success");
   }
 
+  /* ================== 🆕 مهمة 98: سجل الأصول الثابتة ================== */
+  /* طلب المالك: «تسجيل أرصدة الأصول الثابتة (غير المتداولة)».
+   * - سجل مستقل لكل أصل: اسم + تصنيف (غير متداولة / غير ملموسة) + فئة + تاريخ شراء + تكلفة + إهلاك تراكمي.
+   * - صافي الدفتر = التكلفة − الإهلاك التراكمي (محسوب دائمًا، مش مخزّن) عشان التعديل ما ينساش.
+   * - يغذي قسميه في «قائمة المركز المالي» (مهمة 97). والسجل الفاضي = نفس سلوك الدليل القديم (مافيش رجوع للوراء).
+   * - مافيش قصّ صامت (درس build 113): لو الإهلاك أكبر من التكلفة → لافتة بالأرقام + قفل الحفظ،
+   *   والقيمة تفضل زي ما كتبها المستخدم لحد ما يعدّلها بنفسه.
+   * - الصلاحية: صاحب الشركة والمالك دائمًا، والعضو لما تتفعّل له «🏭 الأصول الثابتة» (نفس نمط الحضور).
+   */
+  const FA_CLASS_TITLES = { noncurrent: "أصول غير متداولة", intangible: "أصول غير ملموسة" };
+  const FA_CATEGORIES = ["أراضٍ", "مباني", "معدات", "سيارات", "أثاث", "إلكترونيات", "آلات", "علامة تجارية", "براءة اختراع", "امتياز", "أخرى"];
+  let editingFixedId = null;
+  let fixedBound = false;
+
+  const faClass = (a) => (a && a.assetClass === "intangible" ? "intangible" : "noncurrent");
+  const faLive = () => (Array.isArray(fixedAssets) ? fixedAssets.filter((a) => a && a.deleted !== true) : []);
+  const faById = (id) => faLive().filter((a) => String(a.id) === String(id))[0];
+  const faNextLocalId = () => (Array.isArray(fixedAssets) ? fixedAssets.reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0) : 0) + 1;
+  // الصافي محسوب مش مخزّن: أي تعديل في التكلفة أو الإهلاك يبان فورًا في القائمة والكشف
+  const faNet = (a) => bsRound((Number(a && a.cost) || 0) - (Number(a && a.accumDep) || 0));
+  const faNetText = (a) => {
+    const cost = Number(a && a.cost) || 0, dep = Number(a && a.accumDep) || 0;
+    if (dep > cost) return "—";            // رفضنا نقصّ في صمت: السالب المخبّى ما يطلعش رقم
+    return fmt(faNet(a));
+  };
+  function faTotals(cls) {
+    const l = faLive().filter((a) => faClass(a) === cls);
+    return {
+      count: l.length,
+      cost: bsRound(l.reduce((m, a) => m + (Number(a.cost) || 0), 0)),
+      dep: bsRound(l.reduce((m, a) => m + (Number(a.accumDep) || 0), 0)),
+      net: bsRound(l.reduce((m, a) => m + faNet(a), 0))
+    };
+  }
+  // بنود السجل لقسم في قائمة المركز المالي — [] معناه «السجل فاضي» والقائمة تستخدم حسابات الدليل
+  function faBalanceRows(cls) {
+    return faLive().filter((a) => faClass(a) === cls)
+      .sort((a, b) => String(a.nameAr || "").localeCompare(String(b.nameAr || ""), "ar"))
+      .map((a) => [(a.nameAr || "أصل") + (a.category ? " — " + a.category : ""), faNet(a)]);
+  }
+  // الإهلاك أكبر من التكلفة = خطأ إدخال (الصافي هيبقى سالب) — بنمنع الحفظ وبنوضّح الأرقام
+  function faOverDep() {
+    const cost = parseFloat($("#fxFCost").value);
+    const dep = parseFloat($("#fxFDep").value);
+    if (isNaN(cost) || isNaN(dep)) return null;
+    if (dep <= cost) return null;
+    return { cost: bsRound(cost), dep: bsRound(dep), over: bsRound(dep - cost) };
+  }
+  function paintFixedOver() {
+    const over = faOverDep(), box = $("#fixedOverWarn"), btn = $("#btnFixedSave");
+    if (over) {
+      box.hidden = false;
+      box.innerHTML = "⚠️ الإهلاك التراكمي <b>" + fmt(over.dep) + "</b> ج.م أكبر من التكلفة <b>" + fmt(over.cost) +
+        "</b> ج.م (الزيادة " + fmt(over.over) + " ج.م)، فصافي الدفتر هيبقى بالسالب.<br>" +
+        "عدّل واحدًا منهم — الحفظ مقفول لحد ما الأرقام تستقيم.";
+      $("#fxFNet").value = "—";
+      $("#fxFDep").classList.add("input-bad");
+      btn.disabled = true;
+    } else {
+      box.hidden = true; box.innerHTML = "";
+      $("#fxFNet").value = fmt(faNet({ cost: parseFloat($("#fxFCost").value) || 0, accumDep: parseFloat($("#fxFDep").value) || 0 }));
+      $("#fxFDep").classList.remove("input-bad");
+      btn.disabled = false;
+    }
+  }
+  function faFilterGate() { return canManageFixedAssets(); }
+  // حصانة ثانية جوه الدوال: العضو حتى لو نادى الدالة مباشرة ما يسجلش
+  function faGate() {
+    if (faFilterGate()) return true;
+    toast("صلاحية «الأصول الثابتة» غير مفعّلة لحسابك", "error");
+    return false;
+  }
+
+  function faFiltered() {
+    const q = normalizeAr(String($("#txtFixedSearch").value || "")).trim();
+    const rows = faLive();
+    if (!q) return rows;
+    return rows.filter((a) => [a.nameAr, a.category, FA_CLASS_TITLES[faClass(a)], a.purchaseDate,
+      String(a.cost || ""), String(a.accumDep || ""), a.notes]
+      .map((v) => normalizeAr(String(v == null ? "" : v))).join(" ").indexOf(q) >= 0);
+  }
+
+  function renderFixedAssets() {
+    const tb = $("#dgvFixedAssets tbody");
+    tb.innerHTML = "";
+    const rows = faFiltered().slice().sort((a, b) => {
+      const c = faClass(a).localeCompare(faClass(b));
+      return c !== 0 ? c : String(a.nameAr || "").localeCompare(String(b.nameAr || ""), "ar");
+    });
+    const can = faFilterGate();
+    rows.forEach((a) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td hidden>' + esc(a.id) + '</td>' +
+        '<td>' + esc(a.nameAr || "") + '</td>' +
+        '<td>' + esc(FA_CLASS_TITLES[faClass(a)]) + '</td>' +
+        '<td>' + esc(a.category || "أخرى") + '</td>' +
+        '<td>' + esc(a.purchaseDate || "—") + '</td>' +
+        '<td>' + fmt(Number(a.cost) || 0) + '</td>' +
+        '<td>' + fmt(Number(a.accumDep) || 0) + '</td>' +
+        '<td>' + faNetText(a) + '</td>' +
+        '<td>' + (a.isActive === false ? "⏸ متوقف" : "▶️ في الخدمة") + '</td>' +
+        '<td>' + (can ? '<button class="btn tiny gray" type="button" data-edit-fixed="' + esc(a.id) + '">✏️ تعديل</button>' : "") + '</td>';
+      tb.appendChild(tr);
+    });
+    if (!rows.length) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = '<td colspan="10" class="bal-empty">' +
+        (faLive().length ? "لا نتائج للبحث الحالي" : "لم تُسجَّل أصول بعد — اضغط «➕ تسجيل أصل ثابت» وابدأ بالمبنى أو المعدات") + '</td>';
+      tb.appendChild(tr);
+    }
+    const t1 = faTotals("noncurrent"), t2 = faTotals("intangible");
+    $("#fixedSummary").textContent =
+      "الأصول غير المتداولة: " + t1.count + " أصل — تكلفة " + fmt(t1.cost) + " | إهلاك " + fmt(t1.dep) + " | صافي " + fmt(t1.net) +
+      "  •  الأصول غير الملموسة: " + t2.count + " أصل — تكلفة " + fmt(t2.cost) + " | إهلاك " + fmt(t2.dep) + " | صافي " + fmt(t2.net) +
+      "  •  إجمالي الصافي " + fmt(bsRound(t1.net + t2.net)) + " ج.م";
+    $("#btnAddFixed").disabled = !can;
+    $("#txtFixedSearch").disabled = false;
+    $("#fxCategoryList").innerHTML = FA_CATEGORIES.map((c) => '<option value="' + esc(c) + '"></option>').join("");
+  }
+
+  function openFixedModal(a) {
+    if (!faFilterGate()) { toast("صلاحية «الأصول الثابتة» غير مفعّلة لحسابك", "error"); return; }
+    editingFixedId = a ? a.id : null;
+    $("#mFixedEditTitle").textContent = a ? "✏️ تعديل بيانات أصل" : "➕ تسجيل أصل ثابت جديد";
+    $("#fxFName").value = a ? (a.nameAr || "") : "";
+    $("#fxFClass").value = a ? faClass(a) : "noncurrent";
+    $("#fxFCategory").value = a ? (a.category || "") : "";
+    $("#fxFDate").value = a ? (a.purchaseDate || "") : "";
+    $("#fxFCost").value = a ? (Number(a.cost) || 0) : "";
+    $("#fxFDep").value = a ? (Number(a.accumDep) || 0) : "";
+    $("#fxFActive").value = a ? (a.isActive === false ? "0" : "1") : "1";
+    $("#fxFNotes").value = a ? (a.notes || "") : "";
+    $("#btnFixedDelete").hidden = !a;
+    paintFixedOver();
+    showModal("mFixedAddEdit");
+    $("#fxFName").focus();
+  }
+  function closeFixedModal() { hideModal("mFixedAddEdit"); editingFixedId = null; }
+
+  function saveFixedFromModal() {
+    if (!faGate()) return;
+    const name = String($("#fxFName").value || "").trim();
+    if (!name) { toast("اكتب اسم الأصل أولًا (مثال: مبنى المستودع).", "error"); return; }
+    const costRaw = String($("#fxFCost").value || "").trim();
+    const cost = parseFloat(costRaw);
+    if (costRaw === "" || isNaN(cost) || cost < 0) {
+      toast("التكلفة لازم رقم أكبر من صفر — دي أساس حساب صافي الأصل.", "error"); return;
+    }
+    const depRaw = String($("#fxFDep").value || "").trim();
+    const dep = depRaw === "" ? 0 : parseFloat(depRaw);
+    if (isNaN(dep) || dep < 0) { toast("الإهلاك التراكمي لازم رقمًا (اكتب 0 لو مفيش إهلاك بعد).", "error"); return; }
+    if (dep > cost) {
+      const over = { cost: bsRound(cost), dep: bsRound(dep), over: bsRound(dep - cost) };
+      toast("الإهلاك " + fmt(over.dep) + " أكبر من التكلفة " + fmt(over.cost) + " (الزيادة " + fmt(over.over) +
+        ") — عدّل الرقم الأول، الأصل ما يسجلش وهو كده.", "error");
+      paintFixedOver();
+      return;
+    }
+    const key = normalizeAr(name).trim();
+    const dup = faLive().filter((a) => String(a.id) !== String(editingFixedId) && normalizeAr(String(a.nameAr || "")).trim() === key)[0];
+    if (dup) {
+      toast("فيه أصل مسجّل بالفعل باسم «" + dup.nameAr + "» — عدّله بدل ما تكرّره، أو وضّح الاسم (مثال: «سيارة نقل ٢»).", "error");
+      return;
+    }
+    const rec = {
+      nameAr: name,
+      assetClass: $("#fxFClass").value === "intangible" ? "intangible" : "noncurrent",
+      category: String($("#fxFCategory").value || "").trim() || "أخرى",
+      purchaseDate: String($("#fxFDate").value || "").trim(),
+      cost: bsRound(cost), accumDep: bsRound(dep),
+      isActive: $("#fxFActive").value !== "0",
+      notes: String($("#fxFNotes").value || "").trim()
+    };
+    if (editingFixedId != null) {
+      const a = faById(editingFixedId);
+      if (!a) { toast("لم يتم العثور على الأصل — ممكن اتحذف.", "error"); return; }
+      Object.keys(rec).forEach((k) => { a[k] = rec[k]; });
+      addActivity("تعديل أصل ثابت", rec.nameAr + " — صافي " + faNetText(a));
+      toast("✔ تم حفظ بيانات «" + rec.nameAr + "»", "success");
+    } else {
+      rec.id = faNextLocalId();
+      fixedAssets.push(rec);
+      addActivity("إضافة أصل ثابت", rec.nameAr + " (" + FA_CLASS_TITLES[rec.assetClass] + ") — " + fmt(rec.cost));
+      toast("✔ تمت إضافة «" + rec.nameAr + "» وصافي دفتره " + fmt(faNet(rec)) + " ج.م", "success");
+    }
+    saveFixedAssets();
+    closeFixedModal();
+    renderFixedAssets();
+  }
+
+  function deleteFixedAsset(id) {
+    if (!faGate()) return;
+    const a = faById(id);
+    if (!a) { toast("لم يتم العثور على الأصل.", "error"); return; }
+    if (!confirm("هل أنت متأكد من حذف الأصل «" + (a.nameAr || "") + "» نهائيًا؟\n" +
+      "الصافي " + faNetText(a) + " ج.م هيتشيل من قائمة المركز المالي.")) return;
+    fixedAssets = fixedAssets.filter((x) => String(x.id) !== String(a.id));
+    saveFixedAssets();
+    addActivity("حذف أصل ثابت", (a.nameAr || "") + " (" + fmt(Number(a.cost) || 0) + ")");
+    toast("🗑 تم حذف «" + (a.nameAr || "") + "» — راجع قائمة المركز المالي", "success");
+    if (String(editingFixedId) === String(a.id)) closeFixedModal();
+    renderFixedAssets();
+  }
+
+  function toggleFixedActive(id) {
+    if (!faGate()) return;
+    const a = faById(id);
+    if (!a) return;
+    a.isActive = a.isActive === false;
+    saveFixedAssets();
+    addActivity(a.isActive ? "تشغيل أصل ثابت" : "إيقاف أصل ثابت", a.nameAr || "");
+    toast(a.isActive ? "▶️ «" + a.nameAr + "» رجع في الخدمة" : "⏸ تم إيقاف «" + a.nameAr +
+      "» — هو محسوب في صافي الأصول لحد ما تصرف فيه (بالحذف)", "success");
+    renderFixedAssets();
+  }
+
+  function printFixedAssets() {
+    const t1 = faTotals("noncurrent"), t2 = faTotals("intangible");
+    const d = new Date(), p = (x) => String(x).padStart(2, "0");
+    $("#fxpOrgName").textContent = settings.orgName || "مؤسستي";
+    $("#fxpOrg").textContent = settings.orgName || "مؤسستي";
+    $("#fxpDate").textContent = p(d.getDate()) + "/" + p(d.getMonth() + 1) + "/" + d.getFullYear();
+    const tb = $("#fxpBody");
+    tb.innerHTML = "";
+    const addRow = (html, cls) => {
+      const tr = document.createElement("tr");
+      if (cls) tr.className = cls;
+      tr.innerHTML = html;
+      tb.appendChild(tr);
+    };
+    const section = (cls, title, tot) => {
+      addRow('<td colspan="6"><b>' + esc(title) + '</b></td>', "bal-group");
+      const rows = faBalanceRows(cls);
+      if (!rows.length) { addRow('<td colspan="6" class="bal-empty">لم تُسجَّل أصول في هذا القسم بعد</td>'); return; }
+      faLive().filter((a) => faClass(a) === cls)
+        .sort((x, y) => String(x.nameAr || "").localeCompare(String(y.nameAr || ""), "ar"))
+        .forEach((a) => addRow('<td>' + esc(a.nameAr || "") + '</td><td>' + esc(a.category || "أخرى") + '</td>' +
+          '<td>' + esc(a.purchaseDate || "—") + '</td><td>' + fmt(Number(a.cost) || 0) + '</td>' +
+          '<td>' + fmt(Number(a.accumDep) || 0) + '</td><td>' + faNetText(a) + '</td>'));
+      addRow('<td colspan="3">إجمالي ' + esc(title) + '</td><td>' + fmt(tot.cost) + '</td><td>' + fmt(tot.dep) +
+        '</td><td><b>' + fmt(tot.net) + '</b></td>', "bal-sub");
+    };
+    section("noncurrent", "أصول غير متداولة", t1);
+    section("intangible", "أصول غير ملموسة", t2);
+    addRow('<td colspan="5"><b>إجمالي صافي الأصول الثابتة</b></td><td><b>' + fmt(bsRound(t1.net + t2.net)) +
+      '</b></td>', "bal-total");
+    $("#fxpFoot").innerHTML = "صافي الدفتر = التكلفة − الإهلاك التراكمي. الأصل المتوقف يفضل محسوبًا لحد ما يُتصرَّف فيه.";
+    printSection($("#fixedAssetsPage"));
+  }
+
+  function fixedBindOnce() {
+    if (fixedBound) return;
+    fixedBound = true;
+    $("#btnAddFixed").addEventListener("click", function () { openFixedModal(null); });
+    $("#btnPrintFixed").addEventListener("click", printFixedAssets);
+    $("#txtFixedSearch").addEventListener("input", renderFixedAssets);
+    $("#btnFixedCancel").addEventListener("click", closeFixedModal);
+    $("#btnFixedSave").addEventListener("click", saveFixedFromModal);
+    $("#btnFixedDelete").addEventListener("click", function () {
+      if (editingFixedId != null) deleteFixedAsset(editingFixedId);
+    });
+    ["fxFCost", "fxFDep"].forEach((id) => $("#" + id).addEventListener("input", paintFixedOver));
+    $("#viewFixedAssets").addEventListener("click", function (ev) {
+      const b = ev.target.closest("[data-edit-fixed]");
+      if (b) { openFixedModal(faById(b.dataset.editFixed)); return; }
+      const t = ev.target.closest("[data-toggle-fixed]");
+      if (t) toggleFixedActive(t.dataset.toggleFixed);
+    });
+  }
+
   /* ================== قائمة المركز المالي ================== */
   /* 🆕 مهمة 97: قائمة المركز المالي بثلاثة أقسام بتفاصيلها + تحقق معادلة الميزانية
    * (1) الأصول: متداولة (نقدية/بنوك/محافظ/مخزون/عملاء) + غير متداولة (أراضٍ/مباني/معدات/سيارات) + غير ملموسة (علامة/براءة/امتياز)
@@ -5519,6 +5847,9 @@
     const capital = bsRound(bsLeaves("equity", ["3.1"], ["3.2"]).reduce((m, r) => m + r[1], 0));
     const retained = bsRound(bsLeaves("equity", ["3.2"], null).reduce((m, r) => m + r[1], 0));
     const profits = bsRound(sales.reduce((m, s) => m + (s.grandTotal || 0), 0) - purchases.reduce((m, p2) => m + (p2.grandTotal || 0), 0) - vouchers.filter((v) => v.type === "out").reduce((m, v) => m + v.amount, 0) + vouchers.filter((v) => v.type === "in").reduce((m, v) => m + v.amount, 0));
+    // 🆕 مهمة 98: سجل الأصول الثابتة لو فيه بيانات هو المرجع لقسميه؛ ولو فاضي يرجع لحسابات الدليل (سلوك 97)
+    const faFix = faBalanceRows("noncurrent");
+    const faInt = faBalanceRows("intangible");
 
     return {
       assets: [
@@ -5528,12 +5859,12 @@
             ["المخزون (بالتكلفة المرجحة)", invValue], ["مديونيات العملاء", custDebts]].concat(bsLeaves("asset", ["1.1"], ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]))
         },
         {
-          key: "fix", title: "🏗️ أصول غير متداولة (أراضٍ ومباني ومعدات وسيارات)", short: "الأصول غير المتداولة",
-          rows: bsLeaves("asset", ["1.2", "1.3"], null), empty: "لم تُسجَّل أصول غير متداولة بعد"
+          key: "fix", title: "🏗️ أصول غير متداولة (أراضٍ ومباني ومعدات وسيارات)" + (faFix.length ? " — من سجل الأصول" : ""), short: "الأصول غير المتداولة",
+          rows: faFix.length ? faFix : bsLeaves("asset", ["1.2", "1.3"], null), empty: "لم تُسجَّل أصول غير متداولة بعد"
         },
         {
-          key: "int", title: "🧠 أصول غير ملموسة (علامة تجارية / براءة اختراع / امتياز)", short: "الأصول غير الملموسة",
-          rows: bsLeaves("asset", ["1.4", "1.5", "1.6"], null), empty: "لم تُسجَّل أصول غير ملموسة بعد"
+          key: "int", title: "🧠 أصول غير ملموسة (علامة تجارية / براءة اختراع / امتياز)" + (faInt.length ? " — من سجل الأصول" : ""), short: "الأصول غير الملموسة",
+          rows: faInt.length ? faInt : bsLeaves("asset", ["1.4", "1.5", "1.6"], null), empty: "لم تُسجَّل أصول غير ملموسة بعد"
         }
       ],
       liabs: [
@@ -6510,7 +6841,7 @@
     "db/supabase-upgrade-22-admin-online.sql", "db/supabase-upgrade-23-full-backup.sql"];
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "categories", "customer_txs", "customers",
-    "employees", "attendance", "att_settings",
+    "employees", "attendance", "att_settings", "fixed_assets",
     "journal_entries", "journal_lines", "mizan_created_accounts", "mizan_invoice_seq",
     "mizan_pw_store", "owners", "password_changes", "presence", "products",
     "purchase_items", "purchases", "sale_items", "sales", "supplier_txs", "suppliers",
@@ -8074,6 +8405,8 @@ const pwEye = document.getElementById("btnShowPass");
     // 🆕 بناء 115: دمج الحضور زي بقية الجداول (بالهوية local_id — درس ترحيل ٣٤)
     step("employees", S.employees, employees, function (v) { employees = v; });
     step("attendance", S.attendance, attendance, function (v) { attendance = v; });
+    // 🆕 مهمة 98: الأصول الثابتة — دمج بنفس الهوية (local_id)
+    step("fixed_assets", S.fixed_assets, fixedAssets, function (v) { fixedAssets = v; });
     // att_settings: سطر واحد لكل شركة — لو LOCAL كان افتراضي (مفتاحش غايب لحظة الإقلاع)
     // والسحابة فيها قيمة حقيقية، السحابة هي المرجع. غير كده المحلية تتثبت فوقها لاحقًا بالـ push.
     try {
@@ -8110,6 +8443,7 @@ const pwEye = document.getElementById("btnShowPass");
     localStorage.setItem(LS_EMPLOYEES, JSON.stringify(employees));
     localStorage.setItem(LS_ATTENDANCE, JSON.stringify(attendance));
     localStorage.setItem(LS_ATT_SETTINGS, JSON.stringify(attSettings));
+    localStorage.setItem(LS_FIXED_ASSETS, JSON.stringify(fixedAssets));
   }
 
   /* ================== شاشة "غير متاح" (وقت/قفل/حجب) ================== */
