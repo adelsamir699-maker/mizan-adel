@@ -849,14 +849,8 @@
     pushTable("att_settings"); syncToLocalDisk();
   }
 
-  /* ================== 🆕 مهمة 98: الأصول الثابتة ================== */
-  function saveFixedAssets() {
-    localStorage.setItem(LS_FIXED_ASSETS, JSON.stringify(fixedAssets));
-    pushTable("fixed_assets"); syncToLocalDisk();
-  }
-
   /* ================== 🆕 مهمة 98: حفظ سجل الأصول الثابتة ================== */
-  // نفس مسار بقية الجداول: محلي أولًا (لا يتLost)، ثم رفع للسحابة لو متصل، ثم لقطة الديسك.
+  // نفس مسار بقية الجداول: محلي أولًا (ما يضيعش)، ثم رفع للسحابة لو متصل، ثم لقطة الديسك.
   function saveFixedAssets() {
     localStorage.setItem(LS_FIXED_ASSETS, JSON.stringify(fixedAssets));
     pushTable("fixed_assets"); syncToLocalDisk();
@@ -1163,6 +1157,7 @@
     balancePage: "كشف الأرصدة",
     treStmtPage: "كشف الخزينة",
     attReportPage: "تقرير الحضور والانصراف",
+    fixedAssetsPage: "سجل الأصول الثابتة",
   };
   const PAPER_TITLE_FALLBACK = "مستند"; // بلا اسم منتج ولا اسم شخص
   let screenDocTitle = "";
@@ -1279,6 +1274,8 @@
     }
     // 🆕 بناء 115: القيود اليومية (اليدوي المحاسبي + التسجيل المبسط) — لصاحب الشركة والمالك فقط
     if (name === "journal") return isSuperAcct() || isCompanyOwnerAcct();
+    // 🆕 شاشة «كشف حساب الحسابات» (من القيود اليومية) — نفس بوابة القيود بالظبط
+    if (name === "accStatement") return isSuperAcct() || isCompanyOwnerAcct();
     return DE.featureEnabled ? DE.featureEnabled(name) : true;
   }
 
@@ -1339,6 +1336,11 @@
       toast("صلاحية «الأصول الثابتة» غير مفعّلة لحسابك", "error");
       name = "dashboard";
     }
+    // 🆕 شاشة «كشف حساب الحسابات» — لصاحب الشركة والمالك فقط (زي شاشة القيود)
+    if (name === "accStatement" && !canUseView("accStatement")) {
+      toast("شاشة «كشف حساب الحسابات» متاحة لصاحب الشركة والمالك فقط", "error");
+      name = "dashboard";
+    }
     // 🆕 بناء 115: «القيود اليومية» لصاحب الشركة والمالك فقط (طلب المالك: مش أي حد يسجل قيود)
     if (name === "journal" && !canUseView("journal")) {
       toast("شاشة «القيود اليومية» متاحة لصاحب الشركة والمالك فقط", "error");
@@ -1381,7 +1383,10 @@
     if (name === "treasury") { syncTreasuryFromSett(); recalculateTreasuryBalances(); renderTreasury(); renderTreMoves(); }
     if (name === "accounts") renderAccounts();
     if (name === "journal") { renderJournal(); renderLedger(); } // 🆕 بناء 115: + دفتر الحركة
+    if (name === "accStatement") renderAccStatementView();      // 🆕 كشف حساب الحسابات (من القيود)
     if (name === "balance") renderBalance();
+    // 🆕 مهمة 98: سجل الأصول الثابتة — الربط مرة واحدة ثم الرسم
+    if (name === "fixedAssets") { fixedBindOnce(); renderFixedAssets(); }
     if (name === "treasuryStatements") { recalculateTreasuryBalances(); renderTreStmt(); }
     if (name === "reports") renderReports();
     if (name === "attendance") renderAttendanceView();
@@ -5939,6 +5944,267 @@
     $("#blpFoot").innerHTML = $("#balResult").textContent;
     printSection($("#balancePage"));
   }
+  /* ================== 🆕 شاشة «كشف حساب الحسابات» ==================
+   * طلب المالك (01-10): «عايز خانة بكود الحساب وخانة اسم لما أكتب تتحدث عشان أبحث عن
+   * الحساب اللي عايز أعمله كشف حساب — ويشوفه ويطبعه». المقصود كشف حساب الحسابات المسجّلة
+   * في القيود اليومية (مش دليل العملاء، ومش سجل الحضور).
+   * - الحساب الأب بيجمع حركاته + حركات كل فروعه (مطابقة على مستوى الجزء: 2 تاخد 2.1 و2.1.1
+   *   وما تاخدش 2.10) — عشان كود "2" يرجّع الالتزامات بحركاتها كاملة.
+   * - نفس رياضيات دفتر الحركة في شاشة القيود: الرصيد الجاري في openingBalance، فالافتتاحي =
+   *   الجاري − محصل قيود الحساب (مجموع على كل الحسابات داخل المجموعة).
+   * - الفلترة بالفترة (من/إلى) بـ «رصيد مرحّل» زي مهمة 96، والافتراضي = كامل السجل.
+   * - الصلاحيات زي «القيود اليومية»: صاحب الشركة والمالك فقط + حصانة جوه الدوال.
+   * - مافيش أي تعديل على دوال شاشة القيود أو كشف العميل/المورد (الحراس القديمة فضلت خضرا).
+   */
+  let acsSelected = null;      // كود الحساب المختار
+  let acsFilter = { from: "", to: "" };
+  let acsBound = false;
+
+  function acsGate() {
+    if (canUseView("accStatement")) return true;
+    toast("شاشة «كشف حساب الحسابات» متاحة لصاحب الشركة والمالك فقط", "error");
+    return false;
+  }
+  const acsAll = () => accounts.filter((a) => a && a.isActive !== false);
+  const acsChildCount = (a) => accounts.filter((x) => Number(x.parentId) === Number(a.id)).length;
+  // كل أكواد المجموعة (النفس + الفروع) على مستوى جزء كامل
+  function acsGroupAccounts(acc) {
+    const code = String(acc.code || "");
+    return accounts.filter((a) => a && (String(a.code) === code || String(a.code).indexOf(code + ".") === 0));
+  }
+  function acsAccountName(id) {
+    const a = accounts.filter((x) => Number(x.id) === Number(id))[0];
+    return a ? (a.nameAr || "") : "";
+  }
+  // البحث: الكود من أوله (Prefix) + الاسم في أي موضع — الاتنين اختياريين وبيتحدّثوا live
+  function acsMatches() {
+    const code = String($("#acsCode").value || "").trim();
+    const name = normalizeAr(String($("#acsName").value || "")).trim();
+    let list = acsAll();
+    if (code) list = list.filter((a) => String(a.code || "").indexOf(code) === 0);
+    if (name) list = list.filter((a) => normalizeAr(String(a.nameAr || "")).indexOf(name) >= 0);
+    return list.sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), undefined, { numeric: true }));
+  }
+  // الحركات الكاملة للحساب (أو المجموعة) بترتيب التاريخ — بدون فلترة فترة
+  function acsAllRows(acc) {
+    const ids = acsGroupAccounts(acc).map((a) => Number(a.id));
+    const many = ids.length > 1;
+    const rows = [];
+    journalEntries.slice()
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)) || (Number(a.id) - Number(b.id)))
+      .forEach((j) => {
+        (j.lines || []).forEach((l) => {
+          if (ids.indexOf(Number(l.accountId)) < 0) return;
+          rows.push({
+            date: j.date, number: j.number,
+            desc: String(j.desc || "") + (many ? " — " + acsAccountName(l.accountId) : ""),
+            debit: Number(l.debit) || 0, credit: Number(l.credit) || 0
+          });
+        });
+      });
+    // الجاري (openingBalance) = بعد كل القيود، فالافتتاحي = الجاري − محصل القيود لكل حساب
+    const net = rows.reduce((m, r) => m + r.debit - r.credit, 0);
+    const current = acsGroupAccounts(acc).reduce((m, a) => m + (Number(a.openingBalance) || 0), 0);
+    let run = Math.round((current - net) * 100) / 100;
+    const opening = run;
+    rows.forEach((r) => { run = Math.round((run + r.debit - r.credit) * 100) / 100; r.balance = run; });
+    return { acc: acc, rows: rows, opening: opening, current: Math.round(current * 100) / 100, members: ids.length };
+  }
+  // نفس منطق مهمة 96: سطور الفترة + «رصيد مرحّل» قبل أول حركة لو فيه ما قبل البداية
+  function acsVisibleRows(led) {
+    const from = acsFilter.from, to = acsFilter.to;
+    if (!from && !to) return led.rows;
+    const out = led.rows.filter((r) => (!from || r.date >= from) && (!to || r.date <= to));
+    if (from) {
+      const before = led.rows.filter((r) => r.date < from);
+      if (before.length) {
+        out.unshift({
+          date: from, number: "—", desc: "▷ رصيد مرحّل من قبل هذه الفترة",
+          debit: 0, credit: 0, balance: before[before.length - 1].balance
+        });
+      }
+    }
+    return out;
+  }
+  function acsPeriodLabel() {
+    const p = (x) => String(x).padStart(2, "0");
+    const ar = (iso) => { const d = new Date(iso); return p(d.getDate()) + "/" + p(d.getMonth() + 1) + "/" + d.getFullYear(); };
+    if (!acsFilter.from && !acsFilter.to) return "بلا فلترة (كامل السجل)";
+    if (acsFilter.from && acsFilter.to) return "من " + ar(acsFilter.from) + " إلى " + ar(acsFilter.to);
+    if (acsFilter.from) return "من " + ar(acsFilter.from) + " وحتى اليوم";
+    return "من أول السجل إلى " + ar(acsFilter.to);
+  }
+  function acsRenderList() {
+    const sel = $("#acsList");
+    const list = acsMatches();
+    const keep = acsSelected;
+    sel.innerHTML = "";
+    list.forEach((a) => {
+      const op = document.createElement("option");
+      const kids = acsChildCount(a);
+      op.value = String(a.code);
+      op.textContent = a.code + " — " + (a.nameAr || "") + (kids ? "  (📂 " + kids + " فرع)" : "") +
+        "  |  الجاري " + fmt(Number(a.openingBalance) || 0);
+      if (String(a.code) === String(keep)) op.selected = true;
+      sel.appendChild(op);
+    });
+    $("#acsCount").textContent = list.length
+      ? (list.length + " حساب مطابق — اختار واحد أو دبل كليك عليه")
+      : "لا يوجد حساب مطابق — عدّل الكود أو الاسم";
+    if (!list.length) { acsSelected = null; acsRender(); return; }
+    if (!keep || !list.filter((a) => String(a.code) === String(keep)).length) {
+      acsSelected = list.length === 1 ? String(list[0].code) : null;   // نتيجة واحدة = اتاختارت لوحدها
+      if (acsSelected) {
+        Array.prototype.forEach.call(sel.options, (o) => { o.selected = (o.value === acsSelected); });
+      }
+    }
+    acsRender();
+  }
+  function acsCurrentAccount() {
+    if (!acsSelected) return null;
+    return acsAll().filter((a) => String(a.code) === String(acsSelected))[0] || null;
+  }
+  function acsRender() {
+    const tbody = $("#dgvAcs tbody");
+    const info = $("#acsInfo"), head = $("#acsHead");
+    const acc = acsCurrentAccount();
+    if (!acc) {
+      tbody.innerHTML = '<tr><td colspan="6" class="bal-empty">اكتب كود الحساب أو اسمه في الخانات فوق، واختار الحساب من القائمة — حركاته من القيود اليومية هتظهر هنا.</td></tr>';
+      if (info) info.textContent = "";
+      if (head) head.textContent = "اختار حسابًا من القائمة — أو اكتب كوده في خانة الكود.";
+      return;
+    }
+    const led = acsAllRows(acc);
+    const rows = acsVisibleRows(led);
+    if (head) {
+      head.innerHTML = "الكود: <b>" + esc(acc.code) + "</b> — " + esc(acc.nameAr || "") +
+        " | الفترة: <b>" + esc(acsPeriodLabel()) + "</b>" +
+        (led.members > 1 ? " | <b>مع الفروع</b> (" + led.members + " حساب)" : "") +
+        " | الرصيد الحالي: <b class=\"" + (led.current >= 0 ? "balance-debit" : "balance-credit") + "\">" + fmt(led.current) + " ج.م</b>";
+    }
+    tbody.innerHTML = "";
+    if (led.opening) {
+      const tr0 = document.createElement("tr");
+      tr0.innerHTML = '<td>—</td><td>—</td><td style="text-align:right">رصيد افتتاحي</td><td>-</td><td>-</td><td>' + fmt(led.opening) + '</td>';
+      tbody.appendChild(tr0);
+    }
+    rows.forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td>' + esc(r.date) + '</td>' +
+        '<td>' + esc(r.number == null ? "—" : r.number) + '</td>' +
+        '<td style="text-align:right">' + esc(r.desc) + '</td>' +
+        '<td>' + (r.debit ? fmt(r.debit) : "-") + '</td>' +
+        '<td>' + (r.credit ? fmt(r.credit) : "-") + '</td>' +
+        '<td class="' + (r.balance > 0 ? "balance-debit" : "balance-credit") + '">' + fmt(r.balance) + '</td>';
+      tbody.appendChild(tr);
+    });
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="bal-empty">لا توجد حركات على هذا الحساب' +
+        (acsFilter.from || acsFilter.to ? " في هذه الفترة — جرّب «📅 عرض بالكامل»" : " بعد — سجل قيدًا من شاشة القيود اليومية وهيبان هنا") + '.</td></tr>';
+    }
+    const moves = rows.filter((r) => String(r.desc).indexOf("رصيد مرحّل") === -1).length;
+    if (info) {
+      const hasPeriod = !!(acsFilter.from || acsFilter.to);
+      const lastVisible = rows.length ? rows[rows.length - 1].balance : null;
+      let txt = "الحركات المعروضة: " + moves + (hasPeriod ? " (في الفترة)" : " (كامل السجل)");
+      if (hasPeriod) {
+        // في الفترة: آخر سطور الكشف غير الرصيد الحالي (اللي بيكمل بعد نهاية الفترة)
+        if (lastVisible !== null) txt += " — رصيد نهاية الفترة: " + fmt(lastVisible) + " ج.م";
+        txt += " | الرصيد الحالي (كل السجل): " + fmt(led.current) + " ج.م";
+      } else {
+        txt += " — الرصيد النهائي: " + fmt(led.current) + " ج.م";
+      }
+      info.textContent = txt;
+    }
+  }
+  function acsApplyPeriod() {
+    const f = $("#acsFrom").value || "", t = $("#acsTo").value || "";
+    if (f && t && f > t) {
+      toast("تاريخ البداية «" + f + "» بعد تاريخ النهاية «" + t + "» — صحّح الفترة علشان الكشف يطلع صح.", "warning");
+      return;
+    }
+    acsFilter = { from: f, to: t };
+    acsRender();
+  }
+  function acsClearPeriod() {
+    acsFilter = { from: "", to: "" };
+    $("#acsFrom").value = "";
+    $("#acsTo").value = "";
+    acsRender();
+  }
+  function acsClearSearch() {
+    $("#acsCode").value = "";
+    $("#acsName").value = "";
+    acsSelected = null;
+    acsClearPeriod();
+    acsRenderList();
+    toast("🧹 اتمسح البحث — اكتب كود أو اسم الحساب من جديد", "success");
+  }
+  function acsPrint() {
+    if (!acsGate()) return;
+    const acc = acsCurrentAccount();
+    if (!acc) { toast("اختار حسابًا من القائمة الأول عشان تطبع كشف حسابه.", "warning"); return; }
+    const led = acsAllRows(acc);
+    const rows = acsVisibleRows(led);
+    printStatementDoc({
+      name: "كشف حساب: " + (acc.nameAr || ""),
+      code: acc.code + (led.members > 1 ? " (مع الفروع)" : ""),
+      range: acsPeriodLabel(),
+      balance: led.current,
+      rows: rows.map((r) => ({
+        date: r.date, desc: (r.number && r.number !== "—" ? r.number + " — " : "") + r.desc,
+        debit: r.debit, credit: r.credit, balance: r.balance
+      }))
+    });
+    addActivity("طباعة كشف حساب", acc.code + " — " + (acc.nameAr || "") + " (" + rows.length + " حركة)");
+  }
+  function acsBindOnce() {
+    if (acsBound) return;
+    acsBound = true;
+    $("#acsCode").addEventListener("input", () => { acsSelected = null; acsRenderList(); });
+    $("#acsName").addEventListener("input", () => { acsSelected = null; acsRenderList(); });
+    $("#acsList").addEventListener("change", function () {
+      const o = this.options[this.selectedIndex];
+      if (o) { acsSelected = o.value; acsRender(); }
+    });
+    $("#acsList").addEventListener("dblclick", function () {
+      const o = this.options[this.selectedIndex];
+      if (o) { acsSelected = o.value; acsRender(); acsPrint(); }
+    });
+    $("#acsFrom").addEventListener("change", acsApplyPeriod);
+    $("#acsTo").addEventListener("change", acsApplyPeriod);
+    $("#btnAcsAll").addEventListener("click", acsClearPeriod);
+    $("#btnAcsRefresh").addEventListener("click", acsRenderList);
+    $("#btnAcsClear").addEventListener("click", acsClearSearch);
+    $("#btnAcsPrint").addEventListener("click", acsPrint);
+  }
+  function renderAccStatementView() {
+    if (!acsGate()) return;
+    acsBindOnce();
+    acsRenderList();
+  }
+  // من «حركة حساب داخل القيود» في شاشة القيود → نفس الحساب في الكشف الكامل بالفترة
+  function openAccStatementFor(text) {
+    if (!acsGate()) return;
+    const q = String(text || "").trim();
+    let hit = null;
+    if (q) {
+      const nq = normalizeAr(q);
+      // 1) كود مطابق بالظبط 2) كود من أوله على مستوى الجزء (2 → 2 و2.1 لكن ما ياخدش 2.10)
+      hit = acsAll().filter((a) => String(a.code) === q)[0] ||
+        acsAll().filter((a) => { const c = String(a.code || ""); return c === nq || c.indexOf(nq + ".") === 0; })[0];
+      // 3) اسم مطابق 4) اسم contains (بالترتيب ده عشان كود "2" ما يطيّش على حساب باسم فيه 2)
+      if (!hit) hit = acsAll().filter((a) => normalizeAr(String(a.nameAr || "")) === nq)[0];
+      if (!hit) hit = acsAll().filter((a) => normalizeAr(String(a.nameAr || "")).indexOf(nq) >= 0)[0];
+    }
+    acsSelected = hit ? String(hit.code) : null;
+    $("#acsCode").value = "";
+    $("#acsName").value = "";
+    showView("accStatement");
+    if (!hit && q) toast("لقيت «" + q + "» في حركة القيود السريعة، بس مش في دليل الحسابات — جرّب تبحث بالكود أو الاسم هنا.", "warning");
+  }
+
   /* ================== كشوف حسابات الخزائن ================== */
   function renderTreStmt() {
     const sel = $("#cmbTreStmt");
@@ -7525,6 +7791,7 @@
     $("#txtLedgerAcc").addEventListener("input", renderLedger);
     $("#txtLedgerAcc").addEventListener("focus", () => ensureDatalist("ledgerAccountsList", accounts.filter((a) => Number(a.parentId) !== 0 && a.isActive).map((a) => a.code + " - " + a.nameAr)));
     $("#btnLedgerPrint").addEventListener("click", printLedger);
+    $("#btnOpenAccStatement").addEventListener("click", () => openAccStatementFor($("#txtLedgerAcc").value));
     $("#btnCItemAdd").addEventListener("click", addCItem);
     $("#btnAddJLine").addEventListener("click", () => {
       jrnLines.push({ accountId: "0", accountText: "", debit: "", credit: "" });
@@ -9343,11 +9610,12 @@ const pwEye = document.getElementById("btnShowPass");
         ["docManager", "📁 إدارة مستندات العملاء والموردين"],
         ["returnsManager", "🔁 إدارة المرتجعات"],
         ["attendance", "🕐 الحضور والانصراف"],
-        ["attendanceEdit", "✏️ تعديل سجلات الحضور يدويًا"]
+        ["attendanceEdit", "✏️ تعديل سجلات الحضور يدويًا"],
+        ["fixedAssets", "🏭 الأصول الثابتة"]
         ];
 
   // صلاحيات opt-in: owner/سوبر أدمن عندهما دائمًا، والعضو ما عندهاش إلا لو فُعّلت صريحًا
-  const OPT_IN_FEATS = ["clientSettings", "docManager", "returnsManager", "attendance", "attendanceEdit"];
+  const OPT_IN_FEATS = ["clientSettings", "docManager", "returnsManager", "attendance", "attendanceEdit", "fixedAssets"];
 
   function fmtDate(d) { return d ? String(d).slice(0, 10) : ""; }
   // تاريخ وساعة محليان (لآخر الاتصال وغيرها) — بصيغة YYYY-MM-DD HH:MM

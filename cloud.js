@@ -136,6 +136,29 @@
     }).catch(function () { HAS_PRODUCT_UNIT = false; return false; });
   }
 
+  // 🆕 مهمة 98: جدول «الأصول الثابتة» على السحابة بيتعمل بترحيل ٣٧، والمالك هو اللي بيأمر بتنفيذه.
+  // لحد ما يتنفّذ بنسجل الأصل محليًا وعلى الديسك زي ما هو عادي، بس ما نحاولش الرفع (مافيش جدول
+  // يرفعوله) — عشان كل حفظ ما يطلعلوش تحذير «المزامنة وقفت» وهو مالوش سبب.
+  // المهم: العلامة بتتفعّل بس لو السبب «الجدول غير موجود» فعلًا (42P01 / PGRST205).
+  // أي فشل تاني (نت مثلاً) بيسيب العلامة زي ما هي فالرفع بيحاول عادي وما بيكتمش في صمت —
+  // ده درس build 108: صمت فشل المزامنة ممنوع، والمسار الوحيد اللي بيتخطّى فيه الرفع سببه معروف وموثّق.
+  // أول ما الترحيل يتنفّذ، الفحص بيجيب الجدول موجود فالعلامة بتتمحي والرفع بيكمل من نفس اللحظة.
+  var FA_TABLE_MISSING = false;
+  function isMissingTableError(err) {
+    var msg = String((err && (err.message || err.code || err.details)) || err || "");
+    return /42P01|PGRST205|does not exist|not found/i.test(msg);
+  }
+  function probeFixedAssetsTable() {
+    if (!DATA.client()) return Promise.resolve(false);
+    return Promise.resolve()
+      .then(function () { return DATA.client().from("fixed_assets").select("id").limit(1); })
+      .then(function (r) {
+        if (r && r.error) { if (isMissingTableError(r.error)) FA_TABLE_MISSING = true; return false; }
+        FA_TABLE_MISSING = false; return true;
+      })
+      .catch(function (e) { if (isMissingTableError(e)) FA_TABLE_MISSING = true; return false; });
+  }
+
   // خريطة تحويل (محلي → سماوي / سماوي → محلي)
   var META = {
     customers: {
@@ -270,6 +293,25 @@
         var lid = (r.local_id != null) ? Number(r.local_id) : (localIdFromUuid("att_settings", r.id) || 1);
         return { id: lid, workStart: r.work_start || "09:00", workEnd: r.work_end || "17:00",
           graceMin: Number(r.grace_min || 0), lunchMin: Number(r.lunch_min || 0) };
+      }
+    },
+    // 🆕 مهمة 98: الأصول الثابتة — نفس نمط الهوية (detUuid + local_id) من ترحيل ٣٧
+    fixed_assets: {
+      local: function () { return W.fixed_assets || []; },
+      toCloud: function (r) {
+        return { id: detUuid("fixed_assets", r.id), org_id: DATA.orgId(), local_id: r.id,
+          name_ar: r.nameAr || "", asset_class: r.assetClass === "intangible" ? "intangible" : "noncurrent",
+          category: r.category || "أخرى", purchase_date: r.purchaseDate || null,
+          cost: Number(r.cost || 0), accum_dep: Number(r.accumDep || 0),
+          notes: r.notes || "", is_active: r.isActive !== false, deleted: false };
+      },
+      fromCloud: function (r) {
+        var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("fixed_assets", r.id);
+        return { id: lid, nameAr: r.name_ar || "",
+          assetClass: r.asset_class === "intangible" ? "intangible" : "noncurrent",
+          category: r.category || "أخرى", purchaseDate: String(r.purchase_date || "").slice(0, 10),
+          cost: Number(r.cost || 0), accumDep: Number(r.accum_dep || 0),
+          notes: r.notes || "", isActive: r.is_active !== false };
       }
     },
     accounts: {
@@ -672,6 +714,10 @@
   function syncOne(name) {
     var meta = META[name];
     if (!meta || !DATA.isOnline() || !DATA.client()) return Promise.resolve();
+    // 🆕 مهمة 98: الجدول لسه ما اتعملش على السحابة (ترحيل ٣٧ بأمر المالك) ⇒ الرفع مالوش مكان.
+    // السجل بيتحفظ محليًا + على الديسك زي ما هو، والعلامة بتتمحي أول ما الجدول يظهر.
+    // غير كده (نت مثلاً) المحاولة بتفضل عادية — صمت فشل المزامنة ممنوع (درس build 108).
+    if (name === "fixed_assets" && FA_TABLE_MISSING) return Promise.resolve();
     var local = meta.local() || [];
     var client = DATA.client();
     return client.from(name).select("id, local_id").then(function (res) {
@@ -806,8 +852,9 @@
   function loadAll() {
     W.idMap = W.idMap || {};
     probeProductUnit(); // 🆕 نعرف هل عمود unit موجود على السحابة قبل أول رفع أصناف
+    probeFixedAssetsTable(); // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
-      "employees", "attendance", "att_settings"];
+      "employees", "attendance", "att_settings", "fixed_assets"]; // 🆕 مهمة 98
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
     var eagerFallback = eagerLoad ? null : function (n) {
       return DATA.client().from(n).select("*").order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });

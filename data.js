@@ -19,11 +19,16 @@
 
   // الجداول الصغيرة اللي تُحمَّل مرة واحدة عند الدخول
   var EAGER = ["customers", "suppliers", "products", "treasury", "accounts",
-    "employees", "attendance", "att_settings"];
+    "employees", "attendance", "att_settings", "fixed_assets"]; // 🆕 مهمة 98: الأصول الثابتة
   // الجداول الكبيرة: تُحمَّل عند الطلب فقط
   var LAZY = ["sales", "sale_items", "purchases", "purchase_items", "supplier_txs",
     "vouchers", "journal_entries", "journal_lines", "audit_logs",
     "sale_returns", "sale_return_items", "purchase_returns", "purchase_return_items"];
+  // 🆕 مهمة 98: جداول «اختيارية» — موجودة في EAGER لكن ممكن السحابة لسه ما تعرفهاش
+  // (ترحيل ٣٧ ما اتنفّذش بعد). لو تنزيلها فشل لازم يفضل جدول محلي فاضي،
+  // وما يخلّيش Promise.all كله يقع — عشان كده تحميل كل بيانات العميل ما يفشلش.
+  var OPTIONAL_EAGER = ["fixed_assets"];
+  function isOptionalEager(t) { return OPTIONAL_EAGER.indexOf(t) >= 0; }
   var PAGE_SIZE = 500;
   var MAX_PAGES = 5; // حد أقصى 2500 سطر للجداول الكبيرة (مع البحث/الترقيم)
 
@@ -245,7 +250,11 @@
   function loadEager() {
     var tasks = EAGER.map(function (t) {
       return sb.from(t).select("*").order("created_at", { ascending: true }).then(function (res) {
-        if (res.error) throw res.error;
+        if (res.error) {
+          // 🆕 مهمة 98: جدول اختياري مالوش وجود على السحابة لسه = فاضي، مش فشل تحميل
+          if (isOptionalEager(t)) return [];
+          throw res.error;
+        }
         try { localStorage.setItem(cacheKey(t), JSON.stringify(res.data || [])); } catch (e) { }
         return res.data || [];
       });
@@ -263,7 +272,12 @@
   function loadEagerAll() {
     var tasks = EAGER.map(function (t) {
       return sb.from(t).select("*").order("created_at", { ascending: true }).then(function (res) {
-        if (res.error) throw res.error;
+        if (res.error) {
+          // 🆕 مهمة 98: لو الجدول الاختياري مالوش وجود على السحابة لسه، نرجعه فاضي —
+          // Promise.all كله ما يقعش، وإلا العميل ما بشوفش عملاء ولا أصناف ولا خزائن.
+          if (isOptionalEager(t)) return [t, []];
+          throw res.error;
+        }
         return [t, res.data || []];
       });
     });

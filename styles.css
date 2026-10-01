@@ -425,6 +425,67 @@ body {
 
 .stmt-table tbody td { padding: 6px; text-align: center; white-space: nowrap; }
 
+/* ===== 🆕 شاشة «كشف حساب الحسابات» (من القيود اليومية) ===== */
+.acs-code { flex: 0 1 170px; min-width: 130px; }
+.acs-pick {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+}
+.acs-list {
+  flex: 0 1 470px;
+  min-width: 280px;
+  max-width: 640px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: bold;
+  color: var(--text-primary);
+  padding: 6px;
+}
+.acs-list:focus { outline: 2px solid var(--sidebar-active); }
+.acs-list option { padding: 4px 8px; }
+.acs-list option:checked {
+  background: var(--sel-bg) linear-gradient(0deg, var(--sel-bg), var(--sel-bg));
+  color: var(--sel-fg);
+}
+.acs-side {
+  flex: 1 1 320px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.acs-period { border: 1px solid var(--border); }
+.acs-period .search-input { flex: 0 1 175px; min-width: 140px; }
+@media (max-width: 860px) {
+  .acs-list { flex: 1 1 100%; max-width: none; }
+}
+
+/* ===== 🆕 سجل الأصول الثابتة (مهمة 98) ===== */
+/* لافتة «الإهلاك أكبر من التكلفة»: نفس روح لافتة كمية المرتجع — تحذير ودّي بالأرقام قبل المنع */
+#mFixedAddEditBox .fx-over-warn {
+  margin: 4px 0 10px;
+  padding: 9px 12px;
+  border: 1.5px solid #E4A11B;
+  border-radius: 9px;
+  background: #FFF7E6;
+  color: #8A5300;
+  font-size: 12.3px;
+  font-weight: 700;
+  line-height: 1.75;
+}
+/* الحقل المرفوض بالأحمر — بدون أي قصّ صامت للقيمة */
+#mFixedAddEditBox input.input-bad {
+  border-color: #D64545;
+  background: #FFF2F2;
+  color: #8E2C2C;
+}
+#fxFNet { background: #F1F5F9; font-weight: 800; }
+
 /* ===== التنبيهات (Toast) ===== */
 .toast {
   position: fixed;

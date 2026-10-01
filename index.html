@@ -75,7 +75,11 @@
       <button class="nav-btn" data-view="treasury">💵  الخزينة والمصروفات</button>
       <button class="nav-btn" data-view="accounts">💰  دليل الحسابات</button>
       <button class="nav-btn" data-view="journal">📝  القيود اليومية</button>
+      <!-- 🆕 طلب المالك: كشف حساب الحسابات (حركة أي حساب من القيود اليومية) بشاشة مستقلة وبحث بالكود والاسم -->
+      <button class="nav-btn" data-view="accStatement">🧾  كشف حساب الحسابات</button>
       <button class="nav-btn" data-view="balance">⚖️  قائمة المركز المالي</button>
+      <!-- 🆕 مهمة 98: سجل الأصول الثابتة (غير المتداولة/غير الملموسة) — يغذي قسميه في المركز المالي -->
+      <button class="nav-btn" data-view="fixedAssets" hidden>🏭  الأصول الثابتة</button>
       <button class="nav-btn" data-view="treasuryStatements">📑  كشوف حسابات الخزائن</button>
       <button class="nav-btn" data-view="reports">📈  تقارير المبيعات والمشتريات</button>
       <button class="nav-btn" data-view="attendance" hidden>🕐  الحضور والانصراف</button>
@@ -695,11 +699,12 @@
         </div>
 
         <!-- 🆕 بناء 115: دفتر حركة الحسابات — بحث في أي حساب لمعرفة كل الحركات التي تمت داخله -->
-        <div class="panel-title">🔎 دفتر حركة الحسابات — اختار حسابًا لعرض كل حركاته داخله</div>
+        <div class="panel-title">🔎 حركة حساب داخل القيود (نظرة سريعة) — الكشف الكامل بالتواريخ والطباعة في تبويب «🧾 كشف حساب الحسابات»</div>
         <div class="search-bar">
           <label class="filter-label" for="txtLedgerAcc">الحساب:</label>
           <input type="text" id="txtLedgerAcc" class="search-input" autocomplete="off" placeholder="اكتب كود أو اسم الحساب..." />
           <button id="btnLedgerPrint" class="btn sky" type="button">🖨️ طباعة كشف الحساب</button>
+          <button id="btnOpenAccStatement" class="btn teal" type="button" title="يفتح تبويب كشف حساب الحسابات على نفس الحساب، مع خانتين للكود والاسم وتاريخي بداية ونهاية">🧾 الكشف الكامل بالفترة</button>
           <span id="ledgerInfo" class="stk-summary"></span>
         </div>
         <div class="table-wrap">
@@ -712,6 +717,62 @@
                 <th style="width:12%">مدين (ج.م)</th>
                 <th style="width:12%">دائن (ج.م)</th>
                 <th style="width:14%">الرصيد (ج.م)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+      </section>
+
+      <!-- ===== 🆕 شاشة كشف حساب الحسابات (حركة أي حساب من القيود اليومية) =====
+           طلب المالك: خانة بكود الحساب + خانة اسم تتحدّث وهو بيكتب، عشان يلاقي الحساب
+           ويعمل له كشف حساب يشوفه ويطبعه. أي حساب (حتى الأب) بيجمع حركاته وحركات فروعه. -->
+      <section class="view view-accStatement" id="viewAccStatement" data-id="accStatement" hidden>
+
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnAcsRefresh" class="btn gray" type="button">تحديث 🔄</button>
+            <button id="btnAcsPrint" class="btn sky" type="button">🖨️ طباعة كشف الحساب</button>
+            <button id="btnAcsClear" class="btn red" type="button">🧹 مسح البحث</button>
+          </div>
+          <h1 class="view-title">🧾 كشف حساب الحسابات (من القيود اليومية)</h1>
+        </div>
+
+        <div class="search-bar">
+          <label class="filter-label" for="acsCode">كود الحساب:</label>
+          <input type="text" id="acsCode" class="search-input acs-code" autocomplete="off" placeholder="مثال: 2 أو 2.1" />
+          <label class="filter-label" for="acsName">اسم الحساب:</label>
+          <input type="text" id="acsName" class="search-input" autocomplete="off" placeholder="اكتب أي جزء من الاسم — القائمة بتتحدّث مع الكتابة" />
+          <span id="acsCount" class="stk-summary"></span>
+        </div>
+
+        <div class="acs-pick">
+          <select id="acsList" class="acs-list" size="8" aria-label="اختار الحساب من القائمة"></select>
+          <div class="acs-side">
+            <div class="panel-title">الحساب المختار</div>
+            <div id="acsHead" class="stmt-head-mini">اختار حسابًا من القائمة — أو اكتب كوده وخانه الاسم.</div>
+            <div class="search-bar acs-period">
+              <label class="filter-label" for="acsFrom">من:</label>
+              <input type="date" id="acsFrom" class="search-input" />
+              <label class="filter-label" for="acsTo">إلى:</label>
+              <input type="date" id="acsTo" class="search-input" />
+              <button id="btnAcsAll" class="btn gray" type="button">📅 عرض بالكامل</button>
+            </div>
+            <div id="acsInfo" class="stk-summary"></div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table id="dgvAcs" class="dgv stmt-table">
+            <thead>
+              <tr>
+                <th style="width:12%">التاريخ</th>
+                <th style="width:14%">رقم القيد</th>
+                <th style="width:34%">البيان</th>
+                <th style="width:12%">مدين (ج.م)</th>
+                <th style="width:12%">دائن (ج.م)</th>
+                <th style="width:16%">الرصيد (ج.م)</th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -759,6 +820,51 @@
             <span id="balResult" class="ft-total">النتيجة: متوازن ✓</span>
           </div>
         </div>
+
+      </section>
+
+      <!-- ===== 🆕 شاشة سجل الأصول الثابتة (مهمة 98) =====
+           طلب المالك: «تسجيل أرصدة الأصول الثابتة (غير المتداولة)». لكل أصل: اسم + تصنيف + فئة +
+           تاريخ شراء + تكلفة + إهلاك تراكمي، والصافي محسوب دائمًا (تكلفة − إهلاك) وما يتخزنّش.
+           السجل يغذي قسميه في «قائمة المركز المالي»، والفاضي منه يسيب السلوك القديم للدليل. -->
+      <section class="view view-fixedAssets" id="viewFixedAssets" data-id="fixedAssets" hidden>
+
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnAddFixed" class="btn blue" type="button">➕ تسجيل أصل ثابت</button>
+            <button id="btnPrintFixed" class="btn sky" type="button">🖨️ طباعة سجل الأصول</button>
+          </div>
+          <h1 class="view-title">🏭 سجل الأصول الثابتة</h1>
+        </div>
+
+        <div class="search-bar">
+          <label class="filter-label" for="txtFixedSearch">بحث:</label>
+          <input type="text" id="txtFixedSearch" class="search-input" autocomplete="off"
+            placeholder="اكتب اسم الأصل أو الفئة أو التاريخ أو أي رقم..." />
+          <span id="fixedSummary" class="stk-summary"></span>
+        </div>
+
+        <div class="table-wrap">
+          <table id="dgvFixedAssets" class="dgv stmt-table">
+            <thead>
+              <tr>
+                <th hidden>م</th>
+                <th style="width:20%">اسم الأصل</th>
+                <th style="width:13%">التصنيف</th>
+                <th style="width:11%">الفئة</th>
+                <th style="width:11%">تاريخ الشراء</th>
+                <th style="width:11%">التكلفة (ج.م)</th>
+                <th style="width:11%">الإهلاك التراكمي (ج.م)</th>
+                <th style="width:11%">صافي الدفتر (ج.م)</th>
+                <th style="width:7%">الحالة</th>
+                <th style="width:8%">تعديل</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="stk-hint">صافي الدفتر = التكلفة − الإهلاك التراكمي، وهو اللي بيظهر في «قائمة المركز المالي».
+          الأصل المتوقف (⏸) يفضل محسوبًا في الصافي لحد ما تُتصرَّف فيه بالحذف.</p>
 
       </section>
 
@@ -1753,6 +1859,25 @@
         <div class="inv-foot-print" id="arpFoot"></div>
       </section>
 
+      <!-- 🆕 صفحة سجل الأصول الثابتة للطباعة (مهمة 98) -->
+      <section class="print-only statement-page" id="fixedAssetsPage">
+        <div class="statement-head">
+          <div class="inv-brand-name" id="fxpOrgName"></div>
+          <h2>🏭 سجل الأصول الثابتة: <span id="fxpOrg"></span></h2>
+          <p>تاريخ الطباعة: <span id="fxpDate"></span></p>
+        </div>
+        <table class="stmt-table">
+          <thead>
+            <tr>
+              <th>اسم الأصل</th><th>الفئة</th><th>تاريخ الشراء</th>
+              <th>التكلفة (ج.م)</th><th>الإهلاك التراكمي (ج.م)</th><th>صافي الدفتر (ج.م)</th>
+            </tr>
+          </thead>
+          <tbody id="fxpBody"></tbody>
+        </table>
+        <div class="inv-foot-print" id="fxpFoot"></div>
+      </section>
+
     </main>
   </div>
 
@@ -1850,6 +1975,43 @@
       <div class="modal-actions">
         <button id="btnAttEditCancel" class="btn gray" type="button">إلغاء</button>
         <button id="btnAttEditSave" class="btn blue" type="button">💾 حفظ التعديل المسجَّل</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🆕 نافذة تسجيل / تعديل أصل ثابت (مهمة 98) — صافي الدفتر محسوب، والإهلاك الزائد يقفل الحفظ -->
+  <div class="modal-overlay" id="mFixedAddEdit" hidden>
+    <div class="modal m520" id="mFixedAddEditBox">
+      <h3 id="mFixedEditTitle">➕ تسجيل أصل ثابت جديد</h3>
+      <div class="fx-over-warn" id="fixedOverWarn" hidden></div>
+      <div class="form-grid">
+        <label for="fxFName">اسم الأصل: *</label>
+        <input type="text" id="fxFName" autocomplete="off" placeholder="مثال: مبنى المستودع / سيارة نقل ١" />
+        <label for="fxFClass">التصنيف:</label>
+        <select id="fxFClass">
+          <option value="noncurrent">أصول غير متداولة (أراضٍ/مباني/معدات/سيارات)</option>
+          <option value="intangible">أصول غير ملموسة (علامة/براءة/امتياز)</option>
+        </select>
+        <label for="fxFCategory">الفئة:</label>
+        <input type="text" id="fxFCategory" autocomplete="off" list="fxCategoryList" placeholder="مثال: أراضٍ" />
+        <datalist id="fxCategoryList"></datalist>
+        <label for="fxFDate">تاريخ الشراء:</label>
+        <input type="date" id="fxFDate" />
+        <label for="fxFCost">التكلفة (ج.م): *</label>
+        <input type="number" id="fxFCost" min="0" step="0.01" autocomplete="off" placeholder="0.00" />
+        <label for="fxFDep">الإهلاك التراكمي (ج.م):</label>
+        <input type="number" id="fxFDep" min="0" step="0.01" autocomplete="off" placeholder="0.00" />
+        <label for="fxFNet">صافي الدفتر (ج.م):</label>
+        <input type="text" id="fxFNet" readonly tabindex="-1" />
+        <label for="fxFActive">حالة الأصل:</label>
+        <select id="fxFActive"><option value="1">▶️ في الخدمة</option><option value="0">⏸ متوقف</option></select>
+        <label for="fxFNotes">ملاحظات:</label>
+        <input type="text" id="fxFNotes" autocomplete="off" />
+      </div>
+      <div class="modal-actions">
+        <button id="btnFixedCancel" class="btn gray" type="button">إلغاء</button>
+        <button id="btnFixedDelete" class="btn red" type="button" hidden>🗑 حذف الأصل</button>
+        <button id="btnFixedSave" class="btn blue" type="button">💾 حفظ الأصل</button>
       </div>
     </div>
   </div>
