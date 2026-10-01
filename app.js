@@ -307,9 +307,20 @@
     }
   }
 
+  // 🆕 بناء 118: الجداول الكبيرة (حركة العملاء/الموردين...) بتنزل بعد EAGER في loadLazyAll.
+  // أي إعادة حساب للرصيد الآجل قبل ما جدول الحركة يوصل = تصفير رصيد حقيقي بالصمت
+  // (فاتورة مشتريات آجلة تختفي من «مستحقات الموردين» في المركز المالي ومن الدليل).
+  // فإعادة الحساب بتمتنع لحد ما التنزيل يكتمل، واللي مسجّل بيتحافظ زي ما هو.
+  function bigDataLoaded(name) {
+    const lt = window.MIZAN_STATE && window.MIZAN_STATE.loadedTables;
+    if (!lt) return true;                 // وضع الديسك/المحلي: مافيش تنزيل ناقص أصلًا
+    return lt[name] === true;
+  }
+
   function recalculateCustomerBalances() {
     ensureCashEntities();
-    if (!customers || !txs) return;
+    if (!customers || !txs) return false;
+    if (!bigDataLoaded("customer_txs")) return false;   // 🔒 الحركة لسه ما نزلتش — مافيش تصفير
     customers.forEach((c) => {
       const custTxs = txs.filter((t) => Number(t.customerId) === Number(c.id));
       let bal = 0;
@@ -322,10 +333,12 @@
       });
       c.currentBalance = Math.round(bal * 100) / 100;
     });
+    return true;
   }
 
   function recalculateSupplierBalances() {
-    if (!suppliers || !supplierTxs) return;
+    if (!suppliers || !supplierTxs) return false;
+    if (!bigDataLoaded("supplier_txs")) return false;   // 🔒 نفس الحصانة للموردين
     suppliers.forEach((s) => {
       const sTxs = supplierTxs.filter((t) => Number(t.supplierId) === Number(s.id));
       let bal = 0;
@@ -338,6 +351,7 @@
       });
       s.currentBalance = Math.round(bal * 100) / 100;
     });
+    return true;
   }
 
   function syncTreasuryItemToSett(tr) {
@@ -557,6 +571,11 @@
             attSettings = data.attSettings; saveAttSettings(); restored = true;
           }
           if (!restored) return;
+          // اللقطة المحلية فيها الحركة كاملة ⇒ حصانة بناء 118 ما تمنعش إعادة الحساب هنا
+          try {
+            const LT = (window.MIZAN_STATE.loadedTables = window.MIZAN_STATE.loadedTables || {});
+            ["customer_txs", "supplier_txs", "sales", "purchases", "vouchers", "journal_entries"].forEach((t) => { LT[t] = true; });
+          } catch (e) { }
           recalculateCustomerBalances();
           recalculateSupplierBalances();
           recalculateTreasuryBalances();

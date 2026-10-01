@@ -678,13 +678,20 @@
     journal_entries: {
       local: function () { return W.journalEntries; },
       toCloud: function (r) {
+        // 🆕 بناء 118: app.js بيخزّن القيد بأسماء number/desc/ref — والعمود اسمه jrn_no/description/ref_type.
+        // من غير الفallback ده كان كل قيد يدوي بيركب السحابة «بلا بيان وبلا رقم حقيقي».
         return { id: detUuid("journal_entries", r.id), org_id: DATA.orgId(), local_id: r.id,
-          jrn_no: r.jrnNo || r.id, doc_date: docDate(r), ref_type: r.refType || "",
-          ref_id: (r.refId || "").toString(), description: r.description || "" };
+          jrn_no: r.jrnNo || r.number || r.id, doc_date: docDate(r), ref_type: r.refType || r.ref || "",
+          ref_id: (r.refId || "").toString(), description: r.description || r.desc || "" };
       },
       fromCloud: function (r) {
-        return { id: r.local_id, jrnNo: r.jrn_no, date: r.doc_date, refType: r.ref_type || "",
-          refId: r.ref_id, description: r.description || "", lines: [] };
+        // 🆕 بناء 118: ترجيع نفس أسماء الحقول اللي شاشة «القيود اليومية» بتقرأها
+        // (number/desc/ref/debit/credit). قبل كده كانت بترجع jrnNo/description فقط ⇒
+        // الجدول بيطلع صفوف فاضية بعد أي إعادة تشغيل رغم إن البيانات موجودة على السحابة.
+        return { id: r.local_id, number: r.jrn_no, jrnNo: r.jrn_no, date: r.doc_date,
+          desc: r.description || "", description: r.description || "",
+          ref: r.ref_type || "", refType: r.ref_type || "", refId: r.ref_id,
+          debit: 0, credit: 0, lines: [] };
       },
       itemsTable: "journal_lines",
       itemFromCloud: function (r) {
@@ -851,6 +858,10 @@
   // تحميل كل الجداول إلى الحالة المحلية
   function loadAll() {
     W.idMap = W.idMap || {};
+    // 🆕 بناء 118: تعقّب «اكتمال التنزيل» لكل جدول كبير.
+    // أي إعادة حساب لرصيد آجل قبل ما جدول الحركة يوصل بتصفّر رصيدًا حقيقيًا
+    // (فاتورة مشتريات آجلة تختفي من مستحقات الموردين في المركز المالي) — فبتتمنع.
+    W.loadedTables = {};
     probeProductUnit(); // 🆕 نعرف هل عمود unit موجود على السحابة قبل أول رفع أصناف
     probeFixedAssetsTable(); // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
@@ -950,8 +961,11 @@
       "sale_returns", "purchase_returns"];
     var tasks = lazy.map(function (n) {
       return DATA.loadLazy(n).then(function (rows) {
+        // 🆕 بناء 118: الجدول ده وصلت فعلًا ⇒ إعادة الحساب بقت مسموحة له
+        W.loadedTables = W.loadedTables || {}; W.loadedTables[n] = true;
         rememberIds(n, rows);                            // عشان الحارس يعرف الجهاز ده شاف إيه
         if (n === "journal_entries") {
+          W.loadedTables["journal_lines"] = true;
           return DATA.loadLazy("journal_lines").then(function (lines) {
             rememberIds("journal_lines", lines);
             W.journalEntries = (rows || []).map(function (r) { return META.journal_entries.fromCloud(r); });
