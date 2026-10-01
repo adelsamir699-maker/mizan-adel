@@ -5479,67 +5479,135 @@
   }
 
   /* ================== قائمة المركز المالي ================== */
+  /* 🆕 مهمة 97: قائمة المركز المالي بثلاثة أقسام بتفاصيلها + تحقق معادلة الميزانية
+   * (1) الأصول: متداولة (نقدية/بنوك/محافظ/مخزون/عملاء) + غير متداولة (أراضٍ/مباني/معدات/سيارات) + غير ملموسة (علامة/براءة/امتياز)
+   * (2) الالتزامات: متداولة (موردون/ضريبة/قروض قصيرة) + غير متداولة (قروض طويلة الأجل)
+   * (3) حقوق الملكية: رأس المال + الأرباح المحتجزة + أرباح الدورة
+   * البنود اللي ليها مصدر حركي (خزائن/عملاء/موردون/مخزون/ضريبة) بتتحسب من الحركة نفسها، وحسابات الدليل
+   * المقابلة ليها (BS_OPERATIONAL) بتتاستنى من المجموع عشان العد مرتين ما يحصلش.
+   */
+  const BS_OPERATIONAL = ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "2.1.1", "2.1.2"];
+  const bsRound = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  // في النموذج الحالي openingBalance = الرصيد الجاري بعلامة المدين، فأرصدة الدائن بتترجع للإشارة الصح
+  const bsLedgerValue = (a) => bsRound((a.openingBalance || 0) * (a.type === "asset" || a.type === "expense" ? 1 : -1));
+  const bsHasChild = (a) => accounts.some((x) => Number(x.parentId) === Number(a.id));
+  // مطابقة المجموعة على مستوى جزء كامل: "1.1" تاخد 1.1 و 1.1.x لكن ما تاخدش 1.10
+  const bsInGroup = (code, groups) => groups.some((g) => code === g || String(code).indexOf(g + ".") === 0);
+
+  // أوراق الدليل (من غير الحسابات الأب) لنوع معيّن داخل مجموعات الكود دي، مرتبة بالكود
+  function bsLeaves(type, groups, restGroups) {
+    const leaves = accounts.filter((a) => a.isActive && a.type === type && !bsHasChild(a) && BS_OPERATIONAL.indexOf(String(a.code || "")) < 0);
+    const hit = leaves.filter((a) => bsInGroup(String(a.code || ""), groups));
+    if (restGroups) {
+      // أي ورقة خارج الأقسام المعروفة تنزل في القسم الافتراضي عشان مافيش بند يضيع من القائمة
+      // (مع استبعاد اللي إحنا لحسنها في groups عشان البند ما يتحسبش مرتين)
+      hit.push.apply(hit, leaves.filter((a) => !bsInGroup(String(a.code || ""), groups.concat(restGroups))));
+    }
+    return hit
+      .sort((a, b) => String(a.code || "").localeCompare(String(b.code || "")))
+      .map((a) => [a.nameAr + " (" + a.code + ")", bsLedgerValue(a)]);
+  }
+
+  function balanceSheetData() {
+    const cash = bsRound(treasury.filter((t) => !t.type || t.type === "cash").reduce((m, t) => m + (t.balance || 0), 0));
+    const bank = bsRound(treasury.filter((t) => t.type === "bank").reduce((m, t) => m + (t.balance || 0), 0));
+    const wallet = bsRound(treasury.filter((t) => t.type === "wallet").reduce((m, t) => m + (t.balance || 0), 0));
+    const custDebts = bsRound(customers.reduce((m, c) => m + Math.max(c.currentBalance || 0, 0), 0));
+    const invValue = bsRound(products.reduce((m, pr) => m + (pr.qty || 0) * (pr.weightedAvgCost || 0), 0));
+    const suppDebts = bsRound(suppliers.reduce((m, s) => m + Math.max(s.currentBalance || 0, 0), 0));
+    const taxLiability = bsRound(sales.reduce((m, s) => m + (s.taxAmount || 0), 0) - purchases.reduce((m, p2) => m + (p2.taxAmount || 0), 0));
+    const capital = bsRound(bsLeaves("equity", ["3.1"], ["3.2"]).reduce((m, r) => m + r[1], 0));
+    const retained = bsRound(bsLeaves("equity", ["3.2"], null).reduce((m, r) => m + r[1], 0));
+    const profits = bsRound(sales.reduce((m, s) => m + (s.grandTotal || 0), 0) - purchases.reduce((m, p2) => m + (p2.grandTotal || 0), 0) - vouchers.filter((v) => v.type === "out").reduce((m, v) => m + v.amount, 0) + vouchers.filter((v) => v.type === "in").reduce((m, v) => m + v.amount, 0));
+
+    return {
+      assets: [
+        {
+          key: "cur", title: "💵 أصول متداولة", short: "الأصول المتداولة",
+          rows: [["الصناديق النقدية", cash], ["البنوك والحسابات البنكية", bank], ["المحافظ الإلكترونية", wallet],
+            ["المخزون (بالتكلفة المرجحة)", invValue], ["مديونيات العملاء", custDebts]].concat(bsLeaves("asset", ["1.1"], ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]))
+        },
+        {
+          key: "fix", title: "🏗️ أصول غير متداولة (أراضٍ ومباني ومعدات وسيارات)", short: "الأصول غير المتداولة",
+          rows: bsLeaves("asset", ["1.2", "1.3"], null), empty: "لم تُسجَّل أصول غير متداولة بعد"
+        },
+        {
+          key: "int", title: "🧠 أصول غير ملموسة (علامة تجارية / براءة اختراع / امتياز)", short: "الأصول غير الملموسة",
+          rows: bsLeaves("asset", ["1.4", "1.5", "1.6"], null), empty: "لم تُسجَّل أصول غير ملموسة بعد"
+        }
+      ],
+      liabs: [
+        {
+          key: "cur", title: "📉 التزامات متداولة", short: "الالتزامات المتداولة",
+          rows: [["مستحقات الموردين", suppDebts], ["ضريبة المبيعات المستحقة", Math.max(taxLiability, 0)]].concat(bsLeaves("liability", ["2.1"], ["2.1", "2.2", "2.3", "2.4"]))
+        },
+        {
+          key: "non", title: "🏦 التزامات غير متداولة (قروض طويلة الأجل)", short: "الالتزامات غير المتداولة",
+          rows: bsLeaves("liability", ["2.2", "2.3", "2.4"], null), empty: "لم تُسجَّل التزامات غير متداولة بعد"
+        }
+      ],
+      equity: [
+        {
+          key: "eq", title: "🏧 حقوق الملكية", short: "حقوق الملكية",
+          rows: [["رأس المال", capital], ["الأرباح المحتجزة", retained], ["أرباح الدورة (محققة)", profits]]
+        }
+      ]
+    };
+  }
+
+  // رسم قسم كامل بنفس الشكل على الشاشة والورقة: عنوان المجموعة + بنوده + إجماليه، ثم الإجمالي العام
+  function fillBalTable(tbId, groups, grandLabel) {
+    const tb = $(tbId);
+    tb.innerHTML = "";
+    const addRow = (html, cls) => {
+      const tr = document.createElement("tr");
+      if (cls) tr.className = cls;
+      tr.innerHTML = html;
+      tb.appendChild(tr);
+    };
+    groups.forEach((g) => {
+      addRow('<td colspan="2"><b>' + esc(g.title) + '</b></td>', "bal-group");
+      if (!g.rows.length) addRow('<td colspan="2" class="bal-empty">' + esc(g.empty || "لا توجد بنود في هذا القسم") + '</td>');
+      g.rows.forEach((r) => addRow('<td>' + esc(r[0]) + '</td><td>' + fmt(r[1]) + '</td>'));
+      g.total = bsRound(g.rows.reduce((m, r) => m + r[1], 0));
+      // لو القسم مجموعة واحدة، إجمالي المجموعة هو الإجمالي العام — سطر واحد كفاية
+      if (groups.length > 1) addRow('<td>إجمالي ' + esc(g.short) + '</td><td><b>' + fmt(g.total) + '</b></td>', "bal-sub");
+    });
+    const total = bsRound(groups.reduce((m, g) => m + (g.total || 0), 0));
+    addRow('<td><b>' + esc(grandLabel) + '</b></td><td><b>' + fmt(total) + '</b></td>', "bal-total");
+    return total;
+  }
+
+  // معادلة الميزانية بالأرقام، ولو فيه فرق يظهر بلغة ودّية من غير تشخيص تقني
+  function balFormulaText(ta, tl, te) {
+    if (Math.abs(ta - (tl + te)) < 0.01) return "الميزان متوازن ✓ — الأصول " + fmt(ta) + " = الالتزامات " + fmt(tl) + " + حقوق الملكية " + fmt(te) + " ج.م";
+    return "الأصول " + fmt(ta) + " ج.م، والالتزامات مع حقوق الملكية " + fmt(bsRound(tl + te)) +
+      " ج.م — الفرق " + fmt(Math.abs(ta - tl - te)) + " ج.م. تقدر تضبطه من شاشة القيود اليومية (➖ مصروفات / ➕ إيرادات / 🔁 تحويل / قيد يدوي).";
+  }
+
   function renderBalance() {
     const d = new Date();
     const p = (x) => String(x).padStart(2, "0");
     $("#balDate").textContent = p(d.getDate()) + "/" + p(d.getMonth() + 1) + "/" + d.getFullYear();
 
-    const treasuryTotal = treasury.reduce((m, t) => m + (t.balance || 0), 0);
-    const custDebts = customers.reduce((m, c) => m + Math.max(c.currentBalance || 0, 0), 0);
-    const invValue = products.reduce((m, pr) => m + (pr.qty || 0) * (pr.weightedAvgCost || 0), 0);
-    const suppDebts = suppliers.reduce((m, s) => m + Math.max(s.currentBalance || 0, 0), 0);
-    const taxLiability = sales.reduce((m, s) => m + (s.taxAmount || 0), 0) - purchases.reduce((m, p2) => m + (p2.taxAmount || 0), 0);
-    const capital = accounts.filter((a) => a.type === "equity").reduce((m, a) => m + (a.openingBalance || 0), 0);
-    const profits = sales.reduce((m, s) => m + (s.grandTotal || 0), 0) - purchases.reduce((m, p2) => m + (p2.grandTotal || 0), 0) - vouchers.filter((v) => v.type === "out").reduce((m, v) => m + v.amount, 0) + vouchers.filter((v) => v.type === "in").reduce((m, v) => m + v.amount, 0);
+    const bs = balanceSheetData();
+    const ta = fillBalTable("#dgvBalAssets tbody", bs.assets, "إجمالي الأصول");
+    const tl = fillBalTable("#dgvBalLiab tbody", bs.liabs, "إجمالي الالتزامات");
+    const te = fillBalTable("#dgvBalEquity tbody", bs.equity, "إجمالي حقوق الملكية");
 
-    const assets = [
-      ["الصناديق والبنوك والمحافظ", treasuryTotal],
-      ["مديونيات العملاء", custDebts],
-      ["المخزون (بالتكلفة المرجحة)", invValue],
-      ["مصروفات مقدمة ومدينون آخرون", 0]
-    ];
-    const liab = [
-      ["مستحقات الموردين", suppDebts],
-      ["ضريبة المبيعات المستحقة", Math.max(taxLiability, 0)],
-      ["رأس المال وحقوق الملكية", capital],
-      ["أرباح الدورة (محققة)", Math.round(profits * 100) / 100]
-    ];
-
-    const ta = Math.round(assets.reduce((m, r) => m + r[1], 0) * 100) / 100;
-    const tl = Math.round(liab.reduce((m, r) => m + r[1], 0) * 100) / 100;
-
-    const fill = (tbodyId, rows, total) => {
-      const tb = $(tbodyId);
-      tb.innerHTML = "";
-      rows.forEach((r) => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = '<td>' + esc(r[0]) + '</td><td>' + fmt(r[1]) + '</td>';
-        tb.appendChild(tr);
-      });
-      const tr = document.createElement("tr");
-      tr.innerHTML = '<td><b>الإجمالي</b></td><td><b>' + fmt(total) + '</b></td>';
-      tr.style.fontWeight = "bold";
-      tb.appendChild(tr);
-    };
-    fill("#dgvBalAssets tbody", assets, ta);
-    fill("#dgvBalLiab tbody", liab, tl);
-
-    const ok = Math.abs(ta - tl) < 0.01;
-    $("#balResult").textContent = ok ? "الميزان متوازن ✓" : "فرق الميزان: " + fmt(Math.abs(ta - tl)) + " ج.م (يُعالج عبر القيود اليومية)";
-    $("#balResult").className = "ft-total " + (ok ? "balance-credit" : "balance-debit");
+    $("#balResult").textContent = balFormulaText(ta, tl, te);
+    $("#balResult").className = "ft-total " + (Math.abs(ta - (tl + te)) < 0.01 ? "balance-credit" : "balance-debit");
   }
 
   function printBalance() {
     $("#blpOrg").textContent = settings.orgName || "مؤسستي";
     $("#blpDate").textContent = $("#balDate").textContent;
-    const ta = $("#dgvBalAssets tbody").innerHTML;
-    const tl = $("#dgvBalLiab tbody").innerHTML;
-    $("#blpAssets").innerHTML = ta;
-    $("#blpLiab").innerHTML = tl;
+    $("#blpAssets").innerHTML = $("#dgvBalAssets tbody").innerHTML;
+    $("#blpLiab").innerHTML = $("#dgvBalLiab tbody").innerHTML;
+    $("#blpEquity").innerHTML = $("#dgvBalEquity tbody").innerHTML;
     $("#blpFoot").innerHTML = $("#balResult").textContent;
     printSection($("#balancePage"));
   }
-
   /* ================== كشوف حسابات الخزائن ================== */
   function renderTreStmt() {
     const sel = $("#cmbTreStmt");

@@ -740,8 +740,15 @@
             </table>
           </div>
           <div class="data-panel">
-            <div class="panel-title">📉 الالتزامات وحقوق الملكية</div>
+            <div class="panel-title">📉 الالتزامات</div>
             <table id="dgvBalLiab" class="dgv stmt-table">
+              <thead><tr><th>البند</th><th>القيمة (ج.م)</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="data-panel">
+            <div class="panel-title">🏧 حقوق الملكية</div>
+            <table id="dgvBalEquity" class="dgv stmt-table">
               <thead><tr><th>البند</th><th>القيمة (ج.م)</th></tr></thead>
               <tbody></tbody>
             </table>
@@ -1711,6 +1718,10 @@
         <table class="stmt-table" style="margin-top:18px">
           <thead><tr><th>البند</th><th>القيمة (ج.م)</th></tr></thead>
           <tbody id="blpLiab"></tbody>
+        </table>
+        <table class="stmt-table" style="margin-top:18px">
+          <thead><tr><th>البند</th><th>القيمة (ج.م)</th></tr></thead>
+          <tbody id="blpEquity"></tbody>
         </table>
         <div class="inv-foot-print" id="blpFoot"></div>
       </section>
