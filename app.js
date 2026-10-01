@@ -1476,36 +1476,121 @@
     return DE.featureFlag("attendanceEdit") === true;
   }
 
-  // 🔓 «الضبط الخاص بيا» + «💾 النسخ الاحتياطي»: يظهران لحساب المالك دائمًا وأبدًا.
-  // بتتردّد بعد كل بوابة/تبويب/دخول، فمافيش مسار يخفيهم تاني (طلب المالك 2026-10-01).
+  // 🔓 «الضبط الخاص بيا» + «💾 النسخ الاحتياطي»: يظهران لحساب المالك دائمًا وأبدًا،
+  // ولا يراهما أي حساب تاني إطلاقًا (طلب المالك 2026-10-01).
+  // بتتردّد بعد كل بوابة/تبويب/دخول، فمافيش مسار يخفيهم تاني.
   // الحسابات التانية: التبويب مش بس مخفي — متشال من الـ DOM (سياسة build 94).
+  //
+  // 🛡 بناء 120 (طلب المالك: «ميختفيش من عندي أبدًا زي ما حصل قبل كده»):
+  // بنحتفظ بـ **مرجع نفس العقدة** مش نسخة منها — فلما أي كود (حالي أو مستقبلي)
+  // يخفيها أو يفصلها من الشجرة، re-attach بمرجعها بيرجعها بكل الـ listeners
+  // الملزوقة فيها (لو بنيت عقدة جديدة من الصفر كان التبويب هيطلع فاضي).
+  // وسياسة الإظهار مختلفة لكل عقدة: أزرار الشريط = دايمًا ظاهرة، لكن اللوحات
+  // (bkPane / viewSettings) بتكون hidden بالتصميم وقت ما تبويب تاني نشيط —
+  // دول بنرجعهم بس لو اتفصلوا، أو لو تبويبهم نفسه هو النشيط.
+  const OWNER_TAB_NODES = [];
+  function rememberOwnerNode(node, parent, label, mode) {
+    if (!node || !parent) return;
+    if (!OWNER_TAB_NODES.some((r) => r.label === label)) {
+      OWNER_TAB_NODES.push({ node: node, parent: parent, label: label, mode: mode || "show" });
+    }
+  }
+  function ownerNodeIsHurt(rec) {
+    if (!rec) return false;
+    const el = rec.node;
+    if (el.parentNode !== rec.parent) return true;                       // اتفصلت من الشجرة
+    if (el.style && (el.style.display === "none" || el.style.visibility === "hidden")) return true;
+    if (rec.mode !== "attach" && el.hidden) return true;                 // مخفية وهي مفروض دايمًا ظاهرة
+    if (rec.mode === "attach" && el.hidden && rec.label === "bkPane") {
+      const t = document.querySelector('#setTabs .tab-btn[data-tab="sbak"]');
+      return !!(t && t.classList.contains("active"));                    // تبويبها نشيط واللوحة مخفية
+    }
+    if (rec.mode === "attach" && el.hidden && rec.label === "viewSettings") {
+      const n = document.querySelector('.nav-btn[data-view="settings"]');
+      return !!(n && n.classList.contains("active"));                    // واقف على الضبط والشاشة مخفية
+    }
+    return false;
+  }
+  function ownerSettingsNeedsRepair() {
+    return OWNER_TAB_NODES.some((rec) => ownerNodeIsHurt(rec));
+  }
+  function showOwnerNode(el) {
+    if (!el) return;
+    if (el.hidden) el.hidden = false;
+    if (el.style) {
+      if (el.style.display === "none") el.style.display = "";
+      if (el.style.visibility === "hidden") el.style.visibility = "";
+    }
+  }
+  function restoreOwnerNode(rec) {
+    if (!rec) return;
+    if (rec.node.parentNode !== rec.parent) {
+      try { rec.parent.appendChild(rec.node); } catch (e) { return; }
+    }
+    // «attach» = اللوحة: الإظهار بيحكمه التبويب النشيط، فنرجعها بس لو مكسورة فعلًا
+    if (rec.mode === "attach") { if (ownerNodeIsHurt(rec)) showOwnerNode(rec.node); }
+    else showOwnerNode(rec.node);
+  }
   function enforceOwnerSettings() {
     const isOwner = ownerHasAllAccess() || !!window.__isOwner;
     const sb = document.querySelector(".sidebar");
-    const nav = document.querySelector('.nav-btn[data-view="settings"]');
-    if (nav && sb) {
-      if (isOwner) {
-        nav.hidden = false;
-        if (!nav.parentNode) sb.appendChild(nav);
-      } else if (nav.parentNode) {
-        nav.parentNode.removeChild(nav);
-      }
-    }
-    // زرار لوحة الإدارة + تبويب النسخ الاحتياطي جوه الضبط
-    const ba = document.getElementById("btnAdmin");
-    if (ba) ba.hidden = !isOwner;
-    const bkTab = document.querySelector('#setTabs .tab-btn[data-tab="sbak"]');
-    if (bkTab) bkTab.hidden = false;
-    const bkPane = document.querySelector('#viewSettings .sett-pane[data-pane="sbak"]');
-    if (bkPane && !bkPane.parentNode && bkTab && bkTab.parentNode && bkTab.parentNode.parentNode) {
-      // لو اتشال بالغلط من الشجرة يرجّع آخر تبويب في الشريط
-      bkTab.parentNode.parentNode.appendChild(bkPane);
-    }
+    const setTabs = document.getElementById("setTabs");
+    const vSet = document.getElementById("viewSettings");
+    rememberOwnerNode(document.querySelector('.nav-btn[data-view="settings"]'), sb, "nav", "show");
+    rememberOwnerNode(document.querySelector('#setTabs .tab-btn[data-tab="sbak"]'), setTabs, "bkTab", "show");
+    rememberOwnerNode(document.querySelector('#viewSettings .sett-pane[data-pane="sbak"]'), vSet, "bkPane", "attach");
+    rememberOwnerNode(vSet, vSet && vSet.parentNode, "viewSettings", "attach");
+    const btnAd = document.getElementById("btnAdmin");
+    rememberOwnerNode(btnAd, btnAd && btnAd.parentNode, "btnAdmin", "show");
     ["btnBackupAll", "btnBackupAll2"].forEach((id) => {
       const b = document.getElementById(id);
-      if (b) b.hidden = !isOwner;
+      rememberOwnerNode(b, b && b.parentNode, id, "show");
     });
-    return isOwner;
+
+    if (!isOwner) {
+      // سياسة build 94: لغير المالك التبويب بيتشال من الشجرة مش مخفي بس
+      const navLive = document.querySelector('.nav-btn[data-view="settings"]');
+      if (navLive && navLive.parentNode) navLive.parentNode.removeChild(navLive);
+      const ba0 = document.getElementById("btnAdmin"); if (ba0) ba0.hidden = true;
+      ["btnBackupAll", "btnBackupAll2"].forEach((id) => { const b = document.getElementById(id); if (b) b.hidden = true; });
+      return false;
+    }
+
+    OWNER_TAB_NODES.forEach(restoreOwnerNode);
+    const ba = document.getElementById("btnAdmin");
+    if (ba) ba.hidden = false;
+    const bkTab = document.querySelector('#setTabs .tab-btn[data-tab="sbak"]');
+    if (bkTab) bkTab.hidden = false;
+    ["btnBackupAll", "btnBackupAll2"].forEach((id) => { const b = document.getElementById(id); if (b) b.hidden = false; });
+    armOwnerSettingsGuard();
+    return true;
+  }
+
+  // 🛡 الحارس الحيّ: أي تغيير في الشريط/التبويبات/شاشة الضبط = إعادة فحص في نفس
+  // الدورة (debounce بـ timeout 0 عشان موجة التعديلات المتتالية تتلم فيمرة واحدة).
+  // بيشتغل مرة واحدة في الجلسة، وعلى حساب المالك بس، وبلا أي loop: إعادة التظبيط
+  // تكتب في الـ DOM بس لما تكون محتاجة فعلًا (ownerSettingsNeedsRepair).
+  let ownerGuardArmed = false, ownerGuardQueued = false;
+  function armOwnerSettingsGuard() {
+    if (ownerGuardArmed || typeof MutationObserver !== "function") return;
+    const roots = [document.querySelector(".sidebar"), document.getElementById("setTabs"),
+      document.getElementById("viewSettings")].filter(Boolean);
+    if (!roots.length) return;
+    ownerGuardArmed = true;
+    try {
+      const mo = new MutationObserver(() => {
+        if (ownerGuardQueued) return;
+        ownerGuardQueued = true;
+        setTimeout(() => {
+          ownerGuardQueued = false;
+          if (!(ownerHasAllAccess() || !!window.__isOwner)) return;
+          if (ownerSettingsNeedsRepair()) enforceOwnerSettings();
+        }, 0);
+      });
+      roots.forEach((r) => mo.observe(r, {
+        childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "style", "class"]
+      }));
+    } catch (e) { /* المتصفح ما يدعمش؟ الحارس الكلاسيكي بعد كل بوابة لسه شغال */ }
   }
 
   // إخفاء أزرار الشاشات غير المفعّلة في اشتراك الشركة الحالية
