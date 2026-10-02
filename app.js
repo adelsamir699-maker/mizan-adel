@@ -240,10 +240,15 @@
     customers: ["code", "nameAr", "phone", "openingBalance"],
     suppliers: ["code", "nameAr", "phone", "openingBalance"],
     products: ["code", "barcode", "nameAr", "purchasePrice", "salePrice"],
-    txs: ["customerId", "date", "desc", "debit", "credit"]
+    txs: ["customerId", "date", "desc", "debit", "credit"],
+    // 🛡 بناء 122: مستخدم admin وسجل النشاط التجريبيين لهما توقيع كمان — عشان
+    // «شركة حقيقية = فاضية ١٠٠٪» تغطي كل المحتوى التجريبي مش أربع جداول بس.
+    users: ["username", "fullName", "password", "role", "branch"],
+    activity: ["user", "action", "desc"]
   };
   const SEED_ROWS = {
-    customers: seedCustomers, suppliers: seedSuppliers, products: seedProducts, txs: seedTxs
+    customers: seedCustomers, suppliers: seedSuppliers, products: seedProducts, txs: seedTxs,
+    users: seedUsers, activity: seedActivity
   };
   function isSystemCashRow(row) {
     if (!row) return false;
@@ -271,19 +276,24 @@
   }
   // يشيل الأسطر التجريبية من الذاكرة والكاش (بلا أي رفع للسحابة) — يرجع عدد المحذوف
   function purgeDemoForCloudSession() {
-    const pairs = [["customers", "customers"], ["suppliers", "suppliers"], ["products", "products"], ["txs", "txs"]];
-    const before = { customers: customers, suppliers: suppliers, products: products, txs: txs };
-    customers = stripSeedRows("customers", customers);
-    suppliers = stripSeedRows("suppliers", suppliers);
-    products = stripSeedRows("products", products);
-    txs = stripSeedRows("txs", txs);
-    const keys = { customers: LS_CUSTOMERS, suppliers: LS_SUPPLIERS, products: LS_PRODUCTS, txs: LS_TXS };
+    // 🛡 بناء 122: النطاق بقى كامل — جداول المحتوى الأربعة + مستخدم admin التجريبي
+    // وسجل النشاط التجريبي. الكيانات المحمية (العميل/المورد النقدي) ما تتشالش.
+    const names = ["customers", "suppliers", "products", "txs", "users", "activity"];
+    const keys = { customers: LS_CUSTOMERS, suppliers: LS_SUPPLIERS, products: LS_PRODUCTS,
+      txs: LS_TXS, users: LS_USERS, activity: LS_ACTIVITY };
+    const get = { customers: () => customers, suppliers: () => suppliers, products: () => products,
+      txs: () => txs, users: () => users, activity: () => activity };
+    const set = { customers: (v) => { customers = v; }, suppliers: (v) => { suppliers = v; },
+      products: (v) => { products = v; }, txs: (v) => { txs = v; },
+      users: (v) => { users = v; }, activity: (v) => { activity = v; } };
     let removed = 0;
     A.cleaning = true;   // منع أي رفع أثناء التنظيف (pushTable بيرجع أول حاجة)
     try {
-      pairs.forEach(([name]) => {
-        const arr = name === "customers" ? customers : name === "suppliers" ? suppliers : name === "products" ? products : txs;
-        removed += Math.max(0, before[name].length - arr.length);
+      names.forEach((name) => {
+        const cur = get[name]() || [];
+        const arr = stripSeedRows(name, cur);
+        removed += Math.max(0, cur.length - arr.length);
+        set[name](arr);
         try { localStorage.setItem(keys[name], JSON.stringify(arr)); } catch (e) { }
       });
       mirror();
@@ -294,6 +304,30 @@
   // مين كتب الحالة المحلية في المتصفح ده؟ (null = مجهولة/تجريبية)
   function localStateOrg() { try { return localStorage.getItem(LS_STATE_ORG); } catch (e) { return null; } }
   function stampStateOrg(org) { try { localStorage.setItem(LS_STATE_ORG, org || ""); } catch (e) { } }
+
+  /* ============ 🛡 بناء 122: قاعدة المالك — شركة حقيقية = فاضية ١٠٠٪ ============ */
+  // قرار المالك (02/10): «اعمل القاعده ان اى شركه تنشا فيما بعد تكون فاضية 100%
+  // لكن متحذفش بيانات موجوده». المحتوى التجريبي (أحمد محمد / شركة النور / مصطفى
+  // عبد الله / جهينة / مؤسسة الخير / PRD-00x / حركة 2026-08 / سجل admin / مستخدم
+  // admin) يبقى **للعرض المحلي بدون حساب فقط**. أي متصفح فيه دليل على شركة سحابية
+  // حقيقية يبدأ من الأساس النظامي وحده: العميل والمورد النقدي المحميّان + صندوق
+  // برصيد صفر + شجرة الحسابات، وكل جداول المحتوى فاضية.
+  function realCloudCompanyEvidence() {
+    if (A.online) return true;
+    if (localStateOrg()) return true;                                  // ختم ملكية الحالة (بناء 119)
+    try { if (localStorage.getItem(LS_SRC_ORG)) return true; } catch (e) { }
+    try { if (localStorage.getItem("mizan_session_v1")) return true; } catch (e) { } // جلسة محفوظة
+    try { if (window.DATA && DATA.org && DATA.org()) return true; } catch (e) { }
+    try { if (window.DATA && DATA.email && DATA.email()) return true; } catch (e) { }
+    return false;
+  }
+  // العرض التجريبي مسموح به بس في المتصفح اللي مافيش فيه أي أثر لحساب سحابي
+  function demoAllowedHere() { return !realCloudCompanyEvidence(); }
+  // الأساس النظامي لوحده (الكيانات المحمية بدون أي سطر تجريبي) — نسخة مستقلة
+  // عشان التعديل بعدها على المصفوفة ما يغيّش قالب الـ seed نفسه.
+  function systemOnlyRows(rows) {
+    try { return JSON.parse(JSON.stringify((rows || []).filter(isSystemCashRow))); } catch (e) { return []; }
+  }
 
   // 🛡 بناء 119: الصفر الحقيقي لشركة جديدة — نمسح كل الجداول من الذاكرة والكاش
   // (بلا أي رفع للسحابة: A.cleaning بيطفّئ pushTable) قبل سحب بيانات الشركة.
@@ -635,9 +669,13 @@
           // القديمة ما ترجّعش رصيدًا عدّله المستخدم فعلًا (شكوى: الرصيد الافتتاحي
           // صفر → يرجع 50,000). كمان اللقطة لازم تكون لنفس الشركة.
           if (A.online) return;
-          const nowOrg = (DATA && DATA.org && DATA.org() ? DATA.org().id : null);
-          if (data.orgId && nowOrg && String(data.orgId) !== String(nowOrg)) {
-            console.log("mizan: لقطة الديسك لشركة تانية — تتجاهل (بناء 119)");
+          const nowOrg = (DATA && DATA.org && DATA.org() ? DATA.org().id : null) || localStateOrg();
+          // 🛡 بناء 122: شركة حقيقية ما تقبلش لقطة ديسك مش مختومة بيها — اللقطة اللي
+          // ملهاش ختم (كتابة قديمة قبل بناء 119، أو لقطة وضع العرض المحلي) أصلًا مش
+          // ملك حد، فلازم ما تدخلش جداول شركة سحابية (كان بيكفي «لو فيها orgId»).
+          // وضع العرض المحلي البحت (nowOrg فاضي) لسه بيرجّع لقطة الديسك كما هي.
+          if (nowOrg && String(data.orgId || "") !== String(nowOrg)) {
+            console.log("mizan: لقطة الديسك مش مختومة بشركة هذا المتصفح — تتجاهل (بناء 122)");
             return;
           }
           // 🛡 الاسترجاع من ملف الديسك (مخزن مستقل عن المتصفح/الـ origin):
@@ -646,8 +684,22 @@
           // وبعد الاسترجاع نُثبّت في localStorage حتى لا تُفقد عند إعادة الفتح
           // على نفس الـ origin. (pushTable داخل دوال الحفظ no-op في الوضع المحلي.)
           let restored = false;
+          // 🛡 بناء 122: جدول المحتوى → مفتاح الـ localStorage (لإسقاط أي سطر تجريبي
+          // من لقطة الديسك قبل ما يدخل ذاكرة شركة حقيقية — لقطة قديمة من وضع العرض
+          // المحلي كانت ممكن ترجّع «جهينة/مؤسسة الخير» لشركة سحابية والنت فاصل).
+          const SEED_TABLE_BY_KEY = {};
+          Object.keys(SEED_ROWS).forEach((t) => {
+            if (t === "customers") SEED_TABLE_BY_KEY[LS_CUSTOMERS] = t;
+            if (t === "suppliers") SEED_TABLE_BY_KEY[LS_SUPPLIERS] = t;
+            if (t === "products") SEED_TABLE_BY_KEY[LS_PRODUCTS] = t;
+            if (t === "txs") SEED_TABLE_BY_KEY[LS_TXS] = t;
+          });
           const take = (diskArr, key, inMem, seedRef, assign, persist) => {
             if (!Array.isArray(diskArr) || !diskArr.length) return;
+            // 🛡 شركة حقيقية؟ أي سطر مطابق للتجريبى يتشال من اللقطة قبل الاسترجاع
+            const seedTable = key ? SEED_TABLE_BY_KEY[key] : null;
+            if (seedTable && realCloudCompanyEvidence()) diskArr = stripSeedRows(seedTable, diskArr);
+            if (!diskArr.length) return;
             // لو المفتاح كان غايب لحظة الإقلاع → البيانات الحالية seed (مش شغل
             // مستخدم حقيقي) → يُفضَّل استرجاع الديسك. ده أصلب من مقارنة المرجع
             // لأن ensureCashEntities/الحفظ قد يعيد بناء المصفوفة فيفقد التطابق.
@@ -890,19 +942,22 @@
   }
 
   function loadData() {
+    // 🛡 بناء 122: المحتوى التجريبي للعرض المحلي بدون حساب فقط — في متصفح فيه أثر
+    // لشركة سحابية حقيقية تبدأ الجداول من الأساس النظامي (فاضية عدا الكيانات المحمية).
+    const demo = demoAllowedHere();
     try {
-      customers = JSON.parse(localStorage.getItem(LS_CUSTOMERS)) || seedCustomers;
-      txs = JSON.parse(localStorage.getItem(LS_TXS)) || seedTxs;
+      customers = JSON.parse(localStorage.getItem(LS_CUSTOMERS)) || (demo ? seedCustomers : systemOnlyRows(seedCustomers));
+      txs = JSON.parse(localStorage.getItem(LS_TXS)) || (demo ? seedTxs : []);
       products = (JSON.parse(localStorage.getItem(LS_PRODUCTS)) || []).map(normalizeProduct);
-      activity = JSON.parse(localStorage.getItem(LS_ACTIVITY)) || seedActivity;
+      activity = JSON.parse(localStorage.getItem(LS_ACTIVITY)) || (demo ? seedActivity : []);
       sales = JSON.parse(localStorage.getItem(LS_SALES)) || [];
       treasury = JSON.parse(localStorage.getItem(LS_TREASURY)) || seedTreasury;
-      suppliers = JSON.parse(localStorage.getItem(LS_SUPPLIERS)) || seedSuppliers;
+      suppliers = JSON.parse(localStorage.getItem(LS_SUPPLIERS)) || (demo ? seedSuppliers : systemOnlyRows(seedSuppliers));
       supplierTxs = JSON.parse(localStorage.getItem(LS_SUP_TXS)) || seedSupplierTxs;
       purchases = JSON.parse(localStorage.getItem(LS_PURCHASES)) || seedPurchases;
       accounts = JSON.parse(localStorage.getItem(LS_ACCOUNTS)) || seedAccounts;
       journalEntries = JSON.parse(localStorage.getItem(LS_JOURNAL)) || seedJournal;
-      users = JSON.parse(localStorage.getItem(LS_USERS)) || seedUsers;
+      users = JSON.parse(localStorage.getItem(LS_USERS)) || (demo ? seedUsers : []);
       vouchers = JSON.parse(localStorage.getItem(LS_VOUCHERS)) || seedVouchers;
       saleReturns = JSON.parse(localStorage.getItem(LS_SALE_RETURNS)) || [];
       purchaseReturns = JSON.parse(localStorage.getItem(LS_PURCHASE_RETURNS)) || [];
@@ -919,18 +974,18 @@
         TAX.rate = r > 1 ? r / 100 : r;
       }
     } catch (e) {
-      customers = seedCustomers;
-      txs = seedTxs;
-      products = seedProducts.map(normalizeProduct);
-      activity = seedActivity;
+      customers = demo ? seedCustomers : systemOnlyRows(seedCustomers);
+      txs = demo ? seedTxs : [];
+      products = [];
+      activity = demo ? seedActivity : [];
       sales = [];
       treasury = seedTreasury;
-      suppliers = seedSuppliers;
+      suppliers = demo ? seedSuppliers : systemOnlyRows(seedSuppliers);
       supplierTxs = seedSupplierTxs;
       purchases = seedPurchases;
       accounts = seedAccounts;
       journalEntries = seedJournal;
-      users = seedUsers;
+      users = demo ? seedUsers : [];
       vouchers = seedVouchers;
       saleReturns = [];
       purchaseReturns = [];
@@ -940,26 +995,34 @@
       fixedAssets = [];
       settings = Object.assign({}, defaultSettings);
     }
-    if (!localStorage.getItem(LS_CUSTOMERS)) saveCustomers();
-    if (!localStorage.getItem(LS_TXS)) saveTxs();
-    if (!localStorage.getItem(LS_PRODUCTS)) saveProducts();
-    if (!localStorage.getItem(LS_ACTIVITY)) saveActivity();
-    if (!localStorage.getItem(LS_SALES)) saveSales();
-    if (!localStorage.getItem(LS_TREASURY)) saveTreasury();
-    if (!localStorage.getItem(LS_SUPPLIERS)) saveSuppliers();
-    if (!localStorage.getItem(LS_SUP_TXS)) saveSupplierTxs();
-    if (!localStorage.getItem(LS_PURCHASES)) savePurchases();
-    if (!localStorage.getItem(LS_ACCOUNTS)) saveAccounts();
-    if (!localStorage.getItem(LS_JOURNAL)) persistJournal();
-    if (!localStorage.getItem(LS_USERS)) saveUsers();
-    if (!localStorage.getItem(LS_VOUCHERS)) saveVouchers();
-    if (!localStorage.getItem(LS_SALE_RETURNS)) saveSaleReturns();
-    if (!localStorage.getItem(LS_PURCHASE_RETURNS)) savePurchaseReturns();
-    if (!localStorage.getItem(LS_EMPLOYEES)) saveEmployees();
-    if (!localStorage.getItem(LS_ATTENDANCE)) saveAttendance();
-    if (!localStorage.getItem(LS_ATT_SETTINGS)) saveAttSettings();
-    if (!localStorage.getItem(LS_FIXED_ASSETS)) saveFixedAssets();
-    if (!localStorage.getItem(LS_SETTINGS)) saveSettings();
+    // 🛡 بناء 122: ذيل «أثبّت الفاضي على القرص» ما يقعّش الإقلاع. في متصفح بيرفض
+    // لمس localStorage (وضع خاص قديم / iframe محجوب الكوكيز) كان بيطير Exception من
+    // هنا وتفضل الشاشة بيضاء. البيانات في الذاكرة تكون اتبنيت فعلًا فوق، فالمزامنة
+    // السحابية والحفظ العادي بيكملوا شغلهم — والفشل هنا محلي بحت ومش صامت (console).
+    try {
+      if (!localStorage.getItem(LS_CUSTOMERS)) saveCustomers();
+      if (!localStorage.getItem(LS_TXS)) saveTxs();
+      if (!localStorage.getItem(LS_PRODUCTS)) saveProducts();
+      if (!localStorage.getItem(LS_ACTIVITY)) saveActivity();
+      if (!localStorage.getItem(LS_SALES)) saveSales();
+      if (!localStorage.getItem(LS_TREASURY)) saveTreasury();
+      if (!localStorage.getItem(LS_SUPPLIERS)) saveSuppliers();
+      if (!localStorage.getItem(LS_SUP_TXS)) saveSupplierTxs();
+      if (!localStorage.getItem(LS_PURCHASES)) savePurchases();
+      if (!localStorage.getItem(LS_ACCOUNTS)) saveAccounts();
+      if (!localStorage.getItem(LS_JOURNAL)) persistJournal();
+      if (!localStorage.getItem(LS_USERS)) saveUsers();
+      if (!localStorage.getItem(LS_VOUCHERS)) saveVouchers();
+      if (!localStorage.getItem(LS_SALE_RETURNS)) saveSaleReturns();
+      if (!localStorage.getItem(LS_PURCHASE_RETURNS)) savePurchaseReturns();
+      if (!localStorage.getItem(LS_EMPLOYEES)) saveEmployees();
+      if (!localStorage.getItem(LS_ATTENDANCE)) saveAttendance();
+      if (!localStorage.getItem(LS_ATT_SETTINGS)) saveAttSettings();
+      if (!localStorage.getItem(LS_FIXED_ASSETS)) saveFixedAssets();
+      if (!localStorage.getItem(LS_SETTINGS)) saveSettings();
+    } catch (e) {
+      console.warn("mizan: المتصفح رفض تثبيت الحالة على القرص — البرنامج شغال في الذاكرة", e && e.message);
+    }
   }
 
   function saveProducts() {
@@ -8048,7 +8111,7 @@
       set(LS_SUP_TXS, o.supplierTxs || []);
       set(LS_ACCOUNTS, o.accounts || seedAccounts);
       set(LS_JOURNAL, o.journalEntries || []);
-      set(LS_USERS, o.users || seedUsers);
+      set(LS_USERS, o.users || (demoAllowedHere() ? seedUsers : []));
       set(LS_VOUCHERS, o.vouchers || []);
       set(LS_ACTIVITY, o.activity || []);
       loadData();
