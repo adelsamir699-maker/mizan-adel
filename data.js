@@ -741,15 +741,28 @@ function changeMyPassword(oldPass, newPass) {
       return r.data || null;
     });
   }
+  // 🛡 بناء 124: «المفتاح مش موجود» ≠ «المفتاح موجود ومصفوفته فاضية».
+  // دوال الحفظ على السحابة (mizan_client_sett_save / mizan_admin_sett_save) استبدال كامل:
+  // أي قائمة توصلها غير null ⇒ تمسح الجدول وتعيد إدخال الأسطر. والصيغة القديمة
+  // `payload.units || null` كانت بتحوّل **المصفوفة الفاضية** كمان لـ null؟ لأ —
+  // `[] || null` بيرجع `[]` (مصفوفة فاضية truthy) ⇒ أي حمولة ناقصة (بنية أوفلاين،
+  // أو تحميل فشل) كانت بتمسح الوحدات والتصنيفات والمستودعات كلها.
+  // القاعدة الجديدة: المفتاح الغائب ⇒ null (السحابة ما تلمسش الجدول)، والمصفوفة
+  // الموجودة ⇒ تُبعت كما هي، وأي قيمة تانية ⇒ null.
+  function settListArg(payload, key) {
+    if (!payload || !Object.prototype.hasOwnProperty.call(payload, key)) return null;
+    var v = payload[key];
+    return Array.isArray(v) ? v : null;
+  }
   function saveClientSett(payload) {
     return sb.rpc("mizan_client_sett_save", {
-      p_org: payload.org || null,
-      p_categories: payload.categories || null,
-      p_units: payload.units || null,
-      p_warehouses: payload.warehouses || null,
-      p_owners: payload.owners || null,
-      p_wallets: payload.wallets || null,
-      p_banks: payload.banks || null
+      p_org: (payload && payload.org) || null,
+      p_categories: settListArg(payload, "categories"),
+      p_units: settListArg(payload, "units"),
+      p_warehouses: settListArg(payload, "warehouses"),
+      p_owners: settListArg(payload, "owners"),
+      p_wallets: settListArg(payload, "wallets"),
+      p_banks: settListArg(payload, "banks")
     }).then(function (r) {
       if (r.error) throw r.error;
       return true;
@@ -779,13 +792,13 @@ function changeMyPassword(oldPass, newPass) {
   function adminSettSave(orgId, payload) {
     return sb.rpc("mizan_admin_sett_save", {
       p_org_id: orgId,
-      p_org: payload.org || null,
-      p_categories: payload.categories || null,
-      p_units: payload.units || null,
-      p_warehouses: payload.warehouses || null,
-      p_owners: payload.owners || null,
-      p_wallets: payload.wallets || null,
-      p_banks: payload.banks || null
+      p_org: (payload && payload.org) || null,
+      p_categories: settListArg(payload, "categories"),
+      p_units: settListArg(payload, "units"),
+      p_warehouses: settListArg(payload, "warehouses"),
+      p_owners: settListArg(payload, "owners"),
+      p_wallets: settListArg(payload, "wallets"),
+      p_banks: settListArg(payload, "banks")
     }).then(function (r) {
       if (r.error) throw r.error;
       return true;

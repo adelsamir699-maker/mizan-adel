@@ -7437,7 +7437,9 @@
       data[key] = list;
       root.hidden = true;
       renderSettGrid(root.__prefix, root.__type);
-      toast("تم التعديل محليًا. اضغط «حفظ جميع تبويبات» لحفظه.", "info");
+      // 🛡 بناء 124: التعديل كان «في الذاكرة بس» لحد ما المستخدم يضغط حفظ — يقفل
+      // البرنامج يضيع. دلوقتي بيتخزن على الجهاز فورًا ويترفع للسحابة لو متاحة.
+      settAutosave(root.__prefix, root.__type);
     };
   }
 
@@ -7477,14 +7479,15 @@
         if (typeof renderTreasury === "function") { try { renderTreasury(); } catch (e) { } }
       }
       renderSettGrid(prefix, type);
-      toast("تم الحذف محليًا. اضغط «حفظ جميع تبويبات» لحفظه.", "info");
+      // 🛡 بناء 124: الحذف اتأكّد عليه المستخدم ⇒ يتخزن على الجهاز ويترفع فورًا
+      settAutosave(prefix, type, { force: true });
       return;
     }
     if (!confirm("حذف «" + nm + "»؟")) return;
     list.splice(idx, 1);
     data[key] = list;
     renderSettGrid(prefix, type);
-    toast("تم الحذف محليًا. اضغط «حفظ جميع تبويبات» لحفظه.", "info");
+    settAutosave(prefix, type, { force: true });
   };
 
   // مُحوّل معرّفات حقول الضبط: شاشة العميل بادئتها «c» (csetOrgName) وشاشة المالك
@@ -7524,6 +7527,8 @@
   // قراءة حقول بيانات المنشأة / الضريبة إلى كائن org (قبل الحفظ)
   function settReadOrgFields(prefix) {
     const p = settPayload(prefix);
+    // 🛡 بناء 124: من غير حمولة (تحميل فشل) ما نبنيش org من الفراغ — كان بيرمي TypeError
+    if (!p) return null;
     const org = p.org || {};
     const v = (name) => { const el = settFieldEl(prefix, name); return el ? el.value.trim() : null; };
     // لو الحقل مش موجود في الواجهة نترك القيمة كما هي (ولا نمسحها بإرسال فاضي)
@@ -7566,14 +7571,284 @@
     try { saveSettings(); } catch (e) {}
   }
 
+  /* ============ 🛡 بناء 124: قوائم الضبط ما تضيعش وما تُمسحش (بلاغ «وحدات القياس بتتمسح») ============
+   * المالك 02/10: «وحدات القياس للشركه بتتمسح بعد ما صاحب الشركه يقفل البرنامج صلح الخطا».
+   * قياس القاعدة الحيّة (قراءة فقط، probe_units_wipe.js): شركة واحدة بس فيها وحدات
+   * (المجد: 4 أسطر من 30/9)، وباقي الشركات **صفر** — مع إن أصنافها وفواتيرها بتستعمل
+   * «قطعه» و«وحدة» (القاهرة: 3 أصناف و4 أسطر فاتورة). يعني الوحدات إمّا ما اتحفظتش
+   * أبدًا أو اتمسحت. السببان الجذريان في الكود:
+   *  (١) الإضافة/التعديل/الحذف في التبويبات كانت **في الذاكرة بس** لحد ما المستخدم
+   *      يضغط «حفظ» — التوست «تم التعديل محليًا» بيختفي، يقفل البرنامج ⇒ يضيع كله.
+   *  (٢) دوال الحفظ السحابية «استبدال كامل»: أي قائمة توصل غير null ⇒ delete + insert.
+   *      و`payload.units || null` ما كانتش بتفرّق بين «مش موجود» و«فاضي» (`[]` truthy)،
+   *      فالهيكل الفاضي اللي بيتبني وقت انقطاع الاتصال — أو لو رجعت السحابة null —
+   *      كان بيتبعت كله ⇒ مسح جماعي للقوائم الستة.
+   * القواعد الجديدة: (أ) أي تعديل يتخزن على الجهاز فورًا ويرجع يظهر بعد إعادة الفتح
+   * لحد ما يترفع؛ (ب) **مفيش قائمة تترفع للسحابة إلا لو اتحمّلت منها فعلًا**؛
+   * (ج) تفريغ قائمة فيها أسطر على السحابة محتاج تأكيدًا صريحًا بالعدد. */
+  const SETT_LIST_KEYS = ["categories", "units", "warehouses", "owners", "wallets", "banks"];
+  const SETT_LIST_AR = {
+    categories: "التصنيفات", units: "وحدات القياس", warehouses: "المستودعات",
+    owners: "الملاك والشركاء", wallets: "المحافظ الإلكترونية", banks: "الحسابات البنكية"
+  };
+  const SETT_PENDING_PREFIX = "mizan_sett_pending_v1_";
+  // حالة تحميل كل جلسة: ok=true **بس** بعد ما الحمولة جت من السحابة فعلًا
+  let settLoad = { c: { ok: false, err: "", at: null }, s: { ok: false, err: "", at: null, orgId: null } };
+  // مرجع «كان فيه كام سطر على السحابة» وقت التحميل — بيه بنكشف محاولة التفريغ
+  let settBaseline = { c: {}, s: {} };
+
+  function settCurrentOrgId() {
+    try { if (window.DATA && DATA.orgId) { const v = DATA.orgId(); if (v) return String(v); } } catch (e) { }
+    try { const o = (window.DATA && DATA.org) ? DATA.org() : null; if (o && o.id) return String(o.id); } catch (e) { }
+    try { const s = localStorage.getItem(LS_STATE_ORG); if (s) return String(s); } catch (e) { }
+    return null;
+  }
+  // مفتاح التخزين المحلي **لكل شركة على حدة** — شركة تانية ما تقرأش ولا تمسحش تعديل دي
+  function settPendingKey(prefix) {
+    const id = prefix === "s"
+      ? ("own_" + ((settLoad.s && settLoad.s.orgId) || "none"))
+      : (settCurrentOrgId() || "local");
+    return SETT_PENDING_PREFIX + id;
+  }
+  function settReadPending(prefix) {
+    try {
+      const raw = localStorage.getItem(settPendingKey(prefix));
+      if (!raw) return null;
+      const p = JSON.parse(raw);
+      return (p && typeof p === "object") ? p : null;
+    } catch (e) { return null; }
+  }
+  function settWritePending(prefix, key, list) {
+    try {
+      const all = settReadPending(prefix) || {};
+      all[key] = JSON.parse(JSON.stringify(list || []));
+      all.__at = new Date().toISOString();
+      localStorage.setItem(settPendingKey(prefix), JSON.stringify(all));
+      return true;
+    } catch (e) { return false; }
+  }
+  function settDropPending(prefix, key) {
+    try {
+      const k = settPendingKey(prefix);
+      const all = settReadPending(prefix);
+      if (!all) return;
+      if (key) delete all[key];
+      const left = SETT_LIST_KEYS.filter((x) => Array.isArray(all[x]));
+      if (!key || !left.length) localStorage.removeItem(k);
+      else localStorage.setItem(k, JSON.stringify(all));
+    } catch (e) { }
+  }
+  function settPendingKeys(prefix) {
+    const all = settReadPending(prefix) || {};
+    return SETT_LIST_KEYS.filter((k) => Array.isArray(all[k]) && all[k].length);
+  }
+
+  function settMarkLoaded(prefix, payload, orgId) {
+    settLoad[prefix] = prefix === "s"
+      ? { ok: true, err: "", at: new Date().toISOString(), orgId: orgId || (settLoad.s && settLoad.s.orgId) || null }
+      : { ok: true, err: "", at: new Date().toISOString() };
+    const b = {};
+    SETT_LIST_KEYS.forEach((k) => { b[k] = Array.isArray(payload && payload[k]) ? payload[k].length : 0; });
+    settBaseline[prefix] = b;
+    if (payload && payload.__online === undefined) payload.__online = true;
+  }
+  function settMarkFailed(prefix, err, orgId) {
+    settLoad[prefix] = prefix === "s"
+      ? { ok: false, err: String(err || ""), at: new Date().toISOString(), orgId: orgId || null }
+      : { ok: false, err: String(err || ""), at: new Date().toISOString() };
+    settBaseline[prefix] = {};
+  }
+  function settIsLoaded(prefix) { return !!(settLoad[prefix] && settLoad[prefix].ok); }
+
+  /* القائمة اللي تتبعت للسحابة، أو null = «ما تبعتش خالص» (الدالة ما تلمسش الجدول).
+   * بترفض لو الحمولة ما اتحمّلتش من السحابة، ولو هتفرّغ قائمة فيها أسطر بتطلب تأكيدًا. */
+  function settSafeList(prefix, key, opts) {
+    const why = (opts && opts.why) ? opts.why : null;
+    const p = settPayload(prefix);
+    if (!p || !Array.isArray(p[key])) { if (why) why.v = "nopayload"; return null; }
+    if (!settIsLoaded(prefix)) { if (why) why.v = "notloaded"; return null; }
+    const before = Number((settBaseline[prefix] || {})[key] || 0);
+    const now = p[key].length;
+    if (before > 0 && now === 0 && !(opts && opts.force)) {
+      const label = SETT_LIST_AR[key] || key;
+      const ok = (typeof confirm === "function")
+        ? confirm("⚠️ قائمة «" + label + "» فيها " + before + (before < 11 ? " أسطر" : " سطرًا") +
+          " محفوظة على السحابة، واللي هيتبعت دلوقتي فاضي.\n\nيعني هتتمسح كلها.\n\nلو متأكد اضغط «موافق»، ولو لأ اضغط «إلغاء» وسيب القائمة زي ما هي.")
+        : false;
+      if (!ok) { if (why) why.v = "cancelled"; return null; }
+    }
+    return p[key];
+  }
+  /* حمولة «حفظ جميع التبويبات» الآمنة: org دايمًا + القوائم اللي بس مسموح تبعتها،
+   * وأي قائمة مرفوضة بتتسجل عشان نصارح المستخدم بدل ما تضيع في صمت. */
+  function settSafePayload(prefix) {
+    const src0 = settPayload(prefix);
+    if (!src0) return { payload: {}, skipped: SETT_LIST_KEYS.slice(), noPayload: true };
+    settReadOrgFields(prefix);
+    const src = settPayload(prefix) || {};
+    const out = {};
+    const skipped = [];
+    if (src.org) out.org = src.org;
+    SETT_LIST_KEYS.forEach((k) => {
+      if (!(k in src)) return;
+      const v = settSafeList(prefix, k);
+      if (v === null) { skipped.push(k); return; }
+      out[k] = v;
+    });
+    return { payload: out, skipped: skipped, noPayload: false };
+  }
+  function settSkipText(skipped) {
+    if (!skipped || !skipped.length) return "";
+    return "ملحوظة: " + skipped.map((k) => SETT_LIST_AR[k] || k).join("، ") +
+      " ما اترفعتش لأن بياناتها ما اتحمّلتش من السحابة (منعًا لمسحها) — اضغط «🔄 تحديث» وبعدين احفظ تاني.";
+  }
+
+  function settRowSig(key, r) {
+    if (!r) return "";
+    if (r.id) return "id:" + r.id;
+    const nm = String(r.name || "").trim();
+    const extra = key === "units" ? String(r.symbol || "").trim()
+      : key === "warehouses" ? String(r.code || "").trim()
+        : String(r.account_no || "").trim();
+    return "n:" + nm + "|" + extra;
+  }
+  /* بعد تحميل ناجح: أي تعديل اتخزن على الجهاز وما اترفعش يرجع يظهر (اتحاد بالهوية/الاسم)
+   * بدل ما يضيع — وبنقول للمستخدم صراحةً إن فيه لسه ما اترفعش. */
+  function settApplyPending(prefix) {
+    const pend = settReadPending(prefix);
+    const res = { added: {}, stale: [], left: [] };
+    if (!pend) return res;
+    const p = settPayload(prefix);
+    if (!p) { res.left = settPendingKeys(prefix); return res; }
+    SETT_LIST_KEYS.forEach((k) => {
+      if (!Array.isArray(pend[k]) || !pend[k].length) return;
+      if (!Array.isArray(p[k])) p[k] = [];
+      const have = new Set(p[k].map((r) => settRowSig(k, r)));
+      const names = new Set(p[k].map((r) => String((r && r.name) || "").trim()).filter(Boolean));
+      let added = 0, missing = 0;
+      pend[k].forEach((r) => {
+        const sig = settRowSig(k, r);
+        const nm = String((r && r.name) || "").trim();
+        if (have.has(sig) || (nm && names.has(nm))) return;
+        missing++;
+        p[k].push(r);
+        have.add(sig);
+        if (nm) names.add(nm);
+        added++;
+      });
+      if (added) res.added[k] = added;
+      if (!missing) res.stale.push(k);        // كله موجود على السحابة ⇒ النسخة المحلية بقت قديمة
+      else res.left.push(k);
+    });
+    res.stale.forEach((k) => settDropPending(prefix, k));
+    return res;
+  }
+  // لافتة واحدة صريحة في شاشة الضبط (بدل التوست اللي بيختفي)
+  function settNoticeBox(prefix) {
+    return document.getElementById(prefix === "s" ? "settNoticeOwner" : "settNotice");
+  }
+  function settNotice(msg, kind, prefix) {
+    const box = settNoticeBox(prefix);
+    if (!box) return;
+    box.textContent = "";
+    box.hidden = !msg;
+    box.className = "sett-notice" + (kind ? " " + kind : "");
+    if (!msg) return;
+    box.appendChild(document.createTextNode(msg));
+  }
+  function settNoticePending(prefix) {
+    const left = settPendingKeys(prefix);
+    if (!left.length) { settNotice("", "", prefix); return; }
+    settNotice("⏳ فيه تعديلات محفوظة على الجهاز لسه ما اترفعتش للسحابة: " +
+      left.map((k) => SETT_LIST_AR[k] || k).join("، ") +
+      ". اضغط «💾 حفظ» في التبويب لرفعها — مش هتضيع لو قفلت البرنامج.", "warn", prefix);
+  }
+  /* وحدات مستعملة في الأصناف/الفواتير ومش موجودة في القائمة — بنعرضها كزرار اختياري
+   * (بلا أي كتابة صامتة على السحابة): العميل يرجّع وحداته بضغطة بعد ما كانت بتضيع. */
+  function settMissingUnits() {
+    const p = csetData;
+    const have = new Set(((p && Array.isArray(p.units)) ? p.units : [])
+      .map((u) => String((u && (typeof u === "string" ? u : (u.name || u.symbol))) || "").trim())
+      .filter(Boolean));
+    const miss = [];
+    const add = (v) => {
+      const n = String(v || "").trim();
+      if (!n || have.has(n) || miss.indexOf(n) >= 0) return;
+      miss.push(n);
+    };
+    try { (products || []).forEach((x) => add(x && x.unit)); } catch (e) { }
+    try {
+      (sales || []).forEach((s) => (s && Array.isArray(s.items) ? s.items : []).forEach((it) => add(lineUnit(it))));
+      (purchases || []).forEach((s) => (s && Array.isArray(s.items) ? s.items : []).forEach((it) => add(lineUnit(it))));
+    } catch (e) { }
+    return miss;
+  }
+  function settOfferMissingUnits() {
+    const box = document.getElementById("settNotice");
+    if (!box || !csetData || !settIsLoaded("c")) return;
+    const miss = settMissingUnits();
+    if (!miss.length) return;
+    const old = box.querySelector("#btnFixUnits");
+    if (old) old.remove();
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "btnFixUnits";
+    btn.className = "btn small blue";
+    btn.style.marginTop = "6px";
+    btn.textContent = "➕ أضف الوحدات المستعملة في الأصناف (" + miss.length + "): " + miss.join("، ");
+    btn.addEventListener("click", function () {
+      if (!Array.isArray(csetData.units)) csetData.units = [];
+      miss.forEach((n) => {
+        const dup = csetData.units.some((u) => String((u && (u.name || u.symbol)) || "").trim() === n);
+        if (!dup) csetData.units.push({ id: null, name: n, symbol: "", created_at: new Date().toISOString() });
+      });
+      renderSettGrid("c", "unit");
+      settWritePending("c", "units", csetData.units);
+      settAutosave("c", "unit");
+    });
+    box.hidden = false;
+    box.appendChild(document.createElement("br"));
+    box.appendChild(btn);
+  }
+  /* التخزين الفوري على الجهاز + الرفع للسحابة أول ما يكون متاح.
+   * دي النقطة اللي كانت بتضيّع الشغل: من غيرها أي إضافة كانت في الذاكرة بس. */
+  function settAutosave(prefix, type, opts) {
+    const def = SETT_TYPES[type];
+    const key = def ? def.key : null;
+    if (!key) return;
+    const p = settPayload(prefix);
+    const list = (p && Array.isArray(p[key])) ? p[key] : [];
+    const stored = settWritePending(prefix, key, list);
+    const canCloud = A.online && window.DATA && settIsLoaded(prefix) &&
+      ((prefix === "c" && DATA.saveClientSett) || (prefix === "s" && DATA.adminSettSave));
+    if (canCloud) { saveSettPane(prefix, type, opts); return; }
+    if (stored) {
+      settNoticePending(prefix);
+      toast("اتحفظ «" + (def.title || "") + "» على جهازك ✓ — هيترفع للسحابة أول ما تفتح والنت شغال.", "info");
+    } else {
+      toast("تعذّر الحفظ على الجهاز. افتح الشبكة واضغط «💾 حفظ» قبل ما تقفل البرنامج.", "warning");
+    }
+  }
+
   // ================== العميل: تحميل وحفظ تبويبات شركته ==================
   function loadClientSettingsForm() {
     try { renderDocRootBox(); } catch (e) {} // build 105: صندوق مسار المستندات
     if (A.online && DATA && DATA.clientSett) {
       $("#csettTabs").disabled = true;
       DATA.clientSett().then((p) => {
-        csetData = p || { org: {}, categories: [], units: [], warehouses: [], owners: [], wallets: [], banks: [] };
+        // 🛡 بناء 124: `p || skeleton` كان بيعلّم هيكلًا فاضيًا إنه «من السحابة» (__online)
+        // ⇒ أي حفظ بعده كان بيمسح القوائم الستة. الحمولة الناقصة/null = **ما اتحمّلتش**.
+        if (!p || typeof p !== "object") {
+          settMarkFailed("c", "السحابة رجعت حمولة فاضية");
+          csetData = null;
+          renderAllSettPanes("c");
+          settNotice("⚠️ تعذّر قراءة إعدادات مؤسستك من السحابة (رجعت فاضية). القوائم مقفولة للحفظ لحد ما تتحمّل — اضغط «🔄 تحديث». مافيش حاجة هتتمسح.", "err", "c");
+          try { renderCItems(); } catch (e) {}
+          return;
+        }
+        csetData = p;
         csetData.__online = true;
+        settMarkLoaded("c", csetData);
         if (csetData && csetData.org) {
           if (csetData.org.tax_enabled !== undefined && csetData.org.tax_enabled !== null) {
             applyTaxSettings(csetData.org.tax_enabled, csetData.org.tax_rate);
@@ -7586,16 +7861,44 @@
         syncTreasuryFromSett();
         // 🛡 بناء 119: المرجع اللي بنقارن بيه بعد كده = اللي ظهر قدام المستخدم الآن
         try { captureOpeningBaseline(); } catch (e) {}
+        // 🛡 بناء 124: أي تعديل محفوظ على الجهاز وما اترفعش يرجع يظهر (مش يضيع)
+        try {
+          const merged = settApplyPending("c");
+          const names = Object.keys(merged.added || {});
+          if (names.length) {
+            toast("رجّعنا تعديلاتك المحفوظة على الجهاز: " +
+              names.map((k) => (SETT_LIST_AR[k] || k) + " (+" + merged.added[k] + ")").join("، ") +
+              " — اضغط حفظ لرفعها.", "info");
+          }
+        } catch (e) {}
         renderAllSettPanes("c");
         renderCItems(); // 🆕 بناء 115: بنود المصروفات والإيرادات (من دليل الحسابات مش من payload الضبط)
-      }).catch((e) => toast("تعذّر تحميل إعدادات مؤسستك: " + (e.message || e), "error"));
+        try { settNoticePending("c"); settOfferMissingUnits(); } catch (e) {}
+      }).catch((e) => {
+        // 🛡 بناء 124: فشل التحميل = القوائم **مش محمّلة** ⇒ الحفظ ما يرفعهاش خالص (منع المسح)
+        settMarkFailed("c", (e && e.message) || e);
+        toast("تعذّر تحميل إعدادات مؤسستك: " + (e.message || e), "error");
+        settNotice("⚠️ تعذّر تحميل إعدادات مؤسستك من السحابة: " + ((e && e.message) || e) +
+          ". القوائم مقفولة للحفظ لحد ما تتحمّل — اضغط «🔄 تحديث». مافيش حاجة هتتمسح.", "err", "c");
+        try { renderAllSettPanes("c"); } catch (e2) {}
+      });
       return;
     }
+    // وضع بلا شبكة: هيكل محلي للقراءة/العرض فقط — **مش محمّل من السحابة** ⇒ ممنوع يترفع
+    settMarkFailed("c", "لا يوجد اتصال بالسحابة");
     csetData = {
       org: { name: settings.orgName || "", phone: settings.orgPhone || "", address: settings.orgAddress || "", tax_number: settings.orgVat || "", org_note: settings.orgNote || "", tax_enabled: !!settings.taxEnabled, tax_rate: Math.round((settings.taxRate || 0) * 100), tax_title: "", paper_size: settings.paperSize || "A4", warranty_terms: settings.orgWarranty || "", invoice_fields: normalizeInvFields(settings.invFields) },
       categories: [], units: [], warehouses: [], owners: [], wallets: [], banks: []
     };
-    renderAllSettPanes("c");
+    try {
+      // الوحدات/القوائم المحفوظة على الجهاز تظهر حتى من غير شبكة (بدل شاشة فاضية)
+      const merged = settApplyPending("c");
+      renderAllSettPanes("c");
+      if (settPendingKeys("c").length) settNoticePending("c");
+      else if (Object.keys(merged.added || {}).length) renderAllSettPanes("c");
+    } catch (e) {
+      renderAllSettPanes("c");
+    }
     renderCItems(); // 🆕 بناء 115
   }
 
@@ -7605,16 +7908,39 @@
   }
 
   function saveClientSettingsForm() {
-    const payload = gatherSettPayload("c");
+    // 🛡 بناء 124: الحمولة الآمنة — القوائم اللي ما اتحمّلتش من السحابة ما تتبعتش خالص
+    const safe = settSafePayload("c");
+    const payload = safe.payload;
+    if (safe.noPayload || !payload.org) {
+      settNotice("⚠️ إعدادات مؤسستك لسه ما اتحمّلتش من السحابة، فالحفظ مقفول عشان ما نضيّعش حاجة. اضغط «🔄 تحديث» وجرّب تاني.", "err", "c");
+      toast("تعذّر الحفظ: البيانات لسه ما اتحمّلتش. اضغط «🔄 تحديث».", "warning");
+      return;
+    }
     const doAfter = () => {
       applyTaxSettings(payload.org.tax_enabled, payload.org.tax_rate);
       mirrorOrgToSettings(payload.org);
       addActivity("إعدادات", "تعديل إعدادات المؤسسة");
-      toast("تم حفظ إعدادات مؤسستك بنجاح.", "success");
+      // اللي اترفع فعلًا يتشال من نسخة الجهاز، واللي لسه معلّق يفضل ظاهر في اللافتة
+      SETT_LIST_KEYS.forEach((k) => { if (Array.isArray(payload[k])) settDropPending("c", k); });
+      try {
+        const left = settPendingKeys("c");
+        if (left.length) settNoticePending("c");
+        else { settNotice(safe.skipped.length ? settSkipText(safe.skipped) : "", safe.skipped.length ? "warn" : "", "c"); }
+      } catch (e) { }
+      toast("تم حفظ إعدادات مؤسستك بنجاح." + (safe.skipped.length ? " (" + settSkipText(safe.skipped) + ")" : ""), "success");
     };
     if (A.online && DATA && DATA.saveClientSett) {
-      DATA.saveClientSett(payload).then(doAfter).catch((e) => toast("خطأ في الحفظ: " + (e.message || e), "error"));
-    } else doAfter();
+      DATA.saveClientSett(payload).then(doAfter).catch((e) => {
+        // الحفظ فشل ⇒ التعديلات تتخزن على الجهاز وتفضل مطالبة بالرفع (مش تضيع)
+        try { SETT_LIST_KEYS.forEach((k) => { if (Array.isArray(payload[k])) settWritePending("c", k, payload[k]); }); settNoticePending("c"); } catch (e2) { }
+        toast("خطأ في الحفظ: " + (e.message || e) + " — تعديلاتك محفوظة على الجهاز ومش هتضيع.", "error");
+      });
+    } else {
+      // بلا شبكة: نخزن على الجهاز فورًا عشان قفل البرنامج ما يضيّعش الشغل
+      try { SETT_LIST_KEYS.forEach((k) => { if (Array.isArray(payload[k])) settWritePending("c", k, payload[k]); }); } catch (e) { }
+      doAfter();
+      try { settNoticePending("c"); } catch (e) { }
+    }
   }
 
   // بعد حفظ أي تبويب ضبط: تحدّث القوائم الحية المفتوحة (تصنيفات/وحدات/مستودعات) فورًا
@@ -7648,17 +7974,30 @@
   }
 
   // حفظ تبويب واحد فقط (منفصل لكل قائمة): يرسل جزئه فقط دون المساس بالباقي
-  function saveSettPane(prefix, type) {
+  function saveSettPane(prefix, type, opts) {
     const isOwner = prefix === "s";
     const ttl = type === "org" ? "بيانات المنشأة" : type === "tax" ? "الضريبة والفواتير" : (SETT_TYPES[type] ? SETT_TYPES[type].title : type);
     let payload = {};
-    if (type === "org" || type === "tax") {
+    const paneKey = (type === "org" || type === "tax") ? null : (SETT_TYPES[type] ? SETT_TYPES[type].key : null);
+    if (!paneKey) {
       // يقرأ حقول المنشأة/الضريبة الحالية من الواجهة ويحدّث كائن org فقط (لا يمسّ القوائم)
-      settReadOrgFields(prefix);
-      payload.org = settPayload(prefix).org;
+      const org = settReadOrgFields(prefix);
+      if (!org) { toast("البيانات لسه ما اتحمّلتش — اضغط «🔄 تحديث».", "warning"); return; }
+      payload.org = org;
     } else {
-      const key = SETT_TYPES[type].key;
-      payload[key] = settList(prefix, type).slice();
+      // 🛡 بناء 124: القائمة ما تترفعش إلا لو اتحمّلت من السحابة فعلًا، وتفريغها محتاج تأكيدًا
+      const why = {};
+      const list = settSafeList(prefix, paneKey, { why: why, force: !!(opts && opts.force) });
+      if (list === null) {
+        if (why.v === "cancelled") { toast("تمام — سيبنا «" + ttl + "» زي ما هي وما مسحناش حاجة.", "info"); return; }
+        // ما اتحمّلتش ⇒ نخزن على الجهاز (الشغل ما يضيعش) ونمنع الرفع
+        try { settWritePending(prefix, paneKey, settList(prefix, type)); } catch (e) { }
+        if (isOwner) { toast("اختر الشركة واستنى تحميل بياناتها قبل الحفظ.", "warning"); return; }
+        settNoticePending(prefix);
+        toast("تعذّر تحميل «" + ttl + "» من السحابة، فحفظناها على جهازك ومنعنا رفعها عشان ما تُمسحش. اضغط «🔄 تحديث» وبعدين احفظ.", "warning");
+        return;
+      }
+      payload[paneKey] = list.slice();
     }
     const after = () => {
       if (payload.org) {
@@ -7667,6 +8006,8 @@
         // مفيش منطق إن إعدادات شركة تانية تدخل في إعدادات المالك المحلي.
         if (prefix === "c") mirrorOrgToSettings(payload.org);
       }
+      // 🛡 بناء 124: اللي اترفع للسحابة بنجاح يخرج من نسخة الجهاز المعلّقة
+      if (paneKey) { try { settDropPending(prefix, paneKey); settNoticePending(prefix); } catch (e) { } }
       renderAllSettPanes(prefix);
       // الضبط هو المرجع → حدّث القوائم الحية بعد الحفظ مباشرة
       try {
@@ -7685,9 +8026,15 @@
         syncOpenListsAfterSett();
         renderAllSettPanes(prefix);
         if (!document.getElementById("viewTreasury").hidden) renderTreasury();
+        if (prefix === "c" && paneKey === "units") { try { settOfferMissingUnits(); } catch (e) { } }
       } catch (e) {}
       addActivity("إعدادات", "حفظ تبويب «" + ttl + "»");
-      toast("تم حفظ «" + ttl + "» بنجاح.", "success");
+      toast("تم حفظ «" + ttl + "» على السحابة بنجاح ✓", "success");
+    };
+    // فشل الرفع ⇒ التعديل يفضل محفوظًا على الجهاز ومطلوب في اللافتة (ما يضيعش أبدًا)
+    const onErr = (e) => {
+      if (paneKey) { try { settWritePending(prefix, paneKey, payload[paneKey]); settNoticePending(prefix); } catch (e2) { } }
+      toast("خطأ في الحفظ: " + ((e && e.message) || e) + " — تعديلاتك محفوظة على جهازك ومش هتضيع.", "error");
     };
     if (isOwner) {
       const orgId = $("#setOrgPicker") ? $("#setOrgPicker").value : null;
@@ -7700,10 +8047,11 @@
           if (o) o.org_name = payload.org.name;
           if (window.__admDbl) { /* سيُعاد الجلب عند فتح شاشة الإدارة */ }
         }
-      }).catch((e) => toast("خطأ في الحفظ: " + (e.message || e), "error"));
+      }).catch(onErr);
       return;
     }
-    DATA.saveClientSett(payload).then(after).catch((e) => toast("خطأ في الحفظ: " + (e.message || e), "error"));
+    if (!(A.online && DATA && DATA.saveClientSett)) { onErr("لا يوجد اتصال بالسحابة"); return; }
+    DATA.saveClientSett(payload).then(after).catch(onErr);
   }
 
   // ================== المالك: تبويبات الشركة المحددة ==================
@@ -7758,25 +8106,48 @@
   function loadSettForOrg(orgId) {
     if (!orgId) return;
     DATA.adminSettLoad(orgId).then((p) => {
-      ssetData = p || { org: {}, categories: [], units: [], warehouses: [], owners: [], wallets: [], banks: [] };
+      // 🛡 بناء 124: نفس قاعدة العميل — حمولة ناقصة/null = «ما اتحمّلتش» ⇒ الحفظ ما يرفعش القوائم
+      if (!p || typeof p !== "object") {
+        settMarkFailed("s", "السحابة رجعت حمولة فاضية", orgId);
+        ssetData = null;
+        renderAllSettPanes("s");
+        settNotice("⚠️ تعذّر قراءة إعدادات الشركة من السحابة. القوائم مقفولة للحفظ — اختر الشركة تاني. مافيش حاجة هتتمسح.", "err", "s");
+        return;
+      }
+      ssetData = p;
+      ssetData.__online = true;
+      settMarkLoaded("s", ssetData, orgId);
+      try { settApplyPending("s"); } catch (e) { }
       renderAllSettPanes("s");
+      try { settNoticePending("s"); } catch (e) { }
       const o = ssetOrgs.find((x) => x.org_id === orgId);
       if (o) {
         const t = $("#viewSettings .view-title");
         if (t) t.textContent = "🛡️ إعدادات ونسخ احتياطي المالك — " + (o.org_name || "");
       }
-    }).catch((e) => toast("تعذّر تحميل إعدادات الشركة: " + (e.message || e), "error"));
+    }).catch((e) => {
+      settMarkFailed("s", (e && e.message) || e, orgId);
+      toast("تعذّر تحميل إعدادات الشركة: " + (e.message || e), "error");
+      settNotice("⚠️ تعذّر تحميل إعدادات الشركة: " + ((e && e.message) || e) + ". القوائم مقفولة للحفظ لحد ما تتحمّل. مافيش حاجة هتتمسح.", "err", "s");
+    });
   }
 
   function saveSettingsForm() {
     const orgId = $("#setOrgPicker") ? $("#setOrgPicker").value : null;
     if (!orgId || !ssetData) { toast("اختر الشركة أولًا.", "warning"); return; }
-    const payload = gatherSettPayload("s");
+    // 🛡 بناء 124: نفس قاعدة العميل — القوائم اللي ما اتحمّلتش ما تتبعتش (منع المسح الجماعي)
+    const safe = settSafePayload("s");
+    const payload = safe.payload;
     DATA.adminSettSave(orgId, payload).then(() => {
       addActivity("إعدادات", "تعديل إعدادات شركة (المالك)");
-      toast("تم حفظ تبويبات الشركة بنجاح.", "success");
+      SETT_LIST_KEYS.forEach((k) => { if (Array.isArray(payload[k])) settDropPending("s", k); });
+      toast("تم حفظ تبويبات الشركة بنجاح." + (safe.skipped.length ? " (" + settSkipText(safe.skipped) + ")" : ""), "success");
+      try { settNoticePending("s"); } catch (e) { }
       renderAllSettPanes("s");
-    }).catch((e) => toast("خطأ في الحفظ: " + (e.message || e), "error"));
+    }).catch((e) => {
+      try { SETT_LIST_KEYS.forEach((k) => { if (Array.isArray(payload[k])) settWritePending("s", k, payload[k]); }); settNoticePending("s"); } catch (e2) { }
+      toast("خطأ في الحفظ: " + ((e && e.message) || e) + " — التعديلات محفوظة على الجهاز ومش هتضيع.", "error");
+    });
   }
 
   // رسم كل ألواح التبويبات لجلسة معيّنة (c/s)
@@ -7960,7 +8331,10 @@
     "db/supabase-upgrade-38-backup-fixed-assets.sql", "db/supabase-upgrade-39-product-unit.sql",
     "db/supabase-upgrade-42-owner-always-open.sql",
     // ترقية ٤٣ (تحصين دوال النسخ) اتنفّذت على السحابة 02/10 ≈12:00 بأمر المالك «نفّذ» ⇒ بقت جزء من نسخة النشر
-    "db/supabase-upgrade-43-backup-hardening.sql"];
+    "db/supabase-upgrade-43-backup-hardening.sql",
+    // ترقية 44 (منع الزرع التجريبي في دالة إنشاء الشركة: صندوق رئيسي وحساب رأس مال برصيد صفر فقط)
+    // اتنفّذت على السحابة 02/10 بأمر المالك «نفذ منع الزرع» ⇒ جزء من نسخة النشر (سيرفر جديد = نفس القاعدة)
+    "db/supabase-upgrade-44-no-demo-seed.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
   var DEPLOY_DB_EXCLUDE = {
     // فاضي من 02/10: كل ترحيلات db/ المنشورة داخلة في نسخة النشر (٤٣ انضمّت بعد تنفيذها)
@@ -9006,7 +9380,18 @@
         const type = btn.getAttribute("data-" + prefix + action) || "cat";
         btn.addEventListener("click", () => {
           const list = settList(prefix, type);
-          if (action === "ref") renderSettGrid(prefix, type);
+          // 🛡 بناء 124: «🔄 تحديث» = إعادة تحميل من السحابة فعلًا (كان رسم محلي بس) —
+          // ده الزرار اللي بنوجّه المستخدم ليه لما التحميل يفشل والحفظ يتقفل.
+          if (action === "ref") {
+            renderSettGrid(prefix, type);
+            try {
+              if (prefix === "c") loadClientSettingsForm();
+              else {
+                const oid = $("#setOrgPicker") ? $("#setOrgPicker").value : null;
+                if (oid) loadSettForOrg(oid);
+              }
+            } catch (e) { }
+          }
           else if (action === "add") settOpenEditor(prefix, type, null);
           else if (action === "edit") {
             if (!list.length) { toast("لا توجد بيانات للتعديل.", "info"); return; }
@@ -9019,7 +9404,8 @@
             const p = settPayload(prefix);
             p[SETT_TYPES[type].key] = list;
             renderSettGrid(prefix, type);
-            toast("تم الحذف محليًا. اضغط «حفظ جميع تبويبات» لحفظه.", "info");
+            // 🛡 بناء 124: الحذف من الشريط كمان يتخزن على الجهاز ويترفع فورًا
+            settAutosave(prefix, type, { force: true });
           }
         });
       });

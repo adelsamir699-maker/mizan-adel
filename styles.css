@@ -1649,3 +1649,16 @@ td.c-tax.tax-hidden {
 
 
 
+
+/* ============ 🛡 بناء 124: لافتة حالة قوائم الضبط (وحدات/تصنيفات/مستودعات…) ============
+ * التوست بيختفي بعد ثواني، فالحالة المهمة (تعديلات لسه ما اترفعتش / تحميل فشل)
+ * بتعيش في لافتة ثابتة لحد ما تتحل. الألوان من متغيرات الثيم نفسها — بلا أي hex جديد. */
+.sett-notice{
+  margin:10px 0; padding:10px 12px; border-radius:10px;
+  font-size:13px; font-weight:700; line-height:1.7;
+  border:1px solid var(--border); background:var(--bg);
+  color:var(--text-primary);
+}
+.sett-notice.warn{ border-color:var(--warning); background:rgba(245,158,11,.12); }
+.sett-notice.err{ border-color:var(--danger); background:rgba(239,68,68,.1); }
+.sett-notice .btn{ margin-inline-start:6px; }
