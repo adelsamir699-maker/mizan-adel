@@ -1509,7 +1509,13 @@
   }
 
   /* ================== الروترة بين الشاشات ================== */
-  const BUILT_VIEWS = ["dashboard", "customers", "products", "sales", "purchases", "suppliers", "returns", "returnsReg", "treasury", "accounts", "journal", "balance", "treasuryStatements", "reports", "users", "audit", "settings", "clientSettings", "attendance"];
+  const BUILT_VIEWS = ["dashboard", "customers", "products", "sales", "purchases", "suppliers", "returns", "returnsReg", "treasury", "accounts", "journal", "balance", "treasuryStatements", "reports", "users", "audit", "settings", "clientSettings", "attendance",
+    // 🆕 بناء 125: دول كانوا **ناقصين من القائمة** فزرار «كشف حساب الحسابات»
+    // (build 117) وزرار «الأصول الثابتة» (build 117) كانوا بيرموا «قيد التطوير»
+    // بدل ما يفتحوا الشاشة — باگ حيّ على 124، اتصلّح هنا وبالحارس الثابت.
+    "accStatement", "fixedAssets",
+    // 💬 الدردشة الداخلية (بند 16)
+    "chat"];
 
   // حساب المستخدم الحالي — المصدر الموثوق هو mizan_access (فيه role + is_superadmin)
   // لأن getProfile() قد يكون null أو ناقصًا لحظة الدخول.
@@ -1574,6 +1580,11 @@
   // المالك العام وصاحب الشركة مسموح لهما دائمًا لأن البيانات شركتهما.
   function canUseView(name) {
     var DE = window.DATA || {};
+    // 💬 الدردشة (بناء 125): الاستثناء الوحيد من «المالك يفتح أي شاشة» هنا — ومش
+    // قفل على المالك، دي حالة إن جدول الرسايل نفسه لسه مش على السحابة (ترقية ٤٥
+    // مستنية أمره الصريح). إظهار تبويب فاضي = أمان كاذب، فالتبويب بيظهر لوحده
+    // أول ما الفحص السحابي يلاقي الجدول — لأي حساب بما فيهم المالك نفسه.
+    if (name === "chat") return chatAvailable();
     // 🔓 المالك (عادل) يفتح أي شاشة بلا استثناء — قرار المالك build 119
     if (ownerHasAllAccess()) return true;
     if (name === "clientSettings") {
@@ -1840,6 +1851,12 @@
       toast("شاشة «القيود اليومية» متاحة لصاحب الشركة والمالك فقط", "error");
       name = "dashboard";
     }
+    // 🆕 بناء 125: «الدردشة الداخلية» — لأي حساب غير سحابي، أو قبل ما ترقية ٤٥
+    // تتنفّذ على السحابة، الشاشة مش بتفتح أصلًا (حتى لو حد ناداها من الكونسول).
+    if (name === "chat" && !chatAvailable()) {
+      toast("الدردشة الداخلية مش متاحة على هذا الحساب دلوقتي", "error");
+      name = "dashboard";
+    }
     document.querySelectorAll(".view[data-id]").forEach((v) => {
       v.hidden = v.dataset.id !== name;
     });
@@ -1891,6 +1908,11 @@
     if (name === "audit") renderAudit();
     if (name === "settings") loadSettingsForm();
     if (name === "clientSettings") loadClientSettingsForm();
+    // 🆕 بناء 125: الدردشة — الـ polling بيبدأ مع فتح الشاشة وبيرجع أول ما تتقفل
+    // (مافيش Realtime على السحابة، وبنرفض نفضل نخبط على قاعدة كل ١٢ ثانية وإحنا
+    // واقفين على شاشة تانية).
+    if (name === "chat") renderChat();
+    if (name !== "chat") chatStopPoll();
     // 🆕 بناء 119: كان الشرط بيقرأ window.refreshPresenceCard (محدّتش معروفة) ⇒ السطر
     // ده كان ما ينفّذش حاجة. الدالتين في نفس النطاق، فنناديهم على طول.
     if (name === "admin") { startPresenceView(); refreshPresenceCard(); }
@@ -8337,7 +8359,9 @@
     "db/supabase-upgrade-44-no-demo-seed.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
   var DEPLOY_DB_EXCLUDE = {
-    // فاضي من 02/10: كل ترحيلات db/ المنشورة داخلة في نسخة النشر (٤٣ انضمّت بعد تنفيذها)
+    // ترقية ٤٥ (جدول messages + سياسات الدردشة) **لسه ما اتنفذتش** على Supabase — مستنية أمر المالك الصريح.
+    // سيرفر جديد ما ينفعش ياخد جدول دردشة فاضي والتطبيق افتحها: التبويب نفسها مقفولة عندهم لحد التنفيذ.
+    "db/supabase-upgrade-45-chat.sql": "لم تُنفَّذ على السحابة بعد (بأمر المالك) — خارج نسخة النشر"
   };
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "categories", "customer_txs", "customers",
@@ -9651,6 +9675,11 @@ const pwEye = document.getElementById("btnShowPass");
     csetData = null;
     ssetData = null;
     lastOrgMembers = null;
+    // 💬 بناء 125: الدردشة في الذاكرة فقط (ممنوع تخزينها على الجهاز أصلاً)،
+    // فأي خروج أو رجوع لشاشة الدخول = تفضير كامل + إيقاف الـ polling.
+    // كل مسارات الخروج بتنادي showLogin() → resetSessionState()، فالسطر ده
+    // وحده يغطيها كلها (مافيش رسايل شركة تانية أو حساب تاني يفضل مفتوح).
+    chatWipe("session");
     // خريطة معرّفات السحابة تخص الشركة السابقة → نفضيها
     if (window.MIZAN_STATE) window.MIZAN_STATE.idMap = {};
     // 🔑 build 119: الحالة المحلية بقت «غير مختومة» = مجهولة الملكية ⇒ الدخول
@@ -9687,6 +9716,10 @@ const pwEye = document.getElementById("btnShowPass");
       // اللي داخلين ليها (فاضية لحد ما السحابة تنزل) — كذا أي نداء تاني
       // لحارس العزل ما يمسحش بيانات الشركة اللي اتسحبت للتو.
       stampStateOrg(org);
+      // 💬 بناء 125: رسايل الشركة السابقة (لو الشاشة كانت مفتوحة) ما تفضلش في الذاكرة،
+      // والـ polling ما يفضلش يخبط للسحابة بهوية شركة جديدة وختم قديم.
+      // (بعد الختم عمدًا — ترتيب «المسح ثم الختم» بتاع بناء 119 ما يتكسرش.)
+      chatWipe("org");
       toast(owned ? "تم مسح بيانات الشركة السابقة من هذا المتصفح"
                   : "بدء نظيف: مفيش أي بيانات شركة تانية على هذا المتصفح", "ok");
     }
@@ -11063,6 +11096,440 @@ const pwEye = document.getElementById("btnShowPass");
     $("#atManOut").disabled = !canEdit;
     attSwitchTab(attTab);
     attRenderToday();
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════
+     💬 الدردشة الداخلية (بناء 125 — بند 16)
+
+     القاعدة الحاكمة: **البوابة على السحابة (RLS)** والكود ده واجهة بس.
+       · «محدش يشوف رسايل مش مبعوته له» و«محدش يشوف عضوات شركة مش شركته»
+         و«عادل مش ظاهر للموظفين» = سياسة SELECT على messages + دالة
+         public.mizan_chat_peer (ترقية ٤٥). لو حد عدّل الكود ده في الكونسول
+         الشبكة نفسها ما ترجّعش حاجة ملكوش — فمفيش هنا أي «فلترة خصوصية»
+         بتتعمل يدويًا وممكن تنسي (كانت هتبقى أمان كاذب).
+       · مافيش أي تخزين للرسايل: لا localStorage ولا لقطة ديسك ولا نسخة
+         احتياطية (طلب المالك: «الدردشة لا تدخل النسخ الاحتياطي»). كل حاجة
+         بتعيش في CHAT في الذاكرة وبتتمسح عند الخروج/تبديل الشركة.
+       · مافيش Realtime: قياس 02/10 = صفر جدول في publication
+         supabase_realtime ⇒ polling كل ١٢ ثانية **وقت ما الشاشة مفتوحة بس**،
+         وبيقطع أول ما تقفل أو تخرج أو تبدّل شركة.
+       · أي زعلة غير «الجدول مش موجود» بتظهر بلغة ودّية بلا تشخيص تقني
+         (درس build 108: صمت الفشل ممنوع — وخوف العميل ممنوع).
+     ══════════════════════════════════════════════════════════════════════ */
+  var CHAT = {
+    bound: false,          // أربطة الأحداث تُعمل مرة واحدة عند أول فتح
+    peers: [],             // المخاطَبون: السحابة هي اللي قرّرت مين فيهم
+    peerId: null,          // المحادثة المفتوحة دلوقتي
+    msgs: [],              // رسايل المحادثة المفتوحة (ذاكرة فقط)
+    unread: {},            // peerId -> عدد الرسايل الجديدة
+    timer: null,           // الـ polling
+    filter: "",            // بحث بالاسم
+    busy: false,           // نداء حيّ — يمنع التراكب
+    scopeOverride: null    // سويتش المالك بعد ما يتحفظ (قبل ما الصفحة تتحدّث)
+  };
+  var CHAT_POLL_MS = 12000;
+  var CHAT_MSG_LIMIT = 200;
+
+  // الدردشة سحابية خالص: الحساب المحلي/التجريبي ملوش دردشة، ولازم شركة حقيقية.
+  function chatCloudAcct() {
+    var DE = window.DATA || {};
+    try {
+      if (!(DE.isOnline && DE.isOnline())) return false;
+      if (!DE.orgId || !DE.orgId()) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // متاح = حساب سحابي + جدول messages اتعمل فعلًا على السحابة (probeChatTable).
+  // لو الترقية لسه ما اتنفّذتش التبويب كله مخفي — أحسن من شاشة فاضية توحي
+  // إن الرسايل بتوصل وهي ما بتوصلش (أمان كاذب).
+  function chatAvailable() {
+    if (!chatCloudAcct()) return false;
+    var CL = window.CLOUD || {};
+    if (!CL.chatReady) return false;
+    try { return !!CL.chatReady(); } catch (e) { return false; }
+  }
+
+  function chatMyId() {
+    var CL = window.CLOUD || {};
+    try { return CL.chatMyId ? CL.chatMyId() : null; } catch (e) { return null; }
+  }
+
+  function chatPeerById(id) {
+    var out = null;
+    (CHAT.peers || []).forEach(function (p) { if (p && p.id === id) out = p; });
+    return out;
+  }
+
+  function chatPeerName(p) {
+    if (!p) return "زميل";
+    var n = String(p.full_name || "").trim();
+    if (n) return n;
+    if (p.org_name) return String(p.org_name);
+    return "زميل";
+  }
+
+  // سويتش المالك (عادل) وحده: أصحاب المؤسسات (افتراضي) ⇄ كل المستخدمين.
+  // الحالة الجاية من صفّه على القاعدة (profiles.features.chatScope) — مش من الجهاز.
+  function chatScope() {
+    if (CHAT.scopeOverride === "all" || CHAT.scopeOverride === "owners") return CHAT.scopeOverride;
+    var DE = window.DATA || {};
+    var p = null;
+    try { p = (DE.getProfile && DE.getProfile()) || (DE.me && DE.me()); } catch (e) { p = null; }
+    var f = p && p.features;
+    if (typeof f === "string") { try { f = JSON.parse(f); } catch (e) { f = null; } }
+    return (f && f.chatScope === "all") ? "all" : "owners";
+  }
+  function chatCanSwitchScope() { return isSuperAcct(); }
+  function chatScopeLabel() {
+    return chatScope() === "all" ? "👥 العرض: كل المستخدمين" : "🏢 العرض: أصحاب المؤسسات";
+  }
+
+  function chatHint(msg, kind) {
+    var el = $("#chatSendHint");
+    if (!el) return;
+    el.textContent = msg || "";
+    el.className = "chat-mini" + (kind === "err" ? " chat-err" : kind === "ok" ? " chat-ok" : "");
+  }
+
+  function chatRenderPeers() {
+    var box = $("#chatPeerList");
+    if (!box) return;
+    var f = normalizeAr(CHAT.filter || "").trim();
+    var all = CHAT.peers || [];
+    var list = all.filter(function (p) {
+      if (!f) return true;
+      return normalizeAr(chatPeerName(p)).indexOf(f) >= 0 ||
+             normalizeAr(String(p.org_name || "")).indexOf(f) >= 0;
+    });
+    var cnt = $("#chatPeerCount");
+    if (cnt) cnt.textContent = list.length ? String(list.length) : "";
+    if (!all.length) {
+      box.innerHTML = '<div class="chat-none">مافيش زملاء متاحين للدردشة دلوقتي.</div>';
+      return;
+    }
+    if (!list.length) {
+      box.innerHTML = '<div class="chat-none">مالقيش اسم يطابق بحثك.</div>';
+      return;
+    }
+    box.innerHTML = list.map(function (p) {
+      var un = Number(CHAT.unread[p.id]) || 0;
+      return '<button type="button" class="chat-peer' + (p.id === CHAT.peerId ? " on" : "") +
+        '" data-peer="' + esc(p.id) + '">' +
+        '<span class="chat-peer-name">' + esc(chatPeerName(p)) +
+        (p.is_superadmin ? ' <span class="chat-tag">المالك</span>' : (p.is_owner ? ' <span class="chat-tag">صاحب المؤسسة</span>' : "")) +
+        "</span>" +
+        (p.org_name ? '<span class="chat-peer-org">' + esc(p.org_name) + "</span>" : "") +
+        (un ? '<span class="chat-peer-unread">' + (un > 99 ? "99+" : un) + "</span>" : "") +
+        "</button>";
+    }).join("");
+  }
+
+  function chatTimeOf(d) {
+    if (!d) return "";
+    var x = new Date(d);
+    if (isNaN(x.getTime())) return "";
+    var p = function (n) { return String(n).padStart(2, "0"); };
+    return p(x.getDate()) + "/" + p(x.getMonth() + 1) + " " + p(x.getHours()) + ":" + p(x.getMinutes());
+  }
+
+  function chatUpdateSend() {
+    var btn = $("#btnChatSend");
+    var ta = $("#txtChatMsg");
+    if (!btn) return;
+    var hasTxt = !!(ta && String(ta.value || "").trim().length);
+    btn.disabled = !(CHAT.peerId && hasTxt && chatAvailable());
+  }
+
+  function chatRenderThread() {
+    var box = $("#chatThread");
+    if (!box) return;
+    var title = $("#chatPeerTitle");
+    var peer = chatPeerById(CHAT.peerId);
+    if (title) {
+      title.textContent = peer
+        ? ("💬 " + chatPeerName(peer) + (peer.org_name ? " — " + peer.org_name : ""))
+        : "اختار زميل من القائمة عشان تبدأ المحادثة";
+    }
+    if (!CHAT.peerId) {
+      box.innerHTML = '<div class="chat-none">اختار زميل من القائمة على اليمين.</div>';
+      chatUpdateSend();
+      return;
+    }
+    if (!(CHAT.msgs || []).length) {
+      box.innerHTML = '<div class="chat-none">مافيش رسايل بعد — اكتب أول رسالة.</div>';
+      chatUpdateSend();
+      return;
+    }
+    var me = chatMyId();
+    box.innerHTML = CHAT.msgs.map(function (m) {
+      var mine = String(m.from_user) === String(me);
+      return '<div class="chat-msg ' + (mine ? "me" : "them") + (m.is_private ? " priv" : "") + '">' +
+        '<div class="chat-bubble">' + esc(m.body).replace(/\r?\n/g, "<br>") + "</div>" +
+        '<div class="chat-meta">' + chatTimeOf(m.created_at) +
+        (m.is_private ? " 🔒" : "") + (mine ? (m.read_at ? " ✓✓" : " ✓") : "") +
+        "</div></div>";
+    }).join("");
+    box.scrollTop = box.scrollHeight;
+    chatUpdateSend();
+  }
+
+  function chatUpdateBadge() {
+    var b = $("#chatBadge");
+    if (!b) return;
+    if (!chatAvailable()) { b.hidden = true; b.textContent = ""; return; }
+    var n = 0;
+    Object.keys(CHAT.unread || {}).forEach(function (k) { n += Number(CHAT.unread[k]) || 0; });
+    b.hidden = n <= 0;
+    b.textContent = n > 99 ? "99+" : String(n);
+  }
+
+  // قائمة المخاطَبين — السحابة بتطبّق mizan_chat_peer، فاللي يوصل هنا أصلي مش مُنتقى
+  function chatLoadPeers() {
+    var CL = window.CLOUD || {};
+    if (!CL.chatPeers || !chatAvailable()) return Promise.resolve();
+    return Promise.resolve(CL.chatPeers()).then(function (r) {
+      if (!r || !r.ok || r.missing) {
+        if (r && r.missing) chatShowUnavailable();
+        return;
+      }
+      CHAT.peers = r.peers || [];
+      chatRenderPeers();
+      chatRenderThread();
+    }).catch(function () { });
+  }
+
+  // عدّاد الجديد لكل مخاطَب (رسالتي أنا اللي لسه ما قريتهاش)
+  function chatPollUnread() {
+    var CL = window.CLOUD || {};
+    if (!CL.chatUnread || !chatAvailable()) return Promise.resolve();
+    return Promise.resolve(CL.chatUnread()).then(function (r) {
+      if (!r || !r.ok || r.missing) { if (r && r.missing) chatShowUnavailable(); return; }
+      var counts = {};
+      (r.rows || []).forEach(function (m) {
+        counts[m.from_user] = (Number(counts[m.from_user]) || 0) + 1;
+      });
+      CHAT.unread = counts;
+      chatRenderPeers();
+      chatUpdateBadge();
+    }).catch(function () { });
+  }
+
+  function chatMarkIncomingRead() {
+    var CL = window.CLOUD || {};
+    if (!CL.chatMarkRead) return;
+    var me = String(chatMyId() || "");
+    var ids = (CHAT.msgs || []).filter(function (m) {
+      return String(m.to_user) === me && !m.read_at;
+    }).map(function (m) { return m.id; });
+    if (!ids.length) return;
+    CHAT.unread[CHAT.peerId] = 0;
+    chatRenderPeers();
+    chatUpdateBadge();
+    Promise.resolve(CL.chatMarkRead(ids)).catch(function () { });
+  }
+
+  function chatOpenPeer(id) {
+    if (!id || !chatAvailable()) return;
+    CHAT.peerId = id;
+    CHAT.msgs = [];
+    chatRenderPeers();
+    chatRenderThread();
+    var CL = window.CLOUD || {};
+    return Promise.resolve(CL.chatThread(id, CHAT_MSG_LIMIT)).then(function (r) {
+      if (!r) return;
+      if (r.missing) { chatShowUnavailable(); return; }
+      if (!r.ok) { chatHint("الرسايل ما وصلتش — دوس «تحديث» بعد شوية", "err"); return; }
+      CHAT.msgs = r.rows || [];
+      chatRenderThread();
+      chatMarkIncomingRead();
+    }).catch(function () { chatHint("الرسايل ما وصلتش — دوس «تحديث» بعد شوية", "err"); });
+  }
+
+  // تحديث هادي وقت الـ polling: ما يلمسش خانة الكتابة، ولو المستخدم قاري
+  // رسايل قديمة (مرفوع لفوق) التمرير ما يرتجعوش — يفضل في مكانه.
+  function chatReloadThread() {
+    if (!CHAT.peerId || !chatAvailable()) return Promise.resolve();
+    var CL = window.CLOUD || {};
+    var box = $("#chatThread");
+    var prevTop = box ? box.scrollTop : 0;
+    var atBottom = !box || (box.scrollHeight - box.scrollTop - box.clientHeight) < 40;
+    return Promise.resolve(CL.chatThread(CHAT.peerId, CHAT_MSG_LIMIT)).then(function (r) {
+      if (!r || !r.ok || r.missing) return;
+      var before = (CHAT.msgs || []).length;
+      CHAT.msgs = r.rows || [];
+      chatRenderThread();               // بيرسم ويرجع لأسفل
+      if (!atBottom && box) box.scrollTop = prevTop;
+      if (CHAT.msgs.length > before) chatMarkIncomingRead();
+    }).catch(function () { });
+  }
+
+  function chatSendMsg() {
+    var ta = $("#txtChatMsg"), priv = $("#chkChatPrivate");
+    if (!ta) return;
+    if (!chatAvailable()) {
+      chatHint("الدردشة محتاجة اتصال بالإنترنت وحساب على السحابة", "err");
+      return;
+    }
+    if (!CHAT.peerId) { chatHint("اختار زميل الأول", "err"); return; }
+    var txt = String(ta.value || "").trim();
+    if (!txt) { chatHint("اكتب الرسالة الأول", "err"); chatUpdateSend(); return; }
+    var btn = $("#btnChatSend");
+    if (btn) btn.disabled = true;
+    var CL = window.CLOUD || {};
+    return Promise.resolve(CL.chatSend(CHAT.peerId, txt, !!(priv && priv.checked))).then(function (r) {
+      if (!r || !r.ok) {
+        chatHint((r && r.error) || "الرسالة ما وصلتش — جرّب تاني", "err");
+        chatUpdateSend();
+        return;
+      }
+      ta.value = "";
+      if (r.row) CHAT.msgs.push(r.row);
+      chatRenderThread();
+      chatHint("", "");
+      chatUpdateSend();
+    }).catch(function () {
+      chatHint("الرسالة ما وصلتش — جرّب تاني", "err");
+      chatUpdateSend();
+    });
+  }
+
+  // سويتش المالك: أصحاب المؤسسات فقط ⇄ كل المستخدمين (الدالة على السحابة بترفض أي حساب تاني)
+  function chatFlipScope() {
+    if (!chatCanSwitchScope() || !chatAvailable()) {
+      toast("هذا الخيار لحساب المالك", "error");
+      return;
+    }
+    var next = chatScope() === "all" ? "owners" : "all";
+    var CL = window.CLOUD || {};
+    Promise.resolve(CL.chatSetScope(next)).then(function (r) {
+      if (!r || !r.ok) {
+        if (r && r.missing) { chatShowUnavailable(); return; }
+        chatHint("السويتش ما اتحفظش — جرّب تاني", "err");
+        return;
+      }
+      CHAT.scopeOverride = (r.scope === "all" || r.scope === "owners") ? r.scope : next;
+      CHAT.peerId = null;
+      CHAT.msgs = [];
+      CHAT.peers = [];
+      var sw = $("#btnChatScope");
+      if (sw) sw.textContent = chatScopeLabel();
+      chatHint(next === "all" ? "بقوا كل المستخدمين يظهروا في القائمة" : "رجّعنا القائمة لأصحاب المؤسسات", "ok");
+      chatRenderPeers();
+      chatRenderThread();
+      chatLoadPeers().then(chatPollUnread);
+      // نحدّث صفحتنا من السحابة عشان القراءة الجاية تبقى من القاعدة مش من الذاكرة
+      var DE = window.DATA || {};
+      if (DE.loadProfile) Promise.resolve(DE.loadProfile()).catch(function () { });
+    }).catch(function () { chatHint("السويتش ما اتحفظش — جرّب تاني", "err"); });
+  }
+
+  function chatShowUnavailable() {
+    var cols = $("#chatCols"), note = $("#chatUnavailable");
+    if (cols) cols.hidden = true;
+    if (note) note.hidden = false;
+    chatStopPoll();
+    chatUpdateBadge();
+  }
+
+  function chatTick() {
+    var v = $("#viewChat");
+    if (!v || v.hidden || !chatAvailable()) { chatStopPoll(); return; }
+    if (CHAT.busy) return;
+    CHAT.busy = true;
+    Promise.resolve()
+      .then(function () { return chatLoadPeers(); })
+      .then(function () { return chatPollUnread(); })
+      .then(function () { return chatReloadThread(); })
+      .catch(function () { })
+      .then(function () { CHAT.busy = false; });
+  }
+
+  function chatStartPoll() {
+    chatStopPoll();
+    if (!chatAvailable()) return;
+    CHAT.timer = setInterval(chatTick, CHAT_POLL_MS);
+  }
+  function chatStopPoll() {
+    if (CHAT.timer !== null && typeof CHAT.timer !== "undefined") {
+      clearInterval(CHAT.timer);
+      CHAT.timer = null;
+    }
+  }
+  // مسح كامل لحالة الدردشة من الذاكرة (خروج / تبديل شركة) — مافيش بقايا رسايل
+  function chatWipe(reason) {
+    chatStopPoll();
+    CHAT.peers = [];
+    CHAT.msgs = [];
+    CHAT.peerId = null;
+    CHAT.unread = {};
+    CHAT.filter = "";
+    CHAT.busy = false;
+    if (reason === "session") CHAT.scopeOverride = null;
+    chatUpdateBadge();
+    // الرسم بيرجع الشاشة فاضية **في الـ DOM** كمان — عشان بعد خروج أو تبديل شركة
+    // مافيش بقايا رسايل حد قديم ولا مسودة مكتوبة على نفس الجهاز.
+    chatRenderPeers();
+    chatRenderThread();
+    var ta = $("#txtChatMsg");
+    if (ta) ta.value = "";
+  }
+
+  function chatBindOnce() {
+    if (CHAT.bound) return;
+    CHAT.bound = true;
+    var list = $("#chatPeerList");
+    if (list) list.addEventListener("click", function (e) {
+      var b = e.target && e.target.closest ? e.target.closest(".chat-peer") : null;
+      if (b && b.dataset.peer) chatOpenPeer(b.dataset.peer);
+    });
+    var search = $("#txtChatSearch");
+    if (search) search.addEventListener("input", function () {
+      CHAT.filter = search.value || "";
+      chatRenderPeers();
+    });
+    var ta = $("#txtChatMsg");
+    if (ta) {
+      ta.addEventListener("input", chatUpdateSend);
+      ta.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSendMsg(); }
+      });
+    }
+    var send = $("#btnChatSend");
+    if (send) send.addEventListener("click", chatSendMsg);
+    var refresh = $("#btnChatRefresh");
+    if (refresh) refresh.addEventListener("click", function () {
+      chatHint("…", "");
+      chatTick();
+    });
+    var sw = $("#btnChatScope");
+    if (sw) sw.addEventListener("click", chatFlipScope);
+    // «خاص» مفعّل افتراضيًا: الراحة البال للموظف. (الخصوصية نفسها مش متوقفة على
+    // الصندوق — سياسة SELECT على السحابة بتقفلها لأي حد غير الطرفين مهما كان.)
+    var priv = $("#chkChatPrivate");
+    if (priv && priv.checked !== true) priv.checked = true;
+  }
+
+  function renderChat() {
+    var cols = $("#chatCols"), note = $("#chatUnavailable");
+    if (!chatAvailable()) {
+      if (cols) cols.hidden = true;
+      if (note) note.hidden = false;
+      chatStopPoll();
+      chatUpdateBadge();
+      return;
+    }
+    if (cols) cols.hidden = false;
+    if (note) note.hidden = true;
+    chatBindOnce();
+    var sw = $("#btnChatScope");
+    if (sw) {
+      sw.hidden = !chatCanSwitchScope();
+      if (!sw.hidden) sw.textContent = chatScopeLabel();
+    }
+    chatRenderPeers();
+    chatRenderThread();
+    chatLoadPeers().then(chatPollUnread).then(function () { chatStartPoll(); });
   }
 
   /* ================== لوحة إدارة المالك ================== */

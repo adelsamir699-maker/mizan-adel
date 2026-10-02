@@ -209,14 +209,17 @@ begin
     where a.attrelid = 'public.messages'::regclass
       and a.attnum > 0 and not a.attisdropped
       and a.attname in ('id','org_id','from_user','to_user','body','is_private','read_at','created_at');
-  if n <> 8 then raise exception 'ترقية ٤٥: عدد أعمدة messages = %% (مفروض ٨)', n; end if;
+  if n <> 8 then raise exception 'ترقية ٤٥: عدد أعمدة messages = % (مفروض ٨)', n; end if;
 
   select relrowsecurity into b from pg_class where oid='public.messages'::regclass;
   if b is distinct from true then raise exception 'ترقية ٤٥: RLS مش مفعّلة على messages'; end if;
+  -- relforce = false **بقرار**: mizan_chat_read (definer) لازم تكتب read_at، وبوابتها الذاتية هي الضمان
+  select relforcerowsecurity into b from pg_class where oid='public.messages'::regclass;
+  if b is distinct from false then raise exception 'ترقية ٤٥: relforce على messages مش false — dوال المقروء هتتقفل'; end if;
 
   -- بعد: ٣ سياسات بالظبط، ومافيش سياسة UPDATE، ومافيش رحمة superadmin في أي سياسة
   select count(*) into n from pg_policies where schemaname='public' and tablename='messages';
-  if n <> 3 then raise exception 'ترقية ٤٥: سياسات messages = %% (مفروض ٣)', n; end if;
+  if n <> 3 then raise exception 'ترقية ٤٥: سياسات messages = % (مفروض ٣)', n; end if;
 
   select count(*) into n from pg_policies
     where schemaname='public' and tablename='messages' and cmd='UPDATE';
@@ -224,29 +227,49 @@ begin
 
   select count(*) into n from pg_policies
     where schemaname='public' and tablename='messages'
-      and (polqual like '%is_superadmin%' or polwithcheck like '%is_superadmin%');
+      and (qual like '%is_superadmin%' or with_check like '%is_superadmin%');
   if n <> 0 then raise exception 'ترقية ٤٥: سياسة بتستثنى المالك — الخصوصية لازم حرفية'; end if;
 
-  -- بعد: المنح — anon/public مالهمش أي صلاحية، وauthenticated بلا UPDATE
-  select count(*) into n from information_schema.role_table_grants
-    where table_schema='public' and table_name='messages'
-      and grantee in ('anon','public');
-  if n <> 0 then raise exception 'ترقية ٤٥: منح anon/public على messages لسه موجودة'; end if;
+  -- بعد: المنح — anon/PUBLIC مالهمش أي صلاحية، وauthenticated عندها ٣ ومن غير UPDATE
+  -- (aclexplode موثوق: grantee=0 هو PUBLIC، وinformation_schema بيفسّر PUBLIC بشكل مختلف)
+  select count(*) into n from pg_class k, aclexplode(k.relacl) x
+    where k.oid = 'public.messages'::regclass
+      and (x.grantee = 0 or pg_get_userbyid(x.grantee) in ('anon','public'));
+  if n <> 0 then raise exception 'ترقية ٤٥: منح anon/PUBLIC على messages لسه موجودة (% grant)', n; end if;
 
-  select count(*) into n from information_schema.role_table_grants
-    where table_schema='public' and table_name='messages'
-      and grantee='authenticated' and privilege_type='UPDATE';
+  select count(*) into n from pg_class k, aclexplode(k.relacl) x
+    where k.oid = 'public.messages'::regclass
+      and pg_get_userbyid(x.grantee) = 'authenticated'
+      and x.privilege_type in ('SELECT','INSERT','DELETE');
+  if n <> 3 then raise exception 'ترقية ٤٥: منح authenticated على messages = % (مفروض ٣: select/insert/delete)', n; end if;
+
+  select count(*) into n from pg_class k, aclexplode(k.relacl) x
+    where k.oid = 'public.messages'::regclass
+      and pg_get_userbyid(x.grantee) = 'authenticated' and x.privilege_type = 'UPDATE';
   if n <> 0 then raise exception 'ترقية ٤٥: authenticated لسه عندها UPDATE على messages'; end if;
 
-  -- بعد: الدوال الأربعة محصّنة (definer + pg_temp آخر المسار + بتقرأ auth.uid)
+  -- بعد: الدوال الأربعة محصّنة (definer + search_path مثبّت وpg_temp آخره)
   select count(*) into n from pg_proc p join pg_namespace ns on ns.oid=p.pronamespace
     where ns.nspname='public'
       and p.proname in ('mizan_chat_peer','mizan_chat_peers','mizan_chat_read','mizan_chat_set_scope')
       and p.prosecdef = true
-      and array_to_string(p.proconfig,',') like '%search_path=public%'
-      and array_to_string(p.proconfig,',') like '%pg_temp%'
+      and array_to_string(p.proconfig, ',') = 'search_path=public, pg_temp';
+  if n <> 4 then raise exception 'ترقية ٤٥: الدوال المحصّنة = % (مفروض ٤)', n; end if;
+
+  -- بعد: التقييد الذاتي — ٣ دوال بتقرأ auth.uid() (peers بتستدعي peer فمستناش auth.uid مباشرة)
+  select count(*) into n from pg_proc p join pg_namespace ns on ns.oid=p.pronamespace
+    where ns.nspname='public'
+      and p.proname in ('mizan_chat_peer','mizan_chat_read','mizan_chat_set_scope')
       and p.prosrc like '%auth.uid()%';
-  if n <> 4 then raise exception 'ترقية ٤٥: الدوال المحصّنة = %% (مفروض ٤)', n; end if;
+  if n <> 3 then raise exception 'ترقية ٤٥: دوال بتقرأ auth.uid() = % (مفروض ٣)', n; end if;
+
+  -- بعد: المنح على الدوال — authenticated بس، وممنوع أي grant لـ anon/PUBLIC
+  select count(*) into n from pg_proc p, aclexplode(p.proacl) x
+    join pg_namespace ns on ns.oid=p.pronamespace
+    where ns.nspname='public'
+      and p.proname in ('mizan_chat_peer','mizan_chat_peers','mizan_chat_read','mizan_chat_set_scope')
+      and (x.grantee = 0 or pg_get_userbyid(x.grantee) in ('anon','public'));
+  if n <> 0 then raise exception 'ترقية ٤٥: دوال الدردشة لمنح anon/PUBLIC (% grant)', n; end if;
 
   select prosrc into src from pg_proc p join pg_namespace ns on ns.oid=p.pronamespace
     where ns.nspname='public' and p.proname='mizan_chat_read';
@@ -263,7 +286,7 @@ begin
 
   -- بعد: مفيش أي سطر بيانات اتلمس
   select count(*) into n from public.messages;
-  if n <> 0 then raise exception 'ترقية ٤٥: messages فيها %% سطر — المفروض فضايي', n; end if;
+  if n <> 0 then raise exception 'ترقية ٤٥: messages فيها % سطر — المفروض فاضية', n; end if;
 end;
 $$;
 

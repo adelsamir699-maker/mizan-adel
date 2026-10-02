@@ -869,6 +869,13 @@
     W.loadedTables = {};
     probeProductUnit(); // 🆕 نعرف هل عمود unit موجود على السحابة قبل أول رفع أصناف
     probeFixedAssetsTable(); // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
+    // 🆕 بناء 125 (بند 16): هل جدول messages اتعمل (ترقية ٤٥) ولا لسه على القرص بس.
+    // الفحص ده بيحدد وحده ظهور تبويب «الدردشة» — فالترحيل لما يتنفّذ بأمر المالك
+    // التبويب يطلع لوحده من نفس اللحظة، وبلا أي تغيير كود. (الجدول **ممنوع** يدخل
+    // EAGER/LAZY/لقطة الديسك/النسخة الاحتياطية — قرار المالك: «الدردشة لا تدخل النسخ الاحتياطي».)
+    // بنلفّه جوه الوعد اللي تحت (مش fire-and-forget) عشان `applyFeatureGating` اللي
+    // بعد loadAll يلاقي العلامة متظبطة فعلًا، فالتبويب يطلع من أول رسم.
+    var chatProbe = probeChatTable();
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
       "employees", "attendance", "att_settings", "fixed_assets"]; // 🆕 مهمة 98
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
@@ -899,7 +906,10 @@
         assignLocalIds(n, pairs.map(function (p) { return p.loc; }));
         W[n] = pairs.map(function (p) { return p.loc; });
       });
-      return loadLazyAll().then(function () { return true; });
+      // 🆕 بناء 125: ما نخلصش قبل ما فحص جدول الرسايل يرد — الدخول بيرسم
+      // التبويبات بعد loadAll مباشرة، والفحص لو لسه في الجوّل التبويب يفوت الجولة.
+      // الفحص نفسه بيمسك أخطاءه برجوع false، فممنوع يقعّ الدخول كله.
+      return loadLazyAll().then(function () { return chatProbe; }).then(function () { return true; });
     });
   }
 
@@ -1082,8 +1092,184 @@
       .catch(function (e) { return { ok: false, error: (e && e.message) || String(e) }; });
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // 💬 بناء 125 — الدردشة الداخلية (بند 16)
+  //
+  // القاعدة الذهبية هنا: **البوابة كلها في السحابة (RLS)**، والكود ده عميل بس.
+  //   · «محدش يقدر يشوف رسايل مش مبعوته له» → سياسة SELECT على سطر الرسالة نفسها.
+  //   · «محدش يقدر يشوف عضوات شركة مش شركته» → mizan_chat_peers بتطبّق نفس الميزان.
+  //   يعني حتى لو واحد عدّل الكود في الكونسول، الشبكة نفسها ما ترجّعش حاجة ملكوش.
+  //
+  // كمان: الرسايل **ما تدخلش** أي تخزين محلي ولا لقطة ديسك ولا نسخة احتياطية
+  // (قرار المالك: «الدردشة لا تدخل النسخ الاحتياطي») — عشان كده مافيش هنا كتابة
+  // على W أو localStorage، وكل حاجة بتتقرأ من السحابة وقت ما الشاشة مفتوحة.
+  //
+  // ليه polling مش Realtime؟ مقياس 02/10: صفر جدول في publication
+  // `supabase_realtime` ⇒ الاشتراك اللحظي محتاج تنفيذ سحابي تاني (مستني أمر المالك).
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // البداية = true: لحد ما الفحص يثبت إن الجدول اتعمل، الواجهة ما تظهرش أي حاجة
+  // (أمان كاذب أحسن من شاشة فاضية بتوحي إن الدردشة اشتغلت).
+  var CHAT_TABLE_MISSING = true;
+  var CHAT_LAST_ERROR = "";
+  var UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+  function isUuid(v) { return !!v && UUID_RE.test(String(v)); }
+  function chatFail(err) {
+    CHAT_LAST_ERROR = String((err && (err.message || err.code)) || err || "");
+  }
+  function chatMeId() {
+    var p = null;
+    try { p = (DATA.me && DATA.me()) || (DATA.getProfile && DATA.getProfile()); } catch (e) { p = null; }
+    return (p && p.id) || null;
+  }
+  // «الجدول/الدالة مش موجودين» بس هي اللي بتقفل الدردشة بهدوء — أي زعلة تانية بتظهر.
+  function isChatNotDeployedError(err) {
+    var msg = String((err && (err.message || err.code || err.details)) || err || "");
+    return /42P01|PGRST205|PGRST202|42883|does not exist|not found|schema cache/i.test(msg);
+  }
+  function probeChatTable() {
+    if (!_online() || !_sb()) return Promise.resolve(false);
+    return Promise.resolve()
+      .then(function () { return _sb().from("messages").select("id").limit(1); })
+      .then(function (r) {
+        if (r && r.error) {
+          if (isChatNotDeployedError(r.error)) CHAT_TABLE_MISSING = true;
+          else { CHAT_TABLE_MISSING = false; chatFail(r.error); }
+          return false;
+        }
+        CHAT_TABLE_MISSING = false; CHAT_LAST_ERROR = ""; return true;
+      })
+      .catch(function (e) {
+        if (isChatNotDeployedError(e)) CHAT_TABLE_MISSING = true;
+        else { CHAT_TABLE_MISSING = false; chatFail(e); }
+        return false;
+      });
+  }
+  function chatReady() { return _online() && !!_sb() && !CHAT_TABLE_MISSING; }
+  function chatNotDeployed() { return CHAT_TABLE_MISSING; }
+  function chatLastError() { return CHAT_LAST_ERROR; }
+
+  // مخاطَبون = اللي بيقبلونّي في ميزان الخصوصية (من نفس دوال peer على السحابة)
+  function chatPeers() {
+    if (!chatReady()) return Promise.resolve({ ok: true, missing: true, peers: [] });
+    return Promise.resolve(_sb().rpc("mizan_chat_peers"))
+      .then(function (r) {
+        if (r && r.error) {
+          if (isChatNotDeployedError(r.error)) { CHAT_TABLE_MISSING = true; return { ok: true, missing: true, peers: [] }; }
+          chatFail(r.error); return { ok: false, error: CHAT_LAST_ERROR, peers: [] };
+        }
+        return { ok: true, peers: r.data || [] };
+      })
+      .catch(function (e) { chatFail(e); return { ok: false, error: CHAT_LAST_ERROR, peers: [] }; });
+  }
+
+  // محادثة واحدة: رسايلنا أنا وصديقي بس — والسحابة ما ترجّعش غير كده أصلًا.
+  function chatThread(peerId, limit) {
+    if (!chatReady()) return Promise.resolve({ ok: true, missing: true, rows: [] });
+    var me = chatMeId();
+    if (!isUuid(me) || !isUuid(peerId)) return Promise.resolve({ ok: false, error: "حساب غير مكتمل", rows: [] });
+    var n = Math.max(1, Math.min(500, Number(limit) || 200));
+    var filt = "and(from_user.eq." + me + ",to_user.eq." + peerId + ")," +
+               "and(from_user.eq." + peerId + ",to_user.eq." + me + ")";
+    return Promise.resolve(_sb().from("messages").select("*").or(filt)
+      .order("created_at", { ascending: false }).limit(n))
+      .then(function (r) {
+        if (r && r.error) {
+          if (isChatNotDeployedError(r.error)) { CHAT_TABLE_MISSING = true; return { ok: true, missing: true, rows: [] }; }
+          chatFail(r.error); return { ok: false, error: CHAT_LAST_ERROR, rows: [] };
+        }
+        return { ok: true, rows: (r.data || []).slice().reverse() };
+      })
+      .catch(function (e) { chatFail(e); return { ok: false, error: CHAT_LAST_ERROR, rows: [] }; });
+  }
+
+  // كل الرسائل اللي لسه ما قريتهاش — للعدّاد والتجميع لكل مخاطَب
+  function chatUnread() {
+    if (!chatReady()) return Promise.resolve({ ok: true, missing: true, rows: [] });
+    var me = chatMeId();
+    if (!isUuid(me)) return Promise.resolve({ ok: false, error: "حساب غير مكتمل", rows: [] });
+    return Promise.resolve(_sb().from("messages").select("id,from_user,created_at")
+      .eq("to_user", me).is("read_at", null).limit(500))
+      .then(function (r) {
+        if (r && r.error) {
+          if (isChatNotDeployedError(r.error)) { CHAT_TABLE_MISSING = true; return { ok: true, missing: true, rows: [] }; }
+          chatFail(r.error); return { ok: false, error: CHAT_LAST_ERROR, rows: [] };
+        }
+        return { ok: true, rows: r.data || [] };
+      })
+      .catch(function (e) { chatFail(e); return { ok: false, error: CHAT_LAST_ERROR, rows: [] }; });
+  }
+
+  // تعليم «مقروءة» بالدالة (ممنوع UPDATE على الجدول) — والحد في السحابة: أنا المستلم.
+  function chatMarkRead(ids) {
+    if (!chatReady()) return Promise.resolve({ ok: true, missing: true });
+    var list = (ids || []).filter(isUuid).slice(0, 100);
+    if (!list.length) return Promise.resolve({ ok: true, sent: 0 });
+    var sbk = _sb();
+    return list.reduce(function (chain, id) {
+      return chain.then(function () {
+        return Promise.resolve(sbk.rpc("mizan_chat_read", { p_id: id }))
+          .then(function (r) {
+            if (r && r.error && !isChatNotDeployedError(r.error)) chatFail(r.error);
+            if (r && r.error && isChatNotDeployedError(r.error)) CHAT_TABLE_MISSING = true;
+          }).catch(function (e) { chatFail(e); });
+      });
+    }, Promise.resolve()).then(function () { return { ok: true, sent: list.length }; });
+  }
+
+  // الإرسال: org_id مش بعتة هنا — العمود ليه default current_org() في السحابة،
+  // وسياسة INSERT بترفض أي قيمة تانية، فمسار التزوير مقفول من الطرفين.
+  function chatSend(peerId, body, isPrivate) {
+    if (!chatReady()) return Promise.resolve({ ok: false, missing: true, error: "الدردشة لسه مش متاحة" });
+    var me = chatMeId();
+    if (!isUuid(me) || !isUuid(peerId)) return Promise.resolve({ ok: false, error: "حساب غير مكتمل" });
+    var txt = String(body == null ? "" : body).replace(/\s+$/g, "");
+    if (!txt.trim()) return Promise.resolve({ ok: false, error: "اكتب الرسالة الأول" });
+    if (txt.length > 4000) return Promise.resolve({ ok: false, error: "الرسالة أطول من المسموح" });
+    return Promise.resolve(_sb().from("messages").insert([{
+      from_user: me, to_user: peerId, body: txt, is_private: !!isPrivate
+    }]).select())
+      .then(function (r) {
+        if (r && r.error) {
+          if (isChatNotDeployedError(r.error)) { CHAT_TABLE_MISSING = true; return { ok: false, missing: true, error: "الدردشة لسه مش متاحة على السحابة" }; }
+          // رفض RLS (مش مسموح تبايع الحد ده) = رسالة ودّية مش تشخيص تقني
+          chatFail(r.error);
+          return { ok: false, error: "الرسالة ما وصلتش — اتأكد إنك تبايع حساب من شركتك" };
+        }
+        return { ok: true, row: (r.data && r.data[0]) || null };
+      })
+      .catch(function (e) { chatFail(e); return { ok: false, error: "الرسالة ما وصلتش" }; });
+  }
+
+  // سويتش المالك: أصحاب المؤسسات (افتراضي) أو كل المستخدمين
+  function chatSetScope(scope) {
+    if (!chatReady()) return Promise.resolve({ ok: false, missing: true, error: "الدردشة لسه مش متاحة" });
+    var s = (scope === "all") ? "all" : "owners";
+    return Promise.resolve(_sb().rpc("mizan_chat_set_scope", { p_scope: s }))
+      .then(function (r) {
+        if (r && r.error) {
+          if (isChatNotDeployedError(r.error)) { CHAT_TABLE_MISSING = true; return { ok: false, missing: true }; }
+          chatFail(r.error); return { ok: false, error: CHAT_LAST_ERROR };
+        }
+        return { ok: true, scope: r.data || s };
+      })
+      .catch(function (e) { chatFail(e); return { ok: false, error: CHAT_LAST_ERROR }; });
+  }
+
   window.CLOUD = {
     push: push,
+    chatPeers: chatPeers,
+    chatThread: chatThread,
+    chatUnread: chatUnread,
+    chatMarkRead: chatMarkRead,
+    chatSend: chatSend,
+    chatSetScope: chatSetScope,
+    chatReady: chatReady,
+    chatNotDeployed: chatNotDeployed,
+    chatLastError: chatLastError,
+    probeChatTable: probeChatTable,
+    chatMyId: chatMeId,
     setTreasuryOpening: setTreasuryOpening,
     loadAll: loadAll,
     detUuid: detUuid,

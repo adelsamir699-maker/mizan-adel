@@ -1662,3 +1662,163 @@ td.c-tax.tax-hidden {
 .sett-notice.warn{ border-color:var(--warning); background:rgba(245,158,11,.12); }
 .sett-notice.err{ border-color:var(--danger); background:rgba(239,68,68,.1); }
 .sett-notice .btn{ margin-inline-start:6px; }
+
+
+/* ============ 💬 بناء 125 (بند 16): الدردشة الداخلية ============
+ * الخصوصية كلها على السحابة (RLS على messages + دالة mizan_chat_peer) —
+ * التنسيقات دي شكل بس، وما بتعملش أي بوابة صلاحية.
+ * الألوان من متغيرات الثيم نفسها (ممنوع hex جديد عشان theme التبديل ما يتكسرش).
+ * الدردشة ما تدخلش الطباعة: ورقة العميل بره الموضوع تمامًا. */
+.chat-cols {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  min-height: 380px;
+  margin-top: 6px;
+}
+.chat-side {
+  width: 260px;
+  flex: 0 0 260px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.chat-side-head {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.chat-search { margin: 8px; width: calc(100% - 16px); }
+.chat-list { overflow-y: auto; max-height: 420px; padding: 0 6px 8px; }
+.chat-peer {
+  display: block;
+  width: 100%;
+  text-align: right;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed var(--border);
+  padding: 8px 8px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text-primary);
+}
+.chat-peer:last-child { border-bottom: 0; }
+.chat-peer:hover { background: var(--bg); }
+.chat-peer.on { background: var(--sel-bg); }
+.chat-peer.on .chat-peer-name { color: var(--sel-fg); }
+.chat-peer-name { display: block; font-size: 13px; font-weight: 700; }
+.chat-peer-org { display: block; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.chat-peer-unread {
+  position: absolute;
+  margin-inline-start: 6px;
+  background: var(--danger);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+}
+.chat-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--sel-fg);
+  background: var(--sel-bg);
+  border-radius: 6px;
+  padding: 1px 5px;
+  margin-inline-start: 4px;
+}
+.chat-none { color: var(--text-muted); font-size: 12px; font-weight: 700; padding: 14px 10px; text-align: center; }
+.chat-main {
+  flex: 1 1 auto;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+.chat-peer-title {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--bg);
+}
+.chat-thread {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  max-height: 420px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg);
+}
+.chat-msg { max-width: 76%; display: flex; flex-direction: column; }
+.chat-msg.me { align-self: flex-start; }
+.chat-msg.them { align-self: flex-end; }
+.chat-bubble {
+  padding: 8px 11px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: normal;
+  word-break: break-word;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-primary);
+}
+.chat-msg.me .chat-bubble { background: var(--sel-bg); border-color: var(--info); }
+.chat-msg.priv .chat-bubble { border-style: dashed; }
+.chat-meta { font-size: 10px; font-weight: 700; color: var(--text-muted); margin-top: 3px; }
+.chat-compose { border-top: 1px solid var(--border); padding: 8px 10px; background: #fff; }
+.chat-priv { font-size: 12px; font-weight: 700; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 5px; margin-bottom: 6px; cursor: pointer; }
+.chat-send-row { display: flex; gap: 8px; align-items: flex-end; }
+.chat-input {
+  flex: 1 1 auto;
+  resize: vertical;
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--bg);
+}
+.chat-input:focus { outline: 2px solid var(--info); border-color: var(--info); }
+.chat-mini { font-size: 11px; font-weight: 700; color: var(--text-muted); display: block; margin-top: 4px; min-height: 14px; }
+.chat-mini.chat-err { color: var(--danger); }
+.chat-mini.chat-ok { color: var(--success); }
+/* عدّاد الجديد على زرار الشريط الجانبي */
+.chat-badge {
+  display: inline-block;
+  margin-inline-start: 6px;
+  background: var(--danger);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  vertical-align: middle;
+}
+@media (max-width: 860px) {
+  .chat-cols { flex-direction: column; min-height: 0; }
+  .chat-side { width: 100%; flex: 0 0 auto; }
+  .chat-list, .chat-thread { max-height: 260px; }
+  .chat-msg { max-width: 90%; }
+}
+/* الدردشة مش للطباعة (مافيش زرار طباعة فيها أصلًا) */
+@media print {
+  .view-chat { display: none !important; }
+}
