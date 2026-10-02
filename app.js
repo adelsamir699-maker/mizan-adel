@@ -7958,10 +7958,12 @@
     "db/supabase-upgrade-34-treasury-identity.sql", "db/supabase-upgrade-35-attendance.sql",
     "db/supabase-upgrade-36-backup-attendance.sql", "db/supabase-upgrade-37-fixed-assets.sql",
     "db/supabase-upgrade-38-backup-fixed-assets.sql", "db/supabase-upgrade-39-product-unit.sql",
-    "db/supabase-upgrade-42-owner-always-open.sql"];
+    "db/supabase-upgrade-42-owner-always-open.sql",
+    // ترقية ٤٣ (تحصين دوال النسخ) اتنفّذت على السحابة 02/10 ≈12:00 بأمر المالك «نفّذ» ⇒ بقت جزء من نسخة النشر
+    "db/supabase-upgrade-43-backup-hardening.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
   var DEPLOY_DB_EXCLUDE = {
-    "db/supabase-upgrade-43-backup-hardening.sql": "ترقية ٤٣ لسه ما اتنفّذتش على السحابة — تنضم أول ما يتنفذ"
+    // فاضي من 02/10: كل ترحيلات db/ المنشورة داخلة في نسخة النشر (٤٣ انضمّت بعد تنفيذها)
   };
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "categories", "customer_txs", "customers",
@@ -11687,12 +11689,48 @@ const pwEye = document.getElementById("btnShowPass");
     d.setDate(d.getDate() - 1);
     return subsIso(d);
   }
+  function subsAddDays(iso, n) {
+    const d = new Date(iso + "T00:00:00");
+    d.setDate(d.getDate() + n);
+    return subsIso(d);
+  }
+  function subsDaysBetween(aIso, bIso) {
+    const a = new Date(aIso + "T00:00:00"), b = new Date(bIso + "T00:00:00");
+    return Math.round((b - a) / 86400000);
+  }
+  // ===== إصلاح 02/10 (بند 18): «التجديد» لازم يمدّ لقدام =====
+  // الغلط القديم: الصف كان بيتعبّى من التواريخ المحفوظة (plan_start/plan_end) والزرار كان بيرجّع
+  // نفس التواريخ حرفيًا ⇒ «مش بيغير تاريخ بداية و نهاية الاشتراك و مش بيجدد».
+  // القاعدة الجديدة: لو لسه في مدة باقية نكمّل من بعدها بيوم (ماتخسرش يوم)،
+  // ولو الفترة خلصت (أو مافيش) نبدأ من النهاردة.
+  function subsStoredEnd(o) { return String((o && o.plan_end) || "").slice(0, 10); }
+  function subsStoredStart(o) { return String((o && o.plan_start) || "").slice(0, 10); }
+  function subsRenewStart(o) {
+    const was = subsStoredEnd(o);
+    const today = subsToday();
+    if (was && was >= today) return subsAddDays(was, 1);
+    return today;
+  }
+  // مصدر واحد للسطر التوضيحي تحت تاريخ البداية (الشاشة والرسم اللحظي بيقروا من نفس الدالة)
+  function subsStartHint(start, storedEnd) {
+    const today = subsToday();
+    if (!start) return "حدّد تاريخ البداية";
+    if (storedEnd && start === subsAddDays(storedEnd, 1)) return "مكمّل من نهاية الفترة المحفوظة — ماتخسرش يوم";
+    if (!storedEnd) return "يبدأ من التاريخ ده (مافيش فترة محفوظة)";
+    if (storedEnd < today && start === today) return "الفترة السابقة انتهت — بيبدأ من النهاردة";
+    if (start > storedEnd) return "بيبدأ بعد نهاية الفترة المحفوظة (فراغ " + subsDaysBetween(storedEnd, start) + " يوم)";
+    return "بيرجّع البداية لقبل نهاية الفترة المحفوظة (هتقل " + subsDaysBetween(start, storedEnd) + " يوم)";
+  }
   function subsInferPlan(o) {
     const P = SUB_PLANS();
     // 1) الخطة المحفوظة باسمها على الشركة أولًا
     if (o.plan) {
       const k = Object.keys(P).find((kk) => P[kk].label === o.plan);
       if (k) return k;
+      // 1ب) الأسماء القديمة/الإنجليزيت اللي اتحفظت قبل ما تبقى عربي (free = تجربة)
+      const ALIAS = { free: "f", trial: "f", monthly: "m", half: "h", halfyearly: "h", semi: "h", semiannual: "h", yearly: "y", annual: "y" };
+      const ak = ALIAS[String(o.plan).trim().toLowerCase()];
+      if (ak) return ak;
     }
     // 2) ثم استنتاج من مدة التواريخ الموجودة
     if (!o.plan_start || !o.plan_end) return "y";
@@ -11769,15 +11807,18 @@ const pwEye = document.getElementById("btnShowPass");
       const orgs = res[1];
       const P = SUB_PLANS();
       if (!orgs || !orgs.length) { lst.innerHTML = '<p class="login-sub">لا توجد شركات بعد.</p>'; return; }
-      let h = '<table class="data-table"><thead><tr><th>الشركة</th><th>الخطة</th><th>من تاريخ</th><th>إلى تاريخ</th><th>السعر المتفق عليه (ج.م)</th><th>الانتهاء الحالي</th><th>تفعيل</th></tr></thead><tbody>';
+      let h = '<table class="data-table"><thead><tr><th>الشركة</th><th>الخطة</th><th>من تاريخ (الجديد)</th><th>إلى تاريخ (الجديد)</th><th>السعر المتفق عليه (ج.م)</th><th>المحفوظ حاليًا</th><th>تفعيل / تجديد</th></tr></thead><tbody>';
       orgs.forEach((o) => {
         const oid = o.org_id;
-        // يسمع بالتاريخ الموجود في شاشة الشركة: البداية من plan_start، والنهاية من plan_end (لو موجودة)
-        const start = String(o.plan_start || "").slice(0, 10) || subsToday();
-        const end = String(o.plan_end || "").slice(0, 10);
+        // الإصلاح: «من/إلى» = فترة التجديد الجديدة (مش منسوخة من المحفوظ)
         const pk = subsInferPlan(o);
+        const start = subsRenewStart(o);
+        const end = subsEnd(start, P[pk].months);
         const price = (o.sub_price != null && o.sub_price !== "") ? Number(o.sub_price) : P[pk].price;
-        h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '">' +
+        const wasTxt = subsStoredEnd(o)
+          ? (subsStoredStart(o) ? fmtDate(subsStoredStart(o)) + " ← " : "") + fmtDate(subsStoredEnd(o))
+          : (subsStoredStart(o) ? "من " + fmtDate(subsStoredStart(o)) + " (من غير نهاية)" : "لا يوجد");
+        h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '" data-stored-end="' + subsStoredEnd(o) + '">' +
           '<td><b>' + (o.org_name || "بدون اسم") + '</b></td>' +
           '<td><select class="inp subs-plan">' +
             '<option value="f">🎁 تجربة مجانية</option>' +
@@ -11785,14 +11826,15 @@ const pwEye = document.getElementById("btnShowPass");
             '<option value="h">نصف سنوي</option>' +
             '<option value="y">سنوي</option>' +
           '</select></td>' +
-          '<td><input type="date" class="inp subs-start" value="' + start + '"></td>' +
-          '<td><input type="date" class="inp subs-end" value="' + (end || subsEnd(start, P[pk].months)) + '"></td>' +
+          '<td><input type="date" class="inp subs-start" value="' + start + '">' +
+            '<div class="login-sub subs-note">' + subsStartHint(start, subsStoredEnd(o)) + '</div></td>' +
+          '<td><input type="date" class="inp subs-end" value="' + end + '"></td>' +
           '<td><input type="number" min="0" class="inp subs-price" value="' + price + '" style="width:110px;text-align:center"></td>' +
-          '<td>' + (o.plan_end ? fmtDate(o.plan_end) : "—") + (o.locked ? ' <span class="badge-no">🔴 مقفلة</span>' : "") + '</td>' +
-          '<td><button class="btn small green" type="button">✅ تفعيل/تجديد</button></td>' +
+          '<td>' + wasTxt + (o.locked ? ' <span class="badge-no">🔴 مقفلة</span>' : "") + '</td>' +
+          '<td><button class="btn small green subs-go" type="button">✅ تفعيل</button></td>' +
           '</tr>';
       });
-      h += '</tbody></table><p class="login-sub" style="margin-top:8px">💡 التاريخ معروض زي ما هو في «بيانات الشركة» — غير الخطة أو البداية يتعاد حساب النهاية، والسعر يدوي لكل شركة حسب الاتفاق. والتجديد بيفكّ قفل الشركة أوتوماتيك.</p>';
+      h += '</tbody></table><p class="login-sub" style="margin-top:8px">💡 «من/إلى» دي <b>فترة التجديد الجديدة</b>: لو الشركة لسه جواها مدة باقية بيكمّل من بعدها بيوم (ماتخسرش يوم)، ولو الفترة انتهت بيبدأ من النهاردة. غيّر الخطة أو تاريخ البداية تتعاد حساب النهاية، والسعر يدوي لكل شركة حسب الاتفاق — والتجديد بيفكّ قفل الشركة أوتوماتيك.</p>';
       lst.innerHTML = h;
       orgs.forEach((o) => {
         const tr = lst.querySelector('[data-subs="' + o.org_id + '"]');
@@ -11800,7 +11842,9 @@ const pwEye = document.getElementById("btnShowPass");
         tr.querySelector(".subs-plan").value = subsInferPlan(o);
         tr.querySelector(".subs-plan").addEventListener("change", () => subsCalc(tr, true));
         tr.querySelector(".subs-start").addEventListener("change", () => subsCalc(tr, false));
-        tr.querySelector("button").addEventListener("click", () => subsApply(o, tr));
+        tr.querySelector(".subs-end").addEventListener("change", () => subsPaintAction(tr));
+        tr.querySelector(".subs-go").addEventListener("click", () => subsApply(o, tr));
+        subsPaintAction(tr);
       });
       box.scrollIntoView({ behavior: "smooth", block: "start" });
     }).catch((e) => {
@@ -11813,6 +11857,24 @@ const pwEye = document.getElementById("btnShowPass");
     const start = tr.querySelector(".subs-start").value || subsToday();
     tr.querySelector(".subs-end").value = subsEnd(start, p.months);
     if (refreshPrice) tr.querySelector(".subs-price").value = p.price;
+    subsPaintAction(tr);
+  }
+  // يوضّح للمالك قبل الضغط الزرار نفسه هيعمل إيه (تفعيل ولا تجديد) وكم يوم هتزود
+  function subsPaintAction(tr) {
+    const P = SUB_PLANS();
+    const k = tr.querySelector(".subs-plan").value;
+    const p = P[k] || P.y;
+    const b = tr.querySelector(".subs-go");
+    const note = tr.querySelector(".subs-note");
+    if (!b) return;
+    const start = tr.querySelector(".subs-start").value || "";
+    const end = tr.querySelector(".subs-end").value || "";
+    const bad = !start || !end || end < start;
+    b.textContent = bad ? "⚠ راجع التواريخ" : ((tr.dataset.storedEnd ? "✅ تجديد " : "✅ تفعيل ") + p.label);
+    b.disabled = bad;
+    if (note) note.textContent = bad
+      ? "تاريخ النهاية لازم يكون بعد تاريخ البداية"
+      : ("مدّة " + subsDaysBetween(start, end) + " يوم — " + subsStartHint(start, tr.dataset.storedEnd || ""));
   }
   function subsApply(o, tr) {
     const P = SUB_PLANS();
@@ -11821,14 +11883,22 @@ const pwEye = document.getElementById("btnShowPass");
     const end = tr.querySelector(".subs-end").value;
     const price = Number(tr.querySelector(".subs-price").value) || 0;
     if (!start || !end) { toast("حدّد تاريخ البداية الأول", "error"); return; }
-    const msg = "تأكيد تفعيل اشتراك «" + p.label + "» لشركة " + (o.org_name || "بدون اسم") +
-      "\nمن " + start + " إلى " + end +
+    if (end < start) { toast("تاريخ النهاية لازم يكون بعد تاريخ البداية", "error"); return; }
+    const wasEnd = subsStoredEnd(o);
+    const verb = wasEnd ? "تجديد" : "تفعيل";
+    const gain = wasEnd ? subsDaysBetween(wasEnd, end) : subsDaysBetween(start, end);
+    const gainTxt = gain > 0 ? ("(+" + gain + " يوم عن المحفوظ)")
+      : gain < 0 ? ("(" + gain + " يوم — الفترة هتقلّ!)")
+      : "(نفس الفترة المحفوظة — مافيش تمداد)";
+    const msg = "تأكيد " + verb + " اشتراك «" + p.label + "» لشركة " + (o.org_name || "بدون اسم") +
+      "\nالمحفوظ: " + (wasEnd ? (subsStoredStart(o) ? fmtDate(subsStoredStart(o)) + " ← " : "") + fmtDate(wasEnd) : "لا يوجد") +
+      "\nالجديد: من " + start + " إلى " + end + " " + gainTxt +
       "\nالسعر المتفق عليه: " + price.toLocaleString("en") + " ج.م" +
-      (o.locked ? "\n(الشركة مقفلة حاليًا — هيتم فتحها مع التجديد)" : "");
+      (o.locked ? "\n(الشركة مقفلة حاليًا — هيتم فتحها مع " + verb + ")" : "");
     if (!confirm(msg)) return;
     DATA.adminSetSub(o.org_id, start, end, p.label, price, !!o.locked).then(() => {
-      toast("تم تفعيل «" + p.label + "» إلى " + end + " — " + price.toLocaleString("en") + " ج.م", "ok");
-      addActivity("تجديد اشتراك", "تفعيل " + p.label + " لشركة " + (o.org_name || "") + " من " + start + " إلى " + end + " بمبلغ " + price + " ج.م");
+      toast("تم " + verb + " «" + p.label + "» من " + start + " إلى " + end + " — " + price.toLocaleString("en") + " ج.م", "ok");
+      addActivity("تجديد اشتراك", verb + " " + p.label + " لشركة " + (o.org_name || "") + " من " + start + " إلى " + end + " بمبلغ " + price + " ج.م");
       toggleAdminSubs(); toggleAdminSubs();
       renderAdminOrgs();
     }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
