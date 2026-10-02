@@ -7880,6 +7880,8 @@
   }
 
   // النسخة الاحتياطية الشاملة للمالك (كل العملاء) أو لشركة محددة — حسب اختياره في القائمة
+  // 🆕 بناء 124: بتتبني من mizan_admin_backup_full (٣٦ جدول) بدل export_all/export_one
+  // (١٩ جدول) ⇒ المرتجعات والحضور والأصول الثابتة وأرقام الفواتير بقت داخل الملف
   function backupAllData() {
     if (!DATA) return;
     const sel = document.getElementById("setBackupScope");
@@ -7890,6 +7892,13 @@
     toast("جارٍ تجهيز النسخة الاحتياطية (" + orgName + ")...", "info");
     const run = (prom) => prom.then((pack) => {
       if (!pack) throw new Error("لا توجد بيانات");
+      const cov = backupCoverage(pack, orgId ? ORG_SCOPE : FULL_RESTORE_TABLES);
+      const covTxt = coverageNote(cov);
+      const done = (where) => {
+        addActivity("نسخ احتياطي شامل", "تصدير نسخة احتياطية (" + orgName + ") — " + covTxt);
+        if (cov.missing.length) toast("النسخة اتحفظت " + where + "، بس " + covTxt, "warning");
+        else toast("تم حفظ النسخة الاحتياطية " + where + " — " + covTxt, "success");
+      };
       const jsonStr = JSON.stringify(pack, null, 2);
       const blob = new Blob([jsonStr], { type: "application/json" });
       const name = (orgId ? "mizan-company-backup-" : "mizan-full-backup-") + todayISO() + ".json";
@@ -7908,25 +7917,19 @@
         }).then((handle) => {
           return handle.createWritable().then((w) => w.write(blob).then(() => w.close()));
         }).then(() => {
-          addActivity("نسخ احتياطي شامل", "تصدير نسخة احتياطية (" + orgName + ")");
-          toast("تم حفظ النسخة الاحتياطية في المكان الذي اخترته.", "success");
+          done("في المكان الذي اخترته");
         }).catch((e) => {
           if (e && e.name === "AbortError") return;
-          saveFile(() => {
-            addActivity("نسخ احتياطي شامل", "تصدير نسخة احتياطية (" + orgName + ")");
-            toast("تم حفظ النسخة الاحتياطية في مجلد التنزيلات.", "success");
-          });
+          saveFile(() => done("في مجلد التنزيلات"));
         });
       } else {
-        saveFile(() => {
-          addActivity("نسخ احتياطي شامل", "تصدير نسخة احتياطية (" + orgName + ")");
-          toast("تم حفظ النسخة الاحتياطية في مجلد التنزيلات.", "success");
-        });
+        saveFile(() => done("في مجلد التنزيلات"));
       }
+    }).catch((e) => {
+      const msg = e && e.message ? e.message : String(e);
+      toast("ما كانش ممكن النسخ الاحتياطي: " + (msg.length > 140 ? msg.slice(0, 140) : msg), "error");
     });
-    if (orgId) run(DATA.adminExportOne(orgId));
-    else if (DATA.adminExportAll) run(DATA.adminExportAll());
-    else toast("النسخة الاحتياطية غير متاحة.", "error");
+    run(ownerBackupPack(orgId));
   }
 
   // ============ نسخة النشر الكاملة (كود + سكيما + داتا) — ترحيل ٢٣ ============
@@ -7943,7 +7946,23 @@
     "db/supabase-upgrade-16.sql", "db/supabase-upgrade-17.sql",
     "db/supabase-upgrade-18-role-delete-protection.sql", "db/supabase-upgrade-19-offline-multidevice.sql",
     "db/supabase-upgrade-20-invoice-seq.sql", "db/supabase-upgrade-21-admin-lastseen.sql",
-    "db/supabase-upgrade-22-admin-online.sql", "db/supabase-upgrade-23-full-backup.sql"];
+    "db/supabase-upgrade-22-admin-online.sql", "db/supabase-upgrade-23-full-backup.sql",
+    // 🆕 بناء 124: القائمة كانت واقفة عند الترحيل ٢٣ ⇒ نسخة النشر كانت بتنزل على سيرفر جديد
+    // بلا جداول المرتجعات والحضور والأصول الثابتة. أي ترحيل جديد لازم ينضم هنا
+    // (حارس check_backup_coverage_124.js بيقرأ مجلد db/ ويلزم القائمة بيها).
+    "db/supabase-upgrade-24-subs.sql", "db/supabase-upgrade-25-docs.sql",
+    "db/supabase-upgrade-26-returns.sql", "db/supabase-upgrade-27-supplier-txs-cols.sql",
+    "db/supabase-upgrade-28-tx-time-and-item-indexes.sql", "db/supabase-upgrade-29-item-line-identity.sql",
+    "db/supabase-upgrade-30-invoice-party-links.sql", "db/supabase-upgrade-31-item-line-details.sql",
+    "db/supabase-upgrade-32-backup-returns.sql", "db/supabase-upgrade-33-invoice-fields.sql",
+    "db/supabase-upgrade-34-treasury-identity.sql", "db/supabase-upgrade-35-attendance.sql",
+    "db/supabase-upgrade-36-backup-attendance.sql", "db/supabase-upgrade-37-fixed-assets.sql",
+    "db/supabase-upgrade-38-backup-fixed-assets.sql", "db/supabase-upgrade-39-product-unit.sql",
+    "db/supabase-upgrade-42-owner-always-open.sql"];
+  // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
+  var DEPLOY_DB_EXCLUDE = {
+    "db/supabase-upgrade-43-backup-hardening.sql": "ترقية ٤٣ لسه ما اتنفّذتش على السحابة — تنضم أول ما يتنفذ"
+  };
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "categories", "customer_txs", "customers",
     "employees", "attendance", "att_settings", "fixed_assets",
@@ -7951,6 +7970,137 @@
     "mizan_pw_store", "owners", "password_changes", "presence", "products",
     "purchase_items", "purchases", "sale_items", "sales", "supplier_txs", "suppliers",
     "treasury", "units", "vouchers", "warehouses"];
+
+  // ============ 🆕 بناء 124: تغطية النسخة الاحتياطية — مصدر واحد للحقيقة ============
+  // الجداول اللي `mizan_admin_restore_full` بيفرّغها على السيرفر (ترقيات ٣٢ و٣٦ و٣٨).
+  // لو ملف النسخة ما فيهوش مفتاح جدول من دول ⇒ بيانات الجدول ده تتمسح وقت الاستعادة،
+  // فبنقري الملف قبل الزرار وبنقول للمالك بالحرف هيتمسح إيه.
+  var FULL_RESTORE_TABLES = ["organizations", "profiles",
+    "accounts", "audit_logs", "categories", "customer_txs", "customers",
+    "journal_entries", "journal_lines", "mizan_created_accounts", "mizan_invoice_seq",
+    "mizan_pw_store", "owners", "password_changes", "presence", "products",
+    "purchase_items", "purchases", "sale_items", "sales", "supplier_txs", "suppliers",
+    "treasury", "units", "vouchers", "warehouses",
+    "sale_returns", "sale_return_items", "purchase_returns", "purchase_return_items",
+    "mizan_documents", "mizan_retired_codes",
+    "employees", "attendance", "att_settings", "fixed_assets"];
+  // الجداول اللي مالهاش عمود org_id (مقيس على القاعدة الحيّة 02/10) — ما بتتقسّمش على شركة
+  var ORG_SCOPED_EXCLUDE = ["organizations", "mizan_pw_store"];
+  // نطاق نسخة «شركة واحدة»: كل الجداول ماعدا الحسابات العامة وكلمات المرور
+  var ORG_SCOPE = FULL_RESTORE_TABLES.filter((t) => ORG_SCOPED_EXCLUDE.indexOf(t) === -1);
+  // الجداول اللي `mizan_admin_restore_one` بيرجّعها فعلًا company-by-company (ترقية ١٢)
+  var RESTORE_ONE_COVERS = ["sale_items", "sales", "purchase_items", "purchases", "supplier_txs",
+    "customer_txs", "vouchers", "journal_lines", "journal_entries", "audit_logs", "treasury",
+    "accounts", "owners", "warehouses", "units", "categories", "customers", "suppliers", "products"];
+
+  // استكمال قائمة الجداول من اللقطة نفسها: أي مفتاح مصفوفة جديد على السيرفر
+  // يدخل database.sql أوتوماتيك — عشان القائمة اليدوية ما سيّبتش تعديلات برّا النسخة (بند ٦)
+  function deployTablesFor(dump) {
+    const base = DEPLOY_DATA_TABLES.slice();
+    const seen = {}; base.forEach((k) => { seen[k] = 1; });
+    if (dump && typeof dump === "object") {
+      Object.keys(dump).sort().forEach((k) => {
+        if (seen[k] || k.charAt(0) === "_" || !Array.isArray(dump[k])) return;
+        base.push(k); seen[k] = 1;
+      });
+    }
+    return base;
+  }
+
+  // مقياس التغطية: كام جدول من المطلوب موجودة فعلاً في النسخة (المطلوب = الشامل أو نطاق شركة)
+  function backupCoverage(dump, required) {
+    const list = required || FULL_RESTORE_TABLES;
+    const missing = !dump ? list.slice() : list.filter((t) => !Array.isArray(dump[t]));
+    let rows = 0;
+    if (dump) Object.keys(dump).forEach((k) => { if (Array.isArray(dump[k])) rows += dump[k].length; });
+    return { total: list.length, covered: list.length - missing.length, missing: missing, rows: rows };
+  }
+  function coverageNote(cov) {
+    if (!cov.missing.length) return "كل الجداول مغطاة: " + cov.covered + "/" + cov.total + " جدول، " + cov.rows + " سطر.";
+    return "النسخة فيها " + cov.covered + "/" + cov.total + " جدول — الناقص: " + cov.missing.join("، ") + ".";
+  }
+
+  // نسخة شركة واحدة مبنية من اللقطة الشاملة (كل الجداول، مش ١٩ بس) — بتقبها
+  // mizan_admin_restore_one لأن شكل organizations مدعوم عنده
+  function sliceDumpForOrg(dump, orgId) {
+    if (!dump || !orgId) return null;
+    const orgs = (dump.organizations || []).filter((o) => o && String(o.id) === String(orgId));
+    if (!orgs.length) return null;
+    const out = { exported_at: new Date().toISOString(), source: "mizan_admin_backup_full", org: orgs[0], organizations: orgs };
+    FULL_RESTORE_TABLES.forEach((t) => {
+      if (ORG_SCOPED_EXCLUDE.indexOf(t) !== -1) return;
+      out[t] = Array.isArray(dump[t]) ? dump[t].filter((r) => r && String(r.org_id) === String(orgId)) : [];
+    });
+    return out;
+  }
+
+  // النسخة الاحتياطية للمالك (للكل أو لشركة) بتتبني دلوقتي من mizan_admin_backup_full
+  // بدل mizan_admin_export_all / export_one القدام (١٩ جدول بس) — بند ٦ بالحرف
+  function ownerBackupPack(orgId) {
+    if (!(A.online && DATA && DATA.adminBackupFull)) return Promise.reject(new Error("النسخة الاحتياطية غير متاحة."));
+    return DATA.adminBackupFull().then((dump) => {
+      if (!dump || !Array.isArray(dump.organizations)) throw new Error("لم تصل بيانات كاملة من السيرفر.");
+      if (!orgId) return dump;
+      const pack = sliceDumpForOrg(dump, orgId);
+      if (!pack) throw new Error("الشركة المطلوبة مش في بيانات السيرفر.");
+      return pack;
+    });
+  }
+
+  // إيه اللي جوّه ملف النسخة قبل ما نستعيد — بالأسطر والجدول الناقصة
+  function restoreBriefing(payload) {
+    const single = !!(payload && payload.org && payload.org.id);
+    const cov = backupCoverage(payload, single ? ORG_SCOPE : FULL_RESTORE_TABLES);
+    const orgs = Array.isArray(payload && payload.organizations) ? payload.organizations.length : 0;
+    const users = Array.isArray(payload && payload._auth_users) ? payload._auth_users.length : 0;
+    const orgName = payload && payload.org && payload.org.name ? payload.org.name : "";
+    const head = orgName ? ("شركة «" + orgName + "»") : (orgs + " شركة، " + users + " حساب دخول");
+    return { orgs: orgs, users: users, orgName: orgName, missing: cov.missing, rows: cov.rows,
+      covered: cov.covered, total: cov.total,
+      text: "المحتوى: " + head + " — " + coverageNote(cov) };
+  }
+
+  // مقارنة أعداد الأسطر: الملف ↔ السيرفر بعد الاستعادة (قراءة فقط)
+  function orgIdOfPayload(payload) {
+    if (!payload) return null;
+    if (payload.org && payload.org.id) return String(payload.org.id);
+    const orgs = Array.isArray(payload.organizations) ? payload.organizations : [];
+    return orgs.length === 1 && orgs[0] && orgs[0].id ? String(orgs[0].id) : null;
+  }
+  function restoreCountDiff(payload, live, orgId) {
+    const diffs = []; let checked = 0;
+    const keys = Object.keys(payload || {}).filter((k) => Array.isArray(payload[k]) && k !== "organizations");
+    keys.forEach((k) => {
+      const want = payload[k].length;
+      if (!live || !Array.isArray(live[k])) { diffs.push({ t: k, want: want, got: null, restorable: true }); return; }
+      const got = orgId ? live[k].filter((r) => r && String(r.org_id) === String(orgId)).length : live[k].length;
+      checked++;
+      if (got === want) return;
+      diffs.push({ t: k, want: want, got: got, restorable: !orgId || RESTORE_ONE_COVERS.indexOf(k) !== -1 });
+    });
+    const mismatch = diffs.filter((d) => d.got !== null);
+    const unavailable = diffs.filter((d) => d.got === null);
+    return { checked: checked, matched: checked - mismatch.length, diffs: mismatch,
+      unavailable: unavailable.length, orgId: orgId || null };
+  }
+  function verifyRestore(payload) {
+    if (!(A.online && DATA && DATA.adminBackupFull)) return Promise.resolve(null);
+    const orgId = orgIdOfPayload(payload);
+    return DATA.adminBackupFull()
+      .then((live) => (live && Array.isArray(live.organizations) ? restoreCountDiff(payload, live, orgId) : null))
+      .catch(() => null);
+  }
+  function restoreVerifyNote(v) {
+    if (!v) return "الاستعادة تمت. ما قدرناش نتحقق تلقائيًا من السيرفر دلوقتي — اتأكد بعد لحظات.";
+    if (!v.diffs.length && !v.unavailable) {
+      return "الاستعادة تمت والتحقق: " + v.matched + "/" + v.checked + " جدول مطابق للأرقام على السيرفر.";
+    }
+    const notYet = v.diffs.filter((d) => !d.restorable);
+    let msg = "الاستعادة تمت. التحقق لقى فرق في " + v.diffs.length + " جدول";
+    if (notYet.length) msg += " (" + notYet.length + " منها السيرفر لسه ما بيرجّعهاش شركة-بشركة)";
+    if (v.unavailable) msg += "، و" + v.unavailable + " جدول ما كانش مقروء وقت التحقق";
+    return msg + ". التفاصيل في سجل النشاط.";
+  }
 
   function deployStamp() {
     const d = new Date(), p = (n) => String(n).padStart(2, "0");
@@ -7998,28 +8148,46 @@
     try { dump = await DATA.adminBackupFull(); }
     catch (e) { toast("خطأ في سحب البيانات: " + (e.message || e), "error"); return; }
     if (!dump || !Array.isArray(dump.organizations)) { toast("لم تصل بيانات كاملة من السيرفر.", "error"); return; }
-    // 1) ملفات البنية (SQL) من نفس الموقع المنشور
-    const schemaParts = [];
+    const cov = backupCoverage(dump);
+    // 1) ملفات البنية (SQL) من نفس الموقع المنشور — أي ملف ناقص يعني النسخة على سيرفر جديد
+    //    هتبقى أنقص من البرنامج نفسه، فبنرفض ونقول السبب بالحرف بدل ما نسكت (بند ٦)
+    const schemaParts = []; const schemaMissing = [];
     for (const p of DEPLOY_DB_FILES) {
       const b = await fetchSiteBlob(p);
       if (b) schemaParts.push("-- ==== " + p + " ====\n" + await b.text());
+      else schemaMissing.push(p);
+    }
+    if (schemaMissing.length) {
+      const names = schemaMissing.slice(0, 3).map((p) => p.split("/").pop()).join("، ") + (schemaMissing.length > 3 ? "…" : "");
+      toast("نسخة النشر موقوفة: " + schemaMissing.length + " ملف بنية مش موجود على الموقع المنشور (" + names +
+        "). انشر النسخة الحالية الأول وبعدين اعمل النسخة.", "error");
+      addActivity("نسخة نشر", "مرفوض: " + schemaMissing.length + " ملف بنية ناقص على الموقع المنشور — " + names);
+      return;
     }
     if (!schemaParts.length) { toast("تعذّر سحب ملفات البنية (db/*.sql) من الموقع — حدّث النسخة المنشورة أولًا.", "error"); return; }
-    // 2) ملفات الموقع (site/)
-    const siteFiles = [];
+    // 2) ملفات الموقع (site/) — نفس المنطق: مافيش ملف يسقط في صمت
+    const siteFiles = []; const siteMissing = [];
     for (const p of DEPLOY_SITE_FILES) {
       const b = await fetchSiteBlob(p);
-      if (b) siteFiles.push({ name: "site/" + p, blob: b });
+      if (b) siteFiles.push({ name: "site/" + p, blob: b }); else siteMissing.push(p);
+    }
+    if (siteMissing.length) {
+      toast("نسخة النشر موقوفة: " + siteMissing.length + " ملف موقع مش موجود على الموقع المنشور (" +
+        siteMissing.slice(0, 3).join("، ") + (siteMissing.length > 3 ? "…" : "") + "). انشر النسخة الحالية الأول.", "error");
+      addActivity("نسخة نشر", "مرفوض: " + siteMissing.length + " ملف موقع ناقص على الموقع المنشور");
+      return;
     }
     if (!siteFiles.length) { toast("تعذّر سحب ملفات الموقع.", "error"); return; }
-    // 3) database.sql = البنية (+ البيانات لو نسخة كاملة)
+    // 3) database.sql = البنية (+ البيانات لو نسخة كاملة) — الجداول بتتكمّل من اللقطة نفسها
+    //    فأي جدول جديد على السيرفر يدخل النسخة أوتوماتيك من غير ماحد ينسى يضيفه
+    const dataTables = deployTablesFor(dump);
     let dbSql = buildDeploySql(dump, includeData) + "\n" + schemaParts.join("\n\n") + "\n";
     if (includeData) {
       dbSql += "\n-- ===== بيانات حسابات الدخول (كلمات المرور مشفرة bcrypt) =====\n" +
         genInserts("auth", "users", dump._auth_users, ["confirmed_at"]) +
         genInserts("auth", "identities", dump._auth_identities, ["email"]) +
         "\n-- ===== بيانات الشركات والباقي (ترتيب آمن للمفاتيح الأجنبية) =====\n";
-      DEPLOY_DATA_TABLES.forEach((t) => { dbSql += genInserts("public", t, dump[t], []); });
+      dataTables.forEach((t) => { dbSql += genInserts("public", t, dump[t], []); });
     } else {
       dbSql += "\n-- نسخة فارغة: لا توجد بيانات شركات ولا حسابات دخول.\n" +
         "-- أول مستخدم يسجّل من البرنامج يبقى صاحب شركته؛ ولتعيين مالك عام للنظام:\n" +
@@ -8033,7 +8201,9 @@
         app: "mizan", build: window.MIZAN_BUILD,
         companies: (dump.organizations || []).length,
         auth_users: (dump._auth_users || []).length,
-        counts: DEPLOY_DATA_TABLES.reduce((a, t) => { a[t] = (dump[t] || []).length; return a; }, {})
+        schema_files: DEPLOY_DB_FILES.length,
+        coverage: { tables: cov.total, covered: cov.covered, missing: cov.missing, rows: cov.rows },
+        counts: dataTables.reduce((a, t) => { a[t] = (dump[t] || []).length; return a; }, {})
       }, null, 2)], { type: "application/json" }) }
     ];
     siteFiles.forEach((f) => files.push(f));
@@ -8041,8 +8211,14 @@
     if (includeData) files.push({ name: "data.json", blob: new Blob([JSON.stringify(dump)], { type: "application/json" }) });
     const baseName = "mizan-deploy-backup-" + (includeData ? "full" : "empty") + "-" + deployStamp();
     saveDeployBundle(files, baseName).then((how) => {
-      addActivity("نسخة نشر", "نسخة " + (includeData ? "كاملة" : "فارغة") + " — " + how);
-      toast("اتحفظت في " + baseName + " (" + files.length + " ملف). شوف README.txt لخطوات التشغيل.", "success");
+      addActivity("نسخة نشر", "نسخة " + (includeData ? "كاملة" : "فارغة") + " — " + how +
+        " — تغطية: " + coverageNote(cov));
+      if (cov.missing.length) {
+        toast("النسخة اتحفظت، بس السيرفر ما رجّعش " + cov.missing.length + " جدول: " +
+          cov.missing.join("، ") + ". اتأكد من نسخة السحابة الأول.", "warning");
+      } else {
+        toast("اتحفظت في " + baseName + " (" + files.length + " ملف) — " + coverageNote(cov), "success");
+      }
     });
   }
 
@@ -8104,6 +8280,8 @@
   //  1) ملف بيور (بلا شركات وبلا حسابات) → ما يلمس السيرفر نهائيًا.
   //  2) ملف كامل + سيرفر فاضي (جديد) → يُنشر مباشرة بلا تحذيرات.
   //  3) ملف كامل + سيرفر فيه بيانات → تأكيد صريح قبل الاستبدال (كتلة واحدة: خطأ = لا يتغير شيء).
+  // 🆕 بناء 124: قبل الاستعادة بنقرأ الملف ونقول هيتمسح إيه (mizan_admin_restore_full
+  // بيفرّغ ٣٦ جدول حتى اللي ملهاش مفتاح في الملف)، وبعدها بنقارن الأعداد على السيرفر.
   function ownerRestoreFullFile(jsonStr) {
     let payload;
     try { payload = JSON.parse(jsonStr); } catch (e) { toast("الملف غير صالح أو تالف.", "warning"); return; }
@@ -8114,20 +8292,35 @@
       toast("النسخة دي «سورس بيور» — مفيهاش بيانات شركات عشان تُنشر، والسيرفر الحالي ما اتلمسش. لتنزيلها على سيرفر جديد اتبع خطوات README اللي جوه المجلد.", "info");
       return;
     }
+    const brief = restoreBriefing(payload);
     const doRestore = (freshServer) => {
       toast(freshServer ? "جارٍ نشر النسخة على السيرفر الجديد..." : "جارٍ الاستعادة الكاملة...", "info");
       DATA.adminRestoreFull(payload).then((msg) => {
         toast(msg || "تم النشر بنجاح.", "success");
-        addActivity("نسخة نشر", "نشر باك أب من الجهاز: " + orgsInFile + " شركة، " + usersInFile + " حساب دخول");
-        setTimeout(() => window.location.reload(), 1800);
+        addActivity("نسخة نشر", "نشر باك أب من الجهاز: " + orgsInFile + " شركة، " + usersInFile +
+          " حساب دخول — " + brief.text);
+        return verifyRestore(payload).then((v) => {
+          const note = restoreVerifyNote(v);
+          addActivity("تحقق الاستعادة", note + (v && v.diffs.length
+            ? " — " + v.diffs.map((d) => d.t + " (الملف " + d.want + " / السيرفر " + (d.got === null ? "غير مقروء" : d.got) + ")").join("، ")
+            : ""));
+          toast(note, v && v.diffs.length ? "warning" : "success");
+          setTimeout(() => window.location.reload(), 2200);
+        });
       }).catch((e) => toast("خطأ في الاستعادة (لم يُمسح شيء): " + (e.message || e), "error"));
     };
     const afterServerCheck = (curOrgs) => {
       if (curOrgs === 0) { doRestore(true); return; }
       const w = confirm("السيرفر الحالي فيه بيانات (" + curOrgs + " شركة عاملة).\n\n" +
-        "النسخة اللي اخترتها فيها " + orgsInFile + " شركة و" + usersInFile + " حساب دخول.\n\n" +
+        brief.text + "\n\n" +
         "نشرها معناه استبدال بيانات السيرفر ببيانات الملف (لو حصل أي خطأ في الوسط لا يُمسح شيء — العملية كتلة واحدة).\n\nهل تريد الاستبدال فعلًا؟");
       if (!w) { toast("تم الإلغاء — لم يتغير أي شيء على السيرفر.", "info"); return; }
+      if (brief.missing.length) {
+        const hard = confirm("⚠️ الملف ده نسخة قديمة أو ناقصة: ما فيهوش " + brief.missing.length +
+          " جدول (" + brief.missing.join("، ") + ").\n\nالسيرفر بيفرّغ كل الجداول قبل ما يزرع اللي في الملف،" +
+          " فبيانات الجداول دي هتتمسح وما ترجعش.\n\nهل أنت متأكد إنك عايز تكمّل برضه؟");
+        if (!hard) { toast("تم الإلغاء — لم يتغير أي شيء على السيرفر.", "info"); return; }
+      }
       doRestore(false);
     };
     if (A.online && DATA && DATA.adminOrgs) {
@@ -8136,11 +8329,24 @@
     } else afterServerCheck(1);
   }
 
+  // الجداول اللي فيها بيانات في الملف والسيرفر ما بيرجّعهاش company-by-company دلوقتي
+  function restoreOneLimitNote(payload) {
+    if (!payload) return "";
+    const beyond = FULL_RESTORE_TABLES.filter((t) =>
+      RESTORE_ONE_COVERS.indexOf(t) === -1 && t !== "organizations" && t !== "profiles" &&
+      Array.isArray(payload[t]) && payload[t].length > 0);
+    if (!beyond.length) return "";
+    return "\n\nتنبيه: استعادة شركة-بشركة على السيرفر الحالي بترجّع ١٩ جدول بس. اللي موجود في الملف ومش هيرجع بالطريقة دي: " +
+      beyond.join("، ") + " — عشان ترجّع دول company-by-company لازم ترقية على السيرفر توسّع استعادة الشركة (أمر بيجهّزها)، " +
+      "أو استخدم «♻️ استعادة نسخة نشر كاملة» فهي بتشمل كل الجداول.";
+  }
+
   // استعادة نسخة للمالك: يختار الشركة أولًا (أو الكل) من القائمة، بتحذير فقط — بدون باسورد
   function ownerRestoreFile(jsonStr) {
     let payload;
     try { payload = JSON.parse(jsonStr); } catch (e) { toast("الملف غير صالح أو تالف.", "warning"); return; }
     if (!payload || typeof payload !== "object") { toast("ملف النسخة غير صحيح.", "warning"); return; }
+    const brief = restoreBriefing(payload);
     const sel = document.getElementById("setRestoreScope");
     // لو الملف نسخة شركة واحدة (يحتوي org) نستعيد الشركة مباشرة بمعرّفها من الملف نفسه
     // — فيعمل حتى لو كانت الشركة محذوفة من السحابة (تُعاد إنشاؤها بكل بياناتها)
@@ -8150,29 +8356,44 @@
       ? (payload.org.name || "شركة محذوفة") + " (من الملف)"
       : (sel && sel.selectedOptions.length ? sel.selectedOptions[0].textContent.trim() : "الكل (كل العملاء)");
     if (singleOrgId) {
-      const again = confirm("أعد استعادة شركة «" + scopeName + "»؟\nستُعاد كل بياناتها المخزنة من الملف إلى السحابة (نفس الشركة — تُنشأ مجددًا إن كانت محذوفة).\nملاحظة: حسابات أعضاء الشركة لا تُستعاد من الملف — ستعيد إنشاء حساب دخولها من شاشة الإدارة بعد الاستعادة.\nهل أنت متأكد؟");
+      const again = confirm("أعد استعادة شركة «" + scopeName + "»؟\n" + brief.text +
+        "\nستُعاد بياناتها المخزنة من الملف إلى السحابة (نفس الشركة — تُنشأ مجددًا إن كانت محذوفة)." +
+        "\nملاحظة: حسابات أعضاء الشركة لا تُستعاد من الملف — ستعيد إنشاء حساب دخولها من شاشة الإدارة بعد الاستعادة." +
+        restoreOneLimitNote(payload) +
+        "\n\nهل أنت متأكد؟");
       if (!again) { toast("تم إلغاء الاستعادة.", "info"); return; }
       if (!DATA) { toast("وضع السحابة غير متاح.", "error"); return; }
       toast("جارٍ استعادة الشركة من الملف...", "info");
       DATA.adminRestoreOne(singleOrgId, payload).then(() => {
-        addActivity("نسخ احتياطي شامل", "استعادة شركة واحدة من الملف (" + scopeName + ")");
+        addActivity("نسخ احتياطي شامل", "استعادة شركة واحدة من الملف (" + scopeName + ") — " + brief.text);
         toast("تمت استعادة الشركة بنجاح.", "success");
-        setTimeout(() => window.location.reload(), 1600);
+        return verifyRestore(payload).then((v) => {
+          const note = restoreVerifyNote(v);
+          addActivity("تحقق الاستعادة", note);
+          if (v && v.diffs.length) toast(note, "warning");
+          setTimeout(() => window.location.reload(), 2200);
+        });
       }).catch((e) => {
         const msg = e && e.message ? e.message : String(e);
         toast("خطأ في الاستعادة: " + (msg.length > 140 ? msg.slice(0, 140) : msg), "error");
       });
       return;
     }
-    const w = confirm("تحذير شديد ⚠️⚠️⚠️\n\nستُستبدل بيانات: «" + scopeName + "»\nببيانات هذا الملف نهائيًا. لا يمكن التراجع.\n\nهل أنت متأكد تمامًا؟");
+    const w = confirm("تحذير شديد ⚠️⚠️⚠️\n\nستُستبدل بيانات: «" + scopeName + "»\nببيانات هذا الملف نهائيًا. لا يمكن التراجع.\n\n" +
+      brief.text + restoreOneLimitNote(payload) + "\n\nهل أنت متأكد تمامًا؟");
     if (!w) { toast("تم إلغاء الاستعادة.", "info"); return; }
     if (!DATA) { toast("وضع السحابة غير متاح.", "error"); return; }
     toast("جارٍ استعادة النسخة...", "info");
     const prom = orgId ? DATA.adminRestoreOne(orgId, payload) : DATA.adminRestoreAll(payload);
     prom.then(() => {
       toast("تمت الاستعادة بنجاح.", "success");
-      addActivity("نسخ احتياطي شامل", "استعادة نسخة (" + scopeName + ")");
-      setTimeout(() => window.location.reload(), 1600);
+      addActivity("نسخ احتياطي شامل", "استعادة نسخة (" + scopeName + ") — " + brief.text);
+      return verifyRestore(payload).then((v) => {
+        const note = restoreVerifyNote(v);
+        addActivity("تحقق الاستعادة", note);
+        if (v && v.diffs.length) toast(note, "warning");
+        setTimeout(() => window.location.reload(), 2200);
+      });
     }).catch((e) => {
       const msg = e && e.message ? e.message : String(e);
       toast("خطأ في الاستعادة: " + (msg.length > 140 ? msg.slice(0, 140) : msg), "error");
@@ -10909,8 +11130,13 @@ const pwEye = document.getElementById("btnShowPass");
         dlg.remove();
         if (!confirm("حذف شركة «" + name + "» نهائيًا بكل بياناتها المخزنة (عملاء، مبيعات، حسابات...)?\nسيتم أولًا حفظ نسخة احتياطية كاملة على جهازك لتستعيدها في أي وقت.\nملاحظة: الملف يحفظ بيانات الشركة (وليس حسابات أعضائها) — لو رجّعتها لاحقًا ستعيد إنشاء حساب الدخول من الإدارة.\nلا يمكن التراجع عن الحذف من السحابة.")) return;
         toast("جارٍ تجهيز النسخة الاحتياطية قبل الحذف...", "info");
-        DATA.adminExportOne(orgId).then((pack) => {
+        // 🆕 بناء 124: نسخة ما قبل الحذف بتتبني من اللقطة الشاملة (٣٦ جدول)، ولو أي
+        // جدول ناقص فيها الحذف بيترفض — مامنعش شركة تتحذف بسبب نسخة احتياطية أنقص منها
+        ownerBackupPack(orgId).then((pack) => {
           if (!pack) throw new Error("لا توجد بيانات قابلة للنسخ الاحتياطي");
+          const cov = backupCoverage(pack, ORG_SCOPE);
+          if (cov.missing.length) throw new Error("النسخة الاحتياطية ما شملتش: " + cov.missing.join("، ") + " — الحذف مرفوض");
+          const covTxt = coverageNote(cov);
           const jsonStr = JSON.stringify(pack, null, 2);
           const blob = new Blob([jsonStr], { type: "application/json" });
           const safeName = (name || "شركة").replace(/[\\/:*?"<>|]/g, "_").trim() || "شركة";
@@ -10924,7 +11150,7 @@ const pwEye = document.getElementById("btnShowPass");
             resolve(true);
           };
           const finishSave = () => (DATA.adminDeleteOrg(orgId, "full")
-            .then(() => { toast("تم حفظ النسخة الاحتياطية على جهازك، وحُذفت الشركة نهائيًا من السحابة.", "ok"); })
+            .then(() => { toast("تم حفظ النسخة الاحتياطية على جهازك — " + coverageNote(backupCoverage(pack, ORG_SCOPE)) + " — وحُذفت الشركة نهائيًا من السحابة.", "ok"); })
             .catch((e) => { toast("خُزّنت النسخة الاحتياطية، لكن تعذّر حذف الشركة: " + (e.message || e), "error"); })
             .then(() => renderAdminOrgs()));
           if (window.showSaveFilePicker) {
