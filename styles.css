@@ -300,6 +300,15 @@ body {
 .balance-debit { color: var(--danger); font-weight: bold; }
 .balance-credit { color: var(--success); font-weight: bold; }
 
+/* ================== 🎨 بناء 123 (بند 5): اتجاه المبلغ في الشاشات المالية ==================
+   القاعدة: أي «إيراد / داخل» أخضر وأي «مصروف / خارج» أحمر — في الشاشات المالية بس.
+   دول كلاسات اتجاه (amt-in/amt-out) ومختلفين عن balance-debit/credit اللي معناها
+   طرف الرصيد في الحساب. الكلاسات بتتضاف من app.js عن طريق moneyDirOf/amtCls/amtTd/paintDir،
+   ومصدر الحقيقة واحد: مافيش شاشة بتكتب اللون بنفسها.
+   ملاحظة ترتيب: القواعد دي بعد .kpi-value (سطر 200) عشان تتغلّب عليها بنفس الأولوية. */
+.amt-in  { color: var(--success); font-weight: 700; }
+.amt-out { color: var(--danger);  font-weight: 700; }
+
 /* ===== التذييل ===== */
 .app-footer {
   background: var(--primary-dark);

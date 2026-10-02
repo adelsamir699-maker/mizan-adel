@@ -1168,6 +1168,75 @@
     return String(Math.round((Number(n) || 0) * 100) / 100);
   }
 
+  /* ================== 🆕 بناء 123: قاعدة «الإيراد أخضر والمصروف أحمر» ==================
+   * طلب المالك: «عايز قاعدة في البرنامج: أي إيراد المبلغ يكون لونه أخضر وأي مصروف
+   * المبلغ يكون لونه أحمر». وقراره 02/10: القاعدة دي على **الشاشات المالية بس** —
+   * فواتير العميل/المورد وطباعةاتهم ما بتلمسهاش — ورق العميل يفضل زي ما هو.
+   *
+   * القاعدة كلها في مصدر واحد (moneyDirOf) عشان أي شاشة تسمّي الإيراد/المصروف بنفس
+   * المعنى، ومفيش أي دالة تانية تكرّر التسمية:
+   *   • سند / حركة خزينة:  type|kind = "in" / "out"
+   *   • حساب من الدليل:    type = "revenue" / "expense"  أو كود شجرة 4 / 5
+   *   • قيد يومية:         من أسطره (jrnDir) — واللي فيه الإيراد والمصروف بنفس الحجم
+   *                        ما يتلونش: مافيش لون على تخمين.
+   *   • نص عربي/إنجليزي:   "إيراد" / "مصروف" / "in" / "out" */
+  function moneyDirOf(sig) {
+    if (!sig) return "";
+    if (typeof sig === "string") {
+      const t = String(sig).trim().toLowerCase();
+      if (t === "in" || t === "income" || t === "revenue" || t === "إيراد" || t === "مقبوضات") return "in";
+      if (t === "out" || t === "expense" || t === "مصروف" || t === "مدفوعات") return "out";
+      return "";
+    }
+    const ty = String(sig.type || "").trim().toLowerCase();
+    if (ty === "in" || ty === "income" || ty === "revenue") return "in";
+    if (ty === "out" || ty === "expense") return "out";
+    const kd = String(sig.kind || "").trim().toLowerCase();
+    if (kd === "in") return "in";
+    if (kd === "out") return "out";
+    const code = String(sig.code || "").trim();
+    if (code === "4" || code.indexOf("4.") === 0) return "in";
+    if (code === "5" || code.indexOf("5.") === 0) return "out";
+    return "";
+  }
+  // اسم الكلاس اللي يلوّن الخلية (فاضي = ما تلونش — الشاشات التانية زي ما هي)
+  function amtCls(sig) {
+    const d = moneyDirOf(sig);
+    return d === "in" ? "amt-in" : d === "out" ? "amt-out" : "";
+  }
+  // خلية مبلغ في جدول: نفس fmt بالضبط، و«-» وقت الصفر لو الطلب (زي ما الشاشات كانت تعرض)
+  // الصفر ما يتلونش: مافيش حركة اتقالت، فالاتجاه مجهول مش «إيراد» ولا «مصروف».
+  function amtTd(val, sig, zeroDash) {
+    const n = Number(val) || 0;
+    const zero = Math.abs(n) < 0.005;
+    const c = zero ? "" : amtCls(sig);
+    const txt = (zero && zeroDash) ? "-" : fmt(n);
+    return "<td" + (c ? ' class="' + c + '"' : "") + ">" + txt + "</td>";
+  }
+  // تلوين خانة إدخال أو كارت (بـ classList — ما بيشيلش الكلاسات القديمة ولا بيكسر الستايل)
+  function paintDir(sel, sig) {
+    const el = typeof sel === "string" ? $(sel) : sel;
+    if (!el || !el.classList) return;
+    el.classList.remove("amt-in", "amt-out");
+    const c = amtCls(sig);
+    if (c) el.classList.add(c);
+  }
+  // اتجاه القيد من أسطره: كل سطر على شجرة الإيرادات بيزوّد كفة، وكل سطر على المصروفات بيزوّد كفة
+  function jrnDir(j) {
+    let inSum = 0, outSum = 0;
+    ((j && j.lines) || []).forEach((l) => {
+      const a = accounts.find((x) => Number(x.id) === Number(l && l.accountId));
+      const d = moneyDirOf(a);
+      const amt = (Number(l && l.debit) || 0) + (Number(l && l.credit) || 0);
+      if (!d || amt <= 0) return;
+      if (d === "in") inSum += amt; else outSum += amt;
+    });
+    if (inSum > 0 && outSum === 0) return "in";
+    if (outSum > 0 && inSum === 0) return "out";
+    if (Math.abs(inSum - outSum) >= 0.005) return inSum > outSum ? "in" : "out";
+    return "";
+  }
+
   function normalizeAr(s) {
     return (s || "")
       .replace(/[أإآٱ]/g, "ا")
@@ -1854,7 +1923,13 @@
     const profitSold = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => m + marginOf(s.items), 0);
     const profitReturned = saleReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + marginOf(r.items), 0);
     const profitToday = profitSold - profitReturned;
+    // 🎨 بناء 123 (بند 5): المبلغ أخضر للمدخل / أحمر للمخرج — الشاشات المالية بس.
+    //    كارت «الرصيد المتاح» ما يتلونش: ده رصيد مش إيراد ولا مصروف.
+    paintDir("#kSales", "in");
+    paintDir("#kPurchases", "out");
+    paintDir("#kExpenses", "out");
     $("#kProfit").textContent = fmt(Math.round(profitToday * 100) / 100) + " ج.م";
+    paintDir("#kProfit", profitToday > 0 ? "in" : profitToday < 0 ? "out" : "");
     $("#kTreasury").textContent = fmt(treTotal) + " ج.م";
 
     const low = products.filter((pr) => pr.qty <= pr.reorder);
@@ -5227,8 +5302,8 @@
           '<td>' + typeName + '</td>' +
           '<td>' + esc(t.accountNo || (t.type === "bank" ? "—" : t.type === "wallet" ? (t.phone || "—") : "—")) + '</td>' +
           '<td class="' + (t.balance > 0 ? "balance-debit" : "balance-credit") + '">' + fmt(t.balance) + ' ج.م</td>' +
-          '<td>' + fmt(tTotals.in) + '</td>' +
-          '<td>' + fmt(tTotals.out) + '</td>' +
+          amtTd(tTotals.in, "in") +
+          amtTd(tTotals.out, "out") +
           '<td class="cell-actions"><button class="btn small blue" type="button" data-act="edit">✏️</button></td>';
         tr.dataset.tid = t.id;
         tbody.appendChild(tr);
@@ -5472,8 +5547,8 @@
         '<td>' + esc(m.date) + '</td>' +
         '<td>' + esc(m.name) + '</td>' +
         '<td style="text-align:right">' + esc(m.desc) + '</td>' +
-        '<td>' + (m.in ? fmt(m.in) : "-") + '</td>' +
-        '<td>' + (m.out ? fmt(m.out) : "-") + '</td>';
+        amtTd(m.in, "in", true) +
+        amtTd(m.out, "out", true);
       tbody.appendChild(tr);
     });
     if (!moves.length) tbody.innerHTML = '<tr><td colspan="5">لا توجد حركات بعد.</td></tr>';
@@ -5588,13 +5663,16 @@
     });
     list.forEach((j) => {
       const tr = document.createElement("tr");
+      // 🆕 بناء 123: القيد اللي على شجرة الإيرادات أخضر، واللي على المصروفات أحمر،
+      // والاختلاط المتوازن ما يتلونش (مافيش لون على تخمين)
+      const jdir = jrnDir(j);
       tr.innerHTML =
         '<td hidden></td>' +
         '<td>' + esc(j.number) + '</td>' +
         '<td>' + esc(j.date) + '</td>' +
         '<td style="text-align:right">' + esc(j.desc) + '</td>' +
-        '<td>' + fmt(j.debit) + '</td>' +
-        '<td>' + fmt(j.credit) + '</td>' +
+        amtTd(j.debit, jdir) +
+        amtTd(j.credit, jdir) +
         '<td>' + esc(j.ref) + '</td>';
       tr.addEventListener("dblclick", () => {
         if (confirm("هل تريد طباعة كشف القيد رقم (" + j.number + ")؟")) {
@@ -5879,8 +5957,11 @@
 
   function liveBalanceHint(amountSelId, treasurySelId, hintSelId, mode) {
     const hint = $(hintSelId);
-    if (!hint) return;
     const m = typeof mode === "function" ? mode() : mode;
+    // 🎨 بناء 123 (بند 5): خانة المبلغ بتاخد اتجاه العملية (قبض أخضر / صرف أحمر).
+    //    التحويل «مافيش عليه لون»: المبلغ مش إيراد ولا مصروف، ده بنقل بين حسابات الشركة.
+    paintDir(amountSelId, m === "income" ? "in" : m === "expense" ? "out" : "");
+    if (!hint) return;
     const base = hint.dataset.base !== undefined ? hint.dataset.base : (hint.textContent || "");
     const amount = round2(moneyVal(amountSelId));
     const tid = parseInt((($(treasurySelId) || {})).value, 10);
@@ -6189,14 +6270,16 @@
       tr0.innerHTML = '<td>—</td><td>—</td><td style="text-align:right">رصيد افتتاحي</td><td>-</td><td>-</td><td>' + fmt(led.opening) + '</td>';
       tbody.appendChild(tr0);
     }
+    // 🆕 بناء 123: دفتر حركة حساب إيراد (شجرة 4) أو مصروف (شجرة 5) — حركته تتلون باتجاه الحساب
+    const ldir = moneyDirOf(led.acc);
     led.rows.forEach((r) => {
       const tr = document.createElement("tr");
       tr.innerHTML =
         '<td>' + esc(r.date) + '</td>' +
         '<td>' + esc(r.number) + '</td>' +
         '<td style="text-align:right">' + esc(r.desc) + '</td>' +
-        '<td>' + (r.debit ? fmt(r.debit) : "-") + '</td>' +
-        '<td>' + (r.credit ? fmt(r.credit) : "-") + '</td>' +
+        amtTd(r.debit, ldir, true) +
+        amtTd(r.credit, ldir, true) +
         '<td>' + fmt(r.run) + '</td>';
       tbody.appendChild(tr);
     });
@@ -6832,14 +6915,16 @@
       tr0.innerHTML = '<td>—</td><td>—</td><td style="text-align:right">رصيد افتتاحي</td><td>-</td><td>-</td><td>' + fmt(led.opening) + '</td>';
       tbody.appendChild(tr0);
     }
+    // 🆕 بناء 123: كشف حساب حساب من شجرة الإيرادات (4) ⇒ حركاته خضرا، ومن المصروفات (5) ⇒ حمرا
+    const adir = moneyDirOf(acc);
     rows.forEach((r) => {
       const tr = document.createElement("tr");
       tr.innerHTML =
         '<td>' + esc(r.date) + '</td>' +
         '<td>' + esc(r.number == null ? "—" : r.number) + '</td>' +
         '<td style="text-align:right">' + esc(r.desc) + '</td>' +
-        '<td>' + (r.debit ? fmt(r.debit) : "-") + '</td>' +
-        '<td>' + (r.credit ? fmt(r.credit) : "-") + '</td>' +
+        amtTd(r.debit, adir, true) +
+        amtTd(r.credit, adir, true) +
         '<td class="' + (r.balance > 0 ? "balance-debit" : "balance-credit") + '">' + fmt(r.balance) + '</td>';
       tbody.appendChild(tr);
     });
@@ -6989,8 +7074,8 @@
       tr.innerHTML =
         '<td>' + esc(r.date) + '</td>' +
         '<td style="text-align:right">' + esc(r.desc) + '</td>' +
-        '<td>' + (r.in ? fmt(r.in) : "-") + '</td>' +
-        '<td>' + (r.out ? fmt(r.out) : "-") + '</td>' +
+        amtTd(r.in, "in", true) +
+        amtTd(r.out, "out", true) +
         '<td class="' + (r.run > 0 ? "balance-debit" : "balance-credit") + '">' + fmt(r.run) + '</td>';
       tb.appendChild(tr);
     });
@@ -7083,7 +7168,7 @@
         .sort((a, b) => b.val - a.val);
     };
 
-    const fill = (tbodyId, rows, cols) => {
+    const fill = (tbodyId, rows, cols, dir) => {
       const tb = $(tbodyId);
       tb.innerHTML = "";
       if (!rows.length) {
@@ -7092,15 +7177,16 @@
       }
       rows.forEach((r) => {
         const tr = document.createElement("tr");
-        tr.innerHTML = '<td>' + esc(r.name) + '</td><td>' + esc(r.qty != null ? Number(r.qty).toLocaleString("en-US") : r.count) + '</td><td>' + fmt(r.val) + '</td>';
+        // 🆕 بناء 123: عمود القيمة في التقارير — المبيعات/العملاء = إيراد (أخضر)، المشتريات/الموردين = مصروف (أحمر)
+        tr.innerHTML = '<td>' + esc(r.name) + '</td><td>' + esc(r.qty != null ? Number(r.qty).toLocaleString("en-US") : r.count) + '</td>' + amtTd(r.val, dir);
         tb.appendChild(tr);
       });
     };
 
-    fill("#dgvRepSales tbody", agg(sales, true).slice(0, 15), 3);
-    fill("#dgvRepPurch tbody", agg(purchases, false).slice(0, 15), 3);
-    fill("#dgvRepCust tbody", aggParty(sales, true), 3);
-    fill("#dgvRepSupp tbody", aggParty(purchases, false), 3);
+    fill("#dgvRepSales tbody", agg(sales, true).slice(0, 15), 3, "in");
+    fill("#dgvRepPurch tbody", agg(purchases, false).slice(0, 15), 3, "out");
+    fill("#dgvRepCust tbody", aggParty(sales, true), 3, "in");
+    fill("#dgvRepSupp tbody", aggParty(purchases, false), 3, "out");
 
     const sTot = sales.filter((i) => inRange(i.invoiceDate)).reduce((m, i) => m + (i.grandTotal || 0), 0);
     const pTot = purchases.filter((i) => inRange(i.invoiceDate)).reduce((m, i) => m + (i.grandTotal || 0), 0);
