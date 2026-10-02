@@ -1,7 +1,19 @@
 -- ترقية ٤٥ — الدردشة الداخلية (بند 16)
 --
--- ⚠️ هذا الملف **محفوظ على القرص بس**. ممنوع تنفيذه على Supabase إلا بأمر صريح من المالك.
---    أداة التنفيذ: D:/_work/temp/apply_upgrade_45.js — متقفلة بمفتاح MIZAN_ORDER_45="نفّذ".
+-- ✅ **اتنفّذت على Supabase 03/10 ≈00:44 بأمر المالك الحرفي «يلا، نفذ ترقية الدردشة دلوقتي»**.
+--    الأداة: D:/_work/temp/apply_upgrade_45.js (مقفولة بمفتاح MIZAN_ORDER_45="نفّذ") —
+--    transaction واحدة + ١٩ فحصًا بعد = كلها خضراء قبل الـ commit.
+--    الباك أب: قبل = pre-mig45-20261003-0037 · بعد = post-mig45-20261003-0057.
+--    المخطط: 392→400 عمودًا · 88→93 قيدًا · 61→65 دالة · 116→119 سياسة · 108→112 فهرس · 37→38 جدول.
+--    الإثبات السلوكي على أدوار حقيقية: test_chat_privacy_45.js = **60 ✅/0 ❌** (كله rollback).
+--    ❗ ممنوع إعادة تشغيل الملف كما هو: فحص «messages فاضي» بيبقى فشل متعمّد بعد أول استخدام
+--       (ده مقصود — الترقيات ما تتكررش فوق بيانات حية). لو لازم تعديل لاحق = ملف جديد ٤٦ بأمر صريح.
+--
+--    تصحيحان طلعوا من **التنفيذ نفسه** (المحاكاة والمحلي ما كانش ممكن يمسكوا دول):
+--      (١) Supabase بيدي منح all لـ `authenticated` تلقائيًا على أي جدول جديد ⇒ `revoke` عن
+--          anon/PUBLIC بس كان بيسيب UPDATE فاعلة، والفحص الداخلي رفض ⇒ سحبناها من authenticated كمان.
+--      (٢) استعلام فحص منح الدوال كان مكتوبًا `from pg_proc p, aclexplode(...) x join pg_namespace …`
+--          وهو **باطل نحويًا** في Postgres (ON تبع JOIN ما يرجعش لعنصر الفاصلة اللي قبله).
 --
 -- قواعد المالك الحرفية اللي التحصين ده مبني عليها:
 --   ١) «محدش يقدر يشوف رسايل مش مبعوته له»        → سياسة SELECT على الصف نفسه: from = أنا أو to = أنا
@@ -181,7 +193,11 @@ create policy msg_owner_delete on public.messages
   using (from_user = auth.uid());
 
 -- ═══════════════════════════ ٤) المنح ═════════════════════════════════════
-revoke all on public.messages from anon, public;
+-- تنبيه تنفيذي (03/10): Supabase بيدي **افتراضيًا** منح all لـ authenticated على أي
+-- جدول جديد في public. لو سحبنا المنح عن anon/PUBLIC بس، UPDATE بتاع authenticated
+-- بيفضل موجود والفحص الداخلي بيرفض (والترقية كلها ترجع). ⇒ نسحب الكل أولًا على
+-- authenticated كمان، وبعدين نمنح التلاتة المسموحين بالظبط.
+revoke all on public.messages from anon, public, authenticated;
 grant select, insert, delete on public.messages to authenticated;
 -- ممنوع update: تعليم «مقروءة» يتم بالدالة فقط.
 
@@ -264,12 +280,18 @@ begin
   if n <> 3 then raise exception 'ترقية ٤٥: دوال بتقرأ auth.uid() = % (مفروض ٣)', n; end if;
 
   -- بعد: المنح على الدوال — authenticated بس، وممنوع أي grant لـ anon/PUBLIC
-  select count(*) into n from pg_proc p, aclexplode(p.proacl) x
-    join pg_namespace ns on ns.oid=p.pronamespace
+  -- تصحيح تنفيذي (03/10): الصيغة القديمة (aclexplode مرميّ بالفاصلة قبل JOIN pg_namespace)
+  -- **باطلة في Postgres** — ON حق الـ JOIN ما ينفعش يرجع للعنصر اللي قبله بالفاصلة، وكانت بترجّع
+  -- `invalid reference to FROM-clause entry for table "p"`. الصيغة دي كمان بتفشل لو proacl فاضي
+  -- (NULL = PUBLIC مسموح ضمنيًا) بدل ما تعدّي في صمت.
+  select count(*) into n from pg_proc p
+    join pg_namespace ns on ns.oid = p.pronamespace
     where ns.nspname='public'
       and p.proname in ('mizan_chat_peer','mizan_chat_peers','mizan_chat_read','mizan_chat_set_scope')
-      and (x.grantee = 0 or pg_get_userbyid(x.grantee) in ('anon','public'));
-  if n <> 0 then raise exception 'ترقية ٤٥: دوال الدردشة لمنح anon/PUBLIC (% grant)', n; end if;
+      and (p.proacl is null
+           or exists (select 1 from aclexplode(p.proacl) x
+                       where x.grantee = 0 or pg_get_userbyid(x.grantee) in ('anon','public')));
+  if n <> 0 then raise exception 'ترقية ٤٥: دوال الدردشة لمنح anon/PUBLIC (% دالة)', n; end if;
 
   select prosrc into src from pg_proc p join pg_namespace ns on ns.oid=p.pronamespace
     where ns.nspname='public' and p.proname='mizan_chat_read';
@@ -291,6 +313,19 @@ end;
 $$;
 
 -- ═══════════════════════ سجل ═══════════════════════
--- الحالة: مكتوبة ومحفوظة على القرص (بناء ١٢٥) — **لم تُنفّذ**.
--- التنفيذ يحتاج أمر المالك الحرفي، وبعده: باك أب قبل/بعد + test_chat_privacy_45.js
--- (رحلات أدوار حقيقية داخل savepoint/rollback — درس ترقية ٤٣).
+-- ✅ مُنفَّذة على Supabase 2026-10-03 ≈00:44 (توقيت القاهرة) بأمر المالك الحرفي
+--    «يلا، نفذ ترقية الدردشة دلوقتي» — transaction واحدة، ١٩ فحصًا بعد التنفيذ كلها ✅ ثم commit.
+--   قبل: 392 عمودًا/88 قيدًا/61 دالة/116 سياسة/108 فهرس/37 جدول — بعد: 400/93/65/119/112/38.
+--    ولا سطر بيانات اتلمس: profiles=9 · organizations=8 · employees=0 قبل وبعد، و md5 حزمة
+--    دوال النسخ الأربعة زي ما هي حرفيًا (78094c20cba0a7aaf55ffa25e1f8321c).
+--    الباك أب: D:/MizanBackups/pre-mig45-20261003-0037 · D:/MizanBackups/post-mig45-20261003-0057
+--    (لقطة البنية بتثبت: ٨ أعمدة messages + ٣ سياسات select/insert/delete وبلا أي سياسة UPDATE،
+--     وملف messages **موجودش** في لقطة البيانات = الدردشة بره النسخ الاحتياطي بقرار المالك).
+--    الإثبات السلوكي بأدوار حقيقية (كل محاولة في savepoint والكل rollback — درس ٤٣):
+--    test_chat_privacy_45.js = **60 ✅/0 ❌** يغطي الأوامر الأربعة + anon + منع الانتحال +
+--    منع UPDATE + الحذف للمرسل فقط + سويتش owners/all + «messages بره mizan_admin_backup_full».
+--    أول استخدام حيّ بعد التنفيذ: عادل بعت رسالتين من التطبيق فعليًا (00:56 و00:57) بعد ما قلب
+--    السويتش على «كل المستخدمين» ⇒ الكتابة والقراءة شغالة من غير أي تعديل كود إضافي.
+--    المتأجل لقراره: فرع «أصحاب المؤسسات» بيقارن `organizations.owner_id`، وعلى البيانات الحالية
+--    كل الشركات owner_id = عادل ⇒ القائمة الافتراضية بتاعته = صفر، بينما تعريف التطبيق لصاحب
+--    الشركة = `role='admin' && !is_superadmin` (app.js:1532). أي تصويب = ترقية ٤٦ بأمره الحرفي.
