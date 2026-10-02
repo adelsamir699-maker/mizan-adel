@@ -1397,7 +1397,21 @@
   }
   function isSuperAcct() {
     var r = currentAcct();
-    return !!(r && r.is_superadmin);
+    if (r && r.is_superadmin) return true;
+    // 🛡 بناء 121 (طلب المالك: لوحة الإدارة «متختفيش ابدا من عندي»):
+    // لحظة الدخول ممكن مصدر واحد (mizan_access) يوصل ناقص العمود، فالمالك يتعرّف
+    // من أي مصدر **سحابي** تاني بنفس العلم — والمصادر دي كلها جاية من القاعدة
+    // (access / profile / me)، مش من أي إدخال أو localStorage بتاع المستخدم.
+    var DE = window.DATA || {};
+    try {
+      var a = DE.accessInfo ? DE.accessInfo() : null;
+      if (a && a.is_superadmin) return true;
+      var p = DE.getProfile ? DE.getProfile() : null;
+      if (p && p.is_superadmin) return true;
+      var me = DE.me ? DE.me() : null;
+      if (me && me.is_superadmin) return true;
+    } catch (e) { }
+    return false;
   }
 
   // 🔓 قرار المالك النهائي (build 119): حساب عادل = المالك — كل الصلاحيات دائمًا،
@@ -1457,6 +1471,10 @@
     if (name === "journal") return isSuperAcct() || isCompanyOwnerAcct();
     // 🆕 شاشة «كشف حساب الحسابات» (من القيود اليومية) — نفس بوابة القيود بالظبط
     if (name === "accStatement") return isSuperAcct() || isCompanyOwnerAcct();
+    // 🛡 بناء 121 (طلب المالك: لوحة الإدارة «متظهرش عند حد تاني ابدا»):
+    // لوحة الإدارة = لحساب المالك (سوبر أدمن) **حصريًا** — لا قائمة مزايا الشركة
+    // ولا دور «مدير» ولا تفعيل صريح يقدر يفتحها لغيره. (المالك وصلها فوق بـ ownerHasAllAccess)
+    if (name === "admin") return isSuperAcct();
     return DE.featureEnabled ? DE.featureEnabled(name) : true;
   }
 
@@ -1489,6 +1507,15 @@
   // (bkPane / viewSettings) بتكون hidden بالتصميم وقت ما تبويب تاني نشيط —
   // دول بنرجعهم بس لو اتفصلوا، أو لو تبويبهم نفسه هو النشيط.
   const OWNER_TAB_NODES = [];
+  // 🛡 بناء 121: عقد «لوحة الإدارة» اللي مفروض **تفضل ظاهرة** للمالك وهو واقف على اللوحة
+  // (شريط الأزرار + صناديق المحتوى). اللوحات اللي بتتفتح بالزرار — adminSubs / adminDetail /
+  // adminAccounts / adminPwBox — **مش** في القائمة دي عمدًا: الإخفاء بتاعها مشروّع لحد ما
+  // المالك يضغط زرارها، فالحارس ما يعاندش فتح/قفل اللوحات.
+  const ADMIN_PANEL_NODES = ["btnAdminRefresh", "btnAdminAddOrg", "btnAdminSubs",
+    "btnAdminAccounts", "btnAdminPw", "btnAdminLog", "adminStats", "adminAlerts", "adminList"];
+  // 🛡 بناء 121: آخر شاشة مفتوحة فعلًا — الحارس بيفهم منها إن «لوحة الإدارة»
+  // مفروض ظاهرة دلوقتي (لأنها بتتخفي مشروّع لما أي شاشة تانية تتفتح).
+  let ownerCurrentView = "";
   function rememberOwnerNode(node, parent, label, mode) {
     if (!node || !parent) return;
     if (!OWNER_TAB_NODES.some((r) => r.label === label)) {
@@ -1508,6 +1535,11 @@
     if (rec.mode === "attach" && el.hidden && rec.label === "viewSettings") {
       const n = document.querySelector('.nav-btn[data-view="settings"]');
       return !!(n && n.classList.contains("active"));                    // واقف على الضبط والشاشة مخفية
+    }
+    // 🛡 لوحة الإدارة (بناء 121): المالك واقف عليها والشاشة اتخفت = أذى.
+    // أما وهي شاشة تانية مفتوحة فالإخفاء مشروّع (كود showView نفسه).
+    if (rec.mode === "attach" && el.hidden && rec.label === "viewAdmin") {
+      return ownerCurrentView === "admin";
     }
     return false;
   }
@@ -1542,6 +1574,15 @@
     rememberOwnerNode(vSet, vSet && vSet.parentNode, "viewSettings", "attach");
     const btnAd = document.getElementById("btnAdmin");
     rememberOwnerNode(btnAd, btnAd && btnAd.parentNode, "btnAdmin", "show");
+    // 🛡 بناء 121 (طلب المالك: «تحصين لوحة الإدارة ضروري حالا… متختفيش ابدا من عندي»):
+    // شاشة اللوحة نفسها + أزرارها + محتواها — بنفس مبدأ «مرجع العقدة الحيّ» بتاع 120.
+    // اللوحة attach (بتتخفي مشروّع لما شاشة تانية تتفتح)، والأزرار/المحتوى show.
+    const vAd = document.getElementById("viewAdmin");
+    rememberOwnerNode(vAd, vAd && vAd.parentNode, "viewAdmin", "attach");
+    ADMIN_PANEL_NODES.forEach((id) => {
+      const b = document.getElementById(id);
+      rememberOwnerNode(b, b && b.parentNode, id, "show");
+    });
     ["btnBackupAll", "btnBackupAll2"].forEach((id) => {
       const b = document.getElementById(id);
       rememberOwnerNode(b, b && b.parentNode, id, "show");
@@ -1552,6 +1593,11 @@
       const navLive = document.querySelector('.nav-btn[data-view="settings"]');
       if (navLive && navLive.parentNode) navLive.parentNode.removeChild(navLive);
       const ba0 = document.getElementById("btnAdmin"); if (ba0) ba0.hidden = true;
+      // 🛡 بناء 121: «متظهرش عند حد تاني ابدا» — اللوحة وأزرارها ومحتواها تُقفل
+      // لكل حساب غير المالك (ولو أي كود مستقبلي فتحها بالغلط، الحارس ده بيردها مقفولة).
+      const va0 = document.getElementById("viewAdmin"); if (va0) va0.hidden = true;
+      ADMIN_PANEL_NODES.forEach((id) => { const b = document.getElementById(id); if (b) b.hidden = true; });
+      try { if (typeof stopPresenceView === "function") stopPresenceView(); } catch (e) { }
       ["btnBackupAll", "btnBackupAll2"].forEach((id) => { const b = document.getElementById(id); if (b) b.hidden = true; });
       return false;
     }
@@ -1573,8 +1619,14 @@
   let ownerGuardArmed = false, ownerGuardQueued = false;
   function armOwnerSettingsGuard() {
     if (ownerGuardArmed || typeof MutationObserver !== "function") return;
+    const vAdR = document.getElementById("viewAdmin");
+    const btnAdR = document.getElementById("btnAdmin");
     const roots = [document.querySelector(".sidebar"), document.getElementById("setTabs"),
-      document.getElementById("viewSettings")].filter(Boolean);
+      document.getElementById("viewSettings"),
+      // 🛡 بناء 121: لوحة الإدارة تحت مراقبة نفس الحارس الحيّ. بنراقب **أبوها** مش هي بس:
+      // لو كود شال اللوحة من الشجرة فالطفرة بتحصل على الأب (مراقبتها على اللوحة نفسها
+      // ما تشالش حالة الفصل) — ونفس المنطق على زرار اللوحة اللي في الهيدر بره الـ sidebar.
+      (vAdR && vAdR.parentNode), (btnAdR && btnAdR.parentNode)].filter(Boolean);
     if (!roots.length) return;
     ownerGuardArmed = true;
     try {
@@ -1619,6 +1671,13 @@
       name = "clientSettings";
       toast("هذا القسم للمالك فقط", "error");
     }
+    // 🛡 بناء 121 (طلب المالك: لوحة الإدارة «متظهرش عند حد تاني ابدا»):
+    // أي حساب غير المالك — حتى لو نادى showView("admin") برمجيًا أو من الكونسول —
+    // بيرجع للوحة التحكم، واللوحة ما بتترسمش أصلًا (openAdmin بيرفض قبل أي نداء).
+    if (name === "admin" && !isOwner) {
+      name = "dashboard";
+      toast("لوحة الإدارة لحساب المالك فقط", "error");
+    }
     // «إعدادات مؤسستك» لا تُفتح إلا لمن فعّلها صاحب الشركة (أو المالك/صاحب الشركة)
     if (name === "clientSettings" && !canUseView("clientSettings")) {
       toast("صلاحية «إعدادات مؤسستك» غير مفعّلة لحسابك", "error");
@@ -1652,6 +1711,9 @@
     document.querySelectorAll(".view[data-id]").forEach((v) => {
       v.hidden = v.dataset.id !== name;
     });
+    // 🛡 بناء 121: الحارس الحيّ لازم يعرف المالك واقف على أنهي شاشة، عشان
+    // «لوحة الإدارة» (والوحات المخفية بالتصميم) ما يعاندش إخفاءها المشروّع.
+    ownerCurrentView = name;
     document.querySelectorAll(".nav-btn").forEach((b) => {
       b.classList.toggle("active", b.dataset.view === name);
     });
@@ -8842,6 +8904,7 @@ const pwEye = document.getElementById("btnShowPass");
     try { loadData(); } finally { A.cleaning = false; }
     mirror();
     // 🛡 نخفي شاشات البرنامج القديمة حتى لا تبقى خلف شاشة الدخول
+    ownerCurrentView = "";   // 🛡 بناء 121: مافيش شاشة «نشطة» دلوقتي ⇒ الحارس ما يعاندش إخفاء اللوحات
     document.querySelectorAll(".view").forEach((v) => { v.hidden = true; });
   }
 
@@ -8943,7 +9006,10 @@ const pwEye = document.getElementById("btnShowPass");
           startPlanWatch();
           startPresence();
           // هل المالك (سوبر أدمن)؟ → زرار الإدارة + شاشة إعدادات المالك
-          const isAdmin = !!(acc && acc.is_superadmin);
+          // 🛡 بناء 121: لو صف `is_superadmin` وصل ناقص من مصدر واحد، ownerHasAllAccess()
+          // بيلزم أي مصدر سحابي تاني (profile/me) — فلوحة الإدارة ما تقفلش على المالك.
+          // العكس آمن: أي حساب غير المالك لسه isAdmin=false واللوحة مقفولة + بوابة showView/openAdmin.
+          const isAdmin = !!(acc && acc.is_superadmin) || ownerHasAllAccess();
           window.__isOwner = isAdmin;
           $("#viewAdmin").hidden = !isAdmin;
           $("#viewSettings").hidden = !isAdmin;
@@ -10766,6 +10832,13 @@ const pwEye = document.getElementById("btnShowPass");
   };
 
   function openAdmin() {
+    // 🛡 بناء 121: بوابة أولى قبل أي رسم/نداء — اللوحة للمالك (سوبر أدمن) فقط.
+    // (مش كفاية إن الزرار مخفي: أي مسار مستقبلي ينادي openAdmin ما يفتحش بيانات الشركات)
+    if (!(ownerHasAllAccess() || !!window.__isOwner)) {
+      toast("لوحة الإدارة لحساب المالك فقط", "error");
+      showView("dashboard");
+      return;
+    }
     hideScreens();
     $("#denyScreen").hidden = true;
     renderAdminOrgs();
