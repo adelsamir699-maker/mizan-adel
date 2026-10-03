@@ -405,10 +405,28 @@
 
   // ---- حالة الوصول (الوقت/القفل/المزايا) من القاعدة ----
   var access = null; // allowed, reason, role, org_id, org_name, plan_start, plan_end, locked, blocked, is_superadmin, features
+  // 🛡 بناء 127 (تمهيد التصحيح ٤٩): تفرّق بين «القاعدة ردّت ورفضت» و«ما قدرناش نسأل».
+  //   denied      = رجع لنا رد من Postgres/PostgREST (مثلاً 42501 بعد سحب المنح)
+  //   unreachable = الـ fetch نفسه فشل (النت واقع / السيرفر مشغول) — ده مش قرار من السحابة
+  // ليه: شاشة «لا يمكنك الدخول» كانت بتظهر للعميل لمجرد إن النت قطع، وده كان هيخلي
+  // أي سحب منح (تصحيح ٤٩) خطرًا — الفشل يجب يوصل رسالة «جرّب تاني» على شاشة الدخول.
+  function mizanAskErr(err, kind) {
+    var e = new Error((err && (err.message || err.details)) || String(err || "تعذّر التحقق من الصلاحية"));
+    e.mizanAsk = kind;
+    e.mizanCode = (err && err.code) || null;
+    return e;
+  }
+  function mizanAskTransport(err) {
+    var m = String((err && (err.message || err.code)) || err || "");
+    return /failed to fetch|fetch failed|network|networkerror|econn|etimedout|enotfound|enf|offline|load fail|fetch is not defined/i.test(m);
+  }
   // requestAccess يُستدعى فورًا بعد الدخول قبل فتح الشاشات
   function requestAccess() {
-    return sb.rpc("mizan_access").then(function (r) {
-      if (r.error) throw r.error;
+    var pr;
+    try { pr = sb.rpc("mizan_access"); }
+    catch (e) { return Promise.reject(mizanAskErr(e, mizanAskTransport(e) ? "unreachable" : "denied")); }
+    return pr.then(function (r) {
+      if (r && r.error) throw mizanAskErr(r.error, mizanAskTransport(r.error) ? "unreachable" : "denied");
       // الدالة بترجع مصفوفة من صف واحد أحيانًا → نظيّرها لكائن
       var d = r.data;
       if (Array.isArray(d)) d = d[0] || null;
@@ -418,6 +436,10 @@
         orgRow = { id: access.org_id, name: access.org_name };
       }
       return access;
+    }, function (e) {
+      // رفض من الشبكة نفسه (أو خطأ طالع من فوق) ⇒ نصنّفه من جديد بلا ما نفقد التصنيف القديم
+      if (e && e.mizanAsk) throw e;
+      throw mizanAskErr(e, mizanAskTransport(e) ? "unreachable" : "denied");
     });
   }
   function accessInfo() { return access; }

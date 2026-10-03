@@ -789,6 +789,8 @@
   function setSubInfo(acc) {
     const el = $("#subInfo");
     if (!el) return;
+    // 🛡 بند 17: حساب المالك (عادل) ما يشوفش شريط «نهاية الاشتراك» أبدًا
+    if (acc && acc.is_superadmin) { el.hidden = true; return; }
     if (!acc || !acc.plan_end) { el.hidden = true; return; }
     let end;
     try { end = new Date(acc.plan_end + "T00:00:00"); } catch (e) { el.hidden = true; return; }
@@ -9601,7 +9603,7 @@ const pwEye = document.getElementById("btnShowPass");
             hideLoginExpiry();
             setAuthMsg(m, "", "");
             showMembersScreen();
-          }).catch(() => { showDeny(null); });
+          }).catch((err) => { handleAskFailure(err, m); });
           return;
         }
         proceedOnline(m, username);
@@ -9773,7 +9775,7 @@ const pwEye = document.getElementById("btnShowPass");
         if (!accessGranted(acc)) { showDeny(acc); return; }
         hideLoginExpiry();
         showMembersScreen();
-      }).catch(() => { showDeny(null); });
+      }).catch((err) => { handleAskFailure(err, stageEl); });
       return;
     }
     A.online = true;
@@ -9866,10 +9868,11 @@ const pwEye = document.getElementById("btnShowPass");
         toast("تعذّر تحميل بيانات السحابة: " + e.message, "error");
         initApp();
       });
-    }).catch(() => {
+    }).catch((err) => {
       // 🛡 إغلاق الفتحة القديمة (fail-open): فشل فحص الصلاحيات = مانفتحش البرنامج
       A.adopting = false;
-      showDeny(null);
+      // 🛡 بناء 127: لكن مانرميش شاشة «انتهى اشتراكك» لمجرد إن السحابة ما ردّتش
+      handleAskFailure(err, stageEl);
     });
   }
 
@@ -10255,6 +10258,34 @@ const pwEye = document.getElementById("btnShowPass");
   function hideLoginExpiry() {
     const exp = document.getElementById("loginExpiry");
     if (exp) exp.hidden = true;
+  }
+
+  // 🛡 بناء 127 (تمهيد التصحيح ٤٩): «ما قدرناش نسأل» ≠ «القاعدة قالت لا»
+  // data.js بيسمّي فشل mizan_access بـ err.mizanAsk = "denied" | "unreachable".
+  // أي فشل نقل (نت واقع / سيرفر مشغول) يفضل على شاشة الدخول برسالة ودّية، مش شاشة
+  // «انتهى اشتراكك» — مع بقاء الحماية كما هي: مانفتحش البرنامج خالص (fail-closed).
+  function isTransportAskError(err) {
+    if (!err) return false;
+    if (err.mizanAsk === "unreachable") return true;
+    if (err.mizanAsk === "denied") return false;
+    return /failed to fetch|fetch failed|network|networkerror|econn|etimedout|enotfound|offline|load fail/i.test(String(err.message || err));
+  }
+  function showLoginRetry(stageEl, msg) {
+    hideLoginExpiry();
+    $("#denyScreen").hidden = true;
+    $("#orgScreen").hidden = true;
+    $("#memberScreen").hidden = true;
+    $("#loginScreen").hidden = false;
+    setDbStatus("🟠 مشكلة اتصال");
+    const el = stageEl || $("#authMsg");
+    if (el) setAuthMsg(el, msg, "err");
+  }
+  function handleAskFailure(err, stageEl) {
+    if (isTransportAskError(err)) {
+      showLoginRetry(stageEl, "تعذّر الوصول للسحابة (الإنترنت أو السيرفر مشغول) — اتأكد من الاتصال ودوس دخول تاني.");
+      return;
+    }
+    showDeny(null);
   }
 
   function showDeny(acc) {
@@ -11603,6 +11634,42 @@ const pwEye = document.getElementById("btnShowPass");
   var onlineModal = null;
   var adminOrgsCache = [];
 
+  // ============================================================
+  // 🛡 بند 17 (بناء 127) — شركة المالك المحمية: بلا تواريخ اشتراك
+  // طلب المالك: «الاشتراك من/إلى» ميظهرش على شاشتي، وميتحفظش تاريخ نهاية
+  // لشركتي — لأن تاريخ نهاية غلط واحد يقدر يقفل المالك نفسه.
+  // المصدر: `mizan_admin_orgs()` بترجع عمود `protected` (= الشركة يملكها حساب
+  // is_superadmin) ⇒ الشغل **واجهة بس**، ومافيش أي تنفيذ أو قراءة جديدة على السحابة.
+  // القاعدة: أي سطر بيعرض أو بيحفظ أو بيصنّف plan_start/plan_end بيمر من هنا.
+  // ============================================================
+  function isProtectedOrg(o) { return !!(o && o.protected === true); }
+  // خليّة التاريخ في الجداول الإدارية: «—» لشركة المالك (بدل أي تشخيص تقني)
+  function subDateCell(o, val) { return isProtectedOrg(o) ? "—" : fmtDate(val); }
+  // ممنوع حفظ/قراءة تاريخي شركة محمية من أي نموذج
+  function subDatesWriteLocked(o) { return isProtectedOrg(o); }
+  // تصنيف واحد تستخدمه البطاقات + الفئات + حالة الصف (عشان العدد والقائمة متطابقين)
+  // "locked" | "expired" | "soon" | "active" | "noend" | "other"
+  function subClassOf(o) {
+    if (!o) return "other";
+    if (o.locked) return "locked";
+    if (isProtectedOrg(o)) return "active"; // شركة المالك خارج أي حساب لانتهاء الاشتراك
+    const until = daysUntil(o.plan_end);
+    if (o.plan_end && (o.plan_status === "expired" || (until !== null && until < 0))) return "expired";
+    if (o.plan_end && until !== null && until >= 0 && until <= 7) return "soon";
+    if (!o.plan_end) return "noend";
+    if (o.plan_status === "active" || until === null) return "active";
+    return "other";
+  }
+  function subStatusBadge(o) {
+    const k = subClassOf(o);
+    if (k === "locked") return '<span class="badge-no">🔴 مقفلة</span>';
+    if (k === "expired") return '<span class="badge-no">🔴 منتهية</span>';
+    if (k === "soon") return '<span class="badge-warn">🟠 تنتهي خلال ' + daysUntil(o.plan_end) + " يوم</span>";
+    if (k === "other") return '<span class="badge-no">🔴 ' + (o.plan_status || "متوقفة") + "</span>";
+    if (isProtectedOrg(o)) return '<span class="badge-ok">🟢 نشطة (بلا تاريخ)</span>';
+    return '<span class="badge-ok">🟢 نشطة</span>';
+  }
+
   function renderAdminStats(orgs) {
     adminOrgsCache = orgs || [];
     const box = $("#adminStats");
@@ -11610,12 +11677,13 @@ const pwEye = document.getElementById("btnShowPass");
     let total = orgs.length, active = 0, locked = 0, expired = 0, expiringSoon = 0, members = 0, noEnd = 0;
     orgs.forEach((o) => {
       members += o.members || 0;
-      const until = daysUntil(o.plan_end);
-      if (o.locked) { locked++; }
-      else if ((o.plan_status === "expired" || (until !== null && until < 0)) && o.plan_end) { expired++; }
-      else if (until !== null && until >= 0 && until <= 7 && o.plan_end) { expiringSoon++; }
-      else if (o.plan_end) { active++; }
-      else { noEnd++; }
+      // 🛡 بند 17: التصنيف من مصدر واحد (شركة المالك ما تدخلش في أي حساب انتهاء)
+      const k = subClassOf(o);
+      if (k === "locked") locked++;
+      else if (k === "expired") expired++;
+      else if (k === "soon") expiringSoon++;
+      else if (k === "noend") noEnd++;
+      else active++; // "active" و "other" (نفس العد القديم)
     });
     // آخر اتصال عام: أحدث last_seen بين الشركات غير المتصلة (المتصلة ظهرت في «متصلون الآن»)
     let latest = null;
@@ -11726,10 +11794,10 @@ const pwEye = document.getElementById("btnShowPass");
       const map = {
         all: () => orgs,
         members: () => orgs.filter((o) => (o.members || 0) > 0),
-        active: () => orgs.filter((o) => !o.locked && o.plan_end && ((o.plan_status === "active") || (daysUntil(o.plan_end) !== null && daysUntil(o.plan_end) > 7))),
-        soon: () => orgs.filter((o) => !o.locked && o.plan_end && daysUntil(o.plan_end) !== null && daysUntil(o.plan_end) >= 0 && daysUntil(o.plan_end) <= 7),
-        expired: () => orgs.filter((o) => o.locked || (o.plan_end && (o.plan_status === "expired" || daysUntil(o.plan_end) < 0))),
-        noend: () => orgs.filter((o) => !o.plan_end)
+        active: () => orgs.filter((o) => { const k = subClassOf(o); return k === "active" || k === "other"; }),
+        soon: () => orgs.filter((o) => subClassOf(o) === "soon"),
+        expired: () => orgs.filter((o) => { const k = subClassOf(o); return k === "locked" || k === "expired"; }),
+        noend: () => orgs.filter((o) => subClassOf(o) === "noend")
       };
       const list = (map[kind] || map.all)();
       catOrgsList = list;
@@ -11760,7 +11828,9 @@ const pwEye = document.getElementById("btnShowPass");
         const locked = !!o.locked;
         const until = daysUntil(o.plan_end);
         let st;
-        if (locked) st = '<span class="badge-no">🔴 مقفلة</span>';
+        // 🛡 بند 17: شركة المالك بتاخد حالة من نفس مصدر التصنيف (وبلا تاريخ نهاية)
+        if (isProtectedOrg(o)) st = subStatusBadge(o);
+        else if (locked) st = '<span class="badge-no">🔴 مقفلة</span>';
         else if (o.plan_end && (o.plan_status === "expired" || until < 0)) st = '<span class="badge-no">🔴 منتهية</span>';
         else if (o.plan_end && until >= 0 && until <= 7) st = '<span class="badge-warn">🟠 تنتهي خلال ' + until + " يوم</span>";
         else st = '<span class="badge-ok">🟢 نشطة</span>';
@@ -11768,7 +11838,7 @@ const pwEye = document.getElementById("btnShowPass");
           "<td><b>" + (o.org_name || "بدون اسم") + "</b></td>" +
           "<td><code>" + (o.admin_username || "—") + "</code></td>" +
           "<td>" + (o.members || 0) + "</td>" +
-          "<td>" + fmtDate(o.plan_end) + "</td>" +
+          "<td>" + subDateCell(o, o.plan_end) + "</td>" +
           "<td>" + st + "</td></tr>";
       });
       h += "</tbody></table>";
@@ -11803,6 +11873,8 @@ const pwEye = document.getElementById("btnShowPass");
     orgs.forEach((o) => {
       const until = daysUntil(o.plan_end);
       if (o.locked) return;
+      // 🛡 بند 17: شركة المالك ما ليهاش تاريخ انتهاء أصلاً ⇒ مافيش تنبيه انتهاء عليها
+      if (isProtectedOrg(o)) return;
       if ((o.plan_status === "expired" || (until !== null && until < 0)) && o.plan_end) {
         urgent.push("<div class=\"adm-alert red\">🔴 شركة <code>" + (o.org_name || "بدون اسم") + "</code> اشتراكها انتهى بتاريخ <b>" + fmtDate(o.plan_end) + "</b> — تحدّثه أو قفّلها.</div>");
       } else if (until !== null && until >= 0 && until <= 7 && o.plan_end) {
@@ -11871,28 +11943,16 @@ const pwEye = document.getElementById("btnShowPass");
       '<th>الشركة</th><th>يوزر نيم</th><th>تليفون المسئول</th><th>المالك</th><th>الأعضاء</th><th>من تاريخ</th><th>إلى تاريخ</th>' +
       '<th>الحالة</th><th>آخر اتصال</th><th>المزايا</th><th>إجراءات</th></tr></thead><tbody>';
     filtered.forEach((o) => {
-      const locked = !!o.locked;
-      const until = daysUntil(o.plan_end);
-      let status;
-      if (locked) {
-        status = '<span class="badge-no">🔴 مقفلة</span>';
-      } else if ((o.plan_status === "expired" || until < 0) && o.plan_end) {
-        status = '<span class="badge-no">🔴 منتهية</span>';
-      } else if (until !== null && until >= 0 && until <= 7 && o.plan_end) {
-        status = '<span class="badge-warn">🟠 تنتهي خلال ' + until + " يوم</span>";
-      } else if (o.plan_status === "active" || until === null) {
-        status = '<span class="badge-ok">🟢 نشطة</span>';
-      } else {
-        status = '<span class="badge-no">🔴 ' + (o.plan_status || "متوقفة") + "</span>";
-      }
+      // 🛡 بند 17: حالة الصف من مصدر التصنيف الواحد (شركة المالك = نشطة بلا تاريخ)
+      const status = subStatusBadge(o);
       h += "<tr data-org=\"" + o.org_id + "\" onclick=\"window.__admDbl('" + o.org_id + "')\" style=\"cursor:pointer\" title=\"اضغط ضغطتين لتعديل بيانات الشركة\">" +
         "<td><b>" + (o.org_name || "بدون اسم") + (o.protected ? ' <span class="badge-ok" title="شركة المالك — محمية من الحذف">🔒</span>' : "") + "</b></td>" +
         "<td><code>" + (o.admin_username || "—") + "</code></td>" +
         "<td>" + (o.org_phone || "—") + "</td>" +
         "<td>" + (o.owner_name || "—") + "</td>" +
         "<td>" + (o.members || 0) + " / " + (o.max_members || 5) + "</td>" +
-        "<td>" + fmtDate(o.plan_start) + "</td>" +
-        "<td>" + fmtDate(o.plan_end) + "</td>" +
+        "<td>" + subDateCell(o, o.plan_start) + "</td>" +
+        "<td>" + subDateCell(o, o.plan_end) + "</td>" +
         "<td>" + status + "</td>" +
         '<td style="white-space:nowrap">' + (o.online
           ? '<span style="color:var(--success);font-weight:800">🟢 متصل الآن</span>'
@@ -11974,10 +12034,17 @@ const pwEye = document.getElementById("btnShowPass");
   };
 
   window.__admSave = function (orgId) {
+    // 🛡 بند 17: حصانة تانية — أي مسار حفظ قديم ما بعتش تاريخ لشركة المالك
+    const oRow = (adminOrgsCache || []).find((x) => x.org_id === orgId);
+    if (subDatesWriteLocked(oRow)) { toast("شركتك محمية — مافيش تاريخ اشتراك بيتحفظ لها", "warning"); return; }
     const tr = document.querySelector('#adminList tr[data-org="' + orgId + '"]');
     if (!tr) return;
-    const start = tr.querySelector(".adm-plan-start").value || null;
-    const end = tr.querySelector(".adm-plan-end").value || null;
+    // الجدول بقى بيعرض التواريخ كنص (بند 17) ⇒ لو الخانات مش موجودة مانكتبشش خالص
+    const sEl = tr.querySelector(".adm-plan-start");
+    const eEl = tr.querySelector(".adm-plan-end");
+    if (!sEl || !eEl) return;
+    const start = sEl.value || null;
+    const end = eEl.value || null;
     const locked = tr.querySelector(".adm-status").value === "locked";
     DATA.adminSetOrg(orgId, start, end, locked, null).then(() => {
       toast("تم حفظ إعدادات الشركة", "ok");
@@ -12164,8 +12231,9 @@ const pwEye = document.getElementById("btnShowPass");
           '<label class="feat-line">رقم تليفون المسئول <input id="omPhone" class="inp" type="tel" placeholder="01xxxxxxxxx" style="flex:1" /></label>' +
           '<label class="feat-line">يوزر نيم (حساب الشركة) <code id="omUser" style="font-size:13px"></code> <button class="btn small sky" type="button" id="omUserEdit">✏️ تغيير اليوزر نيم</button></label>' +
           '<label class="feat-line">كلمة المرور <button class="btn small orange" type="button" id="omAdminReset">🔑 تغيير كلمة مرور مالك الشركة</button></label>' +
-          '<label class="feat-line">الاشتراك من <input id="omStart" class="inp" type="date" style="flex:1" /></label>' +
-          '<label class="feat-line">الاشتراك إلى <input id="omEnd" class="inp" type="date" style="flex:1" /></label>' +
+          '<label class="feat-line" id="omStartWrap">الاشتراك من <input id="omStart" class="inp" type="date" style="flex:1" /></label>' +
+          '<label class="feat-line" id="omEndWrap">الاشتراك إلى <input id="omEnd" class="inp" type="date" style="flex:1" /></label>' +
+          '<label class="feat-line" id="omSubNote" hidden>🔒 شركتك محمية <span class="login-sub">بلا تاريخ اشتراك — وممنوع حفظ أي تاريخ نهاية ليها عشان تقفل حسابك</span></label>' +
           '<label class="feat-line">حالة الشركة <select id="omStatus" class="inp" style="flex:1"><option value="active">نشطة</option><option value="locked">مقفلة</option></select></label>' +
           '<label class="feat-line"><button class="btn green" type="button" id="omSave">💾 حفظ بيانات الشركة</button></label>' +
           '</div>' +
@@ -12183,6 +12251,8 @@ const pwEye = document.getElementById("btnShowPass");
         document.body.appendChild(dlg);
       }
       dlg.__orgId = orgId;
+      // 🛡 بند 17: شركة المالك = النوافذ والتواريخ مقفولة (النافذة بيتعاد استخدامها)
+      dlg.__protected = isProtectedOrg(o);
 
       const q = (sel) => dlg.querySelector(sel);
       q("#omNameTitle").textContent = o.org_name || "";
@@ -12190,8 +12260,14 @@ const pwEye = document.getElementById("btnShowPass");
       q("#omMax").value = o.max_members || 5;
       q("#omPhone").value = o.org_phone || "";
       q("#omUser").textContent = o.admin_username || "—";
-      q("#omStart").value = fmtDate(o.plan_start);
-      q("#omEnd").value = fmtDate(o.plan_end);
+      const lockDates = subDatesWriteLocked(o);
+      const wStart = q("#omStartWrap"), wEnd = q("#omEndWrap"), wNote = q("#omSubNote");
+      if (wStart) wStart.hidden = lockDates;
+      if (wEnd) wEnd.hidden = lockDates;
+      if (wNote) wNote.hidden = !lockDates;
+      // شركة محمية: مانحطش حتى قيمة مخفية في الـ input (ممنوع أي مسار يبعته)
+      q("#omStart").value = lockDates ? "" : fmtDate(o.plan_start);
+      q("#omEnd").value = lockDates ? "" : fmtDate(o.plan_end);
       q("#omStatus").value = o.locked ? "locked" : "active";
 
       const loadMembers = () => loadOrgMembers(orgId, "#omMembers", dlg);
@@ -12203,8 +12279,11 @@ const pwEye = document.getElementById("btnShowPass");
           const name = q("#omName").value.trim();
           const max = parseInt(q("#omMax").value, 10);
           const phone = q("#omPhone").value.trim();
-          const start = q("#omStart").value || null;
-          const end = q("#omEnd").value || null;
+          // 🛡 بند 17: شركة المالك ⇒ null/null، و`mizan_admin_set_sub` بتعمل coalesce
+          // فالتواريخ المحفوظة ما تتلمسش (وهي أصلاً null) — مستحيل يتحفظ تاريخ نهاية يقفله.
+          const lockDates = !!dlg.__protected;
+          const start = lockDates ? null : (q("#omStart").value || null);
+          const end = lockDates ? null : (q("#omEnd").value || null);
           const locked = q("#omStatus").value === "locked";
           Promise.all([
             DATA.adminEditOrg(curOrg, name || null, max || null, phone || null),
@@ -12693,6 +12772,15 @@ const pwEye = document.getElementById("btnShowPass");
       let h = '<table class="data-table"><thead><tr><th>الشركة</th><th>الخطة</th><th>من تاريخ (الجديد)</th><th>إلى تاريخ (الجديد)</th><th>السعر المتفق عليه (ج.م)</th><th>المحفوظ حاليًا</th><th>تفعيل / تجديد</th></tr></thead><tbody>';
       orgs.forEach((o) => {
         const oid = o.org_id;
+        // 🛡 بند 17: شركة المالك ما ليهاش خانة تاريخ ولا زرار تجديد — سطر ودّي واحد
+        if (isProtectedOrg(o)) {
+          h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '" data-protected="1">' +
+            '<td><b>' + (o.org_name || "بدون اسم") + '</b> <span class="badge-ok">🔒</span></td>' +
+            '<td colspan="5"><span class="login-sub">شركة المالك — بلا تاريخ اشتراك ومحمية من أي قفل بالتاريخ، فمافيش حاجة تتجدد هنا.</span></td>' +
+            '<td><span class="badge-ok">🟢 مفتوحة دايمًا</span></td>' +
+            '</tr>';
+          return;
+        }
         // الإصلاح: «من/إلى» = فترة التجديد الجديدة (مش منسوخة من المحفوظ)
         const pk = subsInferPlan(o);
         const start = subsRenewStart(o);
@@ -12720,6 +12808,8 @@ const pwEye = document.getElementById("btnShowPass");
       h += '</tbody></table><p class="login-sub" style="margin-top:8px">💡 «من/إلى» دي <b>فترة التجديد الجديدة</b>: لو الشركة لسه جواها مدة باقية بيكمّل من بعدها بيوم (ماتخسرش يوم)، ولو الفترة انتهت بيبدأ من النهاردة. غيّر الخطة أو تاريخ البداية تتعاد حساب النهاية، والسعر يدوي لكل شركة حسب الاتفاق — والتجديد بيفكّ قفل الشركة أوتوماتيك.</p>';
       lst.innerHTML = h;
       orgs.forEach((o) => {
+        // 🛡 بند 17: سطر شركة المالك بلا أي حقول ⇒ مانديش عليها (وإلا selector بترجع null)
+        if (isProtectedOrg(o)) return;
         const tr = lst.querySelector('[data-subs="' + o.org_id + '"]');
         if (!tr) return;
         tr.querySelector(".subs-plan").value = subsInferPlan(o);
@@ -12760,6 +12850,8 @@ const pwEye = document.getElementById("btnShowPass");
       : ("مدّة " + subsDaysBetween(start, end) + " يوم — " + subsStartHint(start, tr.dataset.storedEnd || ""));
   }
   function subsApply(o, tr) {
+    // 🛡 بند 17: حصانة أخيرة — حتى لو أي مسار تاني نادى التجديد على شركة المالك
+    if (subDatesWriteLocked(o)) { toast("شركتك محمية — مافيش تاريخ اشتراك بيتحفظ لها", "warning"); return; }
     const P = SUB_PLANS();
     const p = P[tr.querySelector(".subs-plan").value] || P.y;
     const start = tr.querySelector(".subs-start").value;
@@ -12796,7 +12888,11 @@ const pwEye = document.getElementById("btnShowPass");
     const P = SUB_PLANS();
     const rows = [["الشركة", "الخطة", "من تاريخ", "إلى تاريخ", "السعر المتفق عليه (ج.م)", "الانتهاء المسجل حاليًا", "الحالة"]];
     tbody.querySelectorAll("tr[data-subs]").forEach((tr) => {
-      const pk = tr.querySelector(".subs-plan").value;
+      // 🛡 بند 17: سطر شركة المالك بلا حقول ⇒ يتشال من التصدير (مش بيكسر الجدول)
+      if (tr.dataset.protected === "1") return;
+      const planSel = tr.querySelector(".subs-plan");
+      if (!planSel) return;
+      const pk = planSel.value;
       rows.push([
         tr.children[0].textContent.trim(),
         (P[pk] || {}).label || pk,
