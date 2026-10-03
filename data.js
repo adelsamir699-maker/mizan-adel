@@ -589,7 +589,7 @@
   }
 
   // ---- دوال شركة العميل: إدارة الحسابات الفرعية (الموظفين) ----
-  // معلومات شاشة «حسابات شركتي»: الاسم + الحد الأقصى + العدد الحالي + هل أنا المدير
+  // معلومات شاشة «حسابات شركتي»: الاسم + الحد الأقصى + العدد الحالي + هل أنا مالك الشركة
   function orgInfo() {
     return sb.rpc("mizan_org_info").then(function (r) {
       if (r.error) throw r.error;
@@ -597,7 +597,7 @@
       return Array.isArray(d) ? (d[0] || null) : (d || null);
     });
   }
-  // قائمة الحسابات التابعة لشركتي (مدير الشركة أو السوبر أدمن)
+  // قائمة الحسابات التابعة لشركتي (مالك الشركة أو عادل مالك البرنامج)
   function orgMembers(orgId) {
     return sb.rpc("mizan_org_members", { p_org_id: orgId }).then(function (r) {
       if (r.error) throw r.error;

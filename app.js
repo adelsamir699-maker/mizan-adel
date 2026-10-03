@@ -153,7 +153,7 @@
   const WAREHOUSES = ["المخزن الرئيسي", "مخزن المنصورة", "مخزن الزقازيق"];
 
   const seedActivity = [
-    { ts: "09:12:44", user: "admin", action: "تسجيل دخول", desc: "دخول مدير النظام" },
+    { ts: "09:12:44", user: "admin", action: "تسجيل دخول", desc: "دخول مالك الشركة" },
     { ts: "09:30:10", user: "admin", action: "فاتورة مبيعات", desc: "فاتورة POS #INV-1001" },
     { ts: "10:05:22", user: "admin", action: "تحصيل مديونية", desc: "دفعة من أحمد محمد السيد 500 ج.م" },
     { ts: "11:40:05", user: "admin", action: "إضافة صنف", desc: "إضافة صنف جديد" },
@@ -212,7 +212,7 @@
   const seedJournal = [];
 
   const seedUsers = [
-    { id: 1, username: "admin", fullName: "مدير النظام", password: "123456", role: "مدير النظام", branch: "الفرع الرئيسي", isActive: true, lastSeen: "" }
+    { id: 1, username: "admin", fullName: "مالك الشركة", password: "123456", role: "admin", branch: "الفرع الرئيسي", isActive: true, lastSeen: "" }
   ];
 
   const seedVouchers = [];
@@ -1528,10 +1528,27 @@
     return a || p || null;
   }
 
-  // صاحب الشركة = role admin وليس سوبر أدمن
-  function isCompanyOwnerAcct() {
-    var r = currentAcct();
+  /* ══════ 🧭 التعريف القانوني الوحيد لـ «مالك الشركة» (بناء 126) ══════
+     قرار المالك الحرفي (03/10): «البرنامج بيعرّف صاحب الشركة بـ«مدير مش مالك».
+     إما يتوحّد على تعريف البرنامج» ⇒ التعريف المتَّفق عليه = **تعريف البرنامج نفسه**:
+         مالك الشركة = الحساب اللي `role === "admin"` وليس `is_superadmin`.
+     ممنوع أي سطر تاني يعيد كتابة الشرط ده أو يخترع تعريفًا بديلًا — كل الأبواب
+     (الشاشات، الحذف، تغيير الرقم السري، شاشة الحسابات، الدردشة) بتنادي الدالة دي.
+     (السحابة فيها `organizations.owner_id` = عمود تاني، وعلى البيانات الحالية كله
+      عادل ⇒ ما يصلحش تعريفًا للواجهة؛ الفرع السحابي بيتوحّد في ترقية ٤٦ بنفس المعنى.) */
+  function isCompanyOwnerRow(r) {
     return !!(r && r.role === "admin" && !r.is_superadmin);
+  }
+  // صاحب الشركة = role admin وليس سوبر أدمن (الحساب الحالي)
+  function isCompanyOwnerAcct() {
+    return isCompanyOwnerRow(currentAcct());
+  }
+  /* التسمية العربية الوحيدة للصلاحية في أي مكان يظهر للعميل — لا «مدير»، لا «admin» الخام.
+     قاعدة الواجهة (memory: ممنوع نص تقني مخيف للعميل): المستخدم ما يشوفش الكلمة الإنجليزية. */
+  function roleLabel(r) {
+    if (r && r.is_superadmin) return "مالك البرنامج";
+    if (isCompanyOwnerRow(r)) return "مالك الشركة";
+    return "عضو";
   }
   function isSuperAcct() {
     var r = currentAcct();
@@ -1616,7 +1633,7 @@
     if (name === "accStatement") return isSuperAcct() || isCompanyOwnerAcct();
     // 🛡 بناء 121 (طلب المالك: لوحة الإدارة «متظهرش عند حد تاني ابدا»):
     // لوحة الإدارة = لحساب المالك (سوبر أدمن) **حصريًا** — لا قائمة مزايا الشركة
-    // ولا دور «مدير» ولا تفعيل صريح يقدر يفتحها لغيره. (المالك وصلها فوق بـ ownerHasAllAccess)
+    // ولا دور «مالك شركة» ولا تفعيل صريح يقدر يفتحها لغيره. (المالك وصلها فوق بـ ownerHasAllAccess)
     if (name === "admin") return isSuperAcct();
     return DE.featureEnabled ? DE.featureEnabled(name) : true;
   }
@@ -8362,8 +8379,14 @@
     // رسالة الدردشة نفسها لسه **بره** النسخة: `messages` مش في DEPLOY_DATA_TABLES ولا في دوال النسخ.
     "db/supabase-upgrade-45-chat.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
-  // ✅ فاضية: آخر مستبعد كان ٤٥ (قبل التنفيذ) — ولما اتنفذ انضمت للقائمة فوق، بنفس نمط ٤٣ و٤٤.
-  var DEPLOY_DB_EXCLUDE = {};
+  // ٤٦ و٤٧ و٤٨ **لسه ما اتنفذتش** على السحابة (مستنية أمر المالك الحرفي) ⇒ ماحدش ينشرها مع
+  // نسخة قاعدة جديدة، وإلا سيرفر جديد ياخد بنية ما اتطبقتش على القاعدة الحيّة. أول ما تنفّذ
+  // تنضم لـ DEPLOY_DB_FILES بنفس نمط ٤٣ و٤٤ و٤٥.
+  var DEPLOY_DB_EXCLUDE = {
+    "db/supabase-upgrade-46-chat-owners.sql": "ترقية الدردشة (صاحب المؤسسة + نقطة المتصل) — لسه ما اتنفذتش على السحابة، مستنية أمر المالك",
+    "db/supabase-upgrade-47-chat-broadcast.sql": "بث عادل «رسالة للكل» — لسه ما اتنفذتش على السحابة، مستنية أمر المالك",
+    "db/supabase-upgrade-48-chat-realtime.sql": "الوصول اللحظي للرسايل — لسه ما اتنفذتش على السحابة، مستنية أمر المالك"
+  };
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "categories", "customer_txs", "customers",
     "employees", "attendance", "att_settings", "fixed_assets",
@@ -9739,7 +9762,7 @@ const pwEye = document.getElementById("btnShowPass");
 
   function proceedOnline(stageEl, stageUser, bypassMembers) {
     const stage = (t) => { if (stageEl) setAuthMsg(stageEl, t, ""); };
-    // مدير الشركة (غير المالك) حقه يدخل شاشة «حسابات شركتك» قبل البرنامج
+    // مالك الشركة (غير عادل) حقه يدخل شاشة «حسابات شركتك» قبل البرنامج
     // (bypassMembers = true فقط عند الضغط على زر «دخول البرنامج» من شاشة حسابات الشركة)
     const p0 = DATA.getProfile();
     if (!bypassMembers && isOrgAdmin(p0)) {
@@ -9780,7 +9803,10 @@ const pwEye = document.getElementById("btnShowPass");
         // (لصاحب الشركة والسوبر أدمن فقط، لا للموظفين العاديين)
         $("#btnChangePw").hidden = true;
         const p = DATA.getProfile();
-        setUserInfo("👤 " + (p && p.full_name ? p.full_name : DATA.email()) + " | " + (p && p.role ? p.role : ""));
+        // 🧭 بناء 126: الشريط العلوي ما بيعرضش الكلمة الإنجليزية الخام («admin») ولا «مدير».
+        // التسمية بتيجي من roleLabel، والمصدر الموثوق = mizan_access لو الـ profile ناقص.
+        var meRow = (p && p.role) ? p : ((DATA.accessInfo ? DATA.accessInfo() : null) || p);
+        setUserInfo("👤 " + (p && p.full_name ? p.full_name : DATA.email()) + " | الصلاحية: " + roleLabel(meRow));
         setDbStatus("🟢 متصل بالسحابة");
         stage("جاري التحميل: فتح لوحة البيانات...");
         hideScreens();
@@ -9847,11 +9873,12 @@ const pwEye = document.getElementById("btnShowPass");
     });
   }
 
-  // مؤشر: هل الحساب الحالي مدير شركة (مش مالك النظام)؟ → شاشة الحسابات
+  // مؤشر: هل الحساب الحالي «مالك شركة» (مش عادل مالك البرنامج)؟ → شاشة الحسابات
+  // 🧭 بناء 126: بتفوّض التعريف الوحيد `isCompanyOwnerRow` — ممنوع أي نسخة تانية من الشرط.
   // لو مُرِّر profile ناقص/فارغ نرجع لـ mizan_access (المصدر الموثوق).
   function isOrgAdmin(p) {
     var r = (p && p.role) ? p : currentAcct();
-    return !!(r && r.role === "admin" && !r.is_superadmin);
+    return isCompanyOwnerRow(r);
   }
   // بعد الدخول بحساب الشركة نفتح شاشة «حسابات شركتك» بدل فتح البرنامج مباشرة
   function showMembersScreen() {
@@ -11671,7 +11698,7 @@ const pwEye = document.getElementById("btnShowPass");
         names.forEach((n) => {
           const list = byOrg[n];
           rows += "<tr><td rowspan=\"" + list.length + "\"><b>" + n + "</b></td>" +
-            list.map((u) => "<td><code>" + (u.username || "—") + "</code> " + (u.role === "admin" ? "🧑‍💼" : "👤") + " <span class=\"login-sub\">" + (u.full_name || "") + "</span></td></tr>").join("");
+            list.map((u) => "<td><code>" + (u.username || "—") + "</code> " + (isCompanyOwnerRow(u) ? "🧑‍💼" : "👤") + " <span class=\"login-sub\">" + (u.full_name || "") + "</span></td></tr>").join("");
         });
         onlineModal.innerHTML = '<div class="modal-box">' +
           '<div class="panel-title">🟢 المتصلون الآن — ' + (onlineUsers ? onlineUsers.length : 0) + " مستخدم</div>" +
@@ -11924,7 +11951,7 @@ const pwEye = document.getElementById("btnShowPass");
         const canDel = !isMe && !u.is_superadmin;
         h += "<tr><td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
           "<td><code>" + (u.username || "—") + "</code></td>" +
-          "<td>" + (u.role || "member") + (u.is_superadmin ? " 🔑" : "") + "</td>" +
+          "<td>" + roleLabel(u) + (u.is_superadmin ? " 🔑" : "") + "</td>" +
           "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
           "<td style=\"white-space:nowrap\">" +
           (isMe ? "<span class=\"login-sub\">لا يمكنك حظر نفسك</span>"
@@ -12076,7 +12103,9 @@ const pwEye = document.getElementById("btnShowPass");
     showView("admin");
     startPresenceView();
     const p = DATA.getProfile();
-    setUserInfo("👤 " + (p && p.full_name ? p.full_name : DATA.email()) + " | المالك");
+    // 🧭 بناء 126: التسمية من نفس المصدر الوحيد (دولي هنا = «مالك البرنامج»)
+    var adminRow = (p && p.role) ? p : ((DATA.accessInfo ? DATA.accessInfo() : null) || p);
+    setUserInfo("👤 " + (p && p.full_name ? p.full_name : DATA.email()) + " | الصلاحية: " + roleLabel(adminRow));
   }
 
   // شاشة بيانات الشركة (ضغط مزدوج)
@@ -12087,7 +12116,7 @@ const pwEye = document.getElementById("btnShowPass");
     DATA.adminMembers(orgId).then((users) => {
       adminMembersCache = users || []; lastAdminMembersOrg = orgId;
       if (!users || !users.length) { box.innerHTML = '<p class="login-sub">لا يوجد أعضاء.</p>'; return; }
-      const adminUser = users.find((u) => u.role === "admin");
+      const adminUser = users.find((u) => isCompanyOwnerRow(u));
       if (dlg) dlg.__adminId = adminUser ? adminUser.user_id : null;
       let h = '<table class="data-table"><thead><tr><th>العضو</th><th>يوزر نيم</th><th>الصلاحية</th><th>المزايا</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>';
       const myUid = (DATA.me && DATA.me()) ? DATA.me().id : null;
@@ -12098,7 +12127,7 @@ const pwEye = document.getElementById("btnShowPass");
         h += "<tr>" +
           "<td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
           "<td><code>" + (u.username || "—") + "</code></td>" +
-          "<td>" + (u.role || "member") + (u.is_superadmin ? " 🔑" : "") + "</td>" +
+          "<td>" + roleLabel(u) + (u.is_superadmin ? " 🔑" : "") + "</td>" +
           "<td>" + featsSummary(u.features, ADMIN_FEATURES) + "</td>" +
           "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
           "<td>" +
@@ -12134,7 +12163,7 @@ const pwEye = document.getElementById("btnShowPass");
           '<label class="feat-line">الحد الأقصى للأعضاء <input id="omMax" class="inp" type="number" min="1" max="500" style="flex:1;width:60px" /></label>' +
           '<label class="feat-line">رقم تليفون المسئول <input id="omPhone" class="inp" type="tel" placeholder="01xxxxxxxxx" style="flex:1" /></label>' +
           '<label class="feat-line">يوزر نيم (حساب الشركة) <code id="omUser" style="font-size:13px"></code> <button class="btn small sky" type="button" id="omUserEdit">✏️ تغيير اليوزر نيم</button></label>' +
-          '<label class="feat-line">كلمة المرور <button class="btn small orange" type="button" id="omAdminReset">🔑 تغيير كلمة مرور المدير</button></label>' +
+          '<label class="feat-line">كلمة المرور <button class="btn small orange" type="button" id="omAdminReset">🔑 تغيير كلمة مرور مالك الشركة</button></label>' +
           '<label class="feat-line">الاشتراك من <input id="omStart" class="inp" type="date" style="flex:1" /></label>' +
           '<label class="feat-line">الاشتراك إلى <input id="omEnd" class="inp" type="date" style="flex:1" /></label>' +
           '<label class="feat-line">حالة الشركة <select id="omStatus" class="inp" style="flex:1"><option value="active">نشطة</option><option value="locked">مقفلة</option></select></label>' +
@@ -12190,15 +12219,15 @@ const pwEye = document.getElementById("btnShowPass");
           const curOrg = dlg.__orgId;
           const curName = dlg.querySelector("#omNameTitle") ? dlg.querySelector("#omNameTitle").textContent : "الشركة";
           DATA.adminMembers(curOrg).then((users) => {
-            const admin = users.find((u) => u.role === "admin");
+            const admin = users.find((u) => isCompanyOwnerRow(u));
             if (!admin) { createAdminPrompt(curOrg, curName); return; }
-            resetPwPrompt(admin.user_id, "كلمة مرور مدير الشركة", true);
+            resetPwPrompt(admin.user_id, "كلمة مرور مالك الشركة", true);
           }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
         };
         q("#omUserEdit").onclick = () => {
           const curOrg = dlg.__orgId;
           DATA.adminMembers(curOrg).then((users) => {
-            const admin = users.find((u) => u.role === "admin");
+            const admin = users.find((u) => isCompanyOwnerRow(u));
             if (!admin) { createAdminPrompt(curOrg, dlg.querySelector("#omNameTitle") ? dlg.querySelector("#omNameTitle").textContent : "الشركة"); return; }
             renameUserPrompt(admin.user_id, admin.username);
           }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
@@ -12331,15 +12360,15 @@ const pwEye = document.getElementById("btnShowPass");
     dlg.querySelector("#ruCancel").onclick = () => dlg.remove();
   }
 
-  // إنشاء حساب مدير لشركة ليس بها حساب (المالك) — يُستخدم عند غياب مدير
+  // إنشاء حساب مالك شركة ليس به حساب (من لوحة المالك) — يُستخدم عند غيابه
   function createAdminPrompt(orgId, orgName) {
     const dlg = document.createElement("div");
     dlg.className = "modal-overlay";
-    dlg.innerHTML = '<div class="modal-box"><div class="panel-title">👤 إنشاء حساب مدير لشركة «' + orgName + '»</div>' +
-      '<p class="login-sub" style="margin-bottom:8px">هذه الشركة لا تملك حساب مدير حاليًا — أنشئ حسابًا ليتمكن مسئولها من الدخول.</p>' +
+    dlg.innerHTML = '<div class="modal-box"><div class="panel-title">👤 إنشاء حساب مالك شركة «' + orgName + '»</div>' +
+      '<p class="login-sub" style="margin-bottom:8px">هذه الشركة لا تملك حساب مالك حاليًا — أنشئ حسابًا ليتمكن صاحبها من الدخول.</p>' +
       '<label class="feat-line" style="margin:6px 0">يوزر نيم <input id="caUser" class="inp" placeholder="الاسم بلاتيني (latin)" style="flex:1" /></label>' +
       '<label class="feat-line" style="margin:6px 0">كلمة المرور <input id="caPass" class="inp" type="password" placeholder="كلمة المرور" style="flex:1" /></label>' +
-      '<label class="feat-line" style="margin:6px 0">اسم المدير <input id="caName" class="inp" placeholder="الاسم المعروض (اختياري)" style="flex:1" /></label>' +
+      '<label class="feat-line" style="margin:6px 0">اسم المالك <input id="caName" class="inp" placeholder="الاسم المعروض (اختياري)" style="flex:1" /></label>' +
       '<div class="feat-btns"><button class="btn green" type="button" id="caOk">إنشاء الحساب</button>' +
       '<button class="btn gray" type="button" id="caCancel">إلغاء</button></div></div>';
     document.body.appendChild(dlg);
@@ -12349,7 +12378,7 @@ const pwEye = document.getElementById("btnShowPass");
       const nm = dlg.querySelector("#caName").value.trim() || null;
       if (!un || !pw) { toast("اكتب اليوزر نيم وكلمة المرور", "error"); return; }
       DATA.adminCreateUser(orgId, un, pw, nm, "admin").then(() => {
-        toast("تم إنشاء حساب مدير الشركة", "ok");
+        toast("تم إنشاء حساب مالك الشركة", "ok");
         dlg.remove();
         const om = document.getElementById("orgModal");
         if (om && om.__orgId) {
@@ -12372,8 +12401,8 @@ const pwEye = document.getElementById("btnShowPass");
       '<div class="feat-grid" style="grid-template-columns:1fr 1fr">' +
       '<input id="aoName" class="inp" placeholder="اسم الشركة" />' +
       '<input id="aoMax" class="inp" type="number" placeholder="الحد الأقصى للأعضاء" value="5" />' +
-      '<input id="aoUser" class="inp" placeholder="يوزر نيم مدير الشركة (latin)" />' +
-      '<input id="aoPass" class="inp" type="password" placeholder="كلمة مرور مدير الشركة" />' +
+      '<input id="aoUser" class="inp" placeholder="يوزر نيم مالك الشركة (latin)" />' +
+      '<input id="aoPass" class="inp" type="password" placeholder="كلمة مرور مالك الشركة" />' +
       '</div>' +
       '<div class="feat-btns"><button class="btn green" type="button" id="aoOk">إنشاء الشركة</button>' +
       '<button class="btn gray" type="button" id="aoCancel">إلغاء</button></div></div>';
@@ -12383,7 +12412,7 @@ const pwEye = document.getElementById("btnShowPass");
       const user = dlg.querySelector("#aoUser").value.trim();
       const pass = dlg.querySelector("#aoPass").value;
       const max = parseInt(dlg.querySelector("#aoMax").value, 10) || 5;
-      if (!name || !user || !pass) { toast("اكتب اسم الشركة ويوزر نيم وكلمة مرور المدير", "error"); return; }
+      if (!name || !user || !pass) { toast("اكتب اسم الشركة ويوزر نيم وكلمة مرور المالك", "error"); return; }
       DATA.adminCreateOrg(name, user, pass, max).then((orgId) => {
         toast("تم إنشاء الشركة بيوزر نيم: " + user, "ok");
         dlg.remove();
