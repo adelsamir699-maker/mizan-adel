@@ -1775,7 +1775,10 @@
     const sb = document.querySelector(".sidebar");
     const setTabs = document.getElementById("setTabs");
     const vSet = document.getElementById("viewSettings");
-    rememberOwnerNode(document.querySelector('.nav-btn[data-view="settings"]'), sb, "nav", "show");
+    const svNav = document.querySelector('.nav-btn[data-view="settings"]');
+    // 🧱 بناء 132: أبوها بيتقاس منها مش «السايدبار» — الزرار بقى جوّه قائمة منسدلة،
+    // فلو الحارس يرجّعها لأبو قديم كانت هتتنقل بره القسم وتسيبه فاضي.
+    rememberOwnerNode(svNav, svNav && svNav.parentNode, "nav", "show");
     rememberOwnerNode(document.querySelector('#setTabs .tab-btn[data-tab="sbak"]'), setTabs, "bkTab", "show");
     rememberOwnerNode(document.querySelector('#viewSettings .sett-pane[data-pane="sbak"]'), vSet, "bkPane", "attach");
     rememberOwnerNode(vSet, vSet && vSet.parentNode, "viewSettings", "attach");
@@ -1856,18 +1859,22 @@
   function applyFeatureGating() {
     enforceOwnerSettings();
     var fe = window.DATA && window.DATA.featureEnabled;
-    if (!fe) return;
-    document.querySelectorAll(".nav-btn").forEach((b) => {
-      const n = b.dataset.view;
-      b.hidden = !canUseView(n);
-    });
-    // 🔓 حصانة أخيرة: ضبط المالك مانلغيش عنه بـ featureEnabled مهما حصل
-    const own = ownerHasAllAccess();
-    const svO = document.querySelector('.nav-btn[data-view="settings"]');
-    if (svO && own) svO.hidden = false;
-    // لو الشاشة الحالية أصبحت معطّلة → عد للوحة
-    const cur = document.querySelector(".view:not([hidden])");
-    if (cur && !canUseView(cur.dataset.id)) showView("dashboard");
+    if (fe) {
+      document.querySelectorAll(".nav-btn").forEach((b) => {
+        const n = b.dataset.view;
+        b.hidden = !canUseView(n);
+      });
+      // 🔓 حصانة أخيرة: ضبط المالك مانلغيش عنه بـ featureEnabled مهما حصل
+      const own = ownerHasAllAccess();
+      const svO = document.querySelector('.nav-btn[data-view="settings"]');
+      if (svO && own) svO.hidden = false;
+      // لو الشاشة الحالية أصبحت معطّلة → عد للوحة
+      const cur = document.querySelector(".view:not([hidden])");
+      if (cur && !canUseView(cur.dataset.id)) showView("dashboard");
+    }
+    // 🧱 بناء 132: بعد ما الأزرار اتحدّدت، الأقسام اللي شاشاتها كلها مقفولة تتشال من
+    // الشريط العلوي (طلب المالك: «متظهرش من الأساس، ولا مكانها فاضي»).
+    applySectionVisibility();
   }
 
   function showView(name) {
@@ -1942,6 +1949,9 @@
     document.querySelectorAll(".nav-btn").forEach((b) => {
       b.classList.toggle("active", b.dataset.view === name);
     });
+    // 🧱 بناء 132: الشريط العلوي يقفل أي قائمة مفتوحة ويميّز القسم اللي فيه الشاشة الحالية
+    closeSections();
+    paintSectionActive();
     if (name === "dashboard") renderDashboard();
     if (name === "customers") renderTable();
     if (name === "products") renderProducts();
@@ -8947,6 +8957,8 @@
   /* ================== الربط ================== */
   function initApp() {
     applyFeatureGating();
+    // 🧱 بناء 132: عدّاد الواردة على زرار الدردشة المستقل في الشريط العلوي
+    chatStartBadgeTicker();
     updatePosTaxUI();
     tickClock();
     setInterval(tickClock, 1000);
@@ -11573,6 +11585,34 @@ const pwEye = document.getElementById("btnShowPass");
     if (!chatAvailable()) return;
     CHAT.timer = setInterval(chatTick, CHAT_POLL_MS);
   }
+  /* 🧱 بناء 132 (طلب المالك: «عايز الدردشة تكون مستقلة علشان يظهر فيها إن رسالة جات
+     ويظهر عدد الرسائل الواردة»): الدردشة بقت زرارًا قائمًا بذاته في الشريط العلوي،
+     فالعدّاد لازم يعيش حتى والشاشة مقفولة.
+     الـ ticker ده **قراءة الواردة بس** (`chatUnread` → عدّاد) — مافيش رسم خيوط ولا رسايل،
+     وبيسكت لما شاشة الدردشة نفسها مفتوحة (الـ poll بتاعها أغنى)، وبيسكت قبل الدخول
+     وبعده (`chatAvailable` = حساب سحابي + جدول الرسايل على السحابة). */
+  const CHAT_BADGE_MS = 30000;
+  let CHAT_badgeTimer = null, CHAT_badgeBusy = false;
+  function chatBadgeTick() {
+    if (CHAT_badgeBusy) return;
+    if (!chatAvailable()) return;
+    var v = $("#viewChat");
+    if (v && !v.hidden) return;
+    CHAT_badgeBusy = true;
+    Promise.resolve(chatPollUnread()).catch(function () { }).then(function () { CHAT_badgeBusy = false; });
+  }
+  function chatStartBadgeTicker() {
+    if (typeof setInterval !== "function") return;
+    chatStopBadgeTicker();
+    CHAT_badgeTimer = setInterval(chatBadgeTick, CHAT_BADGE_MS);
+    chatBadgeTick();
+  }
+  function chatStopBadgeTicker() {
+    if (CHAT_badgeTimer !== null && typeof CHAT_badgeTimer !== "undefined") {
+      clearInterval(CHAT_badgeTimer);
+      CHAT_badgeTimer = null;
+    }
+  }
   function chatStopPoll() {
     if (CHAT.timer !== null && typeof CHAT.timer !== "undefined") {
       clearInterval(CHAT.timer);
@@ -11582,6 +11622,8 @@ const pwEye = document.getElementById("btnShowPass");
   // مسح كامل لحالة الدردشة من الذاكرة (خروج / تبديل شركة) — مافيش بقايا رسايل
   function chatWipe(reason) {
     chatStopPoll();
+    // 🧱 بناء 132: الخروج/تبديل company = العدّاد والـ ticker بتاعه يقفوا (بيرجعون مع الدخول)
+    chatStopBadgeTicker();
     CHAT.peers = [];
     CHAT.msgs = [];
     CHAT.peerId = null;
@@ -13665,32 +13707,73 @@ const pwEye = document.getElementById("btnShowPass");
     });
   }
 
-  /* ================== طي شريط القوائم (توفير مساحة) ================== */
-  function wireMenuToggle() {
-    const bar = document.getElementById("sidebar");
-    const btn = document.getElementById("btnMenuToggle");
-    if (!bar || !btn) return;
-    const KEY = "mizan_menu_collapsed_v1";
-    function setCollapsed(on) {
-      bar.classList.toggle("menu-collapsed", on);
-      btn.textContent = on ? "☰ إظهار القوائم" : "☰ إخفاء القوائم";
-      try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (e) { }
-    }
-    let saved = null;
-    try { saved = localStorage.getItem(KEY); } catch (e) { }
-    setCollapsed(saved === "1");
-    btn.addEventListener("click", () => setCollapsed(!bar.classList.contains("menu-collapsed")));
-    // على الموبايل: اختيار قسم من القائمة يقفلها تلقائيًا لتوفير المساحة
-    bar.addEventListener("click", (e) => {
-      if (e.target.closest(".nav-btn") && window.innerWidth <= 860) {
-        setTimeout(() => setCollapsed(true), 150);
-      }
+  /* ================== 🧱 بناء 132: شريط الأقسام العلوي (قوائم تنزل بدل القائمة الجانبية) ==================
+     الطلب بالحرف (03/10 ≈22:15): «قسم فوق بدل زراير كتير، ولما أفتحه تعمل لي قوائم تنزل»
+     + «مش عايز القوائم اللي في الجانب تظهر — من فوق فقط منسدلة»
+     + «الصلاحيات اللي مش عند المستخدم أو صاحب الشركة متظهرش من الأساس، ولا مكانها فاضي».
+     مافيش هنا **أي قرار صلاحيات**: نفس أزرار الشاشات الـ22 ونفس `canUseView`/`showView`.
+     الشغل ده شكل وسلامة استخدام بس: فتح/قفل القائمة، وإسقاط القسم اللي شاشاته كلها مقفولة. */
+  function openSection(id) {
+    document.querySelectorAll(".topnav .sec").forEach((s) => {
+      s.classList.toggle("open", !!id && s.dataset.sec === id);
     });
+  }
+  function closeSections() { openSection(""); }
+  function secScreens(sec) {
+    return Array.prototype.slice.call(sec.querySelectorAll(".drop .nav-btn"));
+  }
+  function visibleScreensOf(sec) { return secScreens(sec).filter((b) => !b.hidden); }
+  /* 🚫 مافيش مكان فاضي: القسم اللي كل شاشاته مقفولة **يتشال** من الشريط (مش يتعطّل ولا يفضل
+     مربع فاضي) — `[hidden]{display:none!important}` في styles.css بيقفلها من غير أي فجوة. */
+  function applySectionVisibility() {
+    document.querySelectorAll(".topnav .sec").forEach((sec) => {
+      const n = visibleScreensOf(sec).length;
+      sec.hidden = n === 0;
+      if (n === 0) sec.classList.remove("open");
+    });
+    paintSectionActive();
+  }
+  /* القسم اللي فيه الشاشة المفتوحة حاليًا ياخد علامة، عشان المستخدم يعرف هو فين */
+  function paintSectionActive() {
+    document.querySelectorAll(".topnav .sec").forEach((sec) => {
+      let on = false;
+      secScreens(sec).forEach((b) => { if (b.classList.contains("active")) on = true; });
+      sec.classList.toggle("has-active", on);
+    });
+  }
+  function wireTopNav() {
+    const bar = document.getElementById("sidebar");
+    if (!bar) return;
+    bar.addEventListener("click", (e) => {
+      const t = e.target.closest("[data-sec-toggle]");
+      if (t) {
+        const sec = t.closest(".sec");
+        const wasOpen = !!(sec && sec.classList.contains("open"));
+        openSection(wasOpen ? "" : (sec ? sec.dataset.sec : ""));
+        return;
+      }
+      // اختيار شاشة من القائمة ⇒ القائمة تقفل والشاشة تتفتح (الربط القديم للزرار شغال لوحده)
+      if (e.target.closest(".nav-btn")) closeSections();
+    });
+    // دوسة بره الشريط = قفل أي قائمة مفتوحة (زي أي شريط قوائم عادي)
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".topnav")) closeSections();
+    });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSections(); });
+    // على الكمبيوتر: لمّا قائمة تكون مفتوحة أصلًا، المرور على قسم تاني يورّي اللي تحته
+    document.querySelectorAll(".topnav .sec").forEach((sec) => {
+      sec.addEventListener("mouseenter", () => {
+        if (window.innerWidth <= 860) return;
+        if (!document.querySelector(".topnav .sec.open")) return;
+        openSection(sec.dataset.sec);
+      });
+    });
+    applySectionVisibility();
   }
 
   /* ================== البداية ================== */
   function init() {
-    wireMenuToggle();
+    wireTopNav();
     const fv = document.getElementById("ftrVer");
     if (fv) fv.textContent = APP_VERSION;
     const lv = document.getElementById("loginVer");

@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4.1"; // نسخة المنتج (اللي يشوفه العميل)
-    window.MIZAN_BUILD = 131;       // عدّاد البناء والكاش (للتطوير فقط)
+    window.MIZAN_BUILD = 132;       // عدّاد البناء والكاش (للتطوير فقط)
 
     (function () {
       var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
@@ -39,7 +39,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=131" />
+  <link rel="stylesheet" href="styles.css?v=132" />
 </head>
 <body>
 
@@ -54,46 +54,98 @@
       <span id="clock"></span>
       <span id="userInfo">👤 في انتظار الدخول</span>
       <span class="db-status" id="subInfo" hidden></span>
-      <button id="btnAdmin" class="btn small blue" type="button" hidden>🛠️ لوحة الإدارة</button>
+      <!-- 🛠️ لوحة الإدارة انتقلت لشريط الأقسام العلوي (بناء 132) — نفس الـ id ونفس الربط بـ openAdmin -->
       <button id="btnChangePw" class="btn small orange" type="button" hidden>🔑 تغيير كلمة مرورك</button>
       <button id="btnLogout" class="btn small red" type="button" hidden>الخروج ↩</button>
     </div>
   </header>
 
-  <div class="app-body">
-    <!-- ===== القائمة الجانبية ===== -->
-<aside class="sidebar" id="sidebar">
-      <button type="button" class="menu-toggle" id="btnMenuToggle" title="إظهار/إخفاء القوائم">☰ القوائم</button>
-      <button class="nav-btn active" data-view="dashboard">📊  لوحة التحكم</button>
+  <!-- ===== 🧱 بناء 132 (طلب المالك 03/10 ≈22:15): شريط أقسام من فوق، والقائمة تنزل تحته =====
+       الطلب بالحرف: «قسم فوق بدل زراير كتير ولما افتح من القسم اللي فوق يعمل لي قوائم تنزل»
+       + «مش عايز القوائم اللي في الجانب تظهر، يعني من فوق فقط منسدلة»
+       + «الصلاحيات اللي مش عند المستخدم/صاحب الشركة متظهرش من الأساس في شاشته، ولا فاضية، ولا مكتوبة».
+       القاعدة في التنفيذ: **نفس أزرار الشاشات الـ22 حرفيًا** (نفس الـ class/names وhidden الافتراضي)
+       اتلمّت في 6 أقسام ⇒ كل بوابات الصلاحيات (`canUseView`/`showView`) والحراس الحيّة لسه شغالة
+       على نفس المعطيات، والفرق بصري فقط. `class="sidebar"` بقى على العنصر نفسه لأن:
+       (١) الحارس الحيّ بتاع المالك بيراقب `.sidebar`، (٢) `@media print` بيخفيها. -->
+  <nav class="sidebar topnav" id="sidebar">
+    <button class="nav-btn active" data-view="dashboard">📊  لوحة التحكم</button>
+
+    <div class="sec" data-sec="inv">
+      <button class="sec-btn" type="button" data-sec-toggle="inv">🧾 الفواتير <i class="chev">▾</i></button>
+      <div class="drop">
       <button class="nav-btn" data-view="sales">🛍️  فواتير المبيعات (POS)</button>
       <button class="nav-btn" data-view="purchases">📦  فواتير المشتريات</button>
       <button class="nav-btn" data-view="returns">🔍  استعلام عن الفواتير</button>
       <button class="nav-btn" data-view="returnsReg" hidden>🔁  المرتجعات</button>
+      </div>
+    </div>
+
+    <div class="sec" data-sec="stock">
+      <button class="sec-btn" type="button" data-sec-toggle="stock">📦 المخزون والأطراف <i class="chev">▾</i></button>
+      <div class="drop">
       <button class="nav-btn" data-view="products">🏷️  الأصناف والمخزون</button>
       <button class="nav-btn" data-view="customers">👨‍💼  دليل العملاء</button>
       <button class="nav-btn" data-view="suppliers">📦  دليل الموردين</button>
+      </div>
+    </div>
+
+    <div class="sec" data-sec="money">
+      <button class="sec-btn" type="button" data-sec-toggle="money">💵 الخزينة والدفترية <i class="chev">▾</i></button>
+      <div class="drop">
       <button class="nav-btn" data-view="treasury">💵  الخزينة والمصروفات</button>
       <button class="nav-btn" data-view="accounts">💰  دليل الحسابات</button>
       <button class="nav-btn" data-view="journal">📝  القيود اليومية</button>
       <!-- 🆕 طلب المالك: كشف حساب الحسابات (حركة أي حساب من القيود اليومية) بشاشة مستقلة وبحث بالكود والاسم -->
       <button class="nav-btn" data-view="accStatement">🧾  كشف حساب الحسابات</button>
+      <button class="nav-btn" data-view="treasuryStatements">📑  كشوف حسابات الخزائن</button>
+      </div>
+    </div>
+
+    <div class="sec" data-sec="rep">
+      <button class="sec-btn" type="button" data-sec-toggle="rep">📊 التقارير والمركز المالي <i class="chev">▾</i></button>
+      <div class="drop">
+      <button class="nav-btn" data-view="reports">📈  تقارير المبيعات والمشتريات</button>
       <button class="nav-btn" data-view="balance">⚖️  قائمة المركز المالي</button>
       <!-- 🆕 مهمة 98: سجل الأصول الثابتة (غير المتداولة/غير الملموسة) — يغذي قسميه في المركز المالي -->
       <button class="nav-btn" data-view="fixedAssets" hidden>🏭  الأصول الثابتة</button>
-      <button class="nav-btn" data-view="treasuryStatements">📑  كشوف حسابات الخزائن</button>
-      <button class="nav-btn" data-view="reports">📈  تقارير المبيعات والمشتريات</button>
-      <button class="nav-btn" data-view="attendance" hidden>🕐  الحضور والانصراف</button>
+      </div>
+    </div>
+
+    <div class="sec" data-sec="team">
+      <button class="sec-btn" type="button" data-sec-toggle="team">👥 الفريق والرقابة <i class="chev">▾</i></button>
+      <div class="drop">
       <button class="nav-btn" data-view="users">👤  المستخدمون والصلاحيات</button>
+      <button class="nav-btn" data-view="attendance" hidden>🕐  الحضور والانصراف</button>
       <button class="nav-btn" data-view="audit">📋  سجل العمليات</button>
-      <!-- 🆕 بناء 125 (بند 16): الدردشة الداخلية — التبويب نفسه بيظهر بس لما
-           جدول الرسايل يكون اتعمل على السحابة (probeChatTable)، وبلا أي قراءة من القرص.
-           الخصوصية كلها RLS على القاعدة: التبويب ده واجهة عرض فقط. -->
-      <button class="nav-btn" data-view="chat" hidden>💬  الدردشة<span id="chatBadge" class="chat-badge" hidden></span></button>
+      </div>
+    </div>
+
+    <div class="sec" data-sec="set">
+      <button class="sec-btn" type="button" data-sec-toggle="set">⚙️ الضبط والنسخ <i class="chev">▾</i></button>
+      <div class="drop">
       <button class="nav-btn" data-view="clientSettings" hidden>⚙️ إعدادات مؤسستك</button>
       <!-- آخر تبويب — للمالك (سوبر أدمن) فقط. يظهر له وحده. -->
       <button class="nav-btn" data-view="settings" hidden>🛡️ إعدادات ونسخ احتياطي المالك</button>
-    </aside>
+      </div>
+    </div>
 
+    <!-- 🆕 بناء 132 (طلب المالك: «عايز الدردشة تكون مستقلة علشان يظهر فيها عدد الرسائل الواردة»):
+         زرار الدردشة بقى في الشريط مباشرة (مش جوّه قسم) ⇒ عدّاد «الجديد» بيبان من غير ما يفتح حاجة.
+         نفس الزرار بنفس الـ id لنفس الشاشة — البوابة (`chatAvailable`) والحظر مش اتلمسوا. -->
+    <!-- 🆕 بناء 125 (بند 16): الدردشة الداخلية — التبويب نفسه بيظهر بس لما
+         جدول الرسايل يكون اتعمل على السحابة (probeChatTable)، وبلا أي قراءة من القرص.
+         الخصوصية كلها RLS على القاعدة: التبويب ده واجهة عرض فقط. -->
+    <button class="nav-btn" data-view="chat" hidden>💬  الدردشة<span id="chatBadge" class="chat-badge" hidden></span></button>
+
+    <!-- 🛡 لوحة الإدارة: زرار عادي في نفس الشريط (طلب المالك 03/10 ≈22:20) — بس **لحساب المالك وحده**:
+         `hidden` افتراضيًا، و`enforceOwnerSettings` هو اللي بيبيّنه له ويخفيه عن أي حساب تاني،
+         والربط نفسه `$("#btnAdmin").addEventListener("click", openAdmin)` (مافيش data-view ⇒
+         الحظر العام بتاع `showView` ما يلمسهاش، واللوحة مش قائمة screens). -->
+    <button id="btnAdmin" class="nav-admin" type="button" hidden>🛠️ لوحة الإدارة</button>
+  </nav>
+
+  <div class="app-body">
     <!-- ===== منطقة العرض ===== -->
 <main class="content">
 
@@ -2810,12 +2862,12 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=131"></script>
-  <script src="supabase.config.js?v=131"></script>
-  <script src="data.js?v=131"></script>
-  <script src="cloud.js?v=131"></script>
-  <script src="install.js?v=131"></script>
-  <script src="app.js?v=131"></script>
+  <script src="lib_supabase.js?v=132"></script>
+  <script src="supabase.config.js?v=132"></script>
+  <script src="data.js?v=132"></script>
+  <script src="cloud.js?v=132"></script>
+  <script src="install.js?v=132"></script>
+  <script src="app.js?v=132"></script>
   <script>
     // كاشف أخطاء على الشاشة (بيحول أي خطأ JS لرسالة مرئية)
     (function () {
