@@ -1581,6 +1581,46 @@
     return !!(acc && (acc.allowed || acc.is_superadmin));
   }
 
+  /* 🔐 بناء 131 — «اللي أحدده بيتنفّذ وما بيرجعش»: مصدر واحد للحظر الصريح.
+   * السبب الجذري لشكوى المالك: كان في كام طبقة بتبلّع قراره —
+   *  (أ) `canUseView` كان بيقول «صاحب الشركة = كل حاجة مفتوحة» قبل ما يقرأ قرار الشركة،
+   *  (ب) مزامنة `mizan_access()` بتدمج `profiles.features || organizations.features`
+   *      فقرار مستوى الحساب بيمحي لو مستوى الشركة قائل «أيوه» على نفس المفتاح،
+   *  (ج) نافذة «⚙️ المزايا» كانت بتفتح وكل الصناديق معلّمة ⇒ أي حفظ جديد كان بيرجّع
+   *      الشركة «كل الصلاحيات» (وده اللي كان بيشوفه «بيترجع تاني»).
+   * القاعدة هنا: **أي «لأ» صريحة في أي مستوى = مقفول**، وأدرج المالك (عادل) محصّن
+   * فوق ده كلها بـ `ownerHasAllAccess()` (قراره في build 119 ما اتغيرش).
+   */
+  const VIEW_FEAT_KEY = { returnsReg: "returnsManager", accStatement: "journal" };
+  function featKeyOf(viewName) { return VIEW_FEAT_KEY[viewName] || viewName; }
+  function permExplicitlyOff(viewName) {
+    var DE = window.DATA || {};
+    var k = featKeyOf(viewName);
+    var acc = null;
+    try { acc = DE.accessInfo ? DE.accessInfo() : null; } catch (e) { acc = null; }
+    var merged = (acc && acc.features) || {};
+    if (merged[k] === false) return true;      // قرار مستوى الشركة (تحديده في لوحة الإدارة)
+    var prof = null;
+    try { prof = DE.getProfile ? DE.getProfile() : null; } catch (e) { prof = null; }
+    var own = (prof && prof.features) || {};
+    return own[k] === false;                   // قرار مستوى الحساب (تحديد صاحب الشركة لموظفيه)
+  }
+
+  /* 🧭 بناء 131: الزرار المقابل في القائمة الجانبية — بتاع `showView` العام.
+   * ليه مش أي معرّف؟ لأن الشاشات اللي مالهاش زرار (لوحة الإدارة/النوافذ) ليها
+   * بواباتها الخاصة فوق، والحظر العام عليها ممكن يقفل حاجة مش مفروض تقفل.
+   */
+  function navBtnOf(viewName) {
+    try { return document.querySelector('.nav-btn[data-view="' + viewName + '"]'); } catch (e) { return null; }
+  }
+  function viewHasNavEntry(viewName) { return !!navBtnOf(viewName); }
+  function navLabelOf(viewName) {
+    var b = navBtnOf(viewName);
+    // ننزع الإيموجي اللي قبل الاسم (الرسالة للعميل بالعربي، مش أيقونات)
+    var t = b ? (b.textContent || "").replace(/\s+/g, " ").trim() : "";
+    return t.replace(/^[^؀-ۿA-Za-z]+/, "").trim();
+  }
+
   // 🔑 زر تغيير الرقم السري في الشريط العلوي — لصاحب الشركة والسوبر أدمن
   function enforceChangePwBtn() {
     var btn = document.getElementById("btnChangePw");
@@ -1606,6 +1646,9 @@
     if (name === "chat") return chatAvailable();
     // 🔓 المالك (عادل) يفتح أي شاشة بلا استثناء — قرار المالك build 119
     if (ownerHasAllAccess()) return true;
+    // 🆕 بناء 131: أي «لأ» صريحة (من مستوى الشركة أو مستوى الحساب) بتقطع هنا —
+    // قبل أي اختصار «صاحب الشركة»، فقرار التحديد ما بيرجعش «كل الصلاحيات».
+    if (permExplicitlyOff(name)) return false;
     if (name === "clientSettings") {
       if (isSuperAcct() || isCompanyOwnerAcct()) return true;
       if (!DE.featureFlag) return true; // احتياطي: لو الدالة غير موجودة نسمح
@@ -1650,6 +1693,8 @@
   // التسجيل اليومي العادي ياخد وقت النظام تلقائيًا من غير إدخال.
   // كل تعديل يدوي بيعدي عبر mizan_att_edit فيتنفَّذ على السحابة ويُسجَّل بالقديم/الجديد/السبب.
   function canEditAttendance() {
+    // 🆕 بناء 131: نفس قاعدة الحظر الصريح (مش بس للشاشة — للتعديل اليدوي كمان)
+    if (!isSuperAcct() && permExplicitlyOff("attendanceEdit")) return false;
     if (isSuperAcct() || isCompanyOwnerAcct()) return true;
     var DE = window.DATA || {};
     if (!DE.featureFlag) return false;
@@ -1874,6 +1919,18 @@
     // تتنفّذ على السحابة، الشاشة مش بتفتح أصلًا (حتى لو حد ناداها من الكونسول).
     if (name === "chat" && !chatAvailable()) {
       toast("الدردشة الداخلية مش متاحة على هذا الحساب دلوقتي", "error");
+      name = "dashboard";
+    }
+    // 🛡 بناء 131 (طلب المالك: «بحدد لهم صلاحيات بترجع تانى كل الصلاحيات لهم»):
+    // البوابات اللي فوقها اسم-بس لكل شاشة على حدة؛ باقي الشاشات (فواتير المبيعات،
+    // دليل العملاء، الخزينة، التقارير…) ما كانش ليها بوابة جوّه `showView`، فأي نداء
+    // برمجي كان بيفتحها رغم إن صاحب الشركة قفلها. القاعدة العامة هنا: الشاشة اللي ليها
+    // زرار في القائمة الجانبية ما تتفتحش إلا لو `canUseView` قالت أيوه.
+    // لوحة التحكم (`dashboard`) مستثناه عمدًا: لو انفتحت على نفسها كان هيقفل على المستخدم.
+    if (name !== "dashboard" && viewHasNavEntry(name) && !canUseView(name)) {
+      const lbl131 = navLabelOf(name);
+      toast((lbl131 ? "شاشة «" + lbl131 + "» " : "الشاشة دي ") +
+        "مقفولة على حسابك — صاحب الشركة هو اللي بيحدّد الصلاحيات", "error");
       name = "dashboard";
     }
     document.querySelectorAll(".view[data-id]").forEach((v) => {
@@ -11618,6 +11675,40 @@ const pwEye = document.getElementById("btnShowPass");
   // صلاحيات opt-in: owner/سوبر أدمن عندهما دائمًا، والعضو ما عندهاش إلا لو فُعّلت صريحًا
   const OPT_IN_FEATS = ["clientSettings", "docManager", "returnsManager", "attendance", "attendanceEdit", "fixedAssets"];
 
+  /* 🆕 بناء 131 — كاش مزايا الشركات (قراءة واحدة من `organizations.features`).
+   * قبل البناء ده كانت نافذة «⚙️ المزايا» بتفتح وكل الصناديق معلّمة (ما بتقرأش
+   * المحفوظ)، فتحديد المالك كان بيبان «راجع كل الصلاحيات» وأي حفظكان بيمسح القرار. */
+  let ORG_FEAT_MAP = null;
+  function orgFeatState(orgId, key) {
+    const f = (ORG_FEAT_MAP && ORG_FEAT_MAP[orgId]) || {};
+    // نفس منطق التنفيذ في القاعدة: opt-in محتاج «أيوه» صريح، وغير كده «لأ» صريحة هي المقفول
+    return OPT_IN_FEATS.indexOf(key) !== -1 ? f[key] === true : f[key] !== false;
+  }
+  function loadOrgFeats() {
+    if (!(window.DATA && DATA.adminOrgFeatures)) return Promise.resolve(false);
+    return DATA.adminOrgFeatures().then((rows) => {
+      const map = {};
+      (rows || []).forEach((r) => {
+        if (r && r.id) map[r.id] = (r.features && typeof r.features === "object") ? r.features : {};
+      });
+      ORG_FEAT_MAP = map;
+      return true;
+    }).catch(() => false); // زعلة اتصال = نرسم الجدول من غير الملخص، ومافيش أي مسح لبيانات
+  }
+  function orgFeatsSummary(orgId) {
+    if (!ORG_FEAT_MAP) return "—";
+    if (!(orgId in ORG_FEAT_MAP)) return "—";
+    const f = ORG_FEAT_MAP[orgId] || {};
+    let open = 0, closed = 0, everSet = false;
+    ADMIN_FEATURES.forEach((row) => {
+      const k = row[0];
+      if (f[k] === true || f[k] === false) everSet = true;
+      if (orgFeatState(orgId, k)) open++; else closed++;
+    });
+    if (!everSet) return "✅ كلها مفتوحة (بلا تحديد)";
+    return closed ? "🔒 " + closed + " مقفولة · 🟢 " + open : "🟢 كل المزايا مفتوحة";
+  }
+
   function fmtDate(d) { return d ? String(d).slice(0, 10) : ""; }
   // تاريخ وساعة محليان (لآخر الاتصال وغيرها) — بصيغة YYYY-MM-DD HH:MM
   function fmtDateTime(d) {
@@ -11964,7 +12055,10 @@ const pwEye = document.getElementById("btnShowPass");
         '<td style="white-space:nowrap">' + (o.online
           ? '<span style="color:var(--success);font-weight:800">🟢 متصل الآن</span>'
           : '<span style="color:#ff5b5b;font-weight:800">' + (o.last_seen ? fmtDateTime(o.last_seen) : "لم يتصل بعد") + "</span>") + "</td>" +
-        "<td><button class=\"btn small teal\" type=\"button\" onclick=\"event.stopPropagation();window.__admFeats('" + o.org_id + "')\">⚙️ المزايا</button></td>" +
+        "<td><button class=\"btn small teal\" type=\"button\" onclick=\"event.stopPropagation();window.__admFeats('" + o.org_id + "')\">⚙️ المزايا</button>" +
+        // 🆕 بناء 131: الملخص بيتحسب من المحفوظ على القاعدة ⇒ المالك يشوف تحديده
+        // قدامه في الجدول، مش جوه النافذة بس (ولو القراءة تعذرت يظهر «—»).
+        "<div class=\"login-sub\" style=\"margin-top:4px\">" + orgFeatsSummary(o.org_id) + "</div></td>" +
         "<td><button class=\"btn small blue\" type=\"button\" onclick=\"event.stopPropagation();window.__admDbl('" + o.org_id + "')\">✏️ بيانات الشركة</button> " +
         (o.protected
           ? '<span class="login-sub" title="شركة رئيسية تخص المالك">🔒 لا تُحذف</span>'
@@ -11979,8 +12073,10 @@ const pwEye = document.getElementById("btnShowPass");
   function renderAdminOrgs() {
     const box = $("#adminList");
     box.innerHTML = '<p class="login-sub">جارٍ تحميل الشركات...</p>';
-    DATA.adminOrgs().then((orgs) => {
-      const list = orgs || [];
+    // 🆕 بناء 131: نقرأ مزايا الشركات الأول (قراءة واحدة، `loadOrgFeats` ما بيرفضش)
+    // عشان عمود «المزايا» يورّي المحفوظ فعلًا مش كلام عام.
+    Promise.all([loadOrgFeats(), DATA.adminOrgs()]).then((res) => {
+      const list = res[1] || [];
       renderAdminStats(list);
       renderAdminAlerts(list);
       paintAdminOrgTable(list);
@@ -12134,32 +12230,41 @@ const pwEye = document.getElementById("btnShowPass");
   // نافذة منبثقة لاختيار المزايا لكل شركة
   window.__admFeats = function (orgId) {
     DATA.adminOrgs().then((orgs) => {
-      const o = orgs.find((x) => x.org_id === orgId);
-      const feats = {};
+      const o = orgs.find((x) => x.org_id === orgId) || {};
       DATA.requestAccess().catch(() => {});
-      // نبني الخريطة من البيانات المتوفرة داخل mizan_admin_orgs ننقصها — نعتمد على القيم الافتراضية
-      let opts = "";
-      ADMIN_FEATURES.forEach(([k, label]) => {
-        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"adm-feat\" value=\"" + k + "\" checked /> " + label + "</label>";
+      // 🆕 بناء 131: الصناديق تتعبّى من **المحفوظ فعلًا** (`organizations.features`)،
+      // مش «checked» على طول. قبل كده كان أي فتح للنافذة + حفظ بيرجّع الشركة
+      // «كل الصلاحيات» وبيمسح تحديد المالك القديم — وده حرفي الشكوى.
+      const ready = (ORG_FEAT_MAP && (orgId in ORG_FEAT_MAP)) ? Promise.resolve(true) : loadOrgFeats();
+      ready.then(() => {
+        let opts = "";
+        ADMIN_FEATURES.forEach(([k, label]) => {
+          opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"adm-feat\" value=\"" + k + "\" " + (orgFeatState(orgId, k) ? "checked" : "") + " /> " + label + "</label>";
+        });
+        const body = "<div class=\"feat-grid\">" + opts + "</div>" +
+          "<p class=\"login-sub\" style=\"margin-top:8px\">✅ اللي بتقفلوه بيفضل مقفول على كل حسابات الشركة (ومقفول حتى على صاحب الشركة) — و«إعدادات المالك» دايمًا لعدّلها.</p>" +
+          "<div class=\"feat-btns\"><button class=\"btn green\" type=\"button\" id=\"admFeatSave\">حفظ المزايا</button>" +
+          "<button class=\"btn gray\" type=\"button\" id=\"admFeatCancel\">إلغاء</button></div>";
+        const dlg = document.createElement("div");
+        dlg.className = "modal-overlay";
+        dlg.id = "featModal";
+        dlg.innerHTML = '<div class="modal-box"><div class="panel-title">المزايا المفتوحة — ' + (o.org_name || "") + "</div>" + body + "</div>";
+        document.body.appendChild(dlg);
+        dlg.querySelector("#admFeatCancel").onclick = () => dlg.remove();
+        dlg.querySelector("#admFeatSave").onclick = () => {
+          const on = {};
+          dlg.querySelectorAll(".adm-feat").forEach((c) => { on[c.value] = c.checked; });
+          // 🆕 بناء 131: `mizan_admin_set_org` بتكتب `plan_end` بلا coalesce ⇒ لازم
+          // نعيد نفس تواريخ الشركة وحالة قفلها، ومينفعش نبعتهم فاضيين وإلا الحفظ
+          // ده كان بيمسح «إلى تاريخ» الاشتراك ويخلي الشركة نشطة للأبد.
+          DATA.adminSetOrg(orgId, o.plan_start || null, o.plan_end || null, o.locked, on).then(() => {
+            toast("تم حفظ المزايا", "ok");
+            if (ORG_FEAT_MAP) ORG_FEAT_MAP[orgId] = on;
+            dlg.remove();
+            renderAdminOrgs();
+          }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+        };
       });
-      const body = "<div class=\"feat-grid\">" + opts + "</div>" +
-        "<div class=\"feat-btns\"><button class=\"btn green\" type=\"button\" id=\"admFeatSave\">حفظ المزايا</button>" +
-        "<button class=\"btn gray\" type=\"button\" id=\"admFeatCancel\">إلغاء</button></div>";
-      const dlg = document.createElement("div");
-      dlg.className = "modal-overlay";
-      dlg.id = "featModal";
-      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">المزايا المفتوحة — ' + (o.org_name || "") + "</div>" + body + "</div>";
-      document.body.appendChild(dlg);
-      dlg.querySelector("#admFeatCancel").onclick = () => dlg.remove();
-      dlg.querySelector("#admFeatSave").onclick = () => {
-        const on = {};
-        dlg.querySelectorAll(".adm-feat").forEach((c) => { on[c.value] = c.checked; });
-        DATA.adminSetOrg(orgId, null, null, null, on).then(() => {
-          toast("تم حفظ المزايا", "ok");
-          dlg.remove();
-          renderAdminOrgs();
-        }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
-      };
     });
   };
 

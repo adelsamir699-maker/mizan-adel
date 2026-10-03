@@ -490,6 +490,17 @@
       return r.data || [];
     });
   }
+  // بناء 131: قراءة مزايا كل شركة الخام (public.organizations.features).
+  // ليه؟ `mizan_admin_orgs` ما بترجّعمش، وكان ده السبب إن نافذة «⚙️ المزايا»
+  // بتفتح وكل الصلاحيات معلّمة من جديد ⇒ تحديد المالك يبان «رجع كل الصلاحيات».
+  // القراءة دي سليمة أمانًا: سياسة `org_select` بتسمح لـ `is_superadmin` بكل الصفوف
+  // (ومحدودة على `current_org()` لباقي الحسابات)، وهي **قراءة فقط** — مافيش أي تنفيذ.
+  function adminOrgFeatures() {
+    return sb.from("organizations").select("id, features").then(function (r) {
+      if (r.error) throw r.error;
+      return r.data || [];
+    });
+  }
   function adminMembers(orgId) {
     return sb.rpc("mizan_admin_members", { p_org_id: orgId }).then(function (r) {
       if (r.error) throw r.error;
@@ -873,6 +884,7 @@ function changeMyPassword(oldPass, newPass) {
     adminCreatedAccounts: adminCreatedAccounts,
     adminDeleteCreatedAccount: adminDeleteCreatedAccount,
     adminOrgs: adminOrgs,
+    adminOrgFeatures: adminOrgFeatures,
     adminMembers: adminMembers,
     adminSetOrg: adminSetOrg,
     adminSetSub: adminSetSub,
