@@ -1,18 +1,23 @@
 -- ترقية ٤٦ — «صاحب المؤسسة» الصح + نقطة المتصل الأخضر (بند 20/أ + بند 20/د)
 --
--- ⏳ **محفوظة على القرص — لسه ما اتنفذتش على السحابة.** أمر المالك الحرفي مطلوب
---    («ممنوع أي رفع أو تنفيذ على Supabase إلا بأمر صريح من المستخدم»). الأداة:
---      node D:/_work/temp/apply_upgrade_46.js                      → يطبع الخطة ويخرج (بلا اتصال)
---      MIZAN_ORDER_46="نفّذ" node D:/_work/temp/apply_upgrade_46.js → تنفيذ فعلی في transaction واحدة
---    وقبلها باك أب سحابة جديد في D:/MizanBackups/pre-mig46-… وبعدها post-mig46-….
---
--- طلب المالك الحرفي (03/10 ≈02:30):
---   «هتبدأ بتصليح الدردشة علشان اصحاب المؤسسات يشوفوا الرسائل اللى وصلت لهم لحظى
---    و يردوا عليها»   و   «عايز المتصل يكون علية علامة بالاخضر»
+-- ✅ **نُفّذت على السحابة 03/10 ≈13:44** بأمر المالك الحرفي «من 1 الى 4 بالترتيب» (سطر ٢).
+--    الأداة: MIZAN_ORDER_46="نفّذ" node D:/_work/temp/apply_upgrade_46.js → transaction واحدة،
+--    ٦ فحوص داخلية + ٣ بصمات md5 للبيانات، وأخضر ⇒ commit (وأي فشل كان ROLLBACK كامل).
+--    الباك أب: قبل = D:/MizanBackups/pre-mig46-20261003-1304 (schema+data+worktree.tar)
+--              بعد = D:/MizanBackups/post-mig46-20261003-1354 (schema+data+logs+tools)
+--    الرجوع جاهز: pre-mig46-…/rollback_46.sql (نص الدوال الثلاثة قبل ٤٦ حرفيًا من لقطة «قبل»
+--              + حذف mizan_is_owner) — **لا يُنفّذ إلا بأمر المالك الحرفي وبعَد باك أب جديد**.
+--    الإثبات بعد التنفيذ: lint 31/0 · حارس سلوكي قراءة-فقط test_chat_owners_46.js = **59 ✅/0 ❌**
+--              (١٠ أقسام: التعريف · منح anon مرفوضة 42501 · عادل يشوف ٦ أصحاب مؤسسات ·
+--               كل مالك ما يشوفش شركة تانية · العضو ما يشوفش عادل · سويتش «all» · نقطة المتصل ·
+--               org_info بنفس التوقيع · خصوصية messages · بصمات البيانات بعد rollback)
+--              والمخطط الحيّ: ٦٦ دالة (65+1) · ٤٠٠ عمود · ٩٣ قيد · ١١٩ سياسة · ١١٢ فهرس · ٣٨ جدول
+--              وباقي ٦٢ دالة بايت-بايت زي ما كانت · ٣٢/٣٨ ملف بيانات مطابق بالبايت.
+--    ⚠️ ممنوع إعادة تشغيل الملف كما هو الآن (قسم ٠ فيه فحوص «قبل» باتت فشلًا متعمّدًا).
 --
 -- السبب الجذري اللي الترقية دي بتقفلوا (#146):
 --   ترقية ٤٥ كانت بتعرّف «صاحب المؤسسة» بـ organizations.owner_id، وعلى البيانات الحيّة
---   كل الشركات الـ 8 فيها owner_id = عادل ⇒ قائمة «أصحاب المؤسسات» بتاعته = صفر، والموظف
+--   كل الشركات فيها owner_id = عادل ⇒ قائمة «أصحاب المؤسسات» بتاعته = صفر، والموظف
 --   اللي دوره admin ما كانش بيقدر يوصل عادل أصلًا.
 --
 --   وقرار المالك الحرفي اللي حسم الموضوع (03/10 ≈04:20):
@@ -37,6 +42,74 @@
 --   · «الدردشة لا تدخل النسخ الاحتياطي» · «متحذفش بيانات موجوده و خاصة شركة القاهرة…»
 --
 -- مافيش begin/commit جوه الملف — المعاملة ملك أداة التنفيذ.
+
+-- ═══════════════ ٠) فحوص «قبل» + منع إعادة التشغيل (أي فشل = رجوع) ═══════════
+-- **لازم تسبق أي DDL**: لو اتحطّت في آخر الملف هتقيس الحالة بعد التغيير فتبقى كاذبة
+-- (وده الغلط اللي اتقاد الليلة دي: بوابة «عليها last_seen» كانت بعد الـ create).
+-- القيم اللي لازم تقارن «بعد» بتتخزن في GUC محلي للمعاملة (`set_config(..., true)`)
+-- فبتترجع تلقائيًا لو getعمل rollback، ومتلوثش أي session تاني.
+do $$
+declare
+  n    int;
+  src  text;
+  sig0 text;
+begin
+  -- ── لازم ترقية ٤٥ تكون اتنفذت (ممنوع نزلّق فوق قاعدة ناقصة) ──
+  if not exists (select 1 from pg_class c join pg_namespace ns on ns.oid = c.relnamespace
+                  where ns.nspname = 'public' and c.relname = 'messages' and c.relkind = 'r') then
+    raise exception 'ترقية ٤٦: جدول messages مش موجود — ترقية ٤٥ لسه ما اتنفذتش';
+  end if;
+
+  select count(*) into n from pg_policies where schemaname='public' and tablename='messages';
+  if n <> 3 then raise exception 'ترقية ٤٦: سياسات messages قبل التنفيذ = % (مفروض ٣)', n; end if;
+
+  select count(*) into n from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+    where ns.nspname='public' and p.proname = 'mizan_chat_peers';
+  if n <> 1 then raise exception 'ترقية ٤٦: mizan_chat_peers قبل التنفيذ = % (مفروض ١)', n; end if;
+
+  -- التوقيع القديم مالوش last_seen (لو عليه ⇒ ٤٦ اتنفذت قبل كده، وممنوع تتكرر)
+  select pg_get_function_result('public.mizan_chat_peers()'::regprocedure) into src;
+  if src ilike '%last_seen%' then
+    raise exception 'ترقية ٤٦: mizan_chat_peers عليها last_seen فعلًا — الترقية دي اتنفذت قبل كده، ممنوع تتكرر';
+  end if;
+
+  -- mizan_org_info لسه بتحسب is_org_admin من role وحده (ده كمان مانع تكرار)
+  if not exists (select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+                  where ns.nspname='public' and p.proname='mizan_org_info') then
+    raise exception 'ترقية ٤٦: mizan_org_info مش موجودة — ترقية ١٧ لسه ما اتنفذتش؟';
+  end if;
+  select prosrc into src from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+    where ns.nspname='public' and p.proname='mizan_org_info';
+  if src like '%mizan_is_owner%' then
+    raise exception 'ترقية ٤٦: mizan_org_info لسه بتنادي mizan_is_owner — الترقية دي اتنفذت قبل كده، ممنوع تتكرر';
+  end if;
+  -- توقيع org_info لازم يفضل حرفيًا زي ما هو (٨ أعمدة) — بنخزنه وبنقارنه «بعد» بالبايت
+  select pg_get_function_result('public.mizan_org_info()'::regprocedure) into sig0;
+  if sig0 is null or sig0 not ilike '%is_org_admin%' then
+    raise exception 'ترقية ٤٦: توقيع mizan_org_info قبل التنفيذ مش المتوقع ⇒ «%»', coalesce(sig0,'(null)');
+  end if;
+  if sig0 ilike '%last_seen%' then
+    raise exception 'ترقية ٤٦: توقيع mizan_org_info فيه last_seen قبل التنفيذ؟ قياس غلط';
+  end if;
+
+  -- mizan_is_owner لازم تبقى **جديدة** (لو موجودة يبقى في نسخة اتنفذت قبل كده)
+  if exists (select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+              where ns.nspname='public' and p.proname='mizan_is_owner') then
+    raise exception 'ترقية ٤٦: mizan_is_owner موجودة قبل التنفيذ — الترقية دي اتنفذت قبل كده، ممنوع تتكرر';
+  end if;
+
+  -- بصمة الأسطر «قبل» (الفحص «بعد» بيقارن) — أي سطر يتشال = rollback
+  perform set_config('mizan_46.msg0',  (select count(*) from public.messages)::text,     true);
+  perform set_config('mizan_46.prof0', (select count(*) from public.profiles)::text,     true);
+  perform set_config('mizan_46.org0',  (select count(*) from public.organizations)::text, true);
+  perform set_config('mizan_46.pres0', (select count(*) from public.presence)::text,     true);
+  perform set_config('mizan_46.sig0',  coalesce(sig0,''),                                 true);
+
+  raise notice 'ترقية ٤٦: فحوص «قبل» خضراء (messages=% · profiles=% · organizations=% · presence=%)',
+    current_setting('mizan_46.msg0'), current_setting('mizan_46.prof0'),
+    current_setting('mizan_46.org0'), current_setting('mizan_46.pres0');
+end;
+$$;
 
 -- ═══════════════════ ١) التعريف الصح لـ «صاحب المؤسسة» ══════════════════════
 create or replace function public.mizan_is_owner(p_id uuid)
@@ -191,7 +264,9 @@ $$;
 revoke all on function public.mizan_org_info() from public, anon;
 grant execute on function public.mizan_org_info() to authenticated;
 
--- ═══════════════════════ ٤) فحوص قبل + بعد (أي فشل = رجوع) ═══════════════════
+-- ═══════════════════ ٥) فحوص «بعد» (أي فشل = رجوع) ═══════════════════
+-- فحوص «قبل» ومنع التكرار في أول الملف (قسم ٠) — هنا **بعد** بس، والقياسات القديمة
+-- بتتقرا من GUC المعاملة اللي قسم ٠ خزّنها.
 do $$
 declare
   n   int;
@@ -203,47 +278,14 @@ declare
   sig0 text;
   b   boolean;
 begin
-  -- ── قبل: لازم ترقية ٤٥ تكون اتنفذت (ممنوع نزلّق فوق قاعدة ناقصة) ──
-  if not exists (select 1 from pg_class c join pg_namespace ns on ns.oid = c.relnamespace
-                  where ns.nspname = 'public' and c.relname = 'messages' and c.relkind = 'r') then
-    raise exception 'ترقية ٤٦: جدول messages مش موجود — ترقية ٤٥ لسه ما اتنفذتش';
+  n0  := current_setting('mizan_46.msg0')::int;
+  p0  := current_setting('mizan_46.prof0')::int;
+  o0  := current_setting('mizan_46.org0')::int;
+  pr0 := current_setting('mizan_46.pres0')::int;
+  sig0 := current_setting('mizan_46.sig0');
+  if sig0 is null or sig0 = '' then
+    raise exception 'ترقية ٤٦: GUC «mizan_46.sig0» فاضي ⇒ قسم ٠ (فحوص قبل) ما اتشغّلش — لا تنفّذ الملف مجزّأ';
   end if;
-
-  select count(*) into n from pg_policies where schemaname='public' and tablename='messages';
-  if n <> 3 then raise exception 'ترقية ٤٦: سياسات messages قبل التنفيذ = % (مفروض ٣)', n; end if;
-
-  select count(*) into n from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
-    where ns.nspname='public' and p.proname = 'mizan_chat_peers';
-  if n <> 1 then raise exception 'ترقية ٤٦: mizan_chat_peers قبل التنفيذ = % (مفروض ١)', n; end if;
-
-  -- قبل: التوقيع القديم مالوش last_seen (لو عليه يبقى ٤٦ اتنفذت قبل كده ⇒ ممنوع تتكرّر)
-  select pg_get_function_result('public.mizan_chat_peers()'::regprocedure) into src;
-  if src ilike '%last_seen%' then
-    raise exception 'ترقية ٤٦: mizan_chat_peers عليها last_seen فعلًا — الترقية دي اتنفذت قبل كده، ممنوع تتكرر';
-  end if;
-
-  -- قبل: mizan_org_info لسه بتحسب is_org_admin من role وحده (مفيهاش mizan_is_owner)
-  --      ده كمان مانع التكرار: لو السطر بقى موجود ⇒ ٤٦ اتنفذت قبل كده.
-  if not exists (select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
-                  where ns.nspname='public' and p.proname='mizan_org_info') then
-    raise exception 'ترقية ٤٦: mizan_org_info مش موجودة — ترقية ١٧ لسه ما اتنفذتش؟';
-  end if;
-  select prosrc into src from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
-    where ns.nspname='public' and p.proname='mizan_org_info';
-  if src like '%mizan_is_owner%' then
-    raise exception 'ترقية ٤٦: mizan_org_info لسه بتنادي mizan_is_owner — الترقية دي اتنفذت قبل كده، ممنوع تتكرر';
-  end if;
-  -- التوقيع لازم يفضل حرفيًا زي ما هو (٨ أعمدة) — بنخزنه وبنقارنه «بعد» بالبايت.
-  select pg_get_function_result('public.mizan_org_info()'::regprocedure) into sig0;
-  if sig0 is null or sig0 not ilike '%is_org_admin%' then
-    raise exception 'ترقية ٤٦: توقيع mizan_org_info قبل التنفيذ مش المتوقع ⇒ «%»', coalesce(sig0,'(null)');
-  end if;
-
-  -- بصمة البيانات قبل (أي تغيير بعدها = rollback) — مافيش عدّ مطلق متوقّع، التقارن قبل/بعد
-  select count(*) into n0  from public.messages;
-  select count(*) into p0  from public.profiles;
-  select count(*) into o0  from public.organizations;
-  select count(*) into pr0 from public.presence;
 
   -- ── بعد: الدوال الثلاث المحصّنة + المساعد الجديد (٥ دوال definer بمسار مثبّت) ──
   select count(*) into n from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
@@ -274,7 +316,12 @@ begin
   if n <> 5 then raise exception 'ترقية ٤٦: دوال عليها منح authenticated = % (مفروض ٥)', n; end if;
 
   -- بعد: mizan_is_owner بتقرأ profiles وبتستثنى السوبر وبتقبل role=admin
-  select prosrc into src from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+  -- 🧵 ملاحظة أداة: كل فحوص «الجسم» هنا بتشتغل على النص **بعد شيل تعليقات `--`**، بنفس
+  --    قاعدة اللِنتر (lint_sql_generic.js). السبب مقاس فعليًا: جسم mizan_is_owner فيه تعليق
+  --    بيسمّي العمود القديم بالاسم، والحارس «ممنوع التعريف القديم» بيبحث عن نفس الاسم
+  --    ⇒ على النص الخام كانت الترقية السليمة بترجع بـ ROLLBACK كاذب (03/10، محاولة ٣).
+  --    الكود نفسه ما بيتأثرش: اللي بيتقاس هو اللي بيفضل بعد الشيل.
+  select regexp_replace(prosrc, '--[^\n]*', '', 'g') into src from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
     where ns.nspname='public' and p.proname='mizan_is_owner';
   if src not like '%p.role = ''admin''%' then
     raise exception 'ترقية ٤٦: mizan_is_owner ما بتعتمدش على role=admin';
@@ -291,7 +338,7 @@ begin
   end if;
 
   -- بعد: peer بتستدعي mizan_is_owner مرتين (فرع عادل + فرع صاحب الشركة)
-  select prosrc into src from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+  select regexp_replace(prosrc, '--[^\n]*', '', 'g') into src from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
     where ns.nspname='public' and p.proname='mizan_chat_peer';
   n := (length(src) - length(replace(src, 'mizan_is_owner', ''))) / length('mizan_is_owner');
   if n <> 2 then raise exception 'ترقية ٤٦: mizan_chat_peer بتنادي mizan_is_owner % مرة (مفروض ٢)', n; end if;
@@ -308,7 +355,7 @@ begin
   end if;
 
   -- بعد: peers بتستدعي peer (بوابة واحدة مش منسوخة) وبتقرأ presence
-  select prosrc into src from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+  select regexp_replace(prosrc, '--[^\n]*', '', 'g') into src from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
     where ns.nspname='public' and p.proname='mizan_chat_peers';
   if src not like '%mizan_chat_peer(p.id)%' then
     raise exception 'ترقية ٤٦: mizan_chat_peers ما بتتبنىش البوابة الواحدة';
@@ -386,24 +433,30 @@ begin
       and p.prosrc like '%messages%';
   if n <> 0 then raise exception 'ترقية ٤٦: messages دخلت دوال النسخ الاحتياطي — قرار المالك مرفوض'; end if;
 
-  -- بعد: مافيش أي سطر اتلمس (مقارنة قبل/بعد جوّه نفس المعاملة)
+  -- بعد: مافيش أي سطر اتشال. المقارنة بـ < مش = عن قصد: عادل بيستخدم الدردشة فعلًا، وأي سطر
+  --   جديد (رسالة/نبضة presence/حساب) بيشفه أول statement بعد commit بتاعه ⇒ المساواة
+  --   المطلقة كانت بتعمل ROLLBACK كاذب. «اللي كان موجود ما اتلمسش» بتثبّته الأداة ببصمة md5
+  --   على الأسطر القديمة نفسها (created_at <= t0) وبصمة profiles/organizations — وده الحارس الصارم.
   select count(*) into n from public.messages;
-  if n <> n0 then raise exception 'ترقية ٤٦: أسطر messages اتغيّرت من % إلى %', n0, n; end if;
+  if n < n0 then raise exception 'ترقية ٤٦: أسطر messages نقصت من % إلى % — مرفوض', n0, n; end if;
 
   select count(*) into n from public.profiles;
-  if n <> p0 then raise exception 'ترقية ٤٦: أسطر profiles اتغيّرت من % إلى %', p0, n; end if;
+  if n < p0 then raise exception 'ترقية ٤٦: أسطر profiles نقصت من % إلى % — مرفوض', p0, n; end if;
 
   select count(*) into n from public.organizations;
-  if n <> o0 then raise exception 'ترقية ٤٦: أسطر organizations اتغيّرت من % إلى %', o0, n; end if;
+  if n < o0 then raise exception 'ترقية ٤٦: أسطر organizations نقصت من % إلى % — مرفوض', o0, n; end if;
 
   select count(*) into n from public.presence;
-  if n <> pr0 then raise exception 'ترقية ٤٦: أسطر presence اتغيّرت من % إلى %', pr0, n; end if;
+  if n < pr0 then raise exception 'ترقية ٤٦: أسطر presence نقصت من % إلى % — مرفوض', pr0, n; end if;
 
   -- بعد: البنية كلها ما اتغيّرتش (الدوال +١ بس: mizan_is_owner) — مقاييس ٤٥ المأخودة 03/10
+  -- 📏 المقياس لازم يبقى **نفس** مقياس الأداة (information_schema.columns = ٤٠٠):
+  --    pg_attribute لوحدها بيجرّ وراه أعمدة الـ sequences (public فيه ٢ sequence = ٦ أعمدة
+  --    وهمية ⇒ ٥٦١ بدل ٤٠٠). القيد `relkind='r'` بيرجّع المقياسين لرقم واحد. (مقاس 03/10.)
   select count(*) into n from pg_attribute a
     join pg_class k on k.oid = a.attrelid
     join pg_namespace ns on ns.oid = k.relnamespace
-    where ns.nspname='public' and a.attnum > 0 and not a.attisdropped;
+    where ns.nspname='public' and k.relkind = 'r' and a.attnum > 0 and not a.attisdropped;
   if n <> 400 then raise exception 'ترقية ٤٦: عدد أعمدة public = % (مفروض ٤٠٠ ثابتة)', n; end if;
 
   select count(*) into n from pg_constraint c
