@@ -1802,7 +1802,10 @@ td.c-tax.tax-hidden {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #cbd5e1;
+  /* مقصود var(--text-muted) مش var(--border): نقطة «مش متصل» لازم تبان رمادية
+     على خلفية القائمة الفاتحة — لون الحد (--border) شبه مختفية على الخلفية (--bg).
+     أي لون جديد في الدردشة يتاخد من المتغيرات، مافيش hex في النص. */
+  background: var(--text-muted);
   margin-inline-end: 6px;
   vertical-align: middle;
 }
