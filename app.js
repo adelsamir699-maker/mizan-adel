@@ -2125,9 +2125,30 @@
   }
 
   /* ================== لوحة التحكم ================== */
+  /* 📊 بناء 135 (سطر ٧ للمالك): «صافي ربح الشهر» بنفس تعريف «صافي ربح اليوم» — مصدر واحد الاتنين.
+     التعريف (قراره المسجّل في بناء 92/96 و108 حرفيًا): مجموع (سعر البيع − سعر الشراء) × الكمية
+     لأسطر فواتير البيع، **ناقص** نفس الهامش لمرتجعات البيع. والبره بالقرار: الضريبة (أمانة مش
+     إيراد) · المشتريات والمصروفات والسندات (ده هامش بيع مش صرف مخزني).
+     `within(تاريخ)` = المجال الزمني: اليوم ⇒ كارت اللوحة، الشهر ⇒ كارت اللوحة التاني —
+     فممنوع يبقى في البرنامج اتنين منطقتين حسابيتين للرقم الواحد. */
+  function profitMarginOf(items) {
+    return (items || []).reduce((mm, it) => {
+      const pr = products.find((x) => Number(x.id) === Number(it.productId));
+      const cost = pr ? (Number(pr.purchasePrice) || Number(pr.weightedAvgCost) || 0) : 0;
+      return mm + (Number(it.qty) || 0) * ((Number(it.price) || 0) - cost);
+    }, 0);
+  }
+  function netSaleProfit(within) {
+    const sold = sales.filter((s) => within(s.invoiceDate)).reduce((m, s) => m + profitMarginOf(s.items), 0);
+    const returned = saleReturns.filter((r) => within(retDateOf(r))).reduce((m, r) => m + profitMarginOf(r.items), 0);
+    return Math.round((sold - returned) * 100) / 100;
+  }
+
   function renderDashboard() {
     const today = todayISO();
     const isToday = (d) => (d || "").slice(0, 10) === today;
+    const monthKey = today.slice(0, 7);
+    const isThisMonth = (d) => (d || "").slice(0, 7) === monthKey;
     // 🔁 بناء 108: المرتجعات بت تخصم من أرقام اليوم (والسندات اللي منها ما تتحسبش مصروف/إيراد)
     const isRetVoucher = (v) => String((v && v.refType) || "").indexOf("_return") !== -1;
     const retSaleToday = saleReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + (Number(r.grandTotal) || 0), 0);
@@ -2141,15 +2162,9 @@
     $("#kSales").textContent = fmt(salesToday) + " ج.م";
     $("#kPurchases").textContent = fmt(purToday) + " ج.م";
     $("#kExpenses").textContent = fmt(expToday) + " ج.م";
-    // صافي ربح اليوم = مجموع (سعر البيع − سعر الشراء) × الكمية لأصناف فواتير اليوم − مرتجعات اليوم
-    const marginOf = (items) => (items || []).reduce((mm, it) => {
-      const pr = products.find((x) => Number(x.id) === Number(it.productId));
-      const cost = pr ? (Number(pr.purchasePrice) || Number(pr.weightedAvgCost) || 0) : 0;
-      return mm + (Number(it.qty) || 0) * ((Number(it.price) || 0) - cost);
-    }, 0);
-    const profitSold = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => m + marginOf(s.items), 0);
-    const profitReturned = saleReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + marginOf(r.items), 0);
-    const profitToday = profitSold - profitReturned;
+    // صافي ربح اليوم = (سعر البيع − سعر الشراء) × الكمية لأصناف فواتير اليوم − مرتجعات اليوم
+    // 📊 بناء 135: الحساب بقى في مصدر واحد (`netSaleProfit`) مشترك مع كارت الشهر.
+    const profitToday = netSaleProfit(isToday);
     // 🎨 بناء 123 (بند 5): المبلغ أخضر للمدخل / أحمر للمخرج — الشاشات المالية بس.
     //    كارت «الرصيد المتاح» ما يتلونش: ده رصيد مش إيراد ولا مصروف.
     paintDir("#kSales", "in");
@@ -2157,6 +2172,10 @@
     paintDir("#kExpenses", "out");
     $("#kProfit").textContent = fmt(Math.round(profitToday * 100) / 100) + " ج.م";
     paintDir("#kProfit", profitToday > 0 ? "in" : profitToday < 0 ? "out" : "");
+    // 📆 بناء 135 (سطر ٧): نفس الهامش على **شهر التقويم الحالي** — فاتورة الشهر اللي فات ما تدخلش.
+    const profitMonth = netSaleProfit(isThisMonth);
+    $("#kMonthProfit").textContent = fmt(profitMonth) + " ج.م";
+    paintDir("#kMonthProfit", profitMonth > 0 ? "in" : profitMonth < 0 ? "out" : "");
     $("#kTreasury").textContent = fmt(treTotal) + " ج.م";
 
     const low = products.filter((pr) => pr.qty <= pr.reorder);

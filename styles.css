@@ -257,7 +257,8 @@ body {
 /* ===== لوحة التحكم ===== */
 .kpi-row {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  /* 📅 بناء 135 (سطر ٧): كارت «صافي ربح الشهر» دخل اللوحة ⇒ 7 كروت في السطر */
+  grid-template-columns: repeat(7, 1fr);
   gap: 8px;
   margin-bottom: 14px;
 }
@@ -298,7 +299,8 @@ body {
 .data-panel .table-wrap { border: none; }
 
 @media (max-width: 1100px) {
-  .kpi-row { grid-template-columns: repeat(3, 1fr); }
+  /* بناء 135: 7 كروت ⇒ 4+3 بدل 3+3+1 (اليتيم اللي كان بيوصل بعرض الشاشة كامل) */
+  .kpi-row { grid-template-columns: repeat(4, 1fr); }
   .tables-row { flex-direction: column; }
 }
 
