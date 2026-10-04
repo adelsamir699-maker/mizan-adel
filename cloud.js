@@ -991,6 +991,16 @@
               var eid = (W.idMap.journal_entries || {})[Number(en.id)];
               bySorted(byEntry[eid] || []).forEach(function (l) { en.lines.push(META.journal_entries.itemFromCloud(l)); });
             });
+            // 🆕 بناء 134: إجمالي القيد (مدين/دائن) مش عمود في journal_entries — بيطلع من أسطره.
+            // من غير الجمع ده أي قيد (يدوي أو متترحّل من فاتورة) بيبان «0.00» في جدول
+            // «القيود اليومية» بعد أي إعادة تشغيل، لأن fromCloud بيحط debit/credit = صفر
+            // لحد ما تلحق الأسطر. الناحية دي قراءة بس — مافيش أي كتابة على السحابة.
+            W.journalEntries.forEach(function (en) {
+              var d = 0, c = 0;
+              (en.lines || []).forEach(function (l) { d += Number(l.debit) || 0; c += Number(l.credit) || 0; });
+              en.debit = Math.round(d * 100) / 100;
+              en.credit = Math.round(c * 100) / 100;
+            });
             return;
           });
         }

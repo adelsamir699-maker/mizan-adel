@@ -1576,6 +1576,67 @@
   // دي بوابة الواجهة فقط: عزل البيانات على السحابة (RLS/current_org) ما اتغيرش.
   function ownerHasAllAccess() { return isSuperAcct(); }
 
+  /* 🔑 بناء 133 — «الإعدادات (المالك)» مش صلاحية تتداول: لمالك البرنامج ولحسابات شركة ميزان.
+     أمر المالك الحرفي (04/10): «اعدادات المالك موجوده ليه فى اختيارات مزايا الشركات
+     انا مش عايزها تظهر فى اختيارات الصلاحيات لانها تخص مالك البرنامج عادل فقط
+     عايزها تظهر فقط عن اعضاء شركة ميزان فقط حساب عادل المالك و حسابات شركة ميزان فقط»
+     ⇒ (١) مفتاح `settings` اتشال من **كل** نوافذ الاختيار (مزايا الشركة / صلاحيات حساب /
+        حساب جديد) ومن ملخص المزايا ⇒ مافيش صاحب شركة يفتحه أو يقفله لحد، ومافيش «مكان فاضي»
+        مكانه (بناء 132)؛
+     (٢) البوابة الوحيدة = `ownerSettingsAllowed()`: مالك البرنامج (سوبر أدمن) أو حساب شركته «ميزان»؛
+     (٣) **اللي مابيدّلش:** لوحة الإدارة (`admin`) وتبويب/أزرار **النسخ الاحتياطي** (`sbak` +
+        `btnBackupAll/2`) فضلا **لمالك البرنامج وحده** — قراراته السابقة (build 94: «النسخ
+        الاحتياطي للمالك adel فقط»، و121: «لوحة الإدارة متظهرش عند حد تاني ابدا») سارية.
+     ⚠️ المفتاح المحفوظ في `organizations.features`/`profiles.features` ما يتلمّش (بيفضل زي ما
+        هو ويتنقل في أي حفظ جديد) — بس بقى **بلا معنى** في الواجهة، فمافيش migration ولا مسح بيانات. */
+  const OWNER_ONLY_FEATS = ["settings"];
+  const MIZAN_ORG_ID = "72597c1b-90e5-40d2-a318-fc9c426e1dc2"; // «mizan» = شركة المالك على القاعدة الحيّة
+  function arnNorm(s) {
+    return String(s == null ? "" : s).toLowerCase()
+      .replace(/[ً-ْـ]/g, "")                        // حركات + تطويل
+      .replace(/[\s\-_/().،,]+/g, "")                 // فواصل
+      .replace(/[إأآٱ]/g, "ا").replace(/ى/g, "ي").replace(/ؤ/g, "و").replace(/ئ/g, "ي").replace(/ة/g, "ه");
+  }
+  function isMizanOrgName(name) {
+    var n = arnNorm(name);
+    if (!n) return false;
+    return n === "mizan" || n === "ميزان" || n.indexOf("mizan") === 0 || n.indexOf("ميزان") === 0;
+  }
+  // org الحالي من **مصادر سحابية** بس (mizan_access / org / profile / me) — بلا localStorage
+  function acctOrgRef() {
+    var DE = window.DATA || {}, out = { id: null, name: null };
+    try { var a = DE.accessInfo ? DE.accessInfo() : null; if (a) { out.id = a.org_id || null; out.name = a.org_name || null; } } catch (e) { }
+    try { var o = DE.org ? DE.org() : null; if (o) { if (!out.id) out.id = o.id || null; if (!out.name) out.name = o.name || null; } } catch (e) { }
+    if (!out.id) { try { var p = DE.getProfile ? DE.getProfile() : null; if (p) out.id = p.org_id || null; } catch (e) { } }
+    if (!out.id) { try { var m = DE.me ? DE.me() : null; if (m) out.id = m.org_id || null; } catch (e) { } }
+    return out;
+  }
+  function inMizanOrg() {
+    var r = acctOrgRef();
+    if (r.id && r.id === MIZAN_ORG_ID) return true;
+    return isMizanOrgName(r.name);
+  }
+  // البوابة الوحيدة لـ «الإعدادات (المالك)»
+  function ownerSettingsAllowed() { return isSuperAcct() || inMizanOrg(); }
+  // القوائم اللي تعرض للعميل اختيارات: دايماً من غير المفاتيح المحجوزة للمالك
+  function chooserFeatures() {
+    return ADMIN_FEATURES.filter(function (row) { return OWNER_ONLY_FEATS.indexOf(row[0]) === -1; });
+  }
+  // أي حفظ جديد لازم يعدي المفتاح المحفوظ زي ما هو (صفر تغيير في بيانات موجودة)
+  function carryOwnerOnlyFeats(target, stored) {
+    var s = (stored && typeof stored === "object") ? stored : {};
+    OWNER_ONLY_FEATS.forEach(function (k) { if (k in s) target[k] = s[k]; });
+    return target;
+  }
+  // 🔑 بناء 133: «النسخ الاحتياطي الشامل» و«الاستعادة» و«مسح البيانات» يفضلوا **للمالك وحده**
+  // (قرار build 94)، فأي حساب تاني في شركة ميزان بقى يفتح شاشة «الضبط» ما يلمّش النسخ.
+  // دي طبقة تانية جوه الدوال نفسها — مش الاعتماد على إن الزرار مخفي.
+  function requireSuperOwner(what) {
+    if (ownerHasAllAccess() || !!window.__isOwner) return true;
+    toast(what + " لحساب مالك البرنامج فقط", "error");
+    return false;
+  }
+
   // هل الوصول مُسمح بهيكلة الواجهة؟ المالك استثناء ثابت من القفل/الانتهاء.
   function accessGranted(acc) {
     return !!(acc && (acc.allowed || acc.is_superadmin));
@@ -1646,6 +1707,10 @@
     if (name === "chat") return chatAvailable();
     // 🔓 المالك (عادل) يفتح أي شاشة بلا استثناء — قرار المالك build 119
     if (ownerHasAllAccess()) return true;
+    // 🔑 بناء 133: «إعدادات المالك» خارج التداول — قرارها مش من قوائم المزايا ولا من
+    // قرار صاحب الشركة؛ الحساب اللي شركة اسمها «ميزان» يفتحها، وغير كده لأ (source of truth
+    // واحد: `ownerSettingsAllowed()`) — علشان كده الفحص ده **قبل** `permExplicitlyOff`.
+    if (name === "settings") return ownerSettingsAllowed();
     // 🆕 بناء 131: أي «لأ» صريحة (من مستوى الشركة أو مستوى الحساب) بتقطع هنا —
     // قبل أي اختصار «صاحب الشركة»، فقرار التحديد ما بيرجعش «كل الصلاحيات».
     if (permExplicitlyOff(name)) return false;
@@ -1770,38 +1835,81 @@
     if (rec.mode === "attach") { if (ownerNodeIsHurt(rec)) showOwnerNode(rec.node); }
     else showOwnerNode(rec.node);
   }
+  function restoreOwnerNodeByLabel(label) {
+    const rec = OWNER_TAB_NODES.filter((r) => r.label === label)[0];
+    if (rec) restoreOwnerNode(rec);
+  }
+  // 🔑 بناء 133: «الشيل من الشجرة» لازم يبقى قابل للتراجع **في نفس الصفحة**.
+  // سياسة build 94/132 بتعمل removeChild للحساب اللي مالوش القسم، والـ logout ما
+  // بيعملش reload (زي 9862) ⇒ لو صاحب شركة «ناجي» خرج ودخل بحساب عادل من غير ما
+  // الصفحة تتحمّل من جديد، الزرار كان يفضل مفقود للأبد — وهي نفس شكوى build 120/121
+  // («متختفيش من عندي أبدا»). فبنخزّن العقدة ومكانها قبل الشيل، ونرجّعها لمين؟
+  // **للمسموح له بس** (`canSet`) — الإرجاع مش في قائمة `OWNER_TAB_NODES` عشان
+  // فرع المالك/الحارس الحيّ ما يرجّعوش لحساب مرفوض.
+  const DETACHED_OWNERS = {};
+  function detachOwnerNode(key, node) {
+    if (!node || !node.parentNode) return;
+    if (!DETACHED_OWNERS[key]) {
+      DETACHED_OWNERS[key] = { node: node, parent: node.parentNode, next: node.nextSibling };
+    }
+    try { node.parentNode.removeChild(node); } catch (e) { }
+  }
+  function attachOwnerNode(key) {
+    const d = DETACHED_OWNERS[key];
+    if (!d) return;
+    if (d.node.parentNode === d.parent) { delete DETACHED_OWNERS[key]; return; }
+    try {
+      d.parent.insertBefore(d.node, (d.next && d.next.parentNode === d.parent) ? d.next : null);
+    } catch (e) { return; }
+    delete DETACHED_OWNERS[key];
+  }
   function enforceOwnerSettings() {
     const isOwner = ownerHasAllAccess() || !!window.__isOwner;
-    const sb = document.querySelector(".sidebar");
+    // 🔑 بناء 133: «الضبط» بقى له تعريف نفسه: المالك + حسابات شركة «ميزان» (أمره الحرفي).
+    // بس **لوحة الإدارة** و**النسخ الاحتياطي** (تبويب + لوحة + الزرارين) فضلا للمالك وحده —
+    // قراراته السابقة (build 94 «النسخ الاحتياطي لadel فقط» و121 «لوحة الإدارة متظهرش عند حد تاني») سارية.
+    const canSet = ownerSettingsAllowed();
+    // المرجع يتقفل أول ما نرجّع العقدة لمكانها، وإلا `svNav` تحت بيرجع null
+    // لدورة مسموحة جاية بعد شيل في دورة مرفوضة على نفس الصفحة.
+    if (canSet) attachOwnerNode("nav");
     const setTabs = document.getElementById("setTabs");
     const vSet = document.getElementById("viewSettings");
     const svNav = document.querySelector('.nav-btn[data-view="settings"]');
+    const bkTabEl = document.querySelector('#setTabs .tab-btn[data-tab="sbak"]');
+    const bkPaneEl = document.querySelector('#viewSettings .sett-pane[data-pane="sbak"]');
     // 🧱 بناء 132: أبوها بيتقاس منها مش «السايدبار» — الزرار بقى جوّه قائمة منسدلة،
     // فلو الحارس يرجّعها لأبو قديم كانت هتتنقل بره القسم وتسيبه فاضي.
-    rememberOwnerNode(svNav, svNav && svNav.parentNode, "nav", "show");
-    rememberOwnerNode(document.querySelector('#setTabs .tab-btn[data-tab="sbak"]'), setTabs, "bkTab", "show");
-    rememberOwnerNode(document.querySelector('#viewSettings .sett-pane[data-pane="sbak"]'), vSet, "bkPane", "attach");
-    rememberOwnerNode(vSet, vSet && vSet.parentNode, "viewSettings", "attach");
+    if (canSet) {
+      rememberOwnerNode(svNav, svNav && svNav.parentNode, "nav", "show");
+      rememberOwnerNode(vSet, vSet && vSet.parentNode, "viewSettings", "attach");
+    }
+    if (isOwner) {
+      rememberOwnerNode(bkTabEl, setTabs, "bkTab", "show");
+      rememberOwnerNode(bkPaneEl, vSet, "bkPane", "attach");
+    }
     const btnAd = document.getElementById("btnAdmin");
-    rememberOwnerNode(btnAd, btnAd && btnAd.parentNode, "btnAdmin", "show");
+    if (isOwner) rememberOwnerNode(btnAd, btnAd && btnAd.parentNode, "btnAdmin", "show");
     // 🛡 بناء 121 (طلب المالك: «تحصين لوحة الإدارة ضروري حالا… متختفيش ابدا من عندي»):
     // شاشة اللوحة نفسها + أزرارها + محتواها — بنفس مبدأ «مرجع العقدة الحيّ» بتاع 120.
     // اللوحة attach (بتتخفي مشروّع لما شاشة تانية تتفتح)، والأزرار/المحتوى show.
     const vAd = document.getElementById("viewAdmin");
-    rememberOwnerNode(vAd, vAd && vAd.parentNode, "viewAdmin", "attach");
-    ADMIN_PANEL_NODES.forEach((id) => {
+    if (isOwner) rememberOwnerNode(vAd, vAd && vAd.parentNode, "viewAdmin", "attach");
+    if (isOwner) ADMIN_PANEL_NODES.forEach((id) => {
       const b = document.getElementById(id);
       rememberOwnerNode(b, b && b.parentNode, id, "show");
     });
-    ["btnBackupAll", "btnBackupAll2"].forEach((id) => {
+    if (isOwner) ["btnBackupAll", "btnBackupAll2"].forEach((id) => {
       const b = document.getElementById(id);
       rememberOwnerNode(b, b && b.parentNode, id, "show");
     });
 
+    if (!canSet) {
+      // سياسة build 94: الحساب اللي القسم ده مالوش عنده — بيتشال من الشجرة مش مخفي بس
+      // (وبخزّن مكانه في `DETACHED_OWNERS` عشان دورة مسموحة بعد كده على نفس الصفحة ترجّعه)
+      detachOwnerNode("nav", document.querySelector('.nav-btn[data-view="settings"]'));
+      if (vSet) vSet.hidden = true;
+    }
     if (!isOwner) {
-      // سياسة build 94: لغير المالك التبويب بيتشال من الشجرة مش مخفي بس
-      const navLive = document.querySelector('.nav-btn[data-view="settings"]');
-      if (navLive && navLive.parentNode) navLive.parentNode.removeChild(navLive);
       const ba0 = document.getElementById("btnAdmin"); if (ba0) ba0.hidden = true;
       // 🛡 بناء 121: «متظهرش عند حد تاني ابدا» — اللوحة وأزرارها ومحتواها تُقفل
       // لكل حساب غير المالك (ولو أي كود مستقبلي فتحها بالغلط، الحارس ده بيردها مقفولة).
@@ -1809,6 +1917,15 @@
       ADMIN_PANEL_NODES.forEach((id) => { const b = document.getElementById(id); if (b) b.hidden = true; });
       try { if (typeof stopPresenceView === "function") stopPresenceView(); } catch (e) { }
       ["btnBackupAll", "btnBackupAll2"].forEach((id) => { const b = document.getElementById(id); if (b) b.hidden = true; });
+      // 🔑 بناء 133: النسخ الاحتياطي للمالك وحده — حتى لو الحساب من شركة ميزان
+      if (bkTabEl) bkTabEl.hidden = true;
+      if (bkPaneEl) bkPaneEl.hidden = true;
+      // حساب ميزان (مش مالك): زرار «الضبط» وشاشته بس هم اللي يرجعوا، والحارس يراقبهم
+      if (canSet) {
+        restoreOwnerNodeByLabel("nav");
+        restoreOwnerNodeByLabel("viewSettings");
+        armOwnerSettingsGuard();
+      }
       return false;
     }
 
@@ -1845,7 +1962,8 @@
         ownerGuardQueued = true;
         setTimeout(() => {
           ownerGuardQueued = false;
-          if (!(ownerHasAllAccess() || !!window.__isOwner)) return;
+          // 🔑 بناء 133: الحارس الحيّ بيشتغل على اللي ليه «الضبط» فعلًا (المالك + حسابات ميزان)
+          if (!ownerSettingsAllowed()) return;
           if (ownerSettingsNeedsRepair()) enforceOwnerSettings();
         }, 0);
       });
@@ -1865,7 +1983,8 @@
         b.hidden = !canUseView(n);
       });
       // 🔓 حصانة أخيرة: ضبط المالك مانلغيش عنه بـ featureEnabled مهما حصل
-      const own = ownerHasAllAccess();
+      // 🔑 بناء 133: نفس الحصانة لحسابات شركة «ميزان» (اللي بقى ليهم القسم ده)
+      const own = ownerSettingsAllowed();
       const svO = document.querySelector('.nav-btn[data-view="settings"]');
       if (svO && own) svO.hidden = false;
       // لو الشاشة الحالية أصبحت معطّلة → عد للوحة
@@ -1878,12 +1997,12 @@
   }
 
   function showView(name) {
-    // حماية: تبويب «إعدادات ونسخ احتياطي المالك» للمالك (سوبر أدمن) وحده.
+    // حماية: تبويب «إعدادات ونسخ احتياطي المالك» لحسابات شركة المالك (بناء 133)
     // أي حساب تاني — حتى لو حاول فتحه برمجيًا — يتحوّل لـ«إعدادات مؤسستك».
     const isOwner = ownerHasAllAccess() || !!window.__isOwner;
-    if (name === "settings" && !isOwner) {
+    if (name === "settings" && !ownerSettingsAllowed()) {
       name = "clientSettings";
-      toast("هذا القسم للمالك فقط", "error");
+      toast("القسم ده لحسابات شركة ميزان فقط", "error");
     }
     // 🛡 بناء 121 (طلب المالك: لوحة الإدارة «متظهرش عند حد تاني ابدا»):
     // أي حساب غير المالك — حتى لو نادى showView("admin") برمجيًا أو من الكونسول —
@@ -3590,6 +3709,8 @@
       status: "posted"
     };
 
+    let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي القبض دخل فيه (للقيد لو كان آجل = null)
+
     if (payment === "آجل") {
       cust.currentBalance = Math.round(((cust.currentBalance || 0) + t.grand) * 100) / 100;
       txs.push({
@@ -3620,6 +3741,7 @@
       if (tr) {
         tr.balance = Math.round(((tr.balance || 0) + t.grand) * 100) / 100;
         invoice.treasuryId = tr.id;
+        paidTreasury = tr;                 // 🆕 بناء 134: الطرف المقابل في القيد هو نفس الحساب اللي القبض دخل فيه
         saveTreasury();
         syncTreasuryItemToSett(tr);
       }
@@ -3634,9 +3756,13 @@
     sales.push(invoice);
     saveSales();
     commitInvoiceSeq("sale", parseInvNo(invoice));
-    addActivity("فاتورة مبيعات", "فاتورة " + invoice.invoiceNumber + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")");
+    // 🆕 بناء 134: الفاتورة تترحّل أوتوماتيك للقيود اليومية (قيد متزن، بلا سند — انظر رأس القسم)
+    const postedJ = postInvoiceJournal("sale", invoice, paidTreasury);
+    addActivity("فاتورة مبيعات", "فاتورة " + invoice.invoiceNumber + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")" +
+      (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : ""));
 
-    toast("تم حفظ وتأكيد فاتورة المبيعات بنجاح برقم (" + invoice.invoiceNumber + ").", "success");
+    toast("تم حفظ وتأكيد فاتورة المبيعات بنجاح برقم (" + invoice.invoiceNumber + ")" +
+      (postedJ && postedJ.j ? " وترحيلها للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
     printInvoice(invoice);
     fillPosDatalist();
     posNewInvoice();
@@ -4065,6 +4191,8 @@
       status: "posted"
     };
 
+    let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي الصرف خرج منه (للقيد لو آجل = null)
+
     if (payment === "آجل") {
       supplier.currentBalance = Math.round(((supplier.currentBalance || 0) + t.grand) * 100) / 100;
       supplierTxs.push({
@@ -4095,6 +4223,7 @@
       if (tr) {
         tr.balance = Math.round(((tr.balance || 0) - t.grand) * 100) / 100;
         invoice.treasuryId = tr.id;
+        paidTreasury = tr;                 // 🆕 بناء 134: الطرف المقابل في القيد = نفس حساب الصرف
         saveTreasury();
         syncTreasuryItemToSett(tr);
       }
@@ -4115,9 +4244,13 @@
     purchases.push(invoice);
     savePurchases();
     commitInvoiceSeq("purchase", parseInvNo(invoice));
-    addActivity("فاتورة مشتريات", "فاتورة " + invoice.invoiceNumber + " - " + supplier.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")");
+    // 🆕 بناء 134: فاتورة المشتريات تترحّل أوتوماتيك للقيود (مخزون + ضريبة مقابل الحساب/المورد)
+    const postedJ = postInvoiceJournal("purchase", invoice, paidTreasury);
+    addActivity("فاتورة مشتريات", "فاتورة " + invoice.invoiceNumber + " - " + supplier.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")" +
+      (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : ""));
 
-    toast("تم حفظ وتأكيد فاتورة المشتريات بنجاح برقم (" + invoice.invoiceNumber + ").", "success");
+    toast("تم حفظ وتأكيد فاتورة المشتريات بنجاح برقم (" + invoice.invoiceNumber + ")" +
+      (postedJ && postedJ.j ? " وترحيلها للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
     printPurchaseInvoice(invoice);
     fillPPDatalist();
     ppNewInvoice();
@@ -4612,11 +4745,15 @@
         syncTreasuryItemToSett(tr);
       }
     }
+    // 🆕 بناء 134: القيد اللي اتترحّل مع الفاتورة بيرجع معاه (تسوية الأرصدة بتلغى سطر-سطر)
+    const goneJ = removeInvoiceJournal(isSales ? "sale" : "purchase", inv);
     // 3) حذف الفاتورة نفسها + سجل النشاط + تحديث الاستعلام
     if (isSales) { sales = sales.filter((x) => x.id !== inv.id); saveSales(); }
     else { purchases = purchases.filter((x) => x.id !== inv.id); savePurchases(); }
-    addActivity("حذف فاتورة", "حذف فاتورة " + kind + " رقم (" + num + ") - " + who + " - بمبلغ " + fmt(amt) + " ج.م (تراجع كامل للمخزون والأرصدة)");
-    toast("تم حذف فاتورة (" + num + ") بنجاح وتراجع أثرها بالكامل.", "success");
+    addActivity("حذف فاتورة", "حذف فاتورة " + kind + " رقم (" + num + ") - " + who + " - بمبلغ " + fmt(amt) +
+      " ج.م (تراجع كامل للمخزون والأرصدة" + (goneJ ? " والقيد " + goneJ.number : "") + ")");
+    toast("تم حذف فاتورة (" + num + ") بنجاح وتراجع أثرها بالكامل" +
+      (goneJ ? " بما فيه القيد (" + goneJ.number + ")" : "") + ".", "success");
     renderInvoiceQuery();
   }
 
@@ -6327,6 +6464,162 @@
     renderJournal();
     renderLedger();
     try { renderTreasury(); renderTreMoves(); } catch (e) { }
+  }
+
+  /* ================== 🆕 بناء 134: الفواتير تترحّل أوتوماتيك للقيود ==================
+     أمر المالك الحرفي (04/10): «وبعدها تبدأ بترحيل المبيعات و المشتريات اللى كنا قلنا
+     عليها الفواتير تترحّل أوتوماتيك للقيود».
+     القرارات المحاسبية (نفس عرف saveJournal/saveSimpleEntry/saveTransfer الموجود):
+       • **قيد بس، بلا سند خزينة:** رصيد الحساب بيتحسب فعلًا من الفاتورة نفسها جوه
+         recalculateTreasuryBalances (sales + purchases + vouchers) ⇒ أي سند جديد كان بيعدّي المبلغ **مرتين**.
+       • **الطرف المقابل حسب نوع الدفع:** نقدية/بنك/محفظة = حسابها في الدليل (1.1.1/1.1.2/1.1.3
+         عن طريق accForTreasuryAcc) · آجل (بيع) = «مديونيات العملاء» 1.1.5 · آجل (شراء) = «مستحقات الموردين» 2.1.1.
+       • **الضريبة سطر مستقل** في «ضريبة المبيعات المستحقة» 2.1.2 (دائن في البيع، مدين في الشراء) —
+         وبتتشال خالص لو الشركة مش شغالة بالضريبة (taxAmount = صفر).
+       • **التسوية:** openingBalance هو الرصيد الجاري (درس build 117/118)، فكل سطر بيزيد حسابَه المدين
+         بينقص حسابَه الدائن — وإلا دفتر الحركة (computeLedger) بيرجع «رصيد افتتاحي» غلط.
+       • **منع التكرار:** refType («فاتورة مبيعات» / «فاتورة مشتريات») + refId (رقم الفاتورة) —
+         الاتنين بيتخزنوا على السحابة (journal_entries.ref_type / ref_id) فأي جهاز تاني
+         ما يرحّش نفس الفاتورة، والحفظ المتكرر لنفس الرقم مستحيل أصلًا (تسلسل الفواتير).
+       • **بلا ترحيل بأثر رجعي:** فواتير ما قبل Build 134 ما تتلمسش (قرار المالك «ممنوع أي تعديل
+         بأثر رجعي في فواتير mizan») — الترحيل بيحصل لحظة حفظ الفاتورة الجديدة وبس.
+       • **الفاتورة ما تلغيش لو الترحيل تعثّر:** لو دليل الحسابات ناقش حساب (شركة جديدة فاضية)،
+         الفاتورة تتحفظ وتظهر رسالة ودّية بالخطوة اللي تنفع — صفر فشل صامت وصفر فقدان بيانات. */
+
+  // ما نعيدش استخدام id قيد اتشال (detUuid على السحابة=based on local id)
+  let JRN_ID_FLOOR = 0;
+  function nextJournalId() {
+    return Math.max(JRN_ID_FLOOR, journalEntries.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
+  }
+  function invoiceJrnRef(kind) { return kind === "sale" ? "فاتورة مبيعات" : "فاتورة مشتريات"; }
+  // مفتاح منع التكرار: نوع الفاتورة + رقمها (الرقم تسلسلي لكل شركة وثابت على كل الأجهزة)
+  function invoiceJrnKey(kind, inv) {
+    const no = String((inv && (inv.invoiceNumber || inv.invoiceNo)) || "").trim();
+    return no ? (kind === "sale" ? "S:" : "P:") + no : "";
+  }
+  function invoiceJrnOf(kind, inv) {
+    const key = invoiceJrnKey(kind, inv);
+    if (!key) return null;
+    const ref = invoiceJrnRef(kind);
+    return journalEntries.find((j) => j && String(j.refId || "") === key &&
+      (j.refType === ref || j.ref === ref)) || null;
+  }
+  // حساب بالدليل من كوده، وباحتياطي بالاسم لو الشركة عدّلت الكود
+  function accByCode(code, nameHint) {
+    let a = accounts.find((x) => String(x.code) === String(code) && x.isActive !== false);
+    if (a) return a;
+    if (nameHint) a = accounts.find((x) => x.isActive !== false && String(x.nameAr || "").indexOf(nameHint) >= 0);
+    return a || null;
+  }
+  // أطراف القيد: بيع = مدين (حساب الدفع أو مديونيات العملاء) / دائن (إيراد + ضريبة)
+  //               شراء = مدين (مخزون + ضريبة) / دائن (حساب الدفع أو مستحقات الموردين)
+  function invoiceJrnPlan(kind, inv, tr) {
+    if (!inv) return { error: "nofact" };
+    const total = round2(inv.grandTotal);
+    const tax = round2(inv.taxAmount);
+    const net = round2(total - tax);
+    if (!(total > 0)) return { error: "amount" };
+    if (net < 0) return { error: "amount" };
+    const ajal = String(inv.paymentMethod || "") === "آجل";
+    const lines = [];
+    if (kind === "sale") {
+      const due = ajal ? accByCode("1.1.5", "مديونيات العملاء") : accForTreasuryAcc(tr);
+      const rev = accByCode("4.1", "إيرادات المبيعات");
+      if (!due) return { error: ajal ? "1.1.5" : "cash" };
+      if (!rev) return { error: "4.1" };
+      lines.push({ accountId: Number(due.id), debit: total, credit: 0 });
+      lines.push({ accountId: Number(rev.id), debit: 0, credit: net });
+      if (tax > 0) {
+        const tx = accByCode("2.1.2", "ضريبة");
+        if (!tx) return { error: "2.1.2" };
+        lines.push({ accountId: Number(tx.id), debit: 0, credit: tax });
+      }
+    } else {
+      const stock = accByCode("1.1.4", "المخزون");
+      const pay = ajal ? accByCode("2.1.1", "مستحقات الموردين") : accForTreasuryAcc(tr);
+      if (!stock) return { error: "1.1.4" };
+      if (!pay) return { error: ajal ? "2.1.1" : "cash" };
+      lines.push({ accountId: Number(stock.id), debit: net, credit: 0 });
+      if (tax > 0) {
+        const tx = accByCode("2.1.2", "ضريبة");
+        if (!tx) return { error: "2.1.2" };
+        lines.push({ accountId: Number(tx.id), debit: tax, credit: 0 });
+      }
+      lines.push({ accountId: Number(pay.id), debit: 0, credit: total });
+    }
+    const d = round2(lines.reduce((m, l) => m + (Number(l.debit) || 0), 0));
+    const c = round2(lines.reduce((m, l) => m + (Number(l.credit) || 0), 0));
+    if (Math.abs(d - c) > 0.01) return { error: "unbalanced" };
+    return { lines: lines, debit: d, credit: c };
+  }
+  // تسوية أرصدة الدليل سطر-سطر (مدين +/دائن −) — نفس عرف saveJournal، وبيصح مع 3 أسطر
+  function settleJrnLines(lines, sign) {
+    (lines || []).forEach((l) => {
+      const a = accounts.find((x) => Number(x.id) === Number(l.accountId));
+      if (!a) return;
+      const netLine = ((Number(l.debit) || 0) - (Number(l.credit) || 0)) * sign;
+      a.openingBalance = round2((Number(a.openingBalance) || 0) + netLine);
+    });
+  }
+  // النص الودّي اللي يشرح إيه الناقش (بلا أي مصطلح تقني للعميل)
+  function invoiceJrnMissText(err) {
+    if (err === "4.1") return "حساب «إيرادات المبيعات» (4.1) مش موجود في دليل حساباتك";
+    if (err === "1.1.4") return "حساب «المخزون» (1.1.4) مش موجود في دليل حساباتك";
+    if (err === "1.1.5") return "حساب «مديونيات العملاء» (1.1.5) مش موجود في دليل حساباتك";
+    if (err === "2.1.1") return "حساب «مستحقات الموردين» (2.1.1) مش موجود في دليل حساباتك";
+    if (err === "2.1.2") return "حساب «ضريبة المبيعات المستحقة» (2.1.2) مش موجود في دليل حساباتك";
+    if (err === "cash") return "حساب النقدية/البنك/المحفظة مش موجود في دليل حساباتك";
+    if (err === "amount") return "مبلغ الفاتورة مش صالح للترحيل";
+    if (err === "unbalanced") return "الطرفان مش متزنيين";
+    return "فيه حساب ناقص في دليل حساباتك";
+  }
+  // الترحيل نفسه: بيسبقه منع تكرار، وبعده قيد متزن + تسوية + حفظ
+  function postInvoiceJournal(kind, inv, tr) {
+    if (!inv) return null;
+    const done = invoiceJrnOf(kind, inv);
+    if (done) return { j: done, already: true };
+    const plan = invoiceJrnPlan(kind, inv, tr);
+    if (plan.error) {
+      toast("الفاتورة اتحفظت تمام. الترحيل التلقائي للقيود ما كملش لأن " +
+        invoiceJrnMissText(plan.error) + " — ضيفه من شاشة الحسابات وبعدها سجّل القيد من «القيود اليومية».", "warning");
+      return null;
+    }
+    const no = String(inv.invoiceNumber || inv.invoiceNo || "");
+    const who = kind === "sale" ? (inv.customerName || inv.customer || "-") : (inv.supplierName || inv.supplier || "-");
+    const tax = round2(inv.taxAmount);
+    const desc = invoiceJrnRef(kind) + " رقم " + no + " — " + who + " — " + fmt(round2(inv.grandTotal)) + " ج.م" +
+      (tax > 0 ? " (منها ضريبة " + fmt(tax) + ")" : "");
+    const j = {
+      id: nextJournalId(),
+      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      date: inv.invoiceDate || inv.date || todayISO(),
+      desc: desc,
+      ref: invoiceJrnRef(kind),
+      refType: invoiceJrnRef(kind),
+      refId: invoiceJrnKey(kind, inv),
+      debit: plan.debit,
+      credit: plan.credit,
+      lines: plan.lines
+    };
+    settleJrnLines(j.lines, 1);
+    journalEntries.push(j);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    return { j: j, already: false };
+  }
+  // حذف الفاتورة = تراجع القدها كمان (المخزون والأرصدة بترجع قبل كده في deleteInvoiceQuery)
+  function removeInvoiceJournal(kind, inv) {
+    const j = invoiceJrnOf(kind, inv);
+    if (!j) return null;
+    settleJrnLines(j.lines, -1);
+    const i = journalEntries.findIndex((x) => x === j);
+    if (i >= 0) journalEntries.splice(i, 1);
+    JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(j.id) || 0);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    return j;
   }
 
   /* ---- دفتر حركة الحسابات: كل الحركات اللي تمت جوه أي حساب ---- */
@@ -8362,6 +8655,8 @@
   // 🆕 بناء 124: بتتبني من mizan_admin_backup_full (٣٦ جدول) بدل export_all/export_one
   // (١٩ جدول) ⇒ المرتجعات والحضور والأصول الثابتة وأرقام الفواتير بقت داخل الملف
   function backupAllData() {
+    // 🔑 بناء 133: النسخ الشامل للمالك وحده (الحساب التاني في شركة ميزان يفتح «الضبط» بس مش النسخ)
+    if (!requireSuperOwner("النسخ الاحتياطي الشامل")) return;
     if (!DATA) return;
     const sel = document.getElementById("setBackupScope");
     const orgId = sel ? sel.value : "";
@@ -8642,6 +8937,8 @@
   }
 
   async function ownerDeployBackup(includeData) {
+    // 🔑 بناء 133: نشر نسخة على السيرفر = للمالك وحده
+    if (!requireSuperOwner("نسخة النشر على السيرفر")) return;
     if (!(A.online && DATA && DATA.adminBackupFull)) { toast("النسخة الاحتياطية غير متاحة.", "error"); return; }
     toast("جارٍ تجهيز نسخة النشر " + (includeData ? "الكاملة (ببيانات الشركات)..." : "الفارغة (سورس فقط)..."), "info");
     let dump;
@@ -8783,6 +9080,8 @@
   // 🆕 بناء 124: قبل الاستعادة بنقرأ الملف ونقول هيتمسح إيه (mizan_admin_restore_full
   // بيفرّغ ٣٦ جدول حتى اللي ملهاش مفتاح في الملف)، وبعدها بنقارن الأعداد على السيرفر.
   function ownerRestoreFullFile(jsonStr) {
+    // 🔑 بناء 133: الاستعادة الكاملة على السيرفر = للمالك وحده
+    if (!requireSuperOwner("الاستعادة من نسخة السيرفر")) return;
     let payload;
     try { payload = JSON.parse(jsonStr); } catch (e) { toast("الملف غير صالح أو تالف.", "warning"); return; }
     if (!payload || !Array.isArray(payload.organizations)) { toast("الملف ده مش نسخة نشر كاملة (لا توجد organizations).", "warning"); return; }
@@ -8843,6 +9142,8 @@
 
   // استعادة نسخة للمالك: يختار الشركة أولًا (أو الكل) من القائمة، بتحذير فقط — بدون باسورد
   function ownerRestoreFile(jsonStr) {
+    // 🔑 بناء 133: الاستعادة من ملف = للمالك وحده
+    if (!requireSuperOwner("الاستعادة من ملف نسخة")) return;
     let payload;
     try { payload = JSON.parse(jsonStr); } catch (e) { toast("الملف غير صالح أو تالف.", "warning"); return; }
     if (!payload || typeof payload !== "object") { toast("ملف النسخة غير صحيح.", "warning"); return; }
@@ -8930,6 +9231,8 @@
   }
 
   function resetData() {
+    // 🔑 بناء 133: مسح البيانات = للمالك وحده
+    if (!requireSuperOwner("مسح البيانات")) return;
     // محذوفة/معطّلة في السحابة: الأداة قديمة من عصر التخزين المحلي التجريبي ولا يجوز تشغيلها
     // لأنها تمسح localStorage ثم قد تدفع بيانات تجريبية إلى السحابة وتستبدل بيانات الشركات الحقيقية.
     if (A.online) {
@@ -9907,8 +10210,10 @@ const pwEye = document.getElementById("btnShowPass");
           // العكس آمن: أي حساب غير المالك لسه isAdmin=false واللوحة مقفولة + بوابة showView/openAdmin.
           const isAdmin = !!(acc && acc.is_superadmin) || ownerHasAllAccess();
           window.__isOwner = isAdmin;
+          // 🔑 بناء 133: شاشة «إعدادات المالك» = المالك + حسابات شركة ميزان (`ownerSettingsAllowed`)،
+          // بينما لوحة الإدارة (`viewAdmin`) وحراسة النسخ الاحتياطي فضلا للمالك وحده (build 121/94).
           $("#viewAdmin").hidden = !isAdmin;
-          $("#viewSettings").hidden = !isAdmin;
+          $("#viewSettings").hidden = !ownerSettingsAllowed();
           // 🔓 قرار المالك (build 119): «الضبط الخاص بيا» + «💾 النسخ الاحتياطي»
           // يظهرا لحساب عادل فورًا، وممنوع أي مسار تاني يخفيهم أو يشيلهم من الـ DOM.
           enforceOwnerSettings();
@@ -10101,9 +10406,14 @@ const pwEye = document.getElementById("btnShowPass");
     };
   };
 
+  // 🔑 بناء 133: المفاتيح المحجوزة للمالك (settings) **ما تظهرش في أي ملخص صلاحيات** —
+  // دي مش صلاحية يتداولها أصحاب المؤسسات، فلو قديمة محفوظة `false` في بيانات حساب،
+  // إبرازها في العمود كان هيبان «مكان/اسم مالوش لازمة» (ولو المفتاح اتشال من قائمة
+  //Labels كان بيرجع اسمه الإنجليزي الخام `settings` = مصطلح تقني للعميل — ممنوع).
+  function isOwnerOnlyFeatKey(k) { return OWNER_ONLY_FEATS.indexOf(k) !== -1; }
   function summarizeFeats(feats) {
     const f = feats || {};
-    const off = Object.keys(f).filter((k) => f[k] === false);
+    const off = Object.keys(f).filter((k) => f[k] === false && !isOwnerOnlyFeatKey(k));
     if (!off.length) return "✅ كل الصلاحيات";
     let s = off.length > 3 ? off.length + " صلاحيات مغلقة" : off.map((k) => {
       const found = ADMIN_FEATURES.find((x) => x[0] === k);
@@ -10114,7 +10424,7 @@ const pwEye = document.getElementById("btnShowPass");
   // ملخص بسيط للصلاحيات داخل لوحة المالك (نفس الأداة)
   function featsSummary(feats, adminFeats) {
     const f = feats || {};
-    const off = Object.keys(f).filter((k) => f[k] === false);
+    const off = Object.keys(f).filter((k) => f[k] === false && !isOwnerOnlyFeatKey(k));
     if (!off.length) return "✅ كل الصلاحيات";
     const offLabels = off.map((k) => {
       const found = (adminFeats || ADMIN_FEATURES).find((x) => x[0] === k);
@@ -10128,7 +10438,8 @@ const pwEye = document.getElementById("btnShowPass");
       const u = members.find((x) => x.user_id === userId);
       if (!u) { toast("الحساب غير موجود", "error"); return; }
       let opts = "";
-      ADMIN_FEATURES.forEach(([k, label]) => {
+      // 🔑 بناء 133: «الإعدادات (المالك)» مش من الاختيارات دي إطلاقًا (source: `chooserFeatures`)
+      chooserFeatures().forEach(([k, label]) => {
         // الصلاحيات opt-in: لا تُمنح إلا لو فُعّلت صريحًا (زي إعدادات المؤسسة والمستندات)
         const on = OPT_IN_FEATS.indexOf(k) !== -1
           ? (u.features && u.features[k] === true)
@@ -10146,6 +10457,9 @@ const pwEye = document.getElementById("btnShowPass");
       dlg.querySelector("#memberFeatSave").onclick = () => {
         const on = {};
         dlg.querySelectorAll(".member-feat").forEach((c) => { on[c.value] = c.checked; });
+        // 🔑 بناء 133: المفتاح المحفوظ (لو كان اتحدد قبل كده) بيعدي زي ما هو — الحفظ
+        // ده مالوش سلطة على «إعدادات المالك»، ومينفعش يمسح أو يضيف بيانات موجودة.
+        carryOwnerOnlyFeats(on, u.features);
         DATA.orgSetFeatures(userId, on).then(() => {
           toast("تم حفظ الصلاحيات", "ok");
           dlg.remove();
@@ -10164,7 +10478,8 @@ const pwEye = document.getElementById("btnShowPass");
         return;
       }
       let opts = "";
-      ADMIN_FEATURES.forEach(([k, label]) => {
+      // 🔑 بناء 133: حساب فرعي جديد مالوش «إعدادات المالك» في القائمة أصلًا
+      chooserFeatures().forEach(([k, label]) => {
         const def = OPT_IN_FEATS.indexOf(k) !== -1 ? "" : " checked";
         opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-newfeat\" value=\"" + k + "\"" + def + " /> " + label + "</label>";
       });
@@ -11742,7 +12057,7 @@ const pwEye = document.getElementById("btnShowPass");
     if (!(orgId in ORG_FEAT_MAP)) return "—";
     const f = ORG_FEAT_MAP[orgId] || {};
     let open = 0, closed = 0, everSet = false;
-    ADMIN_FEATURES.forEach((row) => {
+    chooserFeatures().forEach((row) => {
       const k = row[0];
       if (f[k] === true || f[k] === false) everSet = true;
       if (orgFeatState(orgId, k)) open++; else closed++;
@@ -12280,11 +12595,13 @@ const pwEye = document.getElementById("btnShowPass");
       const ready = (ORG_FEAT_MAP && (orgId in ORG_FEAT_MAP)) ? Promise.resolve(true) : loadOrgFeats();
       ready.then(() => {
         let opts = "";
-        ADMIN_FEATURES.forEach(([k, label]) => {
+        // 🔑 بناء 133: «الإعدادات (المالك)» اتشالت من اختيارات مزايا الشركات — دي مش
+        // صلاحية يتداولها أصحاب المؤسسات، هي لحسابات شركة ميزان (المصدر: `chooserFeatures`).
+        chooserFeatures().forEach(([k, label]) => {
           opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"adm-feat\" value=\"" + k + "\" " + (orgFeatState(orgId, k) ? "checked" : "") + " /> " + label + "</label>";
         });
         const body = "<div class=\"feat-grid\">" + opts + "</div>" +
-          "<p class=\"login-sub\" style=\"margin-top:8px\">✅ اللي بتقفلوه بيفضل مقفول على كل حسابات الشركة (ومقفول حتى على صاحب الشركة) — و«إعدادات المالك» دايمًا لعدّلها.</p>" +
+          "<p class=\"login-sub\" style=\"margin-top:8px\">✅ اللي بتقفلوه بيفضل مقفول على كل حسابات الشركة (ومقفول حتى على صاحب الشركة).<br>🔑 «إعدادات المالك» مش في القائمة دي — دي لحسابات شركة ميزان ومالك البرنامج فقط، ومحدش يقدر يفتحها أو يقفلها لحد.</p>" +
           "<div class=\"feat-btns\"><button class=\"btn green\" type=\"button\" id=\"admFeatSave\">حفظ المزايا</button>" +
           "<button class=\"btn gray\" type=\"button\" id=\"admFeatCancel\">إلغاء</button></div>";
         const dlg = document.createElement("div");
@@ -12296,6 +12613,9 @@ const pwEye = document.getElementById("btnShowPass");
         dlg.querySelector("#admFeatSave").onclick = () => {
           const on = {};
           dlg.querySelectorAll(".adm-feat").forEach((c) => { on[c.value] = c.checked; });
+          // 🔑 بناء 133: مفتاح «إعدادات المالك» لو كان محفوظًا بيعدي زي ما هو (صفر تغيير
+          // في بيانات موجودة) — بس بقى بلا معنى في الواجهة والبوابة مستقلة عنه.
+          carryOwnerOnlyFeats(on, (ORG_FEAT_MAP && ORG_FEAT_MAP[orgId]) || {});
           // 🆕 بناء 131: `mizan_admin_set_org` بتكتب `plan_end` بلا coalesce ⇒ لازم
           // نعيد نفس تواريخ الشركة وحالة قفلها، ومينفعش نبعتهم فاضيين وإلا الحفظ
           // ده كان بيمسح «إلى تاريخ» الاشتراك ويخلي الشركة نشطة للأبد.
@@ -12349,7 +12669,7 @@ const pwEye = document.getElementById("btnShowPass");
           "<td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
           "<td><code>" + (u.username || "—") + "</code></td>" +
           "<td>" + roleLabel(u) + (u.is_superadmin ? " 🔑" : "") + "</td>" +
-          "<td>" + featsSummary(u.features, ADMIN_FEATURES) + "</td>" +
+          "<td>" + featsSummary(u.features, chooserFeatures()) + "</td>" +
           "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
           "<td>" +
           "<button class=\"btn small sky\" style=\"margin:2px\" type=\"button\" onclick=\"window.__admResetPw('" + u.user_id + "')\">🔑 تغيير كلمة المرور</button>" +
