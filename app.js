@@ -11704,7 +11704,7 @@ const pwEye = document.getElementById("btnShowPass");
   }
   function chatPaintLive() {
     var el = $("#chatLiveDot");
-    if (el) { el.textContent = chatLiveText(); el.className = "chat-live " +
+    if (el) { el.textContent = chatLiveText(); el.className = "wa-live " +
       ((/^sub/i.test(String(CHAT_RT.status))) ? "on" : /^open/i.test(String(CHAT_RT.status)) ? "wait" : "off"); }
   }
 
@@ -11875,7 +11875,7 @@ const pwEye = document.getElementById("btnShowPass");
     var el = $("#chatSendHint");
     if (!el) return;
     el.textContent = msg || "";
-    el.className = "chat-mini" + (kind === "err" ? " chat-err" : kind === "ok" ? " chat-ok" : "");
+    el.className = "wa-hint" + (kind === "err" ? " chat-err" : kind === "ok" ? " chat-ok" : "");
   }
 
   function chatRenderPeers() {
@@ -11891,26 +11891,41 @@ const pwEye = document.getElementById("btnShowPass");
     var cnt = $("#chatPeerCount");
     if (cnt) cnt.textContent = list.length ? String(list.length) : "";
     if (!all.length) {
-      box.innerHTML = '<div class="chat-none">مافيش زملاء متاحين للدردشة دلوقتي.</div>';
+      box.innerHTML = '<div class="wa-none">مافيش زملاء متاحين للدردشة دلوقتي.</div>';
       return;
     }
     if (!list.length) {
-      box.innerHTML = '<div class="chat-none">مالقيش اسم يطابق بحثك.</div>';
+      box.innerHTML = '<div class="wa-none">مالقيش اسم يطابق بحثك.</div>';
       return;
     }
     box.innerHTML = list.map(function (p) {
       var un = Number(CHAT.unread[p.id]) || 0;
-      // 🟢 بناء 136 (سطر ٢٠-د): نقطة خضرا على المتصل فعلًا — من `mizan_chat_peers` نفسها
-      // (presence.last_seen >= الآن − ١١٠ ثانية)، فالقياس من السحابة مش من الجهاز.
+      // 🟢 نقطة خضرا على المتصل فعلًا — من `mizan_chat_peers` نفسها
       var on = !!p.is_online;
-      return '<button type="button" class="chat-peer' + (p.id === CHAT.peerId ? " on" : "") +
+      var nm = chatPeerName(p);
+      var initial = nm.charAt(0) || "?";
+      // آخر رسالة (من msgs لو المحادثة مفتوحة، أو فاضية)
+      var lastMsg = "";
+      var lastTime = "";
+      if (p.id === CHAT.peerId && CHAT.msgs.length) {
+        var lm = CHAT.msgs[CHAT.msgs.length - 1];
+        lastMsg = String(lm.body || "").substring(0, 50);
+        lastTime = chatTimeShort(lm.created_at);
+      }
+      return '<button type="button" class="wa-peer' + (p.id === CHAT.peerId ? " on" : "") +
         '" data-peer="' + esc(p.id) + '">' +
-        '<span class="chat-dot' + (on ? " on" : "") + '" title="' + (on ? "متصل دلوقتي" : "مش متصل دلوقتي") + '"></span>' +
-        '<span class="chat-peer-name">' + esc(chatPeerName(p)) +
-        (p.is_superadmin ? ' <span class="chat-tag">المالك</span>' : (p.is_owner ? ' <span class="chat-tag">صاحب المؤسسة</span>' : "")) +
-        "</span>" +
-        (p.org_name ? '<span class="chat-peer-org">' + esc(p.org_name) + "</span>" : "") +
-        (un ? '<span class="chat-peer-unread">' + (un > 99 ? "99+" : un) + "</span>" : "") +
+        '<div class="wa-avatar' + (on ? " on" : "") + '" title="' + (on ? "متصل دلوقتي" : "مش متصل دلوقتي") + '">' + esc(initial) + '</div>' +
+        '<div class="wa-peer-body">' +
+          '<div class="wa-peer-name">' + esc(nm) +
+            (p.is_superadmin ? ' <span class="wa-tag">المالك</span>' : (p.is_owner ? ' <span class="wa-tag">صاحب المؤسسة</span>' : "")) +
+          '</div>' +
+          (lastMsg ? '<div class="wa-peer-last">' + esc(lastMsg) + '</div>' :
+           (p.org_name ? '<div class="wa-peer-last">' + esc(p.org_name) + '</div>' : "")) +
+        '</div>' +
+        '<div class="wa-peer-meta">' +
+          (lastTime ? '<span class="wa-peer-time">' + esc(lastTime) + '</span>' : "") +
+          (un ? '<span class="wa-peer-unread">' + (un > 99 ? "99+" : un) + '</span>' : "") +
+        '</div>' +
         "</button>";
     }).join("");
   }
@@ -11922,48 +11937,89 @@ const pwEye = document.getElementById("btnShowPass");
     var p = function (n) { return String(n).padStart(2, "0"); };
     return p(x.getDate()) + "/" + p(x.getMonth() + 1) + " " + p(x.getHours()) + ":" + p(x.getMinutes());
   }
+  // 🆕 بناء 137: وقت مختصر للقائمة الجانبية (ساعة:دقيقة بس)
+  function chatTimeShort(d) {
+    if (!d) return "";
+    var x = new Date(d);
+    if (isNaN(x.getTime())) return "";
+    var p = function (n) { return String(n).padStart(2, "0"); };
+    return p(x.getHours()) + ":" + p(x.getMinutes());
+  }
 
   function chatUpdateSend() {
     var btn = $("#btnChatSend");
     var ta = $("#txtChatMsg");
     if (!btn) return;
     var hasTxt = !!(ta && String(ta.value || "").trim().length);
+    // 🆕 بناء 137: المرفق المحلي وحده كافي لتفعيل الإرسال
+    var hasAttach = !!CHAT_pendingAttach;
     // في وضع البث مافيش «زميل» محدد — الرسالة بتروح للدائرة كلها (والسحابة بتتأكد من الحساب)
     var targetOk = chatBcastOn() ? true : !!CHAT.peerId;
-    btn.disabled = !(hasTxt && targetOk && chatAvailable());
+    btn.disabled = !((hasTxt || hasAttach) && targetOk && chatAvailable());
   }
 
   function chatRenderThread() {
     var box = $("#chatThread");
     if (!box) return;
-    var title = $("#chatPeerTitle");
+    // 🆕 بناء 137: تحديث رأس المحادثة (افاتار + اسم + حالة)
+    var headName = document.querySelector("#chatPeerTitle .wa-head-name");
+    var headStatus = document.querySelector("#chatPeerTitle .wa-head-status");
+    var headAvatar = $("#waHeadAvatar");
     var peer = chatPeerById(CHAT.peerId);
-    if (title) {
-      title.textContent = peer
-        ? ("💬 " + chatPeerName(peer) + (peer.org_name ? " — " + peer.org_name : ""))
-        : "اختار زميل من القائمة عشان تبدأ المحادثة";
+    if (headName) {
+      headName.textContent = peer ? chatPeerName(peer) : "اختار زميل من القائمة";
+    }
+    if (headStatus) {
+      headStatus.textContent = peer
+        ? (peer.is_online ? "متصل الآن" : (peer.org_name || "آخر ظهور قريب"))
+        : "عشان تبدأ المحادثة";
+    }
+    if (headAvatar) {
+      headAvatar.textContent = peer ? (chatPeerName(peer).charAt(0) || "?") : "؟";
     }
     if (!CHAT.peerId) {
-      box.innerHTML = '<div class="chat-none">اختار زميل من القائمة على اليمين.</div>';
+      box.innerHTML = '<div class="wa-none">اختار زميل من القائمة على اليمين.</div>';
       chatUpdateSend();
       return;
     }
     if (!(CHAT.msgs || []).length) {
-      box.innerHTML = '<div class="chat-none">مافيش رسايل بعد — اكتب أول رسالة.</div>';
+      box.innerHTML = '<div class="wa-none">مافيش رسايل بعد — اكتب أول رسالة.</div>';
       chatUpdateSend();
       return;
     }
     var me = chatMyId();
     box.innerHTML = CHAT.msgs.map(function (m) {
       var mine = String(m.from_user) === String(me);
-      return '<div class="chat-msg ' + (mine ? "me" : "them") + (m.is_private ? " priv" : "") + '">' +
-        '<div class="chat-bubble">' + esc(m.body).replace(/\r?\n/g, "<br>") + "</div>" +
-        '<div class="chat-meta">' + chatTimeOf(m.created_at) +
-        (m.is_private ? " 🔒" : "") + (mine ? (m.read_at ? " ✓✓" : " ✓") : "") +
-        "</div></div>";
+      var cls = "wa-bbl " + (mine ? "out" : "in") + (m.is_private ? " priv" : "");
+      // 🆕 بناء 137: مرفق محلي (صورة/ملف) — يُعرض من IndexedDB مش من السحابة
+      var attachHtml = "";
+      if (m._attach) {
+        var a = m._attach;
+        if (a.type && a.type.indexOf("image/") === 0 && a.dataUrl) {
+          attachHtml = '<img class="wa-attach-img" src="' + esc(a.dataUrl) + '" alt="' + esc(a.name || "صورة") + '" />';
+        } else {
+          attachHtml = '<div class="wa-attach"><div class="wa-attach-icon">📄</div>' +
+            '<div class="wa-attach-info">' + esc(a.name || "ملف") +
+            '<small>' + chatFmtSize(a.size) + ' · على جهازك بس</small></div></div>';
+        }
+      }
+      return '<div class="' + cls + '">' +
+        attachHtml +
+        esc(m.body || "").replace(/\r?\n/g, "<br>") +
+        '<span class="wa-bbl-time">' + chatTimeShort(m.created_at) +
+        (mine ? ' <span class="wa-bbl-check">' + (m.read_at ? "✓✓" : "✓") + '</span>' : "") +
+        (m.is_private ? " 🔒" : "") +
+        '</span></div>';
     }).join("");
     box.scrollTop = box.scrollHeight;
     chatUpdateSend();
+  }
+
+  // 🆕 بناء 137: تنسيق حجم الملف للمرفقات
+  function chatFmtSize(bytes) {
+    if (!bytes || bytes < 1024) return (bytes || 0) + " B";
+    if (bytes < 1048576) return Math.round(bytes / 1024) + " KB";
+    return (bytes / 1048576).toFixed(1) + " MB";
   }
 
   function chatUpdateBadge() {
@@ -12064,25 +12120,34 @@ const pwEye = document.getElementById("btnShowPass");
       return;
     }
     var txt0 = String(ta.value || "").trim();
+    // 🆕 بناء 137: في وضع المرفق المحلي — الرسالة ممكن تكون فاضية (صورة/ملف بس)
+    var hasAttach = !!CHAT_pendingAttach;
     if (chatBcastOn()) {                                   // 📢 وضع البث (مالك البرنامج بس)
       if (!txt0) { chatHint("اكتب الرسالة الأول", "err"); chatUpdateSend(); return; }
       return Promise.resolve(chatSendBroadcast(txt0, !!(priv && priv.checked)));
     }
     if (!CHAT.peerId) { chatHint("اختار زميل الأول", "err"); return; }
     var txt = String(ta.value || "").trim();
-    if (!txt) { chatHint("اكتب الرسالة الأول", "err"); chatUpdateSend(); return; }
+    if (!txt && !hasAttach) { chatHint("اكتب الرسالة الأول أو أرفق ملف", "err"); chatUpdateSend(); return; }
     var btn = $("#btnChatSend");
     if (btn) btn.disabled = true;
+    // 🆕 بناء 137: المرفق المحلي بيتربط بالرسالة في الذاكرة بس — صفر بايت للسحابة
+    var attach = CHAT_pendingAttach;
+    CHAT_pendingAttach = null;
     var CL = window.CLOUD || {};
-    return Promise.resolve(CL.chatSend(CHAT.peerId, txt, !!(priv && priv.checked))).then(function (r) {
+    return Promise.resolve(CL.chatSend(CHAT.peerId, txt || "[مرفق]", !!(priv && priv.checked))).then(function (r) {
       if (!r || !r.ok) {
         chatHint((r && r.error) || "الرسالة ما وصلتش — جرّب تاني", "err");
         chatUpdateSend();
         return;
       }
       ta.value = "";
-      if (r.row) CHAT.msgs.push(r.row);
+      if (r.row) {
+        if (attach) r.row._attach = attach;   // ربط المرفق محليًا بالرسالة
+        CHAT.msgs.push(r.row);
+      }
       chatRenderThread();
+      chatRenderPeers();   // تحديث آخر رسالة في القائمة
       chatHint("", "");
       chatUpdateSend();
     }).catch(function () {
@@ -12196,6 +12261,8 @@ const pwEye = document.getElementById("btnShowPass");
     CHAT.unread = {};
     CHAT.filter = "";
     CHAT.busy = false;
+    // 🆕 بناء 137: مسح المرفق المعلّق
+    CHAT_pendingAttach = null;
     if (reason === "session") CHAT.scopeOverride = null;
     chatUpdateBadge();
     // الرسم بيرجع الشاشة فاضية **في الـ DOM** كمان — عشان بعد خروج أو تبديل شركة
@@ -12206,12 +12273,83 @@ const pwEye = document.getElementById("btnShowPass");
     if (ta) ta.value = "";
   }
 
+  // 🆕 بناء 137: مرفقات محلية (IndexedDB) — صفر بايت للسحابة
+  // الصور/الملفات بتتخزن على جهاز المستخدم بس، وما بتترفعش أبدًا.
+  var CHAT_ATTACH_DB = "mizan_chat_attach_v1";
+  var CHAT_ATTACH_STORE = "files";
+  var CHAT_pendingAttach = null;   // ملف واحد معلّق للإرسال مع الرسالة الجاية
+
+  function chatAttachDB() {
+    return new Promise(function (resolve, reject) {
+      try {
+        var req = indexedDB.open(CHAT_ATTACH_DB, 1);
+        req.onupgradeneeded = function (e) {
+          var db = e.target.result;
+          if (!db.objectStoreNames.contains(CHAT_ATTACH_STORE)) {
+            db.createObjectStore(CHAT_ATTACH_STORE, { keyPath: "id" });
+          }
+        };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error); };
+      } catch (e) { reject(e); }
+    });
+  }
+  function chatAttachSave(id, file, dataUrl) {
+    return chatAttachDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(CHAT_ATTACH_STORE, "readwrite");
+        tx.objectStore(CHAT_ATTACH_STORE).put({ id: id, name: file.name, type: file.type, size: file.size, dataUrl: dataUrl, ts: Date.now() });
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+  function chatAttachLoad(id) {
+    return chatAttachDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(CHAT_ATTACH_STORE, "readonly");
+        var req = tx.objectStore(CHAT_ATTACH_STORE).get(id);
+        req.onsuccess = function () { resolve(req.result || null); };
+        req.onerror = function () { reject(req.error); };
+      });
+    }).catch(function () { return null; });
+  }
+  // معالجة الملفات المختارة: تحويل لـ dataURL + تخزين في IndexedDB + ربط بالرسالة
+  function chatHandleFiles(files) {
+    if (!files || !files.length) return;
+    var file = files[0];   // ملف واحد في كل مرة (واتساب نفس النمط)
+    if (file.size > 10 * 1024 * 1024) {
+      chatHint("الملف كبير أوي (أكبر من ١٠ ميجا) — اختار ملف أصغر", "err");
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var dataUrl = String(reader.result || "");
+      var attachId = "att_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
+      chatAttachSave(attachId, file, dataUrl).then(function () {
+        CHAT_pendingAttach = { id: attachId, name: file.name, type: file.type, size: file.size, dataUrl: dataUrl };
+        chatHint("📎 " + file.name + " (" + chatFmtSize(file.size) + ") — هيتبعت مع الرسالة الجاية", "ok");
+        chatUpdateSend();
+      }).catch(function () {
+        chatHint("ما قدرش يحفظ المرفق على الجهاز — جرّب تاني", "err");
+      });
+    };
+    reader.onerror = function () {
+      chatHint("ما قدرش يقرأ الملف — جرّب تاني", "err");
+    };
+    if (file.type && file.type.indexOf("image/") === 0) {
+      reader.readAsDataURL(file);
+    } else {
+      reader.readAsDataURL(file);
+    }
+  }
+
   function chatBindOnce() {
     if (CHAT.bound) return;
     CHAT.bound = true;
     var list = $("#chatPeerList");
     if (list) list.addEventListener("click", function (e) {
-      var b = e.target && e.target.closest ? e.target.closest(".chat-peer") : null;
+      var b = e.target && e.target.closest ? e.target.closest(".wa-peer") : null;
       if (b && b.dataset.peer) chatOpenPeer(b.dataset.peer);
     });
     var search = $("#txtChatSearch");
@@ -12252,6 +12390,17 @@ const pwEye = document.getElementById("btnShowPass");
     // الصندوق — سياسة SELECT على السحابة بتقفلها لأي حد غير الطرفين مهما كان.)
     var priv = $("#chkChatPrivate");
     if (priv && priv.checked !== true) priv.checked = true;
+    // 🆕 بناء 137: زر المرفقات — ملف/صورة على جهاز المستخدم بس (صفر بايت للسحابة)
+    var attachBtn = $("#btnChatAttach");
+    var fileInp = $("#inpChatFile");
+    if (attachBtn && fileInp) {
+      attachBtn.addEventListener("click", function () { fileInp.click(); });
+      fileInp.addEventListener("change", function () {
+        if (!fileInp.files || !fileInp.files.length) return;
+        chatHandleFiles(fileInp.files);
+        fileInp.value = "";   // عشان نفس الملف يتاختار تاني لو احتاج
+      });
+    }
   }
 
   function renderChat() {
