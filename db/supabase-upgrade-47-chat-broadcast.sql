@@ -39,10 +39,36 @@
 --   السليمة وتعمل rollback. الشكل الصح: بوابة «قبل» مستقلة **قبل** أي DDL، والقياس
 --   بيتخزن في جدول مؤقت `on commit drop` وتقارن بيه في بوابة «بعد».
 --
+-- ⚠️ **مصيدة تانية (04/10، اتقادت من قراءة النص قبل أي تشغيل):** عمود جدول الحماية كان اسمه `v`
+--   وفي بوابة «بعد» متغيّر plpgsql اسمه `v` كمان. القاعدة: الاسم العاري في استعلام جوه
+--   plpgsql بيتفسّر **متغيّر أولًا** ⇒ `select v into gv` كانت بترجع `v` الفارغ بصمت،
+--   يعني أربع فحوصات بيانات («ولا سطر اتلمس») بتقارن بـ null وتقول «مطابق» كداب.
+--   العمود بقى `gval`، والمتغيّر اتشال خالص، والحارس `check_chat_broadcast_47.js` بيمنع
+--   أي عمود في `mizan_47_guard` يصادم اسم متغيّر معلن في نفس الملف.
+--
+-- 🪳 **مصيدة تالتة (04/10، مسكها وضع «التثبيت التجريبي» مش اللِنتر):** بوابة «بعد» كانت بتعدّ
+--    الأعمدة من `pg_attribute` **من غير** `k.relkind = 'r'` ⇒ بتلمّ أعمدة الـ١١٢ فهرس (١٥٥)
+--    والصناديق التسلسلية (٦) كمان = **٥٦١** مقابل ٤٠٠ ⇒ ترقية سليمة كانت هتعمل ROLLBACK.
+--    الرقم ٤٠٠ نفسه صحيح، **التعبير** كان الغلط (نفس درس «ممنوع رقم مقفول من غير قياس» بس
+--    من الجهة التانية: الرقم مقاس بتعبير ≠ التعبير اللي في الكاشف).
+--
+-- 🪟 **نافذة قياس الرسايل:** «قبل/بعد» بيقارنوا أسطر messages اللي `created_at <= t0` بس.
+--   ده مش تساهل: `now()` = لحظة بدء المعاملة، فأي سطر تكتبه **الترقية نفسها** هيحمل
+--   created_at = t0 بالظبط ⇒ داخل النافذة ومحسوب في البصمة (الكتابة الغلط لسه مرفوضة).
+--   المستثنى = رسالة مستخدم وصلت بعد ما بدأنا — بيانات حيّة (عادل بيستخدم الدردشة فعلًا)
+--   وما ينفعش تُسقط ترقية سليمة. نفس القرار اللي في `apply_upgrade_46.js`.
+--
+-- 🧰 **الأدوات (قرص، D:/_work/temp):** `lint_sql_generic.js` (تركيبي) ·
+--   `dryrun_gates_47.js` (بنية + قياس حيّ **قراءة فقط** افتراضيًا؛ الوضع العميق
+--   `MIZAN_DRYRUN_47="شغّل"` تشغيل كامل جوّه rollback + ٩ معايرات) ·
+--   `apply_upgrade_47.js` (من غير مفتاح = خطة وبلا اتصال؛ `MIZAN_ORDER_47="نفّذ"` = تنفيذ) ·
+--   `test_chat_broadcast_47.js` (سلوكي قراءة-فقط بـ JWT حقيقي وsavepoint) ·
+--   `check_chat_broadcast_47.js` (حارس القرص + المعايرات).
+--
 -- مافيش begin/commit جوه الملف — المعاملة ملك أداة التنفيذ.
 
 -- ═══════════════ ١) بوابة «قبل» + تخزين القياس (قبل أي DDL) ═══════════════
-create temp table mizan_47_guard (k text primary key, v text) on commit drop;
+create temp table mizan_47_guard (k text primary key, gval text) on commit drop;
 
 do $$
 declare
@@ -86,7 +112,7 @@ begin
   if sig is null or position('last_seen' in sig) = 0 or position('is_online' in sig) = 0 then
     raise exception 'ترقية ٤٧: توقيع peers قبل التنفيذ مالو last_seen/is_online — حالة القاعدة مش قياس ٤٦';
   end if;
-  insert into mizan_47_guard (k, v) values ('peers_sig', sig);
+  insert into mizan_47_guard (k, gval) values ('peers_sig', sig);
 
   -- خصوصية messages قبل التنفيذ: ٣ سياسات وبلا UPDATE
   select count(*) into n from pg_policies where schemaname = 'public' and tablename = 'messages';
@@ -96,11 +122,19 @@ begin
   if n <> 0 then raise exception 'ترقية ٤٧: فيه سياسة UPDATE على messages قبل التنفيذ'; end if;
 
   -- قياس البيانات المتينة (الترقية المفروض ما تكتبش ولا سطر)
-  select count(*) into n0 from public.messages;
-  select coalesce(md5(string_agg(id::text, ',' order by id)), 'empty') into m0 from public.messages;
+  -- 🪟 النافذة `created_at <= t0` مش تساهل: `now()` في Postgres = **لحظة بدء المعاملة**، فأي سطر
+  --    تكتبه هذي الترقية هيحمل created_at = t0 بالظبط ⇒ داخل النافذة ومحسوب في البصمة.
+  --    اللي بتستثنَاه النافذة = رسالة مستخدم وصلت **بعد** ما بدأنا (معاملة لاحقة) — وهي بيانات
+  --    مستخدم حية، مش شغلنا، وما ينفعش تُسقط الترقية السليمة (نفس درس ٤٦ و`apply_upgrade_46.js`).
+  select count(*) into n0 from public.messages where created_at <= t0;
+  select coalesce(md5(string_agg(id::text, ',' order by id)), 'empty') into m0
+    from public.messages where created_at <= t0;
   select count(*) into p0 from public.profiles;
-  insert into mizan_47_guard (k, v) values
-    ('msg_n', n0::text), ('msg_fp', m0), ('prof_n', p0::text), ('t0', to_char(t0 at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS.MS'));
+  insert into mizan_47_guard (k, gval) values
+    ('msg_n', n0::text), ('msg_fp', m0), ('prof_n', p0::text),
+    -- `t0::text` (مش to_char بلا إزاحة): نص فيه الإزاحة، و`::timestamptz` في **نفس الجلسة**
+    -- يرجّعه لنفس اللحظة بالمايكرو ثانية ⇒ بوابة «بعد» تقدر تعيد نفس النافذة بالحرف.
+    ('t0', t0::text);
 
   raise notice 'ترقية ٤٧: بوابة «قبل» خضراء (messages=% أسطر · profiles=%)', n0, p0;
 end;
@@ -223,7 +257,9 @@ declare
   src   text;
   sig   text;
   gv    text;
-  v     text;
+  -- ⚠️ مافيش متغيّر اسمه `v` هنا **بالعَمد**: كان بيصطدم مع عمود جدول الحماية (`v text`)،
+  --    وفي plpgsql الاسم العاري بيتفسّر متغيّر أولًا ⇒ `select v into gv` كانت بترجع فارغ
+  --    بصمت. العمود بقى `gval` والمتغيّر مش محتاجه حد.
 begin
   -- ── الدالة موجودة، definer، ومسارها مثبّت pg_temp آخره ──
   select count(*) into n from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
@@ -269,7 +305,7 @@ begin
 
   -- ── peers: التوقيع رجع بايت-بايت زي ما كان + الفرعين موجودين + ما بتلمسش غير القراءة ──
   select pg_get_function_result('public.mizan_chat_peers()'::regprocedure) into sig;
-  select v into gv from mizan_47_guard where k = 'peers_sig';
+  select gval into gv from mizan_47_guard where k = 'peers_sig';
   if sig is distinct from gv then
     raise exception 'ترقية ٤٧: توقيع peers اتغير ⇒ شاشة الدردشة هتتكسر';
   end if;
@@ -323,22 +359,26 @@ begin
   if n <> 0 then raise exception 'ترقية ٤٧: messages دخلت دوال النسخ الاحتياطي — قرار المالك مرفوض'; end if;
 
   -- ── ولا سطر اتلمس (الدالة ما اتنادتش جوّه الترقية) ──
-  select v into gv from mizan_47_guard where k = 'msg_n';
-  select count(*) into n from public.messages;
+  -- نفس نافذة «قبل» بالحرف: أي سطر تكتبه هذي المعاملة created_at = t0 ⇒ محسوب،
+  -- واللي يوصل من مستخدم بعد ما بدأنا (معاملة لاحقة) مش من شغلنا ولا يوقّف ترقية سليمة.
+  select gval into gv from mizan_47_guard where k = 't0';
+  select count(*) into n from public.messages where created_at <= gv::timestamptz;
+  select gval into gv from mizan_47_guard where k = 'msg_n';
   if n::text is distinct from gv then
-    raise exception 'ترقية ٤٧: أسطر messages اتغيرت من % إلى %', v, n;
+    raise exception 'ترقية ٤٧: أسطر messages (في نافذة ما قبل start) اتغيرت من % إلى %', gv, n;
   end if;
 
-  select coalesce(md5(string_agg(id::text, ',' order by id)), 'empty') into src from public.messages;
-  select v into gv from mizan_47_guard where k = 'msg_fp';
+  select coalesce(md5(string_agg(id::text, ',' order by id)), 'empty') into src
+    from public.messages where created_at <= (select gval from mizan_47_guard where k = 't0')::timestamptz;
+  select gval into gv from mizan_47_guard where k = 'msg_fp';
   if src is distinct from gv then
     raise exception 'ترقية ٤٧: بصمة معرّات messages اتغيرت — أي سطر اتضاف أو اتشال';
   end if;
 
   select count(*) into n from public.profiles;
-  select v into gv from mizan_47_guard where k = 'prof_n';
+  select gval into gv from mizan_47_guard where k = 'prof_n';
   if n::text is distinct from gv then
-    raise exception 'ترقية ٤٧: أسطر profiles اتغيرت من % إلى %', v, n;
+    raise exception 'ترقية ٤٧: أسطر profiles اتغيرت من % إلى %', gv, n;
   end if;
 
   -- ── البنية: الدوال +١ بس (broadcast)، وباقي المقاييس ثابتة ──
@@ -346,11 +386,14 @@ begin
     where ns.nspname = 'public';
   if n <> 67 then raise exception 'ترقية ٤٧: دوال public = % (مفروض ٦٦ + broadcast = ٦٧)', n; end if;
 
+  -- ⚠️ `relkind='r'` **ضرورية** (اتقادت 04/10 في وضع التثبيت التجريبي): pg_attribute بيشمل كمان
+  --    الفهارس (١١٢ جدول ⇒ ١٥٥ عمود) والصناديق التسلسلية (٢ ⇒ ٦) ⇒ نفس العدّ بلا الشرط كان
+  --    بيرجّع ٥٦١ ويوقع ترقية سليمة بـ ROLLBACK. مع `relkind='r'` = ٤٠٠ حرفيًا (مقاس).
   select count(*) into n from pg_attribute a
     join pg_class k on k.oid = a.attrelid
     join pg_namespace ns on ns.oid = k.relnamespace
-    where ns.nspname = 'public' and a.attnum > 0 and not a.attisdropped;
-  if n <> 400 then raise exception 'ترقية ٤٧: أعمدة public = % (مفروض ٤٠٠ ثابتة)', n; end if;
+    where ns.nspname = 'public' and k.relkind = 'r' and a.attnum > 0 and not a.attisdropped;
+  if n <> 400 then raise exception 'ترقية ٤٧: أعمدة جداول public = % (مفروض ٤٠٠ ثابتة)', n; end if;
 
   select count(*) into n from pg_policy pol join pg_class k on k.oid = pol.polrelid
     join pg_namespace ns on ns.oid = k.relnamespace where ns.nspname = 'public';
