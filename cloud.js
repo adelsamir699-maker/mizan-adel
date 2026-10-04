@@ -1267,6 +1267,93 @@
       .catch(function (e) { chatFail(e); return { ok: false, error: CHAT_LAST_ERROR }; });
   }
 
+  // ═════════ 🆕 بناء 136 — الوصول اللحظي (ترقية ٤٨) + بث المالك (ترقية ٤٧) ═════════
+
+  /* 🪤 **الدرس اللي اتقيد بالقياس على السلك (04/10):** في realtime-js 2.117.1 مافيش
+     overload لـ `on(type, cb)` — الوسيط التاني **دايمًا** هو الفلتر. فـ
+       `.on("postgres_changes", cb)`   ⇒ binding.callback = undefined + الدالة بتتبعت كـ filter
+     والنتيجة `CHANNEL_ERROR: mismatch between server and client bindings for postgres changes`
+     من **العميل** (مش من القاعدة)، وأي رسالة `system` بتقع بـ `TypeError: bind.callback is not a function`.
+     ⇒ الصيغة الصح اللي تحت: **فلتر صريح** في `on` + نفس الفلتر في `config` عشان الاتنين يطابقوا
+     ردّ الخادم (اللي بيرجع `{event:'INSERT', schema:'public', table:'messages', filter:'{..}'}).
+     أي تغيير هنا لازم يتعاير على السلك قبل النشر (spike48d.js / wire_probe_48.js). */
+  var CHAT_RT_FILTER = { event: "INSERT", schema: "public", table: "messages" };
+  var CHAT_RT = { ch: null, key: "", status: "off", tries: 0 };
+
+  function chatRealtimeStatus() { return CHAT_RT.status; }
+
+  // اشتراك واحد لكل جلسة: «INSERT على messages» — والـ RLS على السحابة بتفلتر قبل ما يوصّل أي سطر،
+  // فمافيش هنا أي فلترة «رحمة»: اللي يوصلني هو اللي أنا فيه to_user أو from_user بس.
+  function chatSubscribe(onRow, onStatus) {
+    if (!chatReady()) return false;
+    var me = chatMeId();
+    if (!isUuid(me)) return false;
+    if (CHAT_RT.ch && CHAT_RT.key === String(me)) {          // نفس الجلسة ⇒ نعيد استخدام القناة
+      if (onStatus) { try { onStatus(CHAT_RT.status); } catch (e) { } }
+      return true;
+    }
+    chatUnsubscribe();
+    var sbk = _sb();
+    if (!sbk || typeof sbk.channel !== "function") return false;
+    try {
+      var ch = sbk.channel("mizan-chat-messages:" + me, {
+        config: { postgres_changes: [CHAT_RT_FILTER] }
+      });
+      // ⚠️ الوسيط التاني = الفلتر، والتالت = الدالة (ممنوع `.on(type, cb)`)
+      ch.on("postgres_changes", CHAT_RT_FILTER, function (payload) {
+        var row = payload && (payload.new || payload.record);
+        if (row && typeof row === "object" && row.id) { try { onRow && onRow(row); } catch (e) { } }
+      });
+      ch.subscribe(function (status) {
+        CHAT_RT.status = String(status || "unknown");
+        if (onStatus) { try { onStatus(CHAT_RT.status); } catch (e) { } }
+      });
+      CHAT_RT.ch = ch; CHAT_RT.key = String(me);
+      return true;
+    } catch (e) {
+      chatFail(e);
+      CHAT_RT.status = "error";
+      return false;
+    }
+  }
+
+  function chatUnsubscribe() {
+    if (!CHAT_RT.ch) { CHAT_RT.status = "off"; return; }
+    var ch = CHAT_RT.ch; CHAT_RT.ch = null; CHAT_RT.key = ""; CHAT_RT.status = "off";
+    try {
+      if (typeof ch.unsubscribe === "function") ch.unsubscribe();
+      var sbk = _sb();
+      if (sbk && typeof sbk.removeChannel === "function") sbk.removeChannel(ch);
+    } catch (e) { }
+  }
+
+  // بث المالك (ترقية ٤٧): دالة على السحابة بترفض أي حساب مش المالك العام، وبتفتح سطر مستقل
+  // لكل مستلم في نفس الدائرة — فميزان الخصوصية ما بيتلمسش ومافيش أي رسالة «للكل» بتخترق حد.
+  function chatBroadcast(body, isPrivate) {
+    if (!chatReady()) return Promise.resolve({ ok: false, missing: true, error: "الدردشة لسه مش متاحة" });
+    var txt = String(body == null ? "" : body).trim();
+    if (!txt) return Promise.resolve({ ok: false, error: "اكتب الرسالة الأول" });
+    if (txt.length > 4000) return Promise.resolve({ ok: false, error: "الرسالة أطول من المسموح" });
+    return Promise.resolve(_sb().rpc("mizan_chat_broadcast", { p_body: txt, p_private: !!isPrivate }))
+      .then(function (r) {
+        if (r && r.error) {
+          if (isChatNotDeployedError(r.error)) {
+            return { ok: false, missing: true, error: "البث لسه مش متاح على السحابة" };
+          }
+          // رسالة ودّية: رفض السحابة (مش المالك / الدائرة فاضية) بيتحوّل لكلمة تفيد المستخدم
+          var m = String(r.error.message || "");
+          var friendly = /مافيش مخاطَب/.test(m) ? "مافيش حد في الدائرة دي دلوقتي — قلّب العرض أو ابعت لشخص"
+            : /رسالة المالك/.test(m) ? "البث ده لحساب المالك — ابعت رسالتك لشخص واحد"
+              : /أطول من المسموح|اكتب الرسالة/.test(m) ? m
+                : "الرسالة ما وصلتش — جرّب تاني";
+          chatFail(r.error);
+          return { ok: false, error: friendly, raw: m };
+        }
+        return { ok: true, sent: Number(r.data) || 0 };
+      })
+      .catch(function (e) { chatFail(e); return { ok: false, error: "الرسالة ما وصلتش — جرّب تاني" }; });
+  }
+
   window.CLOUD = {
     push: push,
     chatPeers: chatPeers,
@@ -1280,6 +1367,11 @@
     chatLastError: chatLastError,
     probeChatTable: probeChatTable,
     chatMyId: chatMeId,
+    // 🆕 بناء 136
+    chatSubscribe: chatSubscribe,
+    chatUnsubscribe: chatUnsubscribe,
+    chatRealtimeStatus: chatRealtimeStatus,
+    chatBroadcast: chatBroadcast,
     setTreasuryOpening: setTreasuryOpening,
     loadAll: loadAll,
     detUuid: detUuid,

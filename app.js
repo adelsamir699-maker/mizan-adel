@@ -8765,18 +8765,26 @@
     // org_info بنفس التوقيع) اتنفّذت على السحابة 03/10 ≈13:44 بأمر المالك «من 1 الى 4 بالترتيب»
     // (سطر ٢) — إثبات 59/0 قراءة-فقط ⇒ بقت جزء من نسخة النشر. إعادة تشغيلها كما هو **ممنوعة**.
     "db/supabase-upgrade-46-chat-owners.sql",
+    // ترقية ٤٧ (دالة البث mizan_chat_broadcast: «📢 رسالة للكل» من المالك، سطر مستقل لكل مستلم،
+    // وبلا أي سياسة جديدة على messages) اتنفّذت على السحابة 04/10 ≈07:25 بأمر المالك
+    // «من 1 الى 4 بالترتيب» (سطر ٣) — إثبات: لِنتر 21/0 + dry-run 29/0 + تمرين رجوع 9/0
+    // + سلوكي 56/0 قبل و51/0 بعد ⇒ المخطط 66 → 67 دالة ⇒ جزء من نسخة النشر.
+    // إعادة تشغيلها كما هو **ممنوعة** (بواباتها بقت قياس «بعد»).
+    "db/supabase-upgrade-47-chat-broadcast.sql",
+    // ترقية ٤٨ (لحظي الدردشة: messages دخلت publication العامة بس، والجدول لسه عليه RLS
+    // فالخادم بيفلتر أسطر كل مستلم على مزاعمه) اتنفّذت على السحابة 04/10 ≈09:48 بأمر المالك
+    // «من 1 الى 4 بالترتيب» (سطر ٤) — إثبات: عضوية الكتالوج 0→1 + بصمة أجسام الـ67 دالة
+    // سايتة + مخطط 5/5 md5 قبل = بعد + 36/38 ملف بيانات بالبايت ⇒ جزء من نسخة النشر.
+    // إعادة تشغيلها كما هو **ممنوعة** (بترفض نفسها ببوابات «قبل»).
+    "db/supabase-upgrade-48-chat-realtime.sql",
     // التصحيح ٤٩ (سحب تنفيذ الدوال من «الزائر/أي حد» + تنظيف منح anon من 30 جدول) اتنفّذ على
     // السحابة 03/10 ≈11:05 بأمر المالك «من 1 الى 4 بالترتيب» — النطاق (ج) full ⇒ بقت جزء من نسخة النشر.
     // إعادة تشغيله كما هو **ممنوعة** (بوابة «قبل» بقت فشلًا متعمّدًا بعد السحب)، والملف هنا للسجل.
     "db/supabase-upgrade-49-access-grants.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
-  // ٤٧ و٤٨ **لسه ما اتنفذتش** على السحابة (مستنية أمر المالك الحرفي) ⇒ ماحدش ينشرها مع
-  // نسخة قاعدة جديدة، وإلا سيرفر جديد ياخد بنية/منح ما اتطبقتش على القاعدة الحيّة. أول ما تنفّذ
-  // تنضم لـ DEPLOY_DB_FILES بنفس نمط ٤٣ و٤٤ و٤٥ و٤٩ و٤٦.
-  var DEPLOY_DB_EXCLUDE = {
-    "db/supabase-upgrade-47-chat-broadcast.sql": "بث عادل «رسالة للكل» — لسه ما اتنفذتش على السحابة، مستنية أمر المالك",
-    "db/supabase-upgrade-48-chat-realtime.sql": "الوصول اللحظي للرسايل — لسه ما اتنفذتش على السحابة، مستنية أمر المالك"
-  };
+  // فاضية دلوقتي بالقياس: كل ملف في db/ اتنفّذ على السحابة ⇒ ينشر معه. أي استبعاد جديد لازم يكون
+  // سببه المكتوب **حقيقي** (مش «خايف أنشره») — حارس check_backup_coverage_124.js بيسأل db/ مباشرة.
+  var DEPLOY_DB_EXCLUDE = {};
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "categories", "customer_txs", "customers",
     "employees", "attendance", "att_settings", "fixed_assets",
@@ -9281,6 +9289,10 @@
     applyFeatureGating();
     // 🧱 بناء 132: عدّاد الواردة على زرار الدردشة المستقل في الشريط العلوي
     chatStartBadgeTicker();
+    // 🟢 بناء 136: الاشتراك اللحظي يعيش برضه والشاشة مقفولة — عشان الرسالة **تعمل صوت**
+    // وتعدّ في الزرار لحظة ما تجي، من غير ما المستخدم يفتح الدردشة. (زرار الدردشة نفسه
+    // في مكانه وبشكله — قرار المالك 04/10: «زرار الدردشة فى المكان ده كويس متغيرهوش».)
+    chatRtStart();
     updatePosTaxUI();
     tickClock();
     setInterval(tickClock, 1000);
@@ -11599,6 +11611,211 @@ const pwEye = document.getElementById("btnShowPass");
   var CHAT_POLL_MS = 12000;
   var CHAT_MSG_LIMIT = 200;
 
+  /* 🟢 بناء 136 — الوصول اللحظي (ترقية ٤٧ + ٤٨ اتنفذوا على السحابة)
+   * · الاشتراك بيتعمل بصيغة **فلتر صريح** (الوسيط التاني في `on` دايمًا هو الفلتر —
+   *   `.on(type, cb)` بترمي CHANNEL_ERROR من العميل نفسه، متقاس على السلك 04/10).
+   * · RLS لسه البوابة الوحيدة: اللي بيوصلني = اللي أنا فيه `to_user` أو `from_user` بس.
+   * · الـ polling (١٢ث) والعدّاد (٣٠ث) **ما اتلغوش**: اللحظي بضاف سرعة، مش أمان.
+   *   لو websocket ما اتقبّلش (نت ضعيف/بروكسي) الشاشة تشتغل زي ما كانت بالظبط.
+   * · 🔊 الصوت: WebAudio بنغمة عالية (مافيش ملف صوت يتنزّل) + المستخدم يختار النغمة.
+   *   المفتاح المختار بيتحفظ على الجهاز **كمعرّف فقط** — ممنوع أي نص رسالة يدخل localStorage. */
+  var CHAT_SOUNDS = [
+    ["ping", "🔔 نغمة عالية"], ["double", "🔔🔔 تنبيه مزدوج"], ["bell", "🛎 جرس"],
+    ["siren", "🚨 صافرة"], ["off", "🔕 من غير صوت"]
+  ];
+  var CHAT_SOUND_KEY = "mizan_chat_sound_v1";
+  var CHAT_RT = { status: "off", bound: false };
+  var CHAT_seenIds = Object.create(null);
+
+  function chatSoundId() {
+    var v = "";
+    try { v = String(localStorage.getItem(CHAT_SOUND_KEY) || ""); } catch (e) { v = ""; }
+    for (var i = 0; i < CHAT_SOUNDS.length; i++) if (CHAT_SOUNDS[i][0] === v) return v;
+    return "ping";                       // الافتراضي: عالي وواضح (طلب المالك «صوت عالى»)
+  }
+  function chatSetSoundId(v) {
+    try { localStorage.setItem(CHAT_SOUND_KEY, String(v || "ping")); } catch (e) { }
+  }
+
+  // AudioContext بيتعمل lazily ومفتوح بأول لمسة مستخدم (سياسة المتصفحات: مافيش صوت قبل تفاعل)
+  var CHAT_ac = null;
+  function chatAudioCtx() {
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      if (!CHAT_ac) CHAT_ac = new AC();
+      if (CHAT_ac.state === "suspended" && CHAT_ac.resume) { try { CHAT_ac.resume(); } catch (e) { } }
+      return CHAT_ac;
+    } catch (e) { return null; }
+  }
+  function chatUnblockAudio() {
+    if (typeof window.addEventListener !== "function") return;
+    var go = function () {
+      chatAudioCtx();
+      try { window.removeEventListener("pointerdown", go, true); } catch (e) { }
+      try { window.removeEventListener("keydown", go, true); } catch (e) { }
+    };
+    window.addEventListener("pointerdown", go, true);
+    window.addEventListener("keydown", go, true);
+  }
+  chatUnblockAudio();
+
+  function chatTone(ctx, t0, freq, dur, peak, type) {
+    var o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type || "sine";
+    o.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak || 0.28, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+  function playChatSound(which) {
+    var w = which || chatSoundId();
+    if (w === "off") return false;
+    var ctx = chatAudioCtx();
+    if (!ctx) return false;
+    try {
+      var t = ctx.currentTime + 0.01;
+      if (w === "double") { chatTone(ctx, t, 880, 0.16, 0.30); chatTone(ctx, t + 0.22, 1174, 0.22, 0.30); }
+      else if (w === "bell") {
+        chatTone(ctx, t, 988, 0.5, 0.26, "triangle"); chatTone(ctx, t + 0.06, 1319, 0.45, 0.18, "triangle");
+      }
+      else if (w === "siren") {
+        var o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = "sawtooth"; o.frequency.setValueAtTime(660, t);
+        o.frequency.linearRampToValueAtTime(1180, t + 0.35);
+        o.frequency.linearRampToValueAtTime(660, t + 0.7);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.22, t + 0.04);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
+        o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t + 0.85);
+      }
+      else { chatTone(ctx, t, 1046, 0.18, 0.30); chatTone(ctx, t + 0.05, 1318, 0.3, 0.26); }  // ping
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // حالة اللحظي تُعرض ودّيًا في الشاشة (ومش أي مصطلح تقني)
+  function chatLiveText() {
+    if (CHAT_RT.status === "subscribed" || CHAT_RT.status === "SUBSCRIBED") return "🟢 الرسائل توصلك فور ما تجي";
+    if (CHAT_RT.status === "opening" || CHAT_RT.status === "OPENING" || CHAT_RT.status === "closed-wait") return "🟠 بيتصل…";
+    return "🕐 الرسائل بتتحدّث كل شوية";
+  }
+  function chatPaintLive() {
+    var el = $("#chatLiveDot");
+    if (el) { el.textContent = chatLiveText(); el.className = "chat-live " +
+      ((/^sub/i.test(String(CHAT_RT.status))) ? "on" : /^open/i.test(String(CHAT_RT.status)) ? "wait" : "off"); }
+  }
+
+  function chatSeenHas(id) { return !!CHAT_seenIds[String(id)]; }
+  function chatSeenAdd(id) {
+    if (!id) return;
+    CHAT_seenIds[String(id)] = 1;
+    var k = Object.keys(CHAT_seenIds);
+    if (k.length > 800) { k.slice(0, 400).forEach(function (x) { delete CHAT_seenIds[x]; }); }
+  }
+  function chatSeenReset() { CHAT_seenIds = Object.create(null); }
+
+  /* سطر وصل لحظيًا. الخصوصية محصّلة **كمان** هنا رغم إن السحابة مفلتراة:
+   * لو أي سطر مش ليا (مش منّي ولا إلي) بيتجاهل تمامًا — ولا صوت ولا رسم. */
+  function chatOnRealtimeRow(row) {
+    if (!row) return;
+    var me = String(chatMyId() || "");
+    var from = String(row.from_user || ""), to = String(row.to_user || "");
+    if (!me || (to !== me && from !== me)) return;
+    var dup = chatSeenHas(row.id);
+    chatSeenAdd(row.id);
+    var already = (CHAT.msgs || []).some(function (m) { return String(m.id) === String(row.id); });
+    if (to === me) {
+      if (!dup) playChatSound();                       // تنبيه مرة واحدة لكل رسالة واردة فعلية
+      if (!dup || !already) {
+        var v = $("#viewChat");
+        var openHere = v && !v.hidden;
+        if (openHere && CHAT.peerId && (from === String(CHAT.peerId))) {
+          if (!already) { CHAT.msgs.push(row); chatRenderThread(); chatMarkIncomingRead(); }
+        }
+        Promise.resolve(chatPollUnread()).catch(function () { });
+        chatUpdateBadge();
+      }
+    } else if (openSelfSent(row)) {
+      // صدّى رسالتي أنا (بما فيها البث): نلحقها في الخيط لو لسه ما وصلت بالـ insert
+      if (!already) { CHAT.msgs.push(row); chatRenderThread(); }
+    }
+  }
+  // الصدّى مسموح في **خيط صاحبه بالظبط**: الشاشة مفتوحة + زميل محدد + السطر منّي
+  // وراسله لنفس الزميل المعروض. من غير الشرطين دول رسالة بعتها لواحد بتظهر عند
+  // واحد تاني قدامي — وده تسريب مش شكل حلو (بناء 136، متعاير في check_realtime_48).
+  function openSelfSent(row) {
+    var v = $("#viewChat");
+    if (!v || v.hidden || !CHAT.peerId) return false;
+    var me = String(chatMyId() || "");
+    if (!me) return false;
+    if (String((row && row.from_user) || "") !== me) return false;
+    return String((row && row.to_user) || "") === String(CHAT.peerId);
+  }
+
+  function chatRtStart() {
+    var CL = window.CLOUD || {};
+    if (!CL.chatSubscribe || !chatAvailable()) { CHAT_RT.status = "off"; chatPaintLive(); return false; }
+    var okStart = false;
+    try {
+      okStart = !!CL.chatSubscribe(chatOnRealtimeRow, function (s) {
+        CHAT_RT.status = String(s || "unknown").toLowerCase();
+        chatPaintLive();
+      });
+    } catch (e) { okStart = false; }
+    if (!okStart && CHAT_RT.status === "off") chatPaintLive();
+    return okStart;
+  }
+  function chatRtStop() {
+    var CL = window.CLOUD || {};
+    try { if (CL.chatUnsubscribe) CL.chatUnsubscribe(); } catch (e) { }
+    CHAT_RT.status = "off";
+  }
+
+  /* 📢 بناء 136 (سطر ٢٠-ب): بث المالك «رسالة للكل». الدالة على السحابة (`mizan_chat_broadcast`،
+   * ترقية ٤٧) بترفض أي حساب مش المالك العام **قبل أي كتابة**، وبتفتح سطر مستقل لكل مستلم في
+   * نفس دائرة الخصوصية — فمافيش أي باب جديد ولا رسالة بتخترق حد. الزرار ده **للمالك بس**. */
+  function chatCanBroadcast() { return isSuperAcct() && chatAvailable(); }
+  function chatBcastOn() { return !!CHAT.broadcast; }
+  function chatPaintBcast() {
+    var btn = $("#btnChatBroadcast"), send = $("#btnChatSend"), hint = $("#chatBcastHint");
+    if (btn) {
+      btn.hidden = !chatCanBroadcast();
+      btn.classList.toggle("on", chatBcastOn());
+      btn.textContent = chatBcastOn() ? "📢 البث مُفعّل" : "📢 رسالة للكل";
+    }
+    if (send) send.textContent = chatBcastOn() ? "➤ بث للكل" : "➤ إرسال";
+    if (hint) hint.textContent = chatBcastOn()
+      ? "هذي بتوصل لكل اللي في دائرتك (نفس قواعد الخصوصية) — سطر لكل واحد" : "";
+    chatUpdateSend();
+  }
+  function chatFlipBcast() {
+    if (!chatCanBroadcast()) { toast("البث ده لحساب المالك", "error"); return; }
+    CHAT.broadcast = !CHAT.broadcast;
+    chatPaintBcast();
+    if (CHAT.broadcast) chatHint("اختار «➤ بث للكل» يوصّل الرسالة لكل دائرتك", "");
+  }
+  function chatSendBroadcast(txt, priv) {
+    var CL = window.CLOUD || {};
+    if (!CL.chatBroadcast) { chatHint("البث مش متاح على هذا الحساب", "err"); return Promise.resolve(); }
+    return Promise.resolve(CL.chatBroadcast(txt, priv)).then(function (r) {
+      if (!r || !r.ok) {
+        if (r && r.missing) { chatShowUnavailable(); return; }
+        chatHint((r && r.error) || "الرسالة ما وصلتش — جرّب تاني", "err");
+        chatUpdateSend();
+        return;
+      }
+      CHAT.broadcast = false;
+      var ta = $("#txtChatMsg"); if (ta) ta.value = "";
+      chatPaintBcast();
+      chatHint("✅ وصلت لـ " + (r.sent || 0) + " من زملائك", "ok");
+      Promise.resolve(chatPollUnread()).catch(function () { });
+      chatLoadPeers().catch(function () { });
+    }).catch(function () { chatHint("الرسالة ما وصلتش — جرّب تاني", "err"); chatUpdateSend(); });
+  }
+
   // الدردشة سحابية خالص: الحساب المحلي/التجريبي ملوش دردشة، ولازم شركة حقيقية.
   function chatCloudAcct() {
     var DE = window.DATA || {};
@@ -11683,8 +11900,12 @@ const pwEye = document.getElementById("btnShowPass");
     }
     box.innerHTML = list.map(function (p) {
       var un = Number(CHAT.unread[p.id]) || 0;
+      // 🟢 بناء 136 (سطر ٢٠-د): نقطة خضرا على المتصل فعلًا — من `mizan_chat_peers` نفسها
+      // (presence.last_seen >= الآن − ١١٠ ثانية)، فالقياس من السحابة مش من الجهاز.
+      var on = !!p.is_online;
       return '<button type="button" class="chat-peer' + (p.id === CHAT.peerId ? " on" : "") +
         '" data-peer="' + esc(p.id) + '">' +
+        '<span class="chat-dot' + (on ? " on" : "") + '" title="' + (on ? "متصل دلوقتي" : "مش متصل دلوقتي") + '"></span>' +
         '<span class="chat-peer-name">' + esc(chatPeerName(p)) +
         (p.is_superadmin ? ' <span class="chat-tag">المالك</span>' : (p.is_owner ? ' <span class="chat-tag">صاحب المؤسسة</span>' : "")) +
         "</span>" +
@@ -11707,7 +11928,9 @@ const pwEye = document.getElementById("btnShowPass");
     var ta = $("#txtChatMsg");
     if (!btn) return;
     var hasTxt = !!(ta && String(ta.value || "").trim().length);
-    btn.disabled = !(CHAT.peerId && hasTxt && chatAvailable());
+    // في وضع البث مافيش «زميل» محدد — الرسالة بتروح للدائرة كلها (والسحابة بتتأكد من الحساب)
+    var targetOk = chatBcastOn() ? true : !!CHAT.peerId;
+    btn.disabled = !(hasTxt && targetOk && chatAvailable());
   }
 
   function chatRenderThread() {
@@ -11840,6 +12063,11 @@ const pwEye = document.getElementById("btnShowPass");
       chatHint("الدردشة محتاجة اتصال بالإنترنت وحساب على السحابة", "err");
       return;
     }
+    var txt0 = String(ta.value || "").trim();
+    if (chatBcastOn()) {                                   // 📢 وضع البث (مالك البرنامج بس)
+      if (!txt0) { chatHint("اكتب الرسالة الأول", "err"); chatUpdateSend(); return; }
+      return Promise.resolve(chatSendBroadcast(txt0, !!(priv && priv.checked)));
+    }
     if (!CHAT.peerId) { chatHint("اختار زميل الأول", "err"); return; }
     var txt = String(ta.value || "").trim();
     if (!txt) { chatHint("اكتب الرسالة الأول", "err"); chatUpdateSend(); return; }
@@ -11956,6 +12184,10 @@ const pwEye = document.getElementById("btnShowPass");
   // مسح كامل لحالة الدردشة من الذاكرة (خروج / تبديل شركة) — مافيش بقايا رسايل
   function chatWipe(reason) {
     chatStopPoll();
+    // 🟢 بناء 136: الاشتراك اللحظي بيتقطع هو كمان — ومنع إعادة استخدامه بعد التبديل
+    chatRtStop();
+    chatSeenReset();
+    CHAT.broadcast = false;
     // 🧱 بناء 132: الخروج/تبديل company = العدّاد والـ ticker بتاعه يقفوا (بيرجعون مع الدخول)
     chatStopBadgeTicker();
     CHAT.peers = [];
@@ -12003,6 +12235,19 @@ const pwEye = document.getElementById("btnShowPass");
     });
     var sw = $("#btnChatScope");
     if (sw) sw.addEventListener("click", chatFlipScope);
+    // 🆕 بناء 136: بث المالك + اختيار النغمة (النغمة تفضيل على الجهاز، مافيش فيها أي نص رسالة)
+    var bc = $("#btnChatBroadcast");
+    if (bc) bc.addEventListener("click", chatFlipBcast);
+    var snd = $("#selChatSound");
+    if (snd) {
+      snd.addEventListener("change", function () {
+        chatSetSoundId(snd.value);
+        if (snd.value !== "off") playChatSound(snd.value);   // يسمع النغمة وهو بيختارها
+        chatHint("🔊 تمام، الرسايل الجاية بتعمل هذا الصوت", "ok");
+      });
+    }
+    var tst = $("#btnChatSoundTest");
+    if (tst) tst.addEventListener("click", function () { playChatSound(chatSoundId()); });
     // «خاص» مفعّل افتراضيًا: الراحة البال للموظف. (الخصوصية نفسها مش متوقفة على
     // الصندوق — سياسة SELECT على السحابة بتقفلها لأي حد غير الطرفين مهما كان.)
     var priv = $("#chkChatPrivate");
@@ -12015,6 +12260,8 @@ const pwEye = document.getElementById("btnShowPass");
       if (cols) cols.hidden = true;
       if (note) note.hidden = false;
       chatStopPoll();
+      chatRtStop();
+      chatPaintLive();
       chatUpdateBadge();
       return;
     }
@@ -12026,8 +12273,16 @@ const pwEye = document.getElementById("btnShowPass");
       sw.hidden = !chatCanSwitchScope();
       if (!sw.hidden) sw.textContent = chatScopeLabel();
     }
+    // 🔊 النغمة المحفوظة تظهر في القائمة + الحالة تتارسم
+    var snd = $("#selChatSound");
+    if (snd) snd.value = chatSoundId();
+    CHAT.broadcast = false;
+    chatPaintBcast();
+    chatPaintLive();
     chatRenderPeers();
     chatRenderThread();
+    // 🟢 اللحظي (ترقية ٤٨): اشتراك واحد على INSERT، والـ polling يفضل وراه احتياطي
+    chatRtStart();
     chatLoadPeers().then(chatPollUnread).then(function () { chatStartPoll(); });
   }
 

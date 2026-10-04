@@ -1794,8 +1794,30 @@ td.c-tax.tax-hidden {
 .chat-peer:hover { background: var(--bg); }
 .chat-peer.on { background: var(--sel-bg); }
 .chat-peer.on .chat-peer-name { color: var(--sel-fg); }
-.chat-peer-name { display: block; font-size: 13px; font-weight: 700; }
+.chat-peer-name { display: inline-block; font-size: 13px; font-weight: 700; }
 .chat-peer-org { display: block; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+/* 🟢 بناء 136 (سطر ٢٠-د): نقطة الحالة للمتصل فعلًا — قياسها من السحابة (presence.last_seen) */
+.chat-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  margin-inline-end: 6px;
+  vertical-align: middle;
+}
+.chat-dot.on { background: var(--success); box-shadow: 0 0 0 2px rgba(16, 185, 129, .18); }
+/* 🟢 حالة الوصول (لحظي / بيتصل / دوري) — نص ودّي بلا أي مصطلح تقني */
+.chat-live {
+  padding: 5px 12px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.chat-live.on { color: var(--success); }
+.chat-live.wait { color: var(--warning); }
 .chat-peer-unread {
   position: absolute;
   margin-inline-start: 6px;
