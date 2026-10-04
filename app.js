@@ -7621,7 +7621,9 @@
     const from = $("#dtpRepFrom").value || "2000-01-01";
     const to = $("#dtpRepTo").value || "2999-12-31";
     const rows = [["صنف", "الكمية", "القيمة"]];
-    $("#dgvRepSales tbody tr").forEach((tr) => rows.push([tr.cells[0].textContent, tr.cells[1].textContent, tr.cells[2].textContent]));
+    // بناء 138: `$` = querySelector (عنصر واحد) ⇒ `$(...).forEach` كان بيرمي TypeError وما بينزّلش ملف.
+    // التصدير لازم يمرّ على كل أسطر الجدول ⇒ querySelectorAll.
+    document.querySelectorAll("#dgvRepSales tbody tr").forEach((tr) => rows.push([tr.cells[0].textContent, tr.cells[1].textContent, tr.cells[2].textContent]));
     downloadCSV("reports-" + from + "_" + to + ".csv", rows);
     toast("تم تنزيل ملف Excel للتقارير.", "success");
   }
@@ -7707,7 +7709,8 @@
 
   function exportAudit() {
     const rows = [["الوقت", "المستخدم", "العملية", "البيان"]];
-    $("#dgvAudit tbody tr").forEach((tr) => rows.push(Array.from(tr.cells || []).map((c) => c.textContent)));
+    // بناء 138: نفس العطب في زرار تصدير «سجل العمليات» — `$` بترجّع عنصر واحد فـ forEach بيموت.
+    document.querySelectorAll("#dgvAudit tbody tr").forEach((tr) => rows.push(Array.from(tr.cells || []).map((c) => c.textContent)));
     downloadCSV("audit-log.csv", rows);
     toast("تم تنزيل سجل العمليات.", "success");
   }
