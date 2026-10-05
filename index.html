@@ -419,6 +419,7 @@
             <button id="btnAddProduct" class="btn green" type="button">➕ إضافة صنف جديد للمخزن</button>
             <button id="btnStockTake" class="btn orange" type="button">📋 جرد المخزون لكل مستودع</button>
             <button id="btnTransferStock" class="btn blue" type="button">🔃 نقل أصناف بين المخازن</button>
+            <button id="btnGenBarcodes" class="btn teal" type="button" title="يشغّل باركود للأصناف اللي ملهاش رقم — أي باركود موجود ما بيتلمسش">🔳 تشغيل باركود للأصناف الناقصة</button>
           </div>
           <h1 class="view-title">🏷️ دليل الأصناف وإدارة المخزون والتكاليف</h1>
         </div>
@@ -2035,6 +2036,18 @@
         <div class="inv-foot-print" id="fxpFoot"></div>
       </section>
 
+      <!-- 🔳 صفحة ملصقات الباركود للطباعة (بناء 139) -->
+      <section class="print-only statement-page" id="barcodePage">
+        <div class="statement-head">
+          <div class="inv-brand-name" id="bcpOrgName"></div>
+          <h2>🏷️ ملصقات الباركود: <span id="bcpItemName"></span></h2>
+          <p id="bcpMeta"></p>
+          <p>تاريخ الطباعة: <span id="bcpDate"></span></p>
+        </div>
+        <div class="bc-labels" id="bcpLabels"></div>
+        <div class="inv-foot-print" id="bcpFoot"></div>
+      </section>
+
     </main>
   </div>
 
@@ -2236,7 +2249,13 @@
         <label for="fPCode">كود الصنف الفريد: *</label>
         <input type="text" id="fPCode" autocomplete="off" />
         <label for="fPBarcode">رقم الباركود:</label>
-        <input type="text" id="fPBarcode" autocomplete="off" />
+        <div class="bc-field">
+          <input type="text" id="fPBarcode" autocomplete="off" placeholder="اكتب رقم باركود المصنع، أو اضغط «توليد»" />
+          <button id="btnGenOneBarcode" class="btn small teal" type="button" title="يملى الخانة برقم باركود لو فاضية — ما يغيّرش على رقم مكتوب">🔳 توليد</button>
+        </div>
+        <div class="bc-preview-row">
+          <div id="bcPreviewBox" class="bc-preview"></div>
+        </div>
         <label for="fPNameAr">اسم الصنف بالعربية: *</label>
         <input type="text" id="fPNameAr" autocomplete="off" />
         <label for="fPNameEn">اسم الصنف بالإنجليزية:</label>
@@ -2268,6 +2287,25 @@
       <div class="modal-actions">
         <button id="btnCancelProduct" class="btn gray" type="button">إلغاء</button>
         <button id="btnSaveProduct" class="btn blue" type="button">💾 حفظ الصنف</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🔳 نافذة طباعة ملصق الباركود (بناء 139) -->
+  <div class="modal-overlay" id="mBarcodePrint" hidden>
+    <div class="modal m560" id="mBarcodePrintBox">
+      <h3>🏷️ طباعة ملصق الباركود</h3>
+      <div class="bc-print-name" id="bcPrintName"></div>
+      <div class="bc-print-meta" id="bcPrintMeta"></div>
+      <div class="bc-print-preview" id="bcPrintPreview"></div>
+      <div class="bc-print-code">رقم الباركود: <b id="bcPrintValue"></b></div>
+      <div class="form-grid">
+        <label for="bcQty">عدد الملصقات:</label>
+        <input type="text" id="bcQty" value="1" autocomplete="off" inputmode="numeric" />
+      </div>
+      <div class="modal-actions">
+        <button id="btnCancelBarcodePrint" class="btn gray" type="button">إلغاء</button>
+        <button id="btnPrintBarcode" class="btn teal" type="button">🖨️ طباعة الملصقات</button>
       </div>
     </div>
   </div>

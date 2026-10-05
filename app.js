@@ -1461,6 +1461,7 @@
     treStmtPage: "كشف الخزينة",
     attReportPage: "تقرير الحضور والانصراف",
     fixedAssetsPage: "سجل الأصول الثابتة",
+    barcodePage: "ملصقات الباركود",
   };
   const PAPER_TITLE_FALLBACK = "مستند"; // بلا اسم منتج ولا اسم شخص
   let screenDocTitle = "";
@@ -1488,7 +1489,7 @@
     // اسم الشركة من الضبط (لكل شركة على حدة) يظهر في كل صفحات الطباعة
     // ملاحظة: صفحتا الفاتورة (بيع/شراء) تملآن ترويستهما بنفسها احترامًا لصناديق «على الفاتورة».
     const org = invOrgName();
-    [["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"]].forEach(([id]) => {
+    [["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"], ["bcpOrgName"]].forEach(([id]) => {
       const x = document.getElementById(id);
       if (x) x.textContent = org;
     });
@@ -2738,6 +2739,302 @@
     printSection($("#statementPage"));
   }
 
+  /* ══════════════════════════════════════════════════════════════════════
+     🔳 الباركود — بناء 139 (CODE 128 · Set B · دولجين في المتصفح)
+     ══════════════════════════════════════════════════════════════════════
+     أمر المالك الحرفي (04/10): «توليد الباركود للأصناف (إضافة + الموجودين)
+     + زرار طباعة الباركود قدام كل صنف بالمخزون».
+     ليه من غير مكتبة: الحزمة المنشورة على GitHub Pages بتضل ملفات العشرة
+     بتوعها بالظبط (مافيش dependency خارجي ولا CDN)، وجدول CODE-128 قياسي
+     ومغلق: 107 رمز فقط ⇒ يبقى سطرًا في الكود بدل مكتبة.
+     حصانة البيانات (قاعدة المالك «متحذفش بيانات موجودة»): أي صنف ليه باركود
+     مصنع ⇒ **ممنوع لمسه**. التوليد بيملّى الفراغ بس، وممنوع أي رقم يتكرر
+     جوه نفس الشركة (الرقم المكرّر بيخلّي الإسكانر ما يفرّقش بين صنفين) ⇒
+     الحفظ يرفض برسالة ودّية باسم الصنف التاني.
+     رقم «ميزان» الداخلي: ‹200› + رقم الصنف (9 أرقام) + رقم تحقق GS1 = 13 رقم.
+     ‹200› اختياري لأن GS1 سيّس النطاق 200-299 للاستخدام الداخلي للمحلات،
+     فمستحيل يصطدم مع باركود مصنع حقيقي؛ ورقم التحقق بيخلي الإسكانر يرفض
+     أي قراءة ناقصة أو غلط قبل ما تدخل الفاتورة. */
+  const BC128_BARS = [
+    "11011001100", "11001101100", "11001100110", "10010011000", "10010001100",
+    "10001001100", "10011001000", "10011000100", "10001100100", "11001001000",
+    "11001000100", "11000100100", "10110011100", "10011011100", "10011001110",
+    "10111001100", "10011101100", "10011100110", "11001110010", "11001011100",
+    "11001001110", "11011100100", "11001110100", "11101101110", "11101001100",
+    "11100101100", "11100100110", "11101100100", "11100110100", "11100110010",
+    "11011011000", "11011000110", "11000110110", "10100011000", "10001011000",
+    "10001000110", "10110001000", "10001101000", "10001100010", "11010001000",
+    "11000101000", "11000100010", "10110111000", "10110001110", "10001101110",
+    "10111011000", "10111000110", "10001110110", "11101110110", "11010001110",
+    "11000101110", "11011101000", "11011100010", "11011101110", "11101011000",
+    "11101000110", "11100010110", "11101101000", "11101100010", "11100011010",
+    "11101111010", "11001000010", "11110001010", "10100110000", "10100001100",
+    "10010110000", "10010000110", "10000101100", "10000100110", "10110010000",
+    "10110000100", "10011010000", "10011000010", "10000110100", "10000110010",
+    "11000010010", "11001010000", "11110111010", "11000010100", "10001111010",
+    "10100111100", "10010111100", "10010011110", "10111100100", "10011110100",
+    "10011110010", "11110100100", "11110010100", "11110010010", "11011011110",
+    "11011110110", "11110110110", "10101111000", "10100011110", "10001011110",
+    "10111101000", "10111100010", "11110101000", "11110100010", "10111011110",
+    "10111101110", "11101011110", "11110101110", "11010000100", "11010010000",
+    "11010011100", "1100011101011"
+  ];
+  const BC128_START_B = 104;     // بداية Set B
+  const BC128_STOP = 106;        // رمز الوقوف (13 وحدة — أطول من باقي الرموز)
+  const BC128_MODULO = 103;      // قالب رقم المراجعة
+  const BC128_MIN_CH = 32;       // Set B = ASCII 32..126 (أرقام + حروف إنجليزي + رموز)
+  const BC128_MAX_CH = 126;
+  const BC_PREFIX = "200";       // الاستخدام الداخلي (GS1)
+  const BC_ID_DIGITS = 9;        // 3 + 9 + 1 = 13 خانة
+  const BC_LABELS_MAX = 60;      // سقف الملصقات في الطباعة الواحدة
+
+  // قيمة الرمز في Set B = رقم الـ ASCII مطروح منه 32
+  function bc128Value(ch) {
+    const c = ch.charCodeAt(0);
+    if (c < BC128_MIN_CH || c > BC128_MAX_CH) return -1;
+    return c - BC128_MIN_CH;
+  }
+
+  /* سلسلة الوحدات (1 = أسود / 0 = أبيض): بداية + البيانات + المراجعة + وقوف.
+     أي حرف خارج Set B ⇒ رجوع فاضي — ممنوع تخمين أو إبدال حرف بصورته. */
+  function bc128Bits(text) {
+    const s = String(text == null ? "" : text);
+    if (!s.length) return "";
+    let bits = "", sum = BC128_START_B, pos = 1;
+    for (let i = 0; i < s.length; i++) {
+      const v = bc128Value(s.charAt(i));
+      if (v < 0) return "";
+      bits += BC128_BARS[v];
+      sum += v * pos;
+      pos++;
+    }
+    return BC128_BARS[BC128_START_B] + bits + BC128_BARS[sum % BC128_MODULO] + BC128_BARS[BC128_STOP];
+  }
+
+  // رسم SVG: مستطيل لكل مجموعة «1» متتالية ⇒ حاد على أي مقاس ورق وبلا أي صورة
+  function barcodeSvg(text, o) {
+    const bits = bc128Bits(text);
+    if (!bits) return "";
+    const opts = o || {};
+    const mw = Number(opts.mw) > 0 ? Number(opts.mw) : 0.26;   // عرض الوحدة (mm)
+    const h = Number(opts.h) > 0 ? Number(opts.h) : 10;        // ارتفاع الخطوط (mm)
+    const qz = Number(opts.qz) >= 0 ? Number(opts.qz) : 10;    // منطقة الصمت يمين وشمال
+    const units = bits.length + qz * 2;
+    let rects = "", k = 0;
+    while (k < bits.length) {
+      if (bits.charAt(k) === "1") {
+        let e = k;
+        while (e < bits.length && bits.charAt(e) === "1") e++;
+        rects += '<rect x="' + (qz + k) + '" y="0" width="' + (e - k) + '" height="' + h + '"/>';
+        k = e;
+      } else k++;
+    }
+    return '<svg class="bc-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="باركود" ' +
+      'viewBox="0 0 ' + units + ' ' + h + '" width="' + (units * mw).toFixed(2) + 'mm" height="' + h + 'mm" ' +
+      'preserveAspectRatio="none" fill="#000" shape-rendering="crispEdges">' + rects + '</svg>';
+  }
+
+  // رقم التحقق GS1 (mod 10): الوزن 3 بيتحسب **من اليمين** — الخانة اللي على شمال
+  // رقم التحقق ضرب 3، وبعدين 1 و3 بالتبادل وهي طالع للشمال. الفرق مش شكلي: في GTIN-13
+  // (12 خانة بيانات) أول خانة شمال وزنها 1، وفي EAN-8 (7 خانات) أول خانة وزنها 3.
+  // لو حسبتها من الشمال غلط، الأرقام بتاعتنا تبان «باركود غير صحيح» لأي إسكانر أو
+  // برنامج بيحقق رقم التحقق، وده كان هيضرب في المسح بالباركود (بناء 140).
+  function gs1CheckDigit(body) {
+    const s = String(body == null ? "" : body);
+    if (!/^[0-9]+$/.test(s)) return "";
+    let sum = 0;
+    for (let i = 0; i < s.length; i++) {
+      const weight = ((s.length - 1 - i) % 2 === 0) ? 3 : 1;
+      sum += Number(s.charAt(i)) * weight;
+    }
+    return String((10 - (sum % 10)) % 10);
+  }
+
+  /* رقم «ميزان» الداخلي للصنف — مشتق من `id` لأنه هو الهوية العابرة للأجهزة
+     (cloud.js بيشحن local_id = id)، فالرقم بيطلع نفسه على كل جهاز وبيفضل ثابت. */
+  function internalBarcode(id) {
+    const n = Number(id);
+    if (!Number.isFinite(n) || Math.floor(n) !== n || n < 1 || n > 999999999) return "";
+    const body = BC_PREFIX + String(n).padStart(BC_ID_DIGITS, "0");
+    const cd = gs1CheckDigit(body);
+    if (!cd) return "";
+    return body + cd;
+  }
+
+  /* تنضيف الرقم: أرقام عربية → إنجليزي + شيل المسافات وعلامات الاتجاه.
+     **ممنوع normalizeAr هنا** — هو بيرجّل الحروف لإنجليزي صغير، وCODE-128
+     بيحسّ بالفرق بين «A» و«a» ⇒ رقم المصنع كان بيتغير ومينفعش إسكانر يقرأه. */
+  function bcDigits(v) {
+    let s = String(v == null ? "" : v);
+    s = s.replace(/[٠-٩]/g, (c) => String(c.charCodeAt(0) - 0x0660));
+    s = s.replace(/[۰-۹]/g, (c) => String(c.charCodeAt(0) - 0x06F0));
+    s = s.replace(/[\u200E\u200F\u202A-\u202E\uFEFF]/g, "");
+    return s.replace(/\s+/g, "");
+  }
+
+  function productHasBarcode(p) {
+    return !!(p && bcDigits(p.barcode) !== "");
+  }
+
+  // الصنف التاني اللي شايل نفس الرقم (ممنوع تكرار الباركود جوه الشركة)
+  function barcodeConflictOf(code, exceptId) {
+    const b = bcDigits(code);
+    if (!b) return null;
+    return products.find((p) => p.id !== exceptId && bcDigits(p.barcode) === b) || null;
+  }
+
+  /* التوليد الجماعي: اللي ملوش باركود بس ⇒ ياخد رقم ميزان.
+     الموجود ما بيتلمسش، والمكرّر بيتسجّل في `skipped` عشان يظهر في الرسالة. */
+  function generateMissingBarcodes() {
+    const made = [], skipped = [];
+    const used = new Set();
+    products.forEach((p) => { const b = bcDigits(p.barcode); if (b) used.add(b); });
+    products.forEach((p) => {
+      if (bcDigits(p.barcode) !== "") return;
+      const cand = internalBarcode(p.id);
+      if (!cand) { skipped.push(p); return; }
+      if (used.has(cand)) { skipped.push(p); return; }
+      p.barcode = cand;
+      used.add(cand);
+      made.push(p);
+    });
+    return { made: made, skipped: skipped };
+  }
+
+  function doGenerateBarcodes() {
+    const r = generateMissingBarcodes();
+    if (!r.made.length) {
+      toast(r.skipped.length
+        ? ("مافيش صنف اتغيّر — " + r.skipped.length + " صنف محتاج رقم باركود مختلف (اكتبه من تعديل الصنف).")
+        : "كل الأصناف عندها باركود فعلًا — مافيش حاجة اتغيّرت.", r.skipped.length ? "warning" : "info");
+      return;
+    }
+    saveProducts();
+    renderProducts();
+    addActivity("باركود", "توليد رقم باركود لـ " + r.made.length + " صنف (أي باركود موجود ما اتلمسش)");
+    toast("تم توليد باركود لـ " + r.made.length + " صنف." +
+      (r.skipped.length ? " و" + r.skipped.length + " صنف محتاج رقم مختلف — اكتبه من «تعديل الصنف»." : ""),
+      r.skipped.length ? "warning" : "success");
+  }
+
+  // معاينة الباركود جوه نافذة الصنف (حيّ مع الكتابة)
+  function renderBarcodePreview() {
+    const box = $("#bcPreviewBox");
+    if (!box) return;
+    const code = bcDigits($("#fPBarcode").value);
+    if (!code) {
+      box.innerHTML = '<span class="bc-preview-empty">لما تكتب رقم أو تضغط «توليد»، الباركود بيظهر هنا.</span>';
+      return;
+    }
+    const svg = barcodeSvg(code, { mw: 0.2, h: 8 });
+    box.innerHTML = svg
+      ? svg + '<span class="bc-hrt">' + esc(code) + '</span>'
+      : '<span class="bc-none">الرقم ده ما بيتحوّرش لباركود — يستخدم أرقام أو حروف إنجليزي بس.</span>';
+  }
+
+  /* زرار «🔳 توليد» جوه النافذة: بيملّى الخانة الفاضية بس.
+     لو فيه رقم مكتوب ⇒ ما يتغيّرش (احترام باركود المصنع) والرسالة بتقول تمسحه لو عايز. */
+  function generateBarcodeInDialog() {
+    const cur = bcDigits($("#fPBarcode").value);
+    if (cur) {
+      toast("الخانة فيها رقم باركود فعلًا — «ميزان» ما يغيّرش على رقم مكتوب. امسحها لو عايز رقم ميزان.", "info");
+      return;
+    }
+    const id = editingProductId == null ? nextProductId() : editingProductId;
+    const cand = internalBarcode(id);
+    if (!cand) {
+      toast("مقدرش أعمل رقم باركود دلوقتي — اكتب رقمًا بدل كده.", "warning");
+      return;
+    }
+    const clash = barcodeConflictOf(cand, editingProductId);
+    if (clash) {
+      toast("الرقم ده بقى مستخدم في صنف تاني: " + (clash.nameAr || clash.code) + " — اكتب رقم مختلف.", "warning");
+      return;
+    }
+    $("#fPBarcode").value = cand;
+    renderBarcodePreview();
+    toast("ده رقم باركود «ميزان» للصنف — بيتحفظ مع حفظ الصنف.", "success");
+  }
+
+  /* ══ طباعة ملصقات الباركود ══ */
+  let bcPrintProduct = null;
+
+  // مقاس الخط على الورق: A4 عادي، A5 أضيق، والحراري ضيق جدًا
+  function bcLabelScale() {
+    const z = printPaperSize();
+    return z === "thermal" ? { mw: 0.2, h: 8 } : z === "a5" ? { mw: 0.22, h: 9 } : { mw: 0.26, h: 10 };
+  }
+
+  function bcLabelNode(p, code, org) {
+    const d = document.createElement("div");
+    d.className = "bc-label";
+    d.innerHTML =
+      '<div class="bc-org">' + esc(org) + '</div>' +
+      '<div class="bc-name">' + esc(p.nameAr || p.code || "") + '</div>' +
+      '<div class="bc-meta">' + esc(String(p.code || "")) + " · " + esc(String(p.unit || "")) + " · " + esc(fmt(Number(p.salePrice) || 0)) + '</div>' +
+      '<div class="bc-bars">' + barcodeSvg(code, bcLabelScale()) + '</div>' +
+      '<div class="bc-hrt">' + esc(code) + '</div>';
+    return d;
+  }
+
+  /* زرار 🏷️ قدام كل صنف: لو ملوش باركود بيتولّدله واحد (الفراغ بس) وبعدها
+     تفتح نافذة الطباعة بعدد الملصقات. */
+  function openBarcodePrint(p) {
+    if (!p) return;
+    if (!productHasBarcode(p)) {
+      const cand = internalBarcode(p.id);
+      if (!cand || barcodeConflictOf(cand, p.id)) {
+        toast("الصنف ده ملوش باركود سليم — اكتب له رقم في «تعديل الصنف» الأول.", "warning");
+        openProductDialog(p);
+        return;
+      }
+      p.barcode = cand;
+      saveProducts();
+      renderProducts();
+      addActivity("باركود", "توليد رقم باركود للطباعة للصنف: " + (p.nameAr || p.code) + " (" + p.code + ")");
+    }
+    const code = bcDigits(p.barcode);
+    const svg = barcodeSvg(code, { mw: 0.2, h: 8 });
+    bcPrintProduct = p;
+    $("#bcPrintName").textContent = p.nameAr || p.code || "";
+    $("#bcPrintMeta").textContent = "الكود " + (p.code || "—") + " · " + (p.unit || "—") + " · " + fmt(Number(p.salePrice) || 0);
+    $("#bcPrintValue").textContent = code;
+    $("#bcPrintPreview").innerHTML = svg
+      ? svg + '<span class="bc-hrt">' + esc(code) + '</span>'
+      : '<span class="bc-none">الرقم ده ما بيتحوّرش لباركود — يستخدم أرقام أو حروف إنجليزي بس.</span>';
+    $("#bcQty").value = "1";
+    showModal("mBarcodePrint");
+    $("#bcQty").select();
+  }
+
+  function printBarcodeLabels() {
+    const p = bcPrintProduct;
+    if (!p) { toast("اقفل النافذة وافتح الطباعة من زرار «🏷️ طباعة» قدام الصنف.", "warning"); return; }
+    const code = bcDigits(p.barcode);
+    if (!bc128Bits(code)) {
+      toast("الرقم «" + (code || "فاضي") + "» ما بيتحوّرش لباركود — يستخدم أرقام أو حروف إنجليزي بس.", "warning");
+      return;
+    }
+    // bcDigits بتحوّل الأرقام العربية/الفارسية لإنجليزي وتشيل علامات الاتجاه
+    // (نفس تسامح خانات المبالغ في بناء 118 ⇒ «٣» تطلع 3 ملصقات مش رسالة غلط).
+    const n = parseInt(bcDigits($("#bcQty").value).replace(/[^0-9]/g, ""), 10);
+    if (!Number.isFinite(n) || n < 1) { toast("اكتب عدد الملصقات: 1 أو أكتر.", "warning"); return; }
+    if (n > BC_LABELS_MAX) { toast("أقصى عدد في الطباعة الواحدة " + BC_LABELS_MAX + " ملصق — كمّل الباقي في طباعة تانية.", "warning"); return; }
+    const d = new Date(), z = (x) => String(x).padStart(2, "0");
+    $("#bcpItemName").textContent = p.nameAr || p.code || "";
+    $("#bcpMeta").textContent = "الكود " + (p.code || "—") + " · " + (p.unit || "—") + " · " + fmt(Number(p.salePrice) || 0) +
+      " · عدد الملصقات: " + n;
+    $("#bcpDate").textContent = z(d.getDate()) + "/" + z(d.getMonth() + 1) + "/" + d.getFullYear() + " " + z(d.getHours()) + ":" + z(d.getMinutes());
+    const box = $("#bcpLabels");
+    box.innerHTML = "";
+    const org = invOrgName();
+    for (let i = 0; i < n; i++) box.appendChild(bcLabelNode(p, code, org));
+    $("#bcpFoot").innerHTML = "الباركود ده بتاع «" + esc(org) + "» للاستخدام الداخلي، وبيقرأ بأي إسكانر.";
+    hideModal("mBarcodePrint");
+    renderProducts();
+    printSection($("#barcodePage"));
+  }
+
   /* ================== شاشة الأصناف والمخزون ================== */
   let editingProductId = null;
 
@@ -2968,7 +3265,9 @@
       const stockDetail = WAREHOUSES.map((w) => Number(stockAt(p, w)).toLocaleString("en-US") + "@" + w).join("   ");
       tr.innerHTML =
         '<td>' + esc(p.code) + '</td>' +
-        '<td>' + esc(p.barcode || "-") + '</td>' +
+        '<td class="cell-barcode">' + (bcDigits(p.barcode)
+          ? '<span class="bc-num">' + esc(bcDigits(p.barcode)) + '</span>'
+          : '<span class="bc-missing">— بلا باركود</span>') + '</td>' +
         '<td>' + esc(p.nameAr) + '<div class="stk-mini">' + esc(stockDetail) + '</div></td>' +
         '<td>' + esc(p.category) + '</td>' +
         '<td>' + esc(p.unit) + '</td>' +
@@ -2979,10 +3278,12 @@
         '<td>' + discBadge + '</td>' +
         '<td>' + stBadge + '</td>' +
         '<td class="cell-actions"><button class="btn small blue" type="button" data-action="edit">✏️ تعديل</button>' +
-        ' <button class="btn small red" type="button" data-action="del">🗑️ حذف</button></td>';
+        ' <button class="btn small red" type="button" data-action="del">🗑️ حذف</button>' +
+        ' <button class="btn small teal" type="button" data-action="bc" title="طباعة ملصق الباركود">🏷️ طباعة</button></td>';
       tr.dataset.id = p.id;
       tr.querySelector('[data-action="edit"]').addEventListener("click", () => openProductDialog(p));
       tr.querySelector('[data-action="del"]').addEventListener("click", () => deleteProduct(p));
+      tr.querySelector('[data-action="bc"]').addEventListener("click", () => openBarcodePrint(p));
       tr.addEventListener("dblclick", () => openProductDialog(p));
       tbody.appendChild(tr);
     });
@@ -3052,6 +3353,7 @@
       $("#fPStatus").value = "1";
     }
     showModal("mProduct");
+    renderBarcodePreview();   // 🔳 بناء 139: معاينة الباركود أول ما النافذة تفتح
     $("#fPNameAr").focus();
   }
 
@@ -3085,11 +3387,30 @@
     const discount = moneyVal("#fPDiscount") || 0;
     const status = $("#fPStatus").value === "1";
 
+    /* 🔳 بناء 139: رقم الباركود بيتنضّف (أرقام عربية → إنجليزي، بلا مسافات) و**ممنوع
+       يتكرر جوه نفس الشركة** — لو صنف تاني شايل نفس الرقم الحفظ يقف برسالة باسمه،
+       لأن الإسكانر ما يفرّقش بين صنفين بنفس الرقم. الفحص على **اللي بيتغيّر بس**:
+       بيانات قديمة غريبة ما تمنعش حد إنه يعدّل اسم صنفه (قاعدة «متحذفش بيانات موجودة»). */
+    const prevProduct = editingProductId == null ? null : products.find((p) => p.id === editingProductId);
+    const prevBarcode = prevProduct ? bcDigits(prevProduct.barcode) : "";
+    const typedBarcode = bcDigits($("#fPBarcode").value);
+    if (typedBarcode && typedBarcode !== prevBarcode) {
+      const clash = barcodeConflictOf(typedBarcode, editingProductId);
+      if (clash) {
+        toast("الباركود ده مستخدم في صنف تاني: " + (clash.nameAr || clash.code) + " — غيّير رقم واحد فيهم.", "warning");
+        return;
+      }
+      if (bc128Bits(typedBarcode) === "") {
+        toast("الباركود ده ما بيتحوّرش لباركود — يستخدم أرقام أو حروف إنجليزي بس.", "warning");
+        return;
+      }
+    }
+
     if (editingProductId == null) {
       const pr = {
         id: nextProductId(),
         code: nextProductCode(),
-        barcode: $("#fPBarcode").value.trim() || "",
+        barcode: typedBarcode,
         nameAr: nameAr,
         nameEn: $("#fPNameEn").value.trim(),
         category: category,
@@ -3106,13 +3427,15 @@
         reorder: 50,
         isActive: status
       };
+      // 🔳 بناء 139: الصنف الجديد بياخد رقم باركود «ميزان» من أول ثانية (الخانة الفاضية بس)
+      if (!pr.barcode) pr.barcode = internalBarcode(pr.id);
       products.push(pr);
       saveProducts();
       addActivity("إضافة صنف", "إضافة صنف جديد: " + pr.nameAr + " (" + pr.code + ")");
       toast("تمت إضافة الصنف بنجاح.", "success");
     } else {
       const pr = products.find((p) => p.id === editingProductId);
-      pr.barcode = $("#fPBarcode").value.trim() || "";
+      pr.barcode = typedBarcode;
       pr.nameAr = nameAr;
       pr.nameEn = $("#fPNameEn").value.trim();
       pr.category = category;
@@ -3870,6 +4193,13 @@
       reorder: 50,
       isActive: true
     };
+    // 🔳 بناء 139: الإضافة السريعة من شاشة البيع كمان تاخد رقم باركود (الفراغ بس، وبلا تكرار)
+    let bcAssigned = true;
+    if (!p.barcode) {
+      const cand = internalBarcode(p.id);
+      if (cand && !barcodeConflictOf(cand, p.id)) p.barcode = cand;
+      else bcAssigned = false;
+    }
     products.push(p);
     saveProducts();
     addActivity("إضافة صنف", "إضافة صنف سريع من شاشة المبيعات: " + p.nameAr + " (" + p.code + ")");
@@ -3879,7 +4209,8 @@
     $("#txtPosSearch").value = p.nameAr;
     $("#txtPosPrice").value = moneyStr(p.salePrice);
     posUpdateBadge(p);
-    toast("تم حفظ الصنف (" + p.nameAr + ") برصيد " + qty + " في المخزن.", "success");
+    toast("تم حفظ الصنف (" + p.nameAr + ") برصيد " + qty + " في المخزن." +
+      (bcAssigned ? "" : " ملوش باركود — اكتب رقمًا من «تعديل الصنف»."), "success");
   }
 
   /* ---- إضافة سريعة: عميل ---- */
@@ -9410,6 +9741,13 @@
 
     $("#btnSaveProduct").addEventListener("click", saveProduct);
     $("#btnCancelProduct").addEventListener("click", () => hideModal("mProduct"));
+
+    // 🔳 بناء 139: باركود الأصناف — توليد جماعي + توليد/معاينة جوه النافذة + طباعة الملصق
+    $("#btnGenBarcodes").addEventListener("click", doGenerateBarcodes);
+    $("#btnGenOneBarcode").addEventListener("click", generateBarcodeInDialog);
+    $("#fPBarcode").addEventListener("input", renderBarcodePreview);
+    $("#btnPrintBarcode").addEventListener("click", printBarcodeLabels);
+    $("#btnCancelBarcodePrint").addEventListener("click", () => hideModal("mBarcodePrint"));
 
     $("#trFrom").addEventListener("change", () => { fillTransferTarget(); fillTransferProducts(); });
     $("#trProduct").addEventListener("change", () => {

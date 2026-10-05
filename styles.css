@@ -1965,3 +1965,69 @@ td.c-tax.tax-hidden {
 @media print {
   .view-chat { display: none !important; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * 🔳 بناء 139 — باركود الأصناف (توليد + معاينة + طباعة ملصقات)
+ * الكود CODE-128 بيتولد في app.js وبيرسم SVG نقي (مستطيل لكل مجموعة «1»)
+ * ⇒ حاد على أي مقاس ورق. مافيش مكتبة خارجية، ومافيش صورة.
+ * الألوان من متغيرات الثيم (ممنوع hex جديد).
+ * ═══════════════════════════════════════════════════════════════════════ */
+.bc-field { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bc-field input { flex: 1 1 auto; min-width: 0; direction: ltr; text-align: left; }
+.bc-preview-row { grid-column: 1 / -1; }
+.bc-preview {
+  min-height: 44px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; padding: 7px 8px;
+  border: 1px dashed var(--border); border-radius: 10px; background: #fff;
+  overflow-x: auto;
+}
+.bc-preview .bc-svg { display: block; max-width: 100%; }
+.bc-preview-empty { font-size: 12px; color: var(--text-secondary); }
+.bc-none { font-size: 12px; color: var(--danger); font-weight: 700; }
+/* السطر المقروء تحت الخطوط: أرقام إنجليزي دايمًا، والـ SVG ما بيتلمسش */
+.bc-hrt {
+  font-family: "Courier New", monospace; font-size: 12px; font-weight: 700;
+  letter-spacing: 1.5px; direction: ltr; unicode-bidi: isolate; text-align: center;
+}
+.cell-barcode { direction: ltr; text-align: center; font-family: "Courier New", monospace; font-size: 12px; }
+.cell-barcode .bc-missing { color: var(--text-secondary); font-family: inherit; font-size: 12px; }
+
+/* نافذة الطباعة */
+.bc-print-name { font-size: 15px; font-weight: 800; color: var(--text-primary); text-align: center; }
+.bc-print-meta { font-size: 12px; color: var(--text-secondary); text-align: center; margin-bottom: 8px; }
+.bc-print-preview {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 10px; margin-bottom: 8px;
+  border: 1px solid var(--border); border-radius: 10px; background: #fff;
+  overflow-x: auto;
+}
+.bc-print-preview .bc-svg { display: block; max-width: 100%; }
+.bc-print-code { font-size: 12px; color: var(--text-secondary); text-align: center; margin-bottom: 10px; }
+.bc-print-code b { direction: ltr; unicode-bidi: isolate; font-family: "Courier New", monospace; }
+
+/* ملصق الباركود — بيظهر في ورق الطباعة بس */
+.bc-labels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.bc-label {
+  border: 1px dashed #94A3B8; border-radius: 6px; padding: 6px 4px;
+  text-align: center; break-inside: avoid; page-break-inside: avoid; background: #fff;
+}
+.bc-label .bc-org { font-size: 10px; font-weight: 700; color: #334155; }
+.bc-label .bc-name { font-size: 12px; font-weight: 800; color: #0F172A; margin-top: 2px; }
+.bc-label .bc-meta { font-size: 9.5px; color: #475569; margin-bottom: 3px; }
+.bc-label .bc-bars { line-height: 0; }
+.bc-label .bc-svg { display: block; margin: 0 auto; }
+.bc-label .bc-hrt { font-size: 10px; letter-spacing: 1px; margin-top: 2px; }
+
+/* 🔳 بناء 139 — المقاسات على الورق: A4 ثلاث أعمدة، A5 عمودين، الحراري عمود واحد.
+   ممنوع أي تغيير لقاعدة الـ 5mm اللي جوه @media print الرئيسي (حارس بناء 112). */
+@media print {
+  #barcodePage .statement-head h2 { font-size: 15px; }
+  #barcodePage .statement-head p { font-size: 11px; margin: 3px 0; }
+  #barcodePage .bc-labels { margin-top: 4px; }
+  #barcodePage .inv-foot-print { font-size: 9.5px; color: #475569; margin-top: 8px; text-align: center; }
+  #barcodePage.paper-a5 .bc-labels { grid-template-columns: repeat(2, 1fr); }
+  #barcodePage.paper-thermal .bc-labels { grid-template-columns: 1fr; }
+  #barcodePage.paper-thermal .bc-label { padding: 4px 2px; }
+  #barcodePage.paper-thermal .statement-head { margin-bottom: 8px; }
+}
