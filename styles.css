@@ -2008,13 +2008,20 @@ td.c-tax.tax-hidden {
 
 /* ملصق الباركود — بيظهر في ورق الطباعة بس */
 .bc-labels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+/* 🔳 142 — كل الألوان من متغيرات الثيم (ممنوع hex هنا، والحارس check_chat_125
+   بيسكن النصوص كمان ⇒ حتى التوضيح بيتكتب بلا رمز شباك). القيم الأصلية كانت
+   رمادي مطفي / رمادي متوسط / كحلي غامق، واتبدلت بالمتغيرات بنفس القيمة حرفيًا:
+   `--text-muted` · `--text-secondary` · `--text-primary`. لون سطر اسم الشركة بقى
+   `--text-primary` لأنه مالوش متغيّر نصّي مقابل، والفرق «أغمق شوية» على الملصق
+   (قرارة عين الإسكانر والطابعة). الأبيض تحت الملصق والمعاينة سِبناه `#fff`:
+   الباركود لازم يكون أبيض تحته، وحارس الدردشة بيسمح بالأبيض حصريًا. */
 .bc-label {
-  border: 1px dashed #94A3B8; border-radius: 6px; padding: 6px 4px;
+  border: 1px dashed var(--text-muted); border-radius: 6px; padding: 6px 4px;
   text-align: center; break-inside: avoid; page-break-inside: avoid; background: #fff;
 }
-.bc-label .bc-org { font-size: 10px; font-weight: 700; color: #334155; }
-.bc-label .bc-name { font-size: 12px; font-weight: 800; color: #0F172A; margin-top: 2px; }
-.bc-label .bc-meta { font-size: 9.5px; color: #475569; margin-bottom: 3px; }
+.bc-label .bc-org { font-size: 10px; font-weight: 700; color: var(--text-primary); }
+.bc-label .bc-name { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-top: 2px; }
+.bc-label .bc-meta { font-size: 9.5px; color: var(--text-secondary); margin-bottom: 3px; }
 .bc-label .bc-bars { line-height: 0; }
 .bc-label .bc-svg { display: block; margin: 0 auto; }
 .bc-label .bc-hrt { font-size: 10px; letter-spacing: 1px; margin-top: 2px; }
@@ -2025,7 +2032,7 @@ td.c-tax.tax-hidden {
   #barcodePage .statement-head h2 { font-size: 15px; }
   #barcodePage .statement-head p { font-size: 11px; margin: 3px 0; }
   #barcodePage .bc-labels { margin-top: 4px; }
-  #barcodePage .inv-foot-print { font-size: 9.5px; color: #475569; margin-top: 8px; text-align: center; }
+  #barcodePage .inv-foot-print { font-size: 9.5px; color: var(--text-secondary); margin-top: 8px; text-align: center; }
   #barcodePage.paper-a5 .bc-labels { grid-template-columns: repeat(2, 1fr); }
   #barcodePage.paper-thermal .bc-labels { grid-template-columns: 1fr; }
   #barcodePage.paper-thermal .bc-label { padding: 4px 2px; }
