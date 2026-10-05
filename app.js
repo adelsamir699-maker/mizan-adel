@@ -4399,6 +4399,13 @@
      والإسكانرات اللي ما ترسلش Enter بتتوجه بعد صمت `COLD_SCAN_QUIET_MS` — البائع ما يستناشش. */
   const COLD_SCAN_VIEWS = [["viewSales", "pos"], ["viewPurchases", "pp"]];
   const COLD_SCAN_QUIET_MS = 400;
+  /* 🔴 درس القياس الحيّ (كيبورد حقيقي على الحزمة المنشورة، ٠٦/١٠): البائع اللي بيكتب
+     الكمية بإيده على النمرات بيسبق الإسكانر في نفس الخانة — فـ «السلسلة السريعة» لوحدها
+     ما تفرّقش: «١٢٠٠» بسرعة الصابع بتبقى ٤ حروف بفواصل < ٩٠ms. ⇒ في الوضع الرجّاع
+     ("type" = خانة كمية/سعر بيكتب فيها المالك) لازم الرقم يبقى **بطول باركود** قبل ما
+     يتحوّل لمسحة. باركودات EAN-8 وUPC وEAN-13 كلها ≥ ٨ خانات، فما فيكمش كمية ولا سعر
+     حقيقي يتكتب ٨ خانات بسرعة ٩٠ms ويضيع. */
+  const COLD_SCAN_TYPE_MIN = 8;
   // الحروف اللي ماكينة الباركود بترميها (أرقام لاتينية/عربية + حرف + شرطة + نقطة + مسافة)
   const COLD_SCAN_CHR = /^[0-9A-Za-z٠-٩۰-۹\-.\s]$/;
   /* الخانات اللي البائع بيكتب فيها وبعدها بيمرّر الماسح وهو لسه واقف عليها ⇒ رقم الإسكانر
@@ -4441,6 +4448,17 @@
     return "capture";
   }
 
+  /* «ده إسكانر» مقاس من نفس الختم الزمني — بس بنطاق حسب الوضع:
+       capture ⇒ `SCAN_MIN_LEN` (مافيش كتابة أصلًا، فأي سلسلة سريعة مسحة)
+       type    ⇒ `COLD_SCAN_TYPE_MIN` (الخانة دي البائع بيكتب فيها رقمه بإيده)
+     `scanIsBurst` دالة قراءة صرفة (ممنوع إسناد/`Date.now` فيها — مقاس في الحارس). */
+  function coldBurstOf(mode, raw) {
+    const n = scanClean(raw).length;
+    if (n < SCAN_MIN_LEN) return false;
+    if (mode === "type" && n < COLD_SCAN_TYPE_MIN) return false;
+    return scanIsBurst("cold", n);
+  }
+
   function coldReset() {
     coldBuf = ""; coldMode = null; coldEl = null; coldBase = "";
     if (coldQuiet) { clearTimeout(coldQuiet); coldQuiet = null; }
@@ -4457,7 +4475,7 @@
   function coldFlush() {
     if (coldQuiet) { clearTimeout(coldQuiet); coldQuiet = null; }
     const raw = coldBuf, mode = coldMode, el = coldEl, base = coldBase, inv = coldInvoice();
-    const isScan = raw !== "" && scanIsBurst("cold", scanClean(raw).length);
+    const isScan = raw !== "" && coldBurstOf(mode, raw);
     coldReset();
     if (!isScan || !inv) return;                       // صابع بطيئة أو شاشة تانية ⇒ مافيش أثر
     const code = scanClean(raw);
@@ -4478,6 +4496,11 @@
     if (!inv) { if (coldBuf) coldReset(); return; }     // بره الفاتورتين ⇒ الكيبورد صاحبه زي الأول
     if (k === "Enter") {
       if (!coldBuf) return;                             // مافيش رقم عندنا ⇒ ما نلغيش Enter حد تاني
+      /* 🔴 درس القياس الحيّ (٠٦/١٠): البائع بيكتب الكمية بإيده في «الكمية» وبعدها بدوس
+         Enter على طول — والقديم كان بياكل الـ Enter دايمًا طالما عنده حرف واحد، فالسطر
+         ما بيتضافش والمهمّة تنصف. ⇒ الـ Enter بيتبلّع **لما تكون السلسلة إسكانر فعلًا**
+         (`coldBurstOf`)؛ غير كده دي كتابة المالك وراحت لمسار الخانة القديم بلا أي تدخل. */
+      if (!coldBurstOf(coldMode, coldBuf)) { coldReset(); return; }
       e.preventDefault(); e.stopPropagation();
       coldFlush();
       return;
