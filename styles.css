@@ -2026,6 +2026,45 @@ td.c-tax.tax-hidden {
 .bc-label .bc-svg { display: block; margin: 0 auto; }
 .bc-label .bc-hrt { font-size: 10px; letter-spacing: 1px; margin-top: 2px; }
 
+/* ═══════════════ 📷 بناء 143 — شريط نتيجة المسح الضوئي ═══════════════
+   بيظهر تحت صفّ الفاتورة (البيع والشراء) وتحت خانة الباركود في نافذة الصنف،
+   وبيقول بالعربي الودّي: قريت الصنف / ملقتش / مكرر / موقوف / متوفر قد إيه.
+   الألوان من متغيرات الثيم وحدها (درس 142: حارس الدردشة بيسكن النصوص من
+   `.wa-toolbar` ولساه وممنوع أي hex غير الأبيض)، وممنوع `!important` —
+   `[hidden]` لازم يقهر الكلاس بنفسه عشان الشريط يختفي فعلًا.
+   `.fld-code` اتوسّعت (95px → 150px) لأن الليبل بقى «📷 باركود / كود:»
+   وفيه placeholder — من غير التوسعة الرقم الممسوح كان بينقص بصريًا. */
+.fld-code { width: 150px; }
+.scan-hint {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 700; line-height: 1.55;
+  color: var(--text-primary);
+  background: var(--bg);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 6px 10px; margin: 6px 0 2px;
+}
+.scan-hint[hidden] { display: none; }
+.scan-hint.ok { border-color: var(--success); color: var(--success); background: #fff; }
+.scan-hint.warn { border-color: var(--warning); color: var(--text-primary); background: #fff; }
+.scan-hint.info { border-color: var(--info); color: var(--info); background: #fff; }
+/* السطر الثاني في رسالة المسح: إرشاد هادي مش أمر — بياخد عرض الشريط كله */
+.scan-hint .scan-sub {
+  flex: 1 0 100%; font-size: 11.5px; font-weight: 600;
+  color: var(--text-secondary);
+}
+/* الرقم الممسوح: إنجليزي دايمًا ومعزول لاتجاهًا، عشان «200000000815» ما تركبش على النص العربي */
+.scan-code {
+  direction: ltr; unicode-bidi: isolate;
+  font-family: "Courier New", monospace; font-size: 12px; letter-spacing: .5px;
+}
+.scan-act {
+  font: inherit; font-size: 11.5px; font-weight: 800;
+  color: var(--accent); background: #fff;
+  border: 1px solid var(--accent); border-radius: 999px;
+  padding: 2px 10px; cursor: pointer;
+}
+.bc-field .btn { flex: 0 0 auto; white-space: nowrap; }
+
 /* 🔳 بناء 139 — المقاسات على الورق: A4 ثلاث أعمدة، A5 عمودين، الحراري عمود واحد.
    ممنوع أي تغيير لقاعدة الـ 5mm اللي جوه @media print الرئيسي (حارس بناء 112). */
 @media print {

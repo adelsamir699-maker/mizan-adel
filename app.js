@@ -2883,6 +2883,124 @@
     return products.find((p) => p.id !== exceptId && bcDigits(p.barcode) === b) || null;
   }
 
+  /* ══════════════════════════════════════════════════════════════════════════════
+     بناء 143 — المسح الضوئي لباركود الصنف (فاتورة البيع + فاتورة الشراء + إدخال الصنف)
+     طلب المالك (③ من خطته + تعديله الحرفي 05/10): «الإسكانر يقرأ ⇒ يتعرّف على الصنف
+     ويختاره والمالك يكتب الكمية»، و«ممكن اكتب صنف عادى يدوى، ممكن ميكونش له باركود أو
+     ممكن يكون البائع ليس لديه ماكينة قراءة الباركود».
+     ⇒ المسح **طريقة زيادة مش بديلة**: الكتابة اليدوية بالاسم أو الكود سايبة زي ما هي تمامًا.
+
+     كل الإسكانرات (1D ليزر و2D بيقرا حتى المربع QR) بتشتغل keyboard wedge: بتـ«تكتب»
+     النص اللي جوه الكود حرف بحرف وبعدين تدوس Enter. فالمطلوب من عندنا اتنين:
+       (١) **نضّف** النص (CR/LF/TAB + أرقام عربية) — `scanClean`
+       (٢) **نميّز** الإسكانر عن الصابع البشري — `scanKey` مع كل حرف + `scanIsBurst` عند Enter
+           — عشان نعرف هل Enter ده «إنهاء مسح» (نختار الصنف ونقفل على خانة الكمية) ولا
+           «إنهاء كتابة» (السلوك القديم: يضيف السطر على طول).
+     مطابقة المسح **حرفية** (باركود ⇐ كود)، ومع تسامح الأصفار اللي على الشمال بس
+     (UPC-12 = EAN-13 بنفس الرقم). ممنوع المطابقة الجزئية في الأرقام: «1234» لو
+     دخلت على findProductFlexible كانت هتجيب أي صنف بيحتويها ⇒ سطر غلط على الفاتورة.
+     ══════════════════════════════════════════════════════════════════════════════ */
+
+  // الإسكانر بيرمي الرقم + CR/LF؛ bcDigits بتشيل المسافات والعربي، وعلامات التحكم هنا.
+  function scanClean(raw) {
+    return bcDigits(raw).replace(/[\u0000-\u001F\u007F\u00A0]/g, "");
+  }
+
+  /* الإسكانر بيخلص سلسلة حروفه في أقل من ~50ms/حرف، والصابع البشري فوق 150ms دايمًا.
+     90ms = حدود أمان في نص الطريق (الاتنين بيوصلوا لنفس السطر في الآخر، الفرق Enter زيادة). */
+  const SCAN_MAX_GAP_MS = 90;
+  const SCAN_MIN_LEN = 4;
+  const SCAN_BURST_CHARS = 3;
+  const scanTrace = {};
+  /* ⚠️ تُنادى مع **كل حرف** يدخل الخانة (من مستمع `input`)، مش عند Enter.
+     لو نناديها عند Enter بس ⇒ السلسلة ما تتقاسش خالص (streak يفضل 1) والإسكانر
+     يتعامل معاملة الصابع. الدالة دي بتكتب الطابع الزمني وبتعدّ السلسلة. */
+  function scanKey(fieldId) {
+    const now = Date.now();
+    const t = scanTrace[fieldId];
+    const gap = t ? now - t.last : 0;
+    scanTrace[fieldId] = { last: now, streak: t && gap >= 0 && gap <= SCAN_MAX_GAP_MS ? t.streak + 1 : 1 };
+  }
+  // بتقرأ السلسلة بس — ممنوع تكتب حاجة (الكتابة شغل scanKey)
+  function scanIsBurst(fieldId, len) {
+    const t = scanTrace[fieldId];
+    return len >= SCAN_MIN_LEN && !!t && t.streak >= SCAN_BURST_CHARS;
+  }
+
+  // كل مطابقات الرقم الممسوح، مرتّبة بالدقة: 1 باركود · 2 كود · 3/4 بنفس الرقم بلا أصفار
+  function scanMatches(s) {
+    const out = [];
+    if (!s) return out;
+    const up = s.toUpperCase();
+    const bare = up.replace(/^0+/, "");
+    products.forEach((p) => {
+      const b = bcDigits(p.barcode).toUpperCase();
+      const c = String(p.code == null ? "" : p.code).trim().toUpperCase();
+      if (b && b === up) { out.push({ p: p, tier: 1 }); return; }
+      if (c && c === up) { out.push({ p: p, tier: 2 }); return; }
+      // الأصفار على الشمال بتترفع من **الجهتين** (UPC-12 و EAN-13 رقم واحد):
+      // «012345678905» المخزّن و«12345678905» الممسوح — أو العكس. كل صنف بيرجع مرة
+      // واحدة بس (الـ return فوق)، فمافيش تكرار في الطبقات.
+      if (bare) {
+        if (b && b.replace(/^0+/, "") === bare) { out.push({ p: p, tier: 3 }); return; }
+        if (c && c.replace(/^0+/, "") === bare) { out.push({ p: p, tier: 4 }); return; }
+      }
+    });
+    return out;
+  }
+
+  /* دايمًا كائن واحد: { prod, code, why, others, off } — `why` هو اللي بيحدّد الرسالة
+     الودّية (ممنوع أي اصطلاح تقني يظهر للعميل). الأرقام اللي مالهاش مطابقة حرفية
+     **بتترفض** مش بتتخمن؛ النصوص فيها حروف ترجع لطريقة الكتابة القديمة. */
+  function findProductByScan(raw) {
+    const code = scanClean(raw);
+    if (!code) return { prod: null, code: "", why: "empty" };
+    const hits = scanMatches(code);
+    if (hits.length) {
+      let best = hits[0];
+      hits.forEach((h) => { if (h.tier < best.tier) best = h; });
+      const rivals = hits.filter((h) => h.tier === best.tier && h.p.id !== best.p.id);
+      if (rivals.length) {
+        return { prod: null, code: code, why: "ambiguous", others: [best.p].concat(rivals) };
+      }
+      const p = best.p;
+      if (!p.isActive) return { prod: null, code: code, why: "inactive", off: p };
+      return { prod: p, code: code, why: "ok" };
+    }
+    if (/^[0-9]+$/.test(code)) return { prod: null, code: code, why: "notfound" };
+    const p = findProductFlexible(code);
+    if (!p) return { prod: null, code: code, why: "notfound" };
+    if (!p.isActive) return { prod: null, code: code, why: "inactive", off: p };
+    return { prod: p, code: code, why: "ok" };
+  }
+
+  // الطبقة دي بتكتب الرسالة الودّية اللي تحت خانة الكود (مش توست عابر عشان العميل يقدر يقرا)
+  function scanHint(sel, kind, html) {
+    const el = $(sel);
+    if (!el) return;
+    if (!html) { el.hidden = true; el.innerHTML = ""; el.className = "scan-hint"; return; }
+    el.className = "scan-hint " + (kind || "info");
+    el.innerHTML = html;
+    el.hidden = false;
+  }
+
+  // ممنوع أي HTML في الرقم الممسوح ⇒ بيتمشى في الرسالة كنص صافي
+  function scanMsg(code, extra) {
+    return "<b class='scan-code'>" + esc(code || "") + "</b>" + (extra ? " " + extra : "");
+  }
+
+  /* الرسالة بكل حالاتها — كلها ودّية وبتدلّ على الخطوة الجاية، وممنوع فيها
+     (barcode/RLS/RPC/42501/Invalid) أو أي مصطلح تقني. */
+  function scanFailText(res) {
+    if (res.why === "empty") return "📷 مافيش رقم وصل — قلّب الإسكانر على الخانة، أو اكتب الكود/الاسم بنفسك.";
+    if (res.why === "inactive") return "🚫 الصنف (" + esc(res.off.nameAr || res.off.code) + ") متوقف للبيع — فعّله من «دليل الأصناف» الأول.";
+    if (res.why === "ambiguous") return "⚠️ الرقم ده مسجّل عند أكتر من صنف (" +
+      res.others.map((p) => esc(p.nameAr || p.code)).join(" · ") +
+      ") — اختار الصنف اللي تقصده بكتابة اسمه في خانة الاسم.";
+    return "🔍 ملقتش صنف بالرقم " + scanMsg(res.code) +
+      " — تقدر تكتب اسم الصنف في خانة الاسم، أو تسجّله صنف جديد بالرقم ده.";
+  }
+
   /* التوليد الجماعي: اللي ملوش باركود بس ⇒ ياخد رقم ميزان.
      الموجود ما بيتلمسش، والمكرّر بيتسجّل في `skipped` عشان يظهر في الرسالة. */
   function generateMissingBarcodes() {
@@ -2954,6 +3072,51 @@
     $("#fPBarcode").value = cand;
     renderBarcodePreview();
     toast("ده رقم باركود «ميزان» للصنف — بيتحفظ مع حفظ الصنف.", "success");
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     بناء 143 — مسح باركود المصنع **بالإسكانر** وقت إدخال الصنف في المخزن
+     (طلب المالك بحرفه 05/10: «محتاج عند ادخال الاصناف فى المخزن انه يدينى امكانية
+     مسح ضوئى لباركود المصنع»).
+     الخانة `#fPBarcode` بترقب الإسكانر زي ما بترقب الصابع: بيكتب الرقم ودوس Enter ⇒
+     بننضّف الرقم، نوريه في المعاينة، ونقول للمستخدم الخطوة الجاية. **ممنوع** إن Enter
+     يقفل النافذة أو يحفظ قبل ما المالك يكتب الاسم والسعر — فبنعمل preventDefault.
+     الفحص اللي بيمنع المكرر ويمنع غير القابل للتشفير لسه في `saveProduct` (مسار واحد).
+     ══════════════════════════════════════════════════════════════════════════ */
+  function bcScanHint(kind, html) { scanHint("#bcScanHint", kind, html); }
+
+  function barcodeFieldScan() {
+    const code = scanClean($("#fPBarcode").value);
+    $("#fPBarcode").value = code;
+    renderBarcodePreview();
+    if (!code) {
+      bcScanHint("warn", "📷 مافيش رقم وصل في الخانة — قلّب الإسكانر على الباركود، أو اكتب الرقم بنفسك.");
+      return false;
+    }
+    if (bc128Bits(code) === "") {
+      bcScanHint("warn", "⚠️ الرقم " + scanMsg(code) + " ما بيتقراش كود — يستخدم أرقام أو حروف إنجليزي بس.");
+      return false;
+    }
+    const clash = barcodeConflictOf(code, editingProductId);
+    if (clash) {
+      bcScanHint("warn", "⚠️ الرقم " + scanMsg(code) + " مسجّل قبل كده لصنف تاني: " +
+        esc(clash.nameAr || clash.code) + " — غيّير رقم واحد فيهم قبل الحفظ.");
+      return false;
+    }
+    // رقم مصنع فيه 13 خانة ورقم التحقق بتاعه غلط ⇒ ممكن الإسكانر قرا نص رقم. تنبيه مش رفض.
+    const warn = /^[0-9]{13}$/.test(code) && gs1CheckDigit(code.slice(0, 12)) !== code.charAt(12)
+      ? "<span class='scan-sub'>رقم التحقق مش مطابق — لو تقدر امسّح تاني أحسن (الحفظ لسه بيقبله).</span>" : "";
+    bcScanHint("ok", "📷 اتقرا الرقم " + scanMsg(code) + " — اكتب اسم الصنف وسعّره ودوس «حفظ الصنف»." + warn);
+    return true;
+  }
+
+  // زرار «📷 مسح» = يجهّز الخانة (فوكس + تحديد) عشان الإسكانر يكتب فيها على طول
+  function barcodeFieldArm() {
+    const el = $("#fPBarcode");
+    if (!el) return;
+    el.focus();
+    el.select();
+    bcScanHint("info", "👉 الخانة جاهزة — مرّر الإسكانر على الباركود، أو اكتب الرقم بنفسك.");
   }
 
   /* ══ طباعة ملصقات الباركود ══ */
@@ -3354,6 +3517,7 @@
     }
     showModal("mProduct");
     renderBarcodePreview();   // 🔳 بناء 139: معاينة الباركود أول ما النافذة تفتح
+    scanHint("#bcScanHint");  // 📷 بناء 143: رسالة مسح قديمة من صنف تاني ما تفضلش معروضة
     $("#fPNameAr").focus();
   }
 
@@ -3929,6 +4093,95 @@
     else $("#txtPosSearch").focus();
   }
 
+  /* ══════════════════════════════════════════════════════════════════════════
+     بناء 143 — المسح الضوئي في **فاتورة البيع**
+     الإسكانر (1D أو 2D بيقرا المربع كمان) بيكتب الرقم في خانة «كود الصنف» ودوس Enter.
+     المسار ده **بينتهي عند نفس posAddItem** اللي الكتابة اليدوية بتستخدمها — يعني
+     المخزون والسعر والخصم والضمة والربط بالعميل كله من مصدر واحد (ممنوع مسارين).
+     والكتابة اليدوية ما اتلمستش: لو الحروف جت بسرعة بشرية ⇒ السلوك القديم حرفيًا.
+     ══════════════════════════════════════════════════════════════════════════ */
+  let lastPosScan = "";
+
+  /* المسح: نخلّي الخانة تحمل **الرقم القانوني** للصنف (باركوده، أو كوده لو باركود
+     المصنع اتقرا بتسامح الأصفار) ⇒ posAddItem يلاقيه بالطابقة الحرفية ديغني، وبعدين
+     تناديه. بعد الإضافة بنرجّع التركيز لنفس الخانة عشان المسح المتتابع يشتغل بلا clicks. */
+  function posHandleScan(raw) {
+    const res = findProductByScan(raw);
+    if (!res.prod) {
+      lastPosScan = res.code;
+      scanHint("#posScanHint", "warn", scanFailText(res) +
+        (res.why === "notfound"
+          ? " <button type='button' class='scan-act' data-scan-new='1'>➕ سجّله صنف جديد</button>" : ""));
+      return;
+    }
+    const p = res.prod;
+    const wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
+    const have = Number(stockAt(p, wh)) || 0;
+    const qty = moneyVal("#numPosQty") > 0 ? moneyVal("#numPosQty") : 1;
+    $("#txtPosSearch").value = "";
+    $("#txtPosCode").value = bcDigits(p.barcode) || String(p.code || "");
+    posAddSource = "code";
+    if (!(moneyVal("#txtPosPrice") > 0)) $("#txtPosPrice").value = moneyStr(p.salePrice);
+    const price = moneyVal("#txtPosPrice");
+    posAddItem();
+    if (posItems.some((it) => Number(it.productId) === Number(p.id))) {
+      scanHint("#posScanHint", "ok", "📷 " + esc(p.nameAr || p.code) + " — " +
+        qty + " × " + fmt(price) + " ج.م اتضاف للفاتورة." +
+        "<span class='scan-sub'>عايز كمية تانية؟ عدّلها في جدول الأصناف تحت، أو اكتب الكمية قبل المسح.</span>");
+    } else if (!(have > 0)) {
+      scanHint("#posScanHint", "warn", "📦 الصنف (" + esc(p.nameAr || p.code) +
+        ") مافيش منه في مخزن («" + esc(wh) + "») — غيّر المخزن أو زوّد الرصيد من «المخزون».");
+    } else if (!(price > 0)) {
+      scanHint("#posScanHint", "warn", "🏷️ الصنف (" + esc(p.nameAr || p.code) +
+        ") ملوش سعر بيع مسجّل — حدّدوله في «دليل الأصناف» أو اكتب السعر في خانة «سعر البيع».");
+    } else {
+      scanHint("#posScanHint", "warn", "📦 المتوفر من (" + esc(p.nameAr || p.code) +
+        ") في («" + esc(wh) + "») = " + have + " " + esc(p.unit || "") + " — أقل من الكمية اللي طلبتها.");
+    }
+  }
+
+  // Enter في خانة الكود: إمّا إنهاء مسح (سريع) ⇒ نختار الصنف، أو إنهاء كتابة ⇒ المسار القديم
+  function posCodeEnter() {
+    const raw = $("#txtPosCode").value;
+    if (scanIsBurst("txtPosCode", scanClean(raw).length)) { posHandleScan(raw); return; }
+    posAddVia("code");
+  }
+
+  // الإسكانر بيتوّه أحيانًا على خانة الاسم — بنستقبله هناك بنفس الذكاء
+  function posSearchEnter() {
+    const raw = $("#txtPosSearch").value;
+    if (scanIsBurst("txtPosSearch", scanClean(raw).length)) { posHandleScan(raw); return; }
+    posAddVia("search");
+  }
+
+  function posAddVia(src) {
+    posAddSource = src;
+    posAddItem();
+    scanHint("#posScanHint");
+  }
+
+  function posNewInvoiceClean() {
+    posNewInvoice();
+    lastPosScan = "";
+    scanHint("#posScanHint");
+    $("#txtPosCode").focus();
+  }
+
+  /* رقم باركود اتقرا وما كانش ليها صنف ⇒ النافذة تفتح **والخانة مملّأة بيه**، فالمالك
+     يكتب الاسم والسعر بس (طلبه 05/10: «محتاج عند ادخال الاصناف فى المخزن انه يدينى
+     امكانية مسح ضوئى لباركود المصنع»). */
+  function openProductDialogForScan(raw) {
+    const code = scanClean(raw);
+    openProductDialog(null);
+    if (code) {
+      $("#fPBarcode").value = code;
+      renderBarcodePreview();
+      bcScanHint("ok", "📷 باركود المصنع " + scanMsg(code) +
+        " اتحط في الخانة — اكتب اسم الصنف وسعّره ودوس «حفظ الصنف».");
+    }
+    $("#fPNameAr").focus();
+  }
+
   function posCalcRow(idx) {
     const it = posItems[idx];
     const sub = Math.max(it.qty * it.price - it.discount, 0);
@@ -4429,6 +4682,68 @@
     ppRecalc();
     if (ppAddSource === "code") $("#txtPPCode").focus();
     else $("#txtPPSearch").focus();
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     بناء 143 — المسح الضوئي في **فاتورة الشراء** (نفس منطق البيع، بالاسم التاني)
+     طلب المالك: المسح في «فاتورة البيع والشراء» — والتعديل الحرفي بتاعه: الكتابة
+     اليدوية تفضل متاحة («ممكن ميكونش له باركود أو ممكن يكون البائع ليس لديه ماكينة»).
+     ══════════════════════════════════════════════════════════════════════════ */
+  let lastPpScan = "";
+
+  function ppHandleScan(raw) {
+    const res = findProductByScan(raw);
+    if (!res.prod) {
+      lastPpScan = res.code;
+      scanHint("#ppScanHint", "warn", scanFailText(res) +
+        (res.why === "notfound"
+          ? " <button type='button' class='scan-act' data-scan-new='1'>➕ سجّله صنف جديد</button>" : ""));
+      return;
+    }
+    const p = res.prod;
+    const qty = moneyVal("#numPPQty") > 0 ? moneyVal("#numPPQty") : 1;
+    $("#txtPPSearch").value = "";
+    $("#txtPPCode").value = bcDigits(p.barcode) || String(p.code || "");
+    ppAddSource = "code";
+    if (!(moneyVal("#txtPPPrice") > 0)) $("#txtPPPrice").value = moneyStr(p.purchasePrice);
+    const price = moneyVal("#txtPPPrice");
+    ppAddItem();
+    if (ppItems.some((it) => Number(it.productId) === Number(p.id))) {
+      scanHint("#ppScanHint", "ok", "📷 " + esc(p.nameAr || p.code) + " — " +
+        qty + " × " + fmt(price) + " ج.م اتضاف لفاتورة الشراء." +
+        "<span class='scan-sub'>عايز كمية تانية؟ عدّلها في جدول الأصناف تحت، أو اكتب الكمية قبل المسح.</span>");
+    } else if (!(price > 0)) {
+      scanHint("#ppScanHint", "warn", "🏷️ الصنف (" + esc(p.nameAr || p.code) +
+        ") ملوش سعر شراء مسجّل — حدّدوله في «دليل الأصناف» أو اكتب السعر في خانة «سعر الشراء».");
+    } else {
+      scanHint("#ppScanHint", "warn", "⚠️ (" + esc(p.nameAr || p.code) +
+        ") ما اتضافش — شوف الرسالة اللي فوق وكمّل.");
+    }
+  }
+
+  function ppCodeEnter() {
+    const raw = $("#txtPPCode").value;
+    if (scanIsBurst("txtPPCode", scanClean(raw).length)) { ppHandleScan(raw); return; }
+    ppAddVia("code");
+  }
+
+  function ppSearchEnter() {
+    const raw = $("#txtPPSearch").value;
+    if (scanIsBurst("txtPPSearch", scanClean(raw).length)) { ppHandleScan(raw); return; }
+    ppAddVia("search");
+  }
+
+  function ppAddVia(src) {
+    ppAddSource = src;
+    ppAddItem();
+    scanHint("#ppScanHint");
+  }
+
+  function ppNewInvoiceClean() {
+    ppNewInvoice();
+    lastPpScan = "";
+    scanHint("#ppScanHint");
+    $("#txtPPCode").focus();
   }
 
   function ppCalcRow(idx) {
@@ -9745,7 +10060,13 @@
     // 🔳 بناء 139: باركود الأصناف — توليد جماعي + توليد/معاينة جوه النافذة + طباعة الملصق
     $("#btnGenBarcodes").addEventListener("click", doGenerateBarcodes);
     $("#btnGenOneBarcode").addEventListener("click", generateBarcodeInDialog);
-    $("#fPBarcode").addEventListener("input", renderBarcodePreview);
+    $("#fPBarcode").addEventListener("input", () => { renderBarcodePreview(); scanHint("#bcScanHint"); });
+    // 📷 بناء 143: الإسكانر بيكتب رقم باركود المصنع ودوس Enter ⇒ الرقم يدخل المعاينة والرسالة
+    // توصّي بالخطوة الجاية، و**ممنوع** Enter يقفل النافذة أو يسبق كتابة الاسم والسعر.
+    $("#fPBarcode").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); barcodeFieldScan(); }
+    });
+    $("#btnFBarcodeScan").addEventListener("click", barcodeFieldArm);
     $("#btnPrintBarcode").addEventListener("click", printBarcodeLabels);
     $("#btnCancelBarcodePrint").addEventListener("click", () => hideModal("mBarcodePrint"));
 
@@ -9776,22 +10097,29 @@
     $("#btnCancelQuickCustomer").addEventListener("click", () => hideModal("mQuickCustomer"));
 
     $("#cmbPaymentMethod").addEventListener("change", posPaymentVisibility);
-    $("#txtPosCode").addEventListener("input", posOnCode);
+    // 📷 بناء 143: كل حرف بيمرّ على scanKey ⇒ السلسلة الزمنية بتتقاس **أثناء** الكتابة،
+    // وبعدها Enter بيقرا النتيجة بس (من غير دي، الإسكانر كان بيتعامل معاملة الصابع).
+    $("#txtPosCode").addEventListener("input", () => { scanKey("txtPosCode"); posOnCode(); });
+    // 📷 بناء 143: Enter من الإسكانر = «اختار الصنف»، ومن الصابع = «ضيف السطر» (المسار القديم)
     $("#txtPosCode").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); posAddSource = "code"; posAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); posCodeEnter(); }
     });
-    $("#txtPosSearch").addEventListener("input", posOnSearch);
+    $("#txtPosSearch").addEventListener("input", () => { scanKey("txtPosSearch"); posOnSearch(); });
     $("#txtPosSearch").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); posAddSource = "search"; posAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); posSearchEnter(); }
     });
     $("#numPosQty").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); posAddSource = "search"; posAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); posAddVia("search"); }
     });
     $("#txtPosPrice").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); posAddSource = "search"; posAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); posAddVia("search"); }
     });
-    $("#btnPosAdd").addEventListener("click", posAddItem);
-    $("#btnPosNew").addEventListener("click", posNewInvoice);
+    $("#btnPosAdd").addEventListener("click", () => { posAddItem(); scanHint("#posScanHint"); });
+    $("#btnPosNew").addEventListener("click", posNewInvoiceClean);
+    // 📷 لو الرقم الممسوح ملوش صنف ⇒ زرار في الرسالة يفتح نافذة الصنف والخانة مملانة بالرقم
+    $("#posScanHint").addEventListener("click", (e) => {
+      if (e.target.closest("[data-scan-new]")) openProductDialogForScan(lastPosScan);
+    });
     $("#btnPosSave").addEventListener("click", savePosInvoice);
     $("#txtPosDiscount").addEventListener("input", posRecalc);
     $("#cmbPosWarehouse").addEventListener("change", () => {
@@ -9832,22 +10160,26 @@
       const firstProd = products.find((p) => p.id === (ppItems[0] && ppItems[0].productId));
       ppUpdateBadge(firstProd || null);
     });
-    $("#txtPPCode").addEventListener("input", ppOnCode);
+    $("#txtPPCode").addEventListener("input", () => { scanKey("txtPPCode"); ppOnCode(); });
+    // 📷 بناء 143: نفس منطق البيع — Enter من الإسكانر يختار الصنف، ومن الصابع يضيف السطر
     $("#txtPPCode").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); ppAddSource = "code"; ppAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); ppCodeEnter(); }
     });
-    $("#txtPPSearch").addEventListener("input", ppOnSearch);
+    $("#txtPPSearch").addEventListener("input", () => { scanKey("txtPPSearch"); ppOnSearch(); });
     $("#txtPPSearch").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); ppAddSource = "search"; ppAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); ppSearchEnter(); }
     });
     $("#numPPQty").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); ppAddSource = "search"; ppAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); ppAddVia("search"); }
     });
     $("#txtPPPrice").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); ppAddSource = "search"; ppAddItem(); }
+      if (e.key === "Enter") { e.preventDefault(); ppAddVia("search"); }
     });
-    $("#btnPPAdd").addEventListener("click", ppAddItem);
-    $("#btnPPNew").addEventListener("click", ppNewInvoice);
+    $("#btnPPAdd").addEventListener("click", () => { ppAddItem(); scanHint("#ppScanHint"); });
+    $("#btnPPNew").addEventListener("click", ppNewInvoiceClean);
+    $("#ppScanHint").addEventListener("click", (e) => {
+      if (e.target.closest("[data-scan-new]")) openProductDialogForScan(lastPpScan);
+    });
     $("#btnPPSave").addEventListener("click", savePurchaseInvoice);
     $("#txtPPDiscount").addEventListener("input", ppRecalc);
 
