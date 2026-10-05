@@ -8783,10 +8783,19 @@
     // التصحيح ٤٩ (سحب تنفيذ الدوال من «الزائر/أي حد» + تنظيف منح anon من 30 جدول) اتنفّذ على
     // السحابة 03/10 ≈11:05 بأمر المالك «من 1 الى 4 بالترتيب» — النطاق (ج) full ⇒ بقت جزء من نسخة النشر.
     // إعادة تشغيله كما هو **ممنوعة** (بوابة «قبل» بقت فشلًا متعمّدًا بعد السحب)، والملف هنا للسجل.
-    "db/supabase-upgrade-49-access-grants.sql"];
+    "db/supabase-upgrade-49-access-grants.sql",
+    // ترقية ٥٠ (قفل التسجيل العام في القاعدة: دوال الرموز الثلاثة + `create_org_and_profile` ما
+    // بتقبلش إنشاء شركة بلا رمز دعوة + `join_org` بشروطه الجديدة) اتنفّذت على السحابة
+    // 5/10 ≈01:29 بأمر المالك الحرفي «تمام ابدا فعلها على قاعدة البيانات» — المخطط 67 → 70 دالة
+    // و400/93/119/112/38/37 ثابتة · 338 سطر بيانات قبل = بعد · الإثبات السلوكي 82✓/0✗ ⇒
+    // جزء من نسخة النشر (سيرفر جديد = نفس القاعدة). إعادة تشغيلها كما هو **ممنوعة**
+    // (بوابات «قبل» بقت فشلًا متعمّدًا بعد التنفيذ)، والملف هنا للسجل.
+    "db/supabase-upgrade-50-signup-lock.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
   // فاضية دلوقتي بالقياس: كل ملف في db/ اتنفّذ على السحابة ⇒ ينشر معه. أي استبعاد جديد لازم يكون
   // سببه المكتوب **حقيقي** (مش «خايف أنشره») — حارس check_backup_coverage_124.js بيسأل db/ مباشرة.
+  // بناء 141: ترقية ٥ـ (قفل التسجيل + دوال الرموز) **اتنفّذت** 5/10 ≈01:29 ⇒ دخلت FILES فوق
+  // وبره الاستبعاد زي أخواتها (٤٣→٤٩)، والقاعدة نفسها: أي ملف جديد لسه ما اتنفّذتش يتحط هنا بسبب.
   var DEPLOY_DB_EXCLUDE = {};
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "categories", "customer_txs", "customers",
@@ -9831,6 +9840,12 @@
     bindSettTabs("setTabs");
     bindSettTabs("csettTabs");
 
+    // 🎟️ بناء 141: تبويب «دعوات الشركات» بيقرأ الرموز أول ما يفتح (مش من أول الصفحة)
+    const invTabBtn = document.querySelector('#setTabs .tab-btn[data-tab="sinv"]');
+    if (invTabBtn) {
+      invTabBtn.addEventListener("click", () => loadInviteCodes("invCodesOwner"));
+    }
+
     /* ---- أزرار جداول الإعدادات: العميل (c) والمالك (s) ---- */
     function bindSettGridBtns(viewId) {
       const view = document.getElementById(viewId);
@@ -9941,6 +9956,26 @@
     el.className = "login-msg " + (kind || "");
   }
 
+  /* 🎟️ بناء 141: أي رفض على رمز الدعوة بيتحوّل لكلام ودّي بالعامي قبل ما يوصل للعين —
+     نفس درس build 127 («ممنوع أي مصطلح تقني مخيف للعميل»): مافيش نص من القاعدة بيطلع
+     بوجهه، والمصدر (السحابة/النت/الصلاحية) بيتصنف في جمل مفهومة بصيغة واحدة. */
+  function inviteFailText(err) {
+    const m = String((err && (err.message || err.code || err)) || "");
+    if (/رمز|code/i.test(m) && /غير صحيح|غير نشطة|not active|inactive/i.test(m)) {
+      return "الرمز ده مش شغال — اتأكد إنك كاتبه زي ما وصلك بالظبط، ولو لسه مرفوض تابع مع إدارة برنامج ميزان على واتس وهنرسلهولك من جديد.";
+    }
+    if (/رمز|code/i.test(m)) {
+      return "الرمز ده مش لشركة موجودة حاليًا — تابع مع إدارة برنامج ميزان على واتس تتأكد منه.";
+    }
+    if (/جلسة|session/i.test(m)) {
+      return "انتهت محاولة الدخول — ارجّع اسم المستخدم وكلمة المرور وعاود.";
+    }
+    if (/مرفوض|غير مصرح|permission|denied|صلاحية/i.test(m)) {
+      return "الحساب ده ماعندوش صلاحية يدخل على الشركة دي — تابع مع إدارة برنامج ميزان على واتس.";
+    }
+    return "تعذّر إكمال الانضمام دلوقتي — اتأكد من الاتصال بالإنترنت وعاود، ولو استمر تابع مع إدارة برنامج ميزان على واتس.";
+  }
+
   function setupAuth() {
     const activeLt = () => {
       const b = document.querySelector(".ltab[data-lt].active");
@@ -9953,14 +9988,9 @@
         $("#btnAuthGo").textContent = "دخول";
       });
     });
-    document.querySelectorAll(".ltab[data-ot]").forEach((b) => {
-      b.addEventListener("click", () => {
-        document.querySelectorAll(".ltab").forEach((x) => x.classList.remove("active"));
-        b.classList.add("active");
-        $("#orgJoin").hidden = b.dataset.ot !== "join";
-        $("#orgNew").hidden = b.dataset.ot === "join";
-      });
-    });
+    // 🛡 بناء 141: مافيش تبويبات «شركة جديدة / لدي رمز دعوة» — الشاشة واحدة ووظيفتها
+    // إدخال رمز الدعوة بس (قرار المالك «علشان محدش يعمل حسابات تجريبية»).
+    // أي كود قديم كان بيبدّل بينهم اتشال من الملف، فمافيش مسار يورّي خانة اسم شركة.
 
 const pwEye = document.getElementById("btnShowPass");
     if (pwEye) {
@@ -10000,7 +10030,10 @@ const pwEye = document.getElementById("btnShowPass");
       DATA.login(username, pass).then(() => {
         const p = DATA.getProfile();
         if (!p) {
-          setAuthMsg(m, "هذا الحساب غير مرتبط بأي شركة. تواصل مع إدارة البرنامج.", "err");
+          // 🎟️ بناء 141: الحساب اللي مالوش شركة بياخد **رمز دعوة** من المالك أو مساعِديه
+          // (أعضاء شركة «ميزان») — أما إنه يكتب اسم شركة ويفتحها لنفسه ده اتقفل خالص.
+          showOrgScreen();
+          setAuthMsg($("#orgMsg"), "اكتب رمز الدعوة اللي وصلك من إدارة برنامج ميزان، وبعدها اسمك.", "");
           return;
         }
         if (asCompany) {
@@ -10062,22 +10095,17 @@ const pwEye = document.getElementById("btnShowPass");
       });
     });
 
-    $("#btnOrgNew").addEventListener("click", () => {
-      const name = $("#orgNewName").value.trim();
-      const full = $("#orgNewFull").value.trim();
-      const m = $("#orgMsg");
-      if (!name) { setAuthMsg(m, "اكتب اسم الشركة.", "err"); return; }
-      setAuthMsg(m, "جارٍ إنشاء شركتك...", "");
-      DATA.createOrg(name, full).then(() => proceedOnline()).catch((err) => setAuthMsg(m, "خطأ: " + (err.message || err), "err"));
-    });
+    // 🛡 بناء 141: زرار «إنشاء الشركة والبدء» اتشال من الملف كله (من الـ HTML ومن الكود) —
+    // مافيش أي نداء لـ DATA.createOrg في الحزمة المنشورة، فمحدش يقدر يولّد شركة لنفسه.
 
     $("#btnOrgJoin").addEventListener("click", () => {
       const code = $("#orgJoinCode").value.trim();
       const name = $("#orgJoinName").value.trim();
       const m = $("#orgMsg");
-      if (!code) { setAuthMsg(m, "اكتب رمز الدعوة.", "err"); return; }
-      setAuthMsg(m, "جارٍ الانضمام...", "");
-      DATA.joinOrg(code, name).then(() => proceedOnline()).catch((err) => setAuthMsg(m, "خطأ: " + (err.message || err), "err"));
+      if (!code) { setAuthMsg(m, "اكتب رمز الدعوة اللي وصلك من إدارة برنامج ميزان.", "err"); return; }
+      setAuthMsg(m, "جارٍ التحقق من الرمز...", "");
+      DATA.joinOrg(code, name).then(() => proceedOnline())
+        .catch((err) => setAuthMsg(m, inviteFailText(err), "err"));
     });
 
     const btnOrgLogout = document.getElementById("btnOrgLogout");
@@ -12868,6 +12896,134 @@ const pwEye = document.getElementById("btnShowPass");
     });
   }
 
+  /* ================== 🎟️ بناء 141: رموز الدعوة (المالك ومساعدوه) ==================
+     قرار المالك الحرفي (04/10): «عجبتني فكرة انشاء رمز عشوائي نفّذه، وخلّي أعضاء شركة
+     ميزان يقدروا يولدوا رمز عشوائي برده — شركة ميزان هي الشركة المالكة والأعضاء اللي
+     هضيفهم فيها هما مساعدين ليا». ⇒ الصلاحية من **مصدر واحد**:
+       `inviteCodesAllowed() = ownerSettingsAllowed()` (مالك البرنامج أو حساب في شركة «ميزان»)
+     ونفس مصدر build 133 اللي بيحكم شاشة «الإعدادات (المالك)» — فمافيش تعريف تاني ولا
+     مفتاح في قائمة مزايا يقدر يفتّح الباب لحساب تاني. والرفض بيتعمل **جوه الدوال** كمان
+     (طبقة ثانية زي درس build 121/133)، مش اعتماد على إن الزرار مخفي. */
+  function inviteCodesAllowed() { return ownerSettingsAllowed(); }
+  let inviteCodesCache = [];
+  let inviteCodesVia = "table";
+
+  function invWaLink(o) {
+    const txt = "برنامج ميزان للمحاسبة ⚖️\n" +
+      "الشركة: " + (o.org_name || "") + "\n" +
+      "رمز الانضمام: " + (o.invite_code || "") + "\n\n" +
+      "افتح البرنامج ← اكتب اسم المستخدم وكلمة المرور بتاعك ← اكتب رمز الانضمام ده.";
+    return "https://wa.me/?text=" + encodeURIComponent(txt);
+  }
+  // نص ودّي لفشل «توليد رمز جديد» — نفس قاعدة build 127: مافيش اصطلاح تقني يوصل للعين
+  function inviteWriteFailText(err) {
+    const m = String((err && (err.message || err.code || err)) || "");
+    if (/غير مصرح|مرفوض|permission|denied|صلاحية/i.test(m)) {
+      return "الحساب ده مش عنده صلاحية يغيّر الرمز — ده لمالك البرنامج ومساعِديه.";
+    }
+    if (/الشركة غير موجودة|not found/i.test(m)) return "الشركة دي مش ظاهرة دلوقتي — دوس تحديث القائمة.";
+    return "تعذّر تغيير الرمز دلوقتي — اتأكد من الاتصال وعاود، ولو استمر تابع مع مالك البرنامج.";
+  }
+  function legacyCopy(text, done) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = !!(document.execCommand && document.execCommand("copy"));
+      document.body.removeChild(ta);
+      if (ok) done();
+      else toast("اتنسخ الرمز بإيدك: " + text, "info");
+    } catch (e) { toast("اتنسخ الرمز بإيدك: " + text, "info"); }
+  }
+  function copyInviteCode(orgId) {
+    const o = (inviteCodesCache || []).find((x) => x.org_id === orgId);
+    const code = (o && o.invite_code) || "";
+    if (!code) { toast("الرمز مالوش ظهور الشركة دي دلوقتي — دوس تحديث القائمة الأول", "warning"); return; }
+    const done = () => toast("اتنسخ رمز «" + (o.org_name || "") + "»: " + code, "ok");
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(done, () => legacyCopy(code, done));
+        return;
+      }
+    } catch (e) { }
+    legacyCopy(code, done);
+  }
+
+  function paintInviteCodes(boxId) {
+    const box = document.getElementById(boxId);
+    if (!box) return;
+    if (!inviteCodesAllowed()) { box.innerHTML = ""; return; } // 🛡 fail-closed
+    const rows = inviteCodesCache || [];
+    if (!rows.length) {
+      box.innerHTML = '<p class="login-sub">لا توجد شركات بعد — أو لم تصل الرموز لهذا الحساب.</p>';
+      return;
+    }
+    let h = '<div class="panel-title">🎟️ رموز الدعوة — انسخ وابعت على واتس</div>' +
+      '<p class="stk-hint">كل شركة ليها رمز. ابعت الرمز للعميل على واتس، ويكتبه عند الدخول فيدخل شركته. ' +
+      '«🎲 رمز عشوائي جديد» بيلغي الرمز القديم ويطلّع واحد بدلُه. ' +
+      '<b>مافيش زرار «شركة جديدة» في البرنامج: الحساب ما يدخلش غير برمز من عندك.</b></p>' +
+      (inviteCodesVia === "table" && !isSuperAcct()
+        ? '<p class="stk-hint">الحساب ده بيشوف رمز شركته بس — عرض كل الشركات بكل رموزها بيشتغل بعد ما مالك البرنامج يفعّل التحديث الصغير في السحابة.</p>'
+        : "") +
+      '<table class="data-table"><thead><tr><th>الشركة</th><th>رمز الدعوة</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>';
+    rows.forEach((o) => {
+      const code = String(o.invite_code || "");
+      h += "<tr>" +
+        "<td><b>" + esc(o.org_name || "بدون اسم") + "</b></td>" +
+        "<td><code style=\"font-size:15px;font-weight:800;letter-spacing:2px\">" + esc(code || "—") + "</code></td>" +
+        "<td>" + (o.plan_status === "active" ? '<span class="badge-ok">🟢 نشطة</span>' : "⏳ " + esc(o.plan_status || "—")) + "</td>" +
+        '<td style="white-space:nowrap">' +
+        '<button class="btn small blue" type="button" onclick="window.__invCopy(\'' + o.org_id + "')\">📋 انسخ الرمز</button> " +
+        '<a class="btn small green" href="' + invWaLink(o) + '" target="_blank" rel="noopener">🟢 واتس</a> ' +
+        '<button class="btn small orange" type="button" onclick="window.__invNew(\'' + o.org_id + "')\">🎲 رمز جديد</button>" +
+        "</td></tr>";
+    });
+    h += "</tbody></table>";
+    box.innerHTML = h;
+  }
+
+  // قراية الرموز: `adminInviteCodes` بتجرب دالة definer الأول وبعدين تقرأ الجدول مباشرة
+  // (السياسة بترجّع للمالك كل الصفوف، ولأي حساب تاني صفّ شركته) ⇒ بشتغل من النهاردة
+  // وبلا أي كتابة سحابية. الفشل الشبكة = نص ودّي، ومافيش أي رسالة من القاعدة بوجهها.
+  function loadInviteCodes(boxId) {
+    const box = document.getElementById(boxId);
+    if (!box) return;
+    if (!inviteCodesAllowed()) { box.innerHTML = ""; return; }
+    box.innerHTML = '<p class="login-sub">جارٍ تحميل الرموز...</p>';
+    DATA.adminInviteCodes().then((res) => {
+      inviteCodesCache = (res && res.rows) || [];
+      inviteCodesVia = (res && res.via) || "table";
+      paintInviteCodes(boxId);
+      paintInviteCodes(boxId === "adminCodes" ? "invCodesOwner" : "adminCodes");
+    }).catch(() => {
+      inviteCodesCache = [];
+      box.innerHTML = '<p class="login-msg err">تعذّر قراءة الرموز دلوقتي — دوس «🔄 تحديث القائمة»، ولو استمر تابع مع مالك البرنامج.</p>';
+      paintInviteCodes(boxId === "adminCodes" ? "invCodesOwner" : "adminCodes");
+    });
+  }
+
+  window.__invCopy = function (orgId) { copyInviteCode(orgId); };
+
+  window.__invNew = function (orgId) {
+    if (!inviteCodesAllowed()) { toast("توليد الرموز لمالك البرنامج ومساعِديه فقط", "error"); return; }
+    const o = (inviteCodesCache || []).find((x) => x.org_id === orgId);
+    DATA.adminRotateInvite(orgId).then((r) => {
+      if (r && r.unavailable) {
+        toast("تغيير الرمز هيشتغل بعد ما مالك البرنامج يفعّل التحديث الصغير في السحابة — الرمز الحالي شغال زي ما هو", "info");
+        return;
+      }
+      if (r && r.code) {
+        toast("اتعمل رمز جديد لـ«" + ((o && o.org_name) || "الشركة") + "»: " + r.code, "ok");
+      }
+      loadInviteCodes("adminCodes");
+      loadInviteCodes("invCodesOwner");
+    }).catch((e) => toast(inviteWriteFailText(e), "error"));
+  };
+
   // الكتابة في صندوق البحث تعيد الرسم من الكاش فقط — بدون طلب شبكة جديد
   function onAdminSearchInput() {
     if (document.getElementById("adminList")) paintAdminOrgTable();
@@ -13067,6 +13223,8 @@ const pwEye = document.getElementById("btnShowPass");
     hideScreens();
     $("#denyScreen").hidden = true;
     renderAdminOrgs();
+    // 🎟️ بناء 141: رموز الدعوة بتظهر تحت جدول الشركات على طول (المالك بيشوف الكل)
+    loadInviteCodes("adminCodes");
     showView("admin");
     startPresenceView();
     const p = DATA.getProfile();

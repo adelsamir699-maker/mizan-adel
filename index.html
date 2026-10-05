@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4.1"; // نسخة المنتج (اللي يشوفه العميل)
-    window.MIZAN_BUILD = 138;       // عدّاد البناء والكاش (للتطوير فقط)
+    window.MIZAN_BUILD = 141;       // عدّاد البناء والكاش (للتطوير فقط)
 
     (function () {
       var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
@@ -39,7 +39,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=138" />
+  <link rel="stylesheet" href="styles.css?v=141" />
 </head>
 <body>
 
@@ -1394,6 +1394,7 @@
           <button class="tab-btn" data-tab="swal">📱 المحافظ الإلكترونية</button>
           <button class="tab-btn" data-tab="sbnk">🏦 حسابات البنوك</button>
           <button class="tab-btn" data-tab="sown">👥 أصحاب المنشأة</button>
+          <button class="tab-btn" data-tab="sinv">🎟️ دعوات الشركات</button>
           <button class="tab-btn" data-tab="sbak">💾 النسخ الاحتياطي</button>
         </div>
 
@@ -1537,6 +1538,16 @@
               <button class="btn orange" type="button" data-ssave="owner">💾 حفظ الأصحاب</button>
             </div>
             <div class="tbl-wrap" id="sGridOwner"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="sinv" hidden>
+          <div class="sett-box">
+            <div class="panel-title">🎟️ دعوات الشركات (الرمز العشوائي)</div>
+            <p class="stk-hint">كل شركة ليها رمز دعوة. انسخ الرمز وابعتوه على واتس — العميل بيكتبه عند الدخول فيدخل شركته على طول.
+              تقدر تولّد رمز جديد لأي شركة، والرمز القديم ما بيشتغلش بعده.
+              <b>الرمز ده بس اللي بيدي وصول: مافيش حد يقدر يعمل شركة لنفسه من البرنامج.</b></p>
+            <div id="invCodesOwner" class="tbl-wrap"></div>
           </div>
         </div>
 
@@ -1811,6 +1822,10 @@
           </div>
           <div id="adminList" class="tbl-wrap"></div>
         </div>
+        <!-- 🎟️ بناء 141: رموز الدعوة — المالك ومساعدوه (أعضاء شركة «ميزان») بيعملوا الرمز
+             من هنا ومن «الإعدادات (المالك)»، وبيسوّوه على واتس للعميل. نفس الشاشة تُرسم
+             من مصدر صلاحية واحد `inviteCodesAllowed()`. -->
+        <div id="adminCodes" class="sett-box"></div>
         <div id="adminSubs" class="sett-box subs-gold" hidden>
           <div class="panel-title">💰 الاشتراكات والأسعار</div>
           <p class="login-sub">اسعار الباقات الافتراضية قابلة للتعديل من الكروت هنا، وسعر كل شركة بيتحدد يدويًا حسب الاتفاق معها. التواريخ المعروضة هي نفسها الموجودة في «بيانات الشركة» — تغيير الخطة أو تاريخ البداية يعيد حساب النهاية، ودوس «تفعيل/تجديد» للحفظ.</p>
@@ -2844,30 +2859,29 @@
     </div>
   </div>
 
-  <!-- ===== شاشة إنشاء الشركة (تظهر بعد نجاح الدخول لما الحساب مالهوش شركة) ===== -->
+  <!-- ===== شاشة الانضمام برمز دعوة (تظهر لحساب مالوش شركة بعد الدخول) =====
+       🛡 بناء 141 (قرار المالك «علشان محدش يعمل حسابات تجريبية»): شاشة «شركة جديدة» اتشالت
+       من الملف كله — مافيش تبويب ومافيش خانة اسم شركة ومافيش زرار «إنشاء الشركة والبدء».
+       اللي يفضل: الحساب يدخل **برمز دعوة عشوائي** المالك أو مساعِدوه (أعضاء شركة «ميزان»)
+       بيعمله من لوحة الإدارة / «الإعدادات (المالك)» وبيسوّله على واتس. البوابة السحابية
+       (ترقية ٥٠ — **اتنفّذت على القاعدة ٥/١٠ ≈01:29** بأمر المالك الحرفي) بتقفل نفس الباب
+       من جهة القاعدة: `create_org_and_profile` بقت مرفوضة لأي نداء عام، و`join_org`
+       ما بقبلش غير رمز صحيح. -->
   <div class="login-screen" id="orgScreen" hidden>
     <div class="login-box">
-      <div class="login-logo">🏢</div>
-      <h2>مرحبًا بك</h2>
-      <p class="login-sub">تم تسجيل دخولك بنجاح ✅ — الخطوة الأخيرة: حدد شركتك</p>
-      <div class="login-tabs">
-        <button type="button" class="ltab active" data-ot="new">شركة جديدة</button>
-        <button type="button" class="ltab" data-ot="join">لدي رمز دعوة</button>
-      </div>
-      <div id="orgNew">
-        <label class="filter-label">اسم الشركة</label>
-        <input type="text" id="orgNewName" class="inp" placeholder="مؤسستي التجارية">
-        <label class="filter-label">اسمك</label>
-        <input type="text" id="orgNewFull" class="inp" placeholder="الاسم الكامل">
-        <button type="button" id="btnOrgNew" class="btn green full">إنشاء الشركة والبدء</button>
-      </div>
-      <div id="orgJoin" hidden>
+      <div class="login-logo">🎟️</div>
+      <h2>عندك رمز دعوة؟</h2>
+      <p class="login-sub">اكتب رمز الدعوة اللي وصلك من إدارة برنامج ميزان على واتس، واكتب اسمك — تدخل على طول.</p>
+      <div id="orgJoin">
         <label class="filter-label">رمز الدعوة</label>
-        <input type="text" id="orgJoinCode" class="inp" placeholder="مثال: ABC12345">
+        <input type="text" id="orgJoinCode" class="inp" placeholder="مثال: 7FBC0DFF" autocomplete="off">
         <label class="filter-label">اسمك</label>
         <input type="text" id="orgJoinName" class="inp" placeholder="الاسم الكامل">
-        <button type="button" id="btnOrgJoin" class="btn green full">الانضمام</button>
+        <button type="button" id="btnOrgJoin" class="btn green full">الدخول بالرمز</button>
       </div>
+      <p class="login-sub" style="margin-top:10px">مافيش رمز؟ تابع مع إدارة البرنامج على واتس
+        <a href="https://wa.me/201002655282" target="_blank" rel="noopener"><b dir="ltr">01002655282</b></a>
+        وهيوصلك رمز الشركة بتاعتك.</p>
       <div id="orgMsg" class="login-msg"></div>
       <button type="button" id="btnOrgLogout" class="btn gray full" style="margin-top:8px">تسجيل خروج</button>
     </div>
@@ -2890,12 +2904,12 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=138"></script>
-  <script src="supabase.config.js?v=138"></script>
-  <script src="data.js?v=138"></script>
-  <script src="cloud.js?v=138"></script>
-  <script src="install.js?v=138"></script>
-  <script src="app.js?v=138"></script>
+  <script src="lib_supabase.js?v=141"></script>
+  <script src="supabase.config.js?v=141"></script>
+  <script src="data.js?v=141"></script>
+  <script src="cloud.js?v=141"></script>
+  <script src="install.js?v=141"></script>
+  <script src="app.js?v=141"></script>
   <script>
     // كاشف أخطاء على الشاشة (بيحول أي خطأ JS لرسالة مرئية)
     (function () {

@@ -149,20 +149,15 @@
     });
   }
 
-  function signup(username, pass) {
-    return ensureLib().then(function () {
-      if (!sb) init();
-      if (!sb) throw new Error("لا يوجد إعداد اتصال");
-      return sb.auth.signUp({ email: toEmail(username), password: pass }).then(function (r) {
-        if (r.error) throw r.error;
-        lastCreds = { username: username, pass: pass };
-        saveSessionTokens(r.data.session);
-        return r.data;
-      });
-    });
-  }
+  /* 🛡 بناء 141 — «مافيش تسجيل ذاتي خالص»: الدالة `signup` (اللي كانت بتنادي `sb.auth.signUp`)
+     كانت **ميتة** (صفر نداء في `app.js` — الحسابات بتتعمل من لوحة المالك `mizan_admin_create_user`
+     أو من شاشة «حسابات شركتك» لصاحبها)، فتم حذفها من الملف ومن قايمة التصدير:
+     الحزمة المنشورة مافيهاش ولا سطر بيبعت طلب تسجيل حساب جديد للسحابة
+     ⇒ بقايا الكود ما تبقىش بابًا لو بوابة التسجيل العام في لوحة Supabase رجعت مفتوحة.
+     قرار المالك الحرفي (04/10): «علشان محدش يعمل حسابات تجريبية». */
 
-  // لو الدخول ناجح ومفيش ملف/شركة لسه → هيكمل إنشاء الشركة
+  // الدخول ناجح ومفيش ملف/شركة لسه ⇒ الصفحة توري **شاشة رمز الدعوة** (`orgScreen`) —
+  // ومافيش إنشاء شركة من هنا خالص من بناء 141 (القرار: «علشان محدش يعمل حسابات تجريبية»).
   function loadProfile() {
     return sb.auth.getUser().then(function (gu) {
       if (gu.error || !gu.data.user) throw gu.error || new Error("لا يوجد مستخدم");
@@ -229,15 +224,13 @@
     });
   }
 
-  // إنشاء شركة جديدة أول مرة
-  function createOrg(orgName, name) {
-    return reloginThen(function () {
-      return sb.rpc("create_org_and_profile", { p_org_name: orgName, p_name: name || "" }).then(function (r) {
-        if (r.error) throw r.error;
-        return loadProfile();
-      });
-    });
-  }
+  /* 🎟️ بناء 141 — «قفل التسجيل»: دالة `createOrg` (اللي بتنادي `create_org_and_profile`) اتشالت من الملف كله:
+     قرار المالك الحرفي (04/10): «علشان محدش يعمل حسابات تجريبية» + «و بعدين اربط الدعوه منى انا».
+     ⇒ الحزمة المنشورة مافيهاش ولا نداء لـ `create_org_and_profile`، وأي حساب جديد
+     بياخد رمز دعوة من المالك أو من مساعِديه (أعضاء شركة «ميزان») ويكتبه عند الدخول.
+     إنشاء الشركات يفضل من مسارين بس: لوحة المالك (`mizan_admin_create_org`)، والترقية ٥٠
+     اللي بتقفل الدالة العامة على نفس النطاقين — **و٥٠ اتنفّذت على السحابة ٥/١٠ ≈01:29**
+     بأمر المالك الحرفي «تمام ابدا فعلها على قاعدة البيانات» (الإثبات السلوكي 82✓/0✗). */
 
   // الانضمام لشركة برمز دعوة
   function joinOrg(code, name) {
@@ -505,6 +498,57 @@
     return sb.rpc("mizan_admin_members", { p_org_id: orgId }).then(function (r) {
       if (r.error) throw r.error;
       return r.data || [];
+    });
+  }
+
+  /* 🎟️ بناء 141 — «قفل التسجيل + رمز الدعوة العشوائي» (قرار المالك 04/10):
+     أي حساب جديد بياخد رمزه من المالك أو من مساعِديه (أعضاء شركة «ميزان»)، والعميل
+     بيكتب الرمز عند الدخول. `mizan_admin_orgs()` ما بترجّعش `invite_code`، فبنقراه من
+     مصدرين بالترتيب ده:
+       (١) `mizan_admin_invite_codes()` — دالة definer بتدي القايمة كاملة للمالك **ولمساعديه**
+           (أعضاء شركة «ميزان»): دي من ترقية ٥٠ و**اتنفّذت على السحابة ٥/١٠ ≈01:29** بأمر المالك
+           الحرفي «تمام ابدا فعلها على قاعدة البيانات» ⇒ ده المسار الحيّ، و`via:"rpc"`.
+       (٢) رجوع لقراءة `organizations` مباشرة: سياسة `org_select` الموجودة على القاعدة الحيّة
+           بتسمح لـ `is_superadmin` بكل الصفوف، وبتدي أي حساب تاني **صفّ شركته هو بس**
+           ⇒ يفضل **مسار أمان** لسيرفر/قاعدة لسه ما تطبقتش عليها ٥٠ (سيرفر جديد ياخد الترقية
+           من `DEPLOY_DB_FILES`)، مش الحالة الحيّة. وهي **قراءة فقط** زي `adminOrgFeatures`. */
+  function fnMissingErr(e) {
+    if (!e) return false;
+    var c = String(e.code || e["pg-code"] || e.pgcode || "");
+    var m = String(e.message || "");
+    return c === "PGRST202" || c === "42883" || c === "PGRST102" ||
+      /could not find the function/i.test(m) || /does not exist/i.test(m) || /is not recognised/i.test(m);
+  }
+  function adminInviteCodes() {
+    var norm = function (rows) {
+      return (rows || []).map(function (x) {
+        return {
+          org_id: x.org_id || x.id || null,
+          org_name: x.org_name || x.name || "",
+          invite_code: x.invite_code || "",
+          plan_status: x.plan_status || "active"
+        };
+      }).filter(function (x) { return x.org_id; });
+    };
+    return sb.rpc("mizan_admin_invite_codes").then(function (r) {
+      if (!r.error) return { rows: norm(r.data), via: "rpc" };
+      if (!fnMissingErr(r.error)) throw r.error;
+      return sb.from("organizations").select("id, name, invite_code, plan_status")
+        .order("created_at", { ascending: false })
+        .then(function (o) {
+          if (o.error) throw o.error;
+          return { rows: norm(o.data), via: "table" };
+        });
+    });
+  }
+  // توليد رمز عشوائي جديد لشركة: كتابة على `organizations.invite_code` — ودي بس بتتم من
+  // دالة definer (الترقية ٥٠ — اتنفّذت ٥/١٠). أي سيرفر/قاعدة لسه ما طبّقتها بنرجّع
+  // `unavailable` بدل ما نكذب ونقول «تم» (مسار أمان بس، مش الحالة الحيّة).
+  function adminRotateInvite(orgId) {
+    return sb.rpc("mizan_admin_rotate_invite", { p_org_id: orgId }).then(function (r) {
+      if (!r.error) return { code: r.data || "", unavailable: false };
+      if (fnMissingErr(r.error)) return { code: "", unavailable: true };
+      throw r.error;
     });
   }
   function adminSetOrg(orgId, planStart, planEnd, locked, features) {
@@ -857,9 +901,7 @@ function changeMyPassword(oldPass, newPass) {
     client: client,
     orgId: orgId,
     login: login,
-    signup: signup,
     autoLogin: autoLogin,
-    createOrg: createOrg,
     joinOrg: joinOrg,
     loadProfile: loadProfile,
     email: email,
@@ -885,6 +927,8 @@ function changeMyPassword(oldPass, newPass) {
     adminDeleteCreatedAccount: adminDeleteCreatedAccount,
     adminOrgs: adminOrgs,
     adminOrgFeatures: adminOrgFeatures,
+    adminInviteCodes: adminInviteCodes,
+    adminRotateInvite: adminRotateInvite,
     adminMembers: adminMembers,
     adminSetOrg: adminSetOrg,
     adminSetSub: adminSetSub,
