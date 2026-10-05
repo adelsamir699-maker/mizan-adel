@@ -2063,7 +2063,24 @@ td.c-tax.tax-hidden {
   border: 1px solid var(--accent); border-radius: 999px;
   padding: 2px 10px; cursor: pointer;
 }
+/* 📷 بناء 143 (طلب 05/10 ≈18:20) — أرقام «كمّللي الرقم» اللي بتظهر أثناء الكتابة اليدوية:
+   مجموعة أزرار تلف مع النص في نفس شريط الرسالة، والرقم نفسه لاتجاهه إنجليزي دايمًا. */
+.scan-hint .scan-picks { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.scan-picks .scan-act { direction: ltr; unicode-bidi: isolate; font-family: "Courier New", monospace; }
 .bc-field .btn { flex: 0 0 auto; white-space: nowrap; }
+
+/* 📱 بناء 143 (طلب المالك 05/10 ≈18:05: «نفس الشكل اللى هتظهر على الكمبيوتر والموبايل»):
+   على شاشة الموبايل خانة الباركود تاخد عرض الصف كامل، والكمية/Sعر يتقسموا السطر — نفس
+   ترتيب الكمبيوتر (الصفوف أصلًا `flex-wrap: wrap`). لازم تفضل **بعد** قاعدة الـ 150px
+   لأنها بنفس خصوصية الاختيار، فالمتأخر في المصدر هو اللي بيكسب. */
+@media (max-width: 640px) {
+  .fld-cust { width: 100%; }
+  .fld-code { flex: 1 1 100%; width: auto; }
+  .fld-qty { flex: 0 0 78px; width: auto; }
+  .fld-price { flex: 1 1 110px; width: auto; }
+  .fld-btn { flex: 0 0 auto; }
+  .scan-hint { font-size: 12.5px; }
+}
 
 /* 🔳 بناء 139 — المقاسات على الورق: A4 ثلاث أعمدة، A5 عمودين، الحراري عمود واحد.
    ممنوع أي تغيير لقاعدة الـ 5mm اللي جوه @media print الرئيسي (حارس بناء 112). */
