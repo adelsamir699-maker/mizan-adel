@@ -2119,6 +2119,16 @@ td.c-tax.tax-hidden {
   flex: 1 0 100%; font-size: 11.5px; font-weight: 600;
   color: var(--text-secondary);
 }
+/* 🔧 بناء 145 (طلب المالك 06/10 ≈23:45 — بحرفه: «بلاش تكتب دي … والسعر الإجمالي عايزه
+   واضح»): رسالة المسح بقت **أرقامًا** (سعر السطر + إجمالي الفاتورة) ⇒ الرقم بيتقاس من
+   `posRecalc`/`ppRecalc` وبيتعرض بخط أعرض وأصغر‑للاتجاه عشان «1,250.00» ما تركبش على
+   العربي. لون من المتغيرات بس (ممنوع أي رمز شباك هنا — حارس الدردشة بيمسكه). */
+.scan-hint .scan-line-total {
+  direction: ltr; unicode-bidi: isolate;
+  font-family: "Courier New", monospace; font-size: 13px; font-weight: 800;
+  color: var(--primary-dark);
+  padding: 0 2px;
+}
 /* الرقم الممسوح: إنجليزي دايمًا ومعزول لاتجاهًا، عشان «200000000815» ما تركبش على النص العربي */
 .scan-code {
   direction: ltr; unicode-bidi: isolate;

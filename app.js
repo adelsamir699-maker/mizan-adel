@@ -34,14 +34,21 @@
   const LS_ATT_SETTINGS = "mizan_att_settings_v1";
   // 🆕 مهمة 98: سجل الأصول الثابتة (غير المتداولة / غير الملموسة)
   const LS_FIXED_ASSETS = "mizan_fixed_assets_v1";
-  // 🧮 بناء 145: ورق «الجرد بالباركود» — على جهاز العميل بس (مافيش جدول سحابي ومافيش ترقية)
+  /* 🧮 بناء 145 → 146: ورق «الجرد بالباركود» على جهاز العميل بس (مافيش جدول سحابي ومافيش ترقية).
+     ⚠️ المفتاح **بره** `LS_ALL_KEYS` عندنا عمدًا، والسبب مقاس حيًّا (طلب المالك 06/10 ≈23:50:
+     «مش بيحفظ ورقة الجرد»): `guardOrgSwitch()` بينادي `wipeLocalTables()` اللي بتمسح **كل**
+     مفتاح في `LS_ALL_KEYS`، و`showLogin()` بتمسح ختم الحالة (`LS_STATE_ORG`) ⇒ أي **خروج ثم
+     دخول لنفس الشركة** كان بيشيل الورق المحفوظ («حفظتها ولقيتها راحت»).
+     العزل اللي كان سبب المسح ده بقى متحقّق **بالمفتاح نفسه**: كل شركة ليها مفتاح
+     `mizan_sc_sheets_v1:<orgId>` ⇒ ورق شركة ما بيبانشش في شركة تانية أبدًا، ومش محتاج
+    مسحه عند التبديل. المنطق كله في `scOrgKey`/`scSheetsRead`/`scSheetsWrite`. */
   const LS_STOCK_SHEETS = "mizan_sc_sheets_v1";
   // كل مفاتيح البيانات المحلية (مشتركة بين كل الحسابات في نفس المتصفح)
   const LS_ALL_KEYS = [
     LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_ACTIVITY, LS_SALES, LS_TREASURY,
     LS_SUPPLIERS, LS_SUP_TXS, LS_PURCHASES, LS_ACCOUNTS, LS_JOURNAL,
     LS_USERS, LS_VOUCHERS, LS_SALE_RETURNS, LS_PURCHASE_RETURNS, LS_SETTINGS,
-    LS_EMPLOYEES, LS_ATTENDANCE, LS_ATT_SETTINGS, LS_FIXED_ASSETS, LS_STOCK_SHEETS
+    LS_EMPLOYEES, LS_ATTENDANCE, LS_ATT_SETTINGS, LS_FIXED_ASSETS
   ];
   // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
@@ -4440,15 +4447,34 @@
        (٥) **الأصناف اللي ما اتلمستش = قرار سطر-سطر** في نافذة `#mScZero`: ممنوع تصفير
            تلقائي جملي، وممنوع تسريبهم بلا سؤال — اللي ما تتعلّمش عليه صح بيفضل برصيد
            زي ما هو.
-     الورق كله على **جهاز العميل بس** (`LS_STOCK_SHEETS` في `LS_ALL_KEYS` ⇒ بيتمسح مع
-     تبديل الشركة زي باقي بيانات الجهاز): **مافيش جدول `stock_counts` على السحابة
-     ومافيش ترقية ٥١**، وممنوع إدخال المفتاح في `mirror()` أو `pushTable()`.
+     الورق كله على **جهاز العميل بس**: مفتاح `mizan_sc_sheets_v1:<orgId>` (بناء 146 — بره
+     `LS_ALL_KEYS` عمدًا، شوف السبب المقيّس تحت عند التعريف) ⇒ **مافيش جدول `stock_counts` على
+     السحابة ومافيش ترقية ٥١**، وممنوع إدخال المفتاح في `mirror()` أو `pushTable()`.
      ══════════════════════════════════════════════════════════════════════════════ */
 
   /* ---- الورق على الجهاز (مافيش رفع سحابي خالص) ---- */
-  function scSheetsRead() {
+  /* 🔴 باگ حيّ مقاس (06/10 ≈23:50 — «مش بيحفظ ورقة الجرد»): الورق كان على مفتاح عام
+     داخل `LS_ALL_KEYS`، و`guardOrgSwitch()` بيمسح كل مفتاح في القائمة عند أي دخول ختمه
+     مش مطابق — و`showLogin()` بيشيل الختم ⇒ **خروج ودخول لنفس الشركة = الورق راح**.
+     الإصلاح: المفتاح يتقفل **بمعرّف الشركة** (`…:orgId`) ⇒ العزل بقى في اسم المفتاح
+     نفسه، فمفيش سبب يمسحه، وورق شركة ما بيبانش في شركة تانية أبدًا. */
+  let scLoadedKey = null;      // المفتاح اللي آخر قراءة فعلًا جاية منه (null = ما قريانش)
+  function scOrgId() {
     try {
-      const raw = JSON.parse(localStorage.getItem(LS_STOCK_SHEETS));
+      const o = window.DATA && typeof DATA.org === "function" ? DATA.org() : null;
+      if (o && o.id) return String(o.id);
+    } catch (e) { /* DATA لسه ما اتعملهاش init */ }
+    try { const l = localStateOrg(); if (l) return String(l); } catch (e) { /* مافيش ختم */ }
+    return "";
+  }
+  function scOrgKey() {
+    const id = scOrgId();
+    return id ? LS_STOCK_SHEETS + ":" + id : LS_STOCK_SHEETS;
+  }
+  function scSheetsRead() {
+    scLoadedKey = scOrgKey();
+    try {
+      const raw = JSON.parse(localStorage.getItem(scLoadedKey));
       if (!Array.isArray(raw)) return [];
       // ورقة بلا `lines` مصفوفة = كتابة قديمة/تالفة ⇒ تتجاهلها أحسن من شاشة فاضية أو زعلة
       return raw.filter((s) => s && typeof s === "object" && Array.isArray(s.lines));
@@ -4457,10 +4483,23 @@
   // مافيش `pushTable` ومافيش `syncToLocalDisk`: الورقة أداة عدّ على الجهاز ده، مش بيانات شركة.
   function scSheetsWrite() {
     try {
-      localStorage.setItem(LS_STOCK_SHEETS, JSON.stringify(scSheets));
+      scLoadedKey = scOrgKey();
+      localStorage.setItem(scLoadedKey, JSON.stringify(scSheets));
     } catch (e) {
       toast("المتصفح رفض يحفظ الورقة على الجهاز — العدّاد شغال في الذاكرة، بس الورقة ما بتفضلش بعد قفل الصفحة.", "warning");
     }
+  }
+  /* الورق بيتقري وقت `loadData()` (مرة عند الإقلاع/الدخول)، بس المعرّف الحقيقي للشركة
+     ممكن يتعرّف بعد كده أو يتبدّل ⇒ أي نداء لشاشة الجرد لازم يتأكد إن اللي في الذاكرة
+     جاي من **مفتاح الشركة دي**. لو المفتاح مختلف: نعيد القراءة من القرص (ولو لسه ما
+     اتقريتش خالص: نقري أول مرة). بدون ده الزرار «📂 فتح» بيلاقي القائمة فاضية ⇒
+     «ورقة الجرد مش بتنزل» زي ما اشتكى المالك. */
+  function scResyncOrg() {
+    const k = scOrgKey();
+    if (scLoadedKey === k) return false;
+    scSheets = scSheetsRead();
+    scSheetCur = null;
+    return true;
   }
   function scNewNo() {
     let m = 0;
@@ -4487,6 +4526,7 @@
     scSheetsWrite();
   }
   function scCur() {
+    scResyncOrg();   // 🔴 «ورقة الجرد مش بتنزل» (06/10 ≈23:50): الذاكرة لازم تبقى بتاعة الشركة دي
     if (!scSheetCur) scNewSheet();
     return scSheetCur;
   }
@@ -5545,7 +5585,13 @@
     $("#txtPosCode").value = "";
     $("#numPosQty").value = "1";
     $("#txtPosPrice").value = "";
-    posUpdateBadge(prod);
+    /* 🔧 طلب المالك الحيّ 06/10 ≈23:20 (#217 قطعة ٢ — بحرفه: «كمان سعات الكميه الموجوده
+       فى المخزن بتكون معلقه حتى بعد ما ادوس انتر»). الشارة **للمطابقة قبل الإضافة**:
+       بتقول «الرصيد والسعر» عشان البائع يختار صح. أول ما السطر ينزل الجدول، الرقم
+       بقى جوه السطر ⇒ الشارة لازم تمشي، وإلا تضلّ «معلّقة فوق» باسم الصنف اللي قبله.
+       الرجوع لها محترم ومفاجئ: الوقوف بالمؤشر على أي سطر في الجدول بيهّطها تاني
+       (`mouseenter` في `renderPosItems`)، فمافيش معلومة ضاعت — وممنوع إعادة `posUpdateBadge(prod)`. */
+    posUpdateBadge(null);
     renderPosItems();
     posRecalc();
     if (posAddSource === "code") $("#txtPosCode").focus();
@@ -5591,6 +5637,7 @@
     if (!res.prod) {
       lastPosScan = res.code;
       scanBeep("no");
+      posUpdateBadge(null);   // #217/٢: مافيش صنف اتعرّف ⇒ مافيش شارة تضلّ من صنف قبله
       scanHint("#posScanHint", "warn", scanFailText(res) +
         (res.why === "notfound"
           ? " <button type='button' class='scan-act' data-scan-new='1'>➕ سجّله صنف جديد</button>" : ""));
@@ -5632,11 +5679,14 @@
       $("#numPosQty").value = "";
       posQtyTyped = false;
       scanBeep("ok");
+      /* 🔧 طلب المالك الحيّ 06/10 ≈23:45 (بحرفه): «بلاش تكتب دي … والسعر الإجمالي عايزه
+         واضح». ⇒ النص التعليمي («المسحة تنزّل السطر على طول…») اتشال خالص، والرسالة بقت
+         **الرقم نفسه**: سعر الصنف الممسوح + إجمالي الفاتورة بعد السطر ده (من `posRecalc`
+         مصدر الحساب الوحيد، فاللي في الرسالة = اللي في الفوتر حرفيًا). */
+      const tot = posRecalc();
       scanHint("#posScanHint", "ok", "📷 " + esc(p.nameAr || p.code) + " — " +
-        qty + " × " + fmt(price) + " ج.م نزلت في الفاتورة." +
-        (autoQty
-          ? "<span class='scan-sub'>✅ المسحة تنزّل السطر على طول (كمية ١) · زوّدها من خانة الكمية أو امسّح الصنف تاني = +١.</span>"
-          : "<span class='scan-sub'>امسّح الصنف اللي بعده — ينزل على طول كمان.</span>"));
+        qty + " × " + fmt(price) + " = <b class='scan-line-total'>" + fmt(Math.round(qty * price * 100) / 100) + " ج.م</b>" +
+        " · 🧾 إجمالي الفاتورة: <b class='scan-line-total'>" + fmt(tot.grand) + " ج.م</b>");
     } else if (!(have > 0)) {
       scanBeep("no");
       scanHint("#posScanHint", "warn", "📦 الصنف (" + esc(p.nameAr || p.code) +
@@ -5650,11 +5700,24 @@
       scanHint("#posScanHint", "warn", "📦 المتوفر من (" + esc(p.nameAr || p.code) +
         ") في («" + esc(wh) + "») = " + have + " " + esc(p.unit || "") + " — أقل من الكمية اللي طلبتها.");
     }
+    /* #217/٢ — **بوابة واحدة بعد قرار التعارف**: سواء السطر نزل أو اترفض، الرسالة اللي
+       فوق فيها الرقم المطلوب (الإجمالي / المتوفر / السعر)، فالشارة ما تضلّش معلّقة تحت
+       الرأس باسم الصنف الممسوح. (المسار اليدوي بيمسّيها جوه `posAddItem` عند النجاح،
+       و`posOnCode`/`posOnSearch` بيهّطوها تاني وقت المطابقة قبل الإضافة.) */
+    posUpdateBadge(null);
   }
 
   // Enter في خانة الكود: إمّا إنهاء مسح (سريع) ⇒ نختار الصنف، أو إنهاء كتابة ⇒ المسار القديم
+  /* 🔴 باگ حيّ مقاس 06/10 ≈23:55 (بحرفه: «المسح بيتعرّف على الأصناف وبيضيفها وبيخطّي
+     في الرسالة خطأ وبيقول ادخل اسم الصنف»): الإسكانر بيرسل **Enter بعد الحروف**، وفي
+     فئة من الماكينات الرقم بيوصل/ينفّذ قبل الـ Enter ⇒ النجاح بيفرّغ خانة الكود
+     (`posAddItem` سطر 5545) والـ Enter بيجي على **خانة فاضية** ⇒ `posAddVia` ⇒
+     `posAddItem` بتقول «لم يتم العثور على صنف يطابق الاسم أو الكود». الصنف كان نزل
+     فعلًا، والرسالة كدّابة. ⇒ **الخانة الفاضية = مافيش حاجة تتنفّذ** (ممنوع رفض صامت
+     للكتابة الحقيقية: أي حرف في الخانة بيمشي المسار القديم بالحرف). */
   function posCodeEnter() {
     const raw = $("#txtPosCode").value;
+    if (!String(raw || "").trim()) return;
     if (scanBurstOf("txtPosCode", raw)) { posHandleScan(scanTailNorm("txtPosCode")); return; }
     posAddVia("code");
   }
@@ -5662,6 +5725,7 @@
   // الإسكانر بيتوّه أحيانًا على خانة الاسم — بنستقبله هناك بنفس الذكاء
   function posSearchEnter() {
     const raw = $("#txtPosSearch").value;
+    if (!String(raw || "").trim()) return;   // نفس باب الفاتورة فوق: الخانة فاضية ⇒ Enter مالوش موضوع
     if (scanBurstOf("txtPosSearch", raw)) { posHandleScan(scanTailNorm("txtPosSearch")); return; }
     posAddVia("search");
   }
@@ -6380,7 +6444,7 @@
     $("#txtPPCode").value = "";
     $("#numPPQty").value = "1";
     $("#txtPPPrice").value = "";
-    ppUpdateBadge(prod);
+    ppUpdateBadge(null);   // #217/٢ — نفس باب البيع: السطر نزل ⇒ الشارة تمشي (الوقوف على السطر يهّطها)
     renderPPItems();
     ppRecalc();
     if (ppAddSource === "code") $("#txtPPCode").focus();
@@ -6399,6 +6463,7 @@
     if (!res.prod) {
       lastPpScan = res.code;
       scanBeep("no");
+      ppUpdateBadge(null);   // #217/٢: مافيش صنف اتعرّف ⇒ مافيش شارة تضلّ من صنف قبله
       scanHint("#ppScanHint", "warn", scanFailText(res) +
         (res.why === "notfound"
           ? " <button type='button' class='scan-act' data-scan-new='1'>➕ سجّله صنف جديد</button>" : ""));
@@ -6430,11 +6495,13 @@
       $("#numPPQty").value = "";
       ppQtyTyped = false;
       scanBeep("ok");
+      /* 🔧 نفس طلب المالك الحيّ 06/10 ≈23:45 في البيع (بحرفه: «بلاش تكتب دي … والسعر
+         الإجمالي عايزه واضح») — والشراء نفس الباب بنفس الرسالة: **الرقم نفسه** بدل النص
+         التعليمي، والإجمالي من `ppRecalc` مصدر الحساب الوحيد. */
+      const tot = ppRecalc();
       scanHint("#ppScanHint", "ok", "📷 " + esc(p.nameAr || p.code) + " — " +
-        qty + " × " + fmt(price) + " ج.م نزلت في فاتورة الشراء." +
-        (autoQty
-          ? "<span class='scan-sub'>✅ المسحة تنزّل السطر على طول (كمية ١) · زوّدها من خانة الكمية أو امسّح الصنف تاني = +١.</span>"
-          : "<span class='scan-sub'>امسّح الصنف اللي بعده — ينزل على طول كمان.</span>"));
+        qty + " × " + fmt(price) + " = <b class='scan-line-total'>" + fmt(Math.round(qty * price * 100) / 100) + " ج.م</b>" +
+        " · 🧾 إجمالي فاتورة الشراء: <b class='scan-line-total'>" + fmt(tot.grand) + " ج.م</b>");
     } else if (!(price > 0)) {
       scanBeep("no");
       scanHint("#ppScanHint", "warn", "🏷️ الصنف (" + esc(p.nameAr || p.code) +
@@ -6444,16 +6511,19 @@
       scanHint("#ppScanHint", "warn", "⚠️ (" + esc(p.nameAr || p.code) +
         ") ما اتضافش — شوف الرسالة اللي فوق وكمّل.");
     }
+    ppUpdateBadge(null);   // #217/٢ — بوابة واحدة بعد قرار التعارف: الشارة ما تضلّش معلّقة
   }
 
   function ppCodeEnter() {
     const raw = $("#txtPPCode").value;
+    if (!String(raw || "").trim()) return;   // نفس باب البيع: Enter على خانة فاضية = مافيش موضوع
     if (scanBurstOf("txtPPCode", raw)) { ppHandleScan(scanTailNorm("txtPPCode")); return; }
     ppAddVia("code");
   }
 
   function ppSearchEnter() {
     const raw = $("#txtPPSearch").value;
+    if (!String(raw || "").trim()) return;
     if (scanBurstOf("txtPPSearch", raw)) { ppHandleScan(scanTailNorm("txtPPSearch")); return; }
     ppAddVia("search");
   }
