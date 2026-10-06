@@ -4271,6 +4271,15 @@
      المصنع اتقرا بتسامح الأصفار) ⇒ posAddItem يلاقيه بالطابقة الحرفية ديغني، وبعدين
      تناديه. بعد الإضافة بنرجّع التركيز لنفس الخانة عشان المسح المتتابع يشتغل بلا clicks.
      الزنة (`scanBeep`) بتتنادى **بعد** القرار: ok = صنف اتضاف · no = مرفوض/مافيش صنف. */
+  /* القياس الوحيد ل«السطر نزل»: كمية الصنف دي كام في الفاتورة دلوقتي (البيع والشراء
+     بيعدّوا من نفس السطور — مش من رسالة ولا من «اسم الصنف موجود ولا لأ»، لأندها بيصدق
+     على سطر قديم والإضافة الجديدة تكون اترفضت). */
+  function invoiceQtyOf(list, p) {
+    let s = 0;
+    list.forEach((it) => { if (Number(it.productId) === Number(p.id)) s += Number(it.qty) || 0; });
+    return s;
+  }
+
   function posHandleScan(raw) {
     const res = findProductByScan(raw);
     if (!res.prod) {
@@ -4306,11 +4315,17 @@
       if (q.select) q.select();
       return;
     }
+    /* 🔴 كمية المالك ما تمسحش إلا لما الإضافة تنجح فعلًا (قياس حيّ ٠٦/١٠: مسحة بكمية
+       أكبر من المتوفر ⇒ `posAddItem` بترفض، لكن السطور القديمة كانت بتمسح الخانة
+       وتقول «اتضاف» لأن الحكم كان «الصنف موجود في الفاتورة» — وده بيصدق حتى لو السطر
+       ده من مسحة قبلها). المقياس الصح: **كمية الصنف في الفاتورة زادت**. وبعد النجاح
+       الخانة ترجع فاضية والنشيط يتشال، فمسحة تانية ما تضيفش بكمية الصنف اللي قبلها. */
+    const qtyBefore = invoiceQtyOf(posItems, p);
     posAddItem();
-    // كل مسحة ناجحة بتطلب كمية جديدة — الخانة ترجع فاضية والنشيط يتشال (الطلب بالحرف)
-    $("#numPosQty").value = "";
-    posQtyTyped = false;
-    if (posItems.some((it) => Number(it.productId) === Number(p.id))) {
+    const added = invoiceQtyOf(posItems, p) > qtyBefore;
+    if (added) {
+      $("#numPosQty").value = "";
+      posQtyTyped = false;
       scanBeep("ok");
       scanHint("#posScanHint", "ok", "📷 " + esc(p.nameAr || p.code) + " — " +
         qty + " × " + fmt(price) + " ج.م اتضاف للفاتورة." +
@@ -5090,10 +5105,13 @@
       if (q.select) q.select();
       return;
     }
+    // نفس قياس البيع بالحرف: كمية المالك ما تتمسحش إلا لو السطر نزل فعلًا (٠٦/١٠)
+    const qtyBefore = invoiceQtyOf(ppItems, p);
     ppAddItem();
-    $("#numPPQty").value = "";
-    ppQtyTyped = false;
-    if (ppItems.some((it) => Number(it.productId) === Number(p.id))) {
+    const added = invoiceQtyOf(ppItems, p) > qtyBefore;
+    if (added) {
+      $("#numPPQty").value = "";
+      ppQtyTyped = false;
       scanBeep("ok");
       scanHint("#ppScanHint", "ok", "📷 " + esc(p.nameAr || p.code) + " — " +
         qty + " × " + fmt(price) + " ج.م اتضاف لفاتورة الشراء." +
