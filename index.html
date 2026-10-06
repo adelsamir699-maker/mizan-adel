@@ -85,6 +85,9 @@
       <button class="sec-btn" type="button" data-sec-toggle="stock">📦 المخزون والأطراف <i class="chev">▾</i></button>
       <div class="drop">
       <button class="nav-btn" data-view="products">🏷️  الأصناف والمخزون</button>
+      <!-- 🧮 بناء 144 (سطر ٢ من خطة المالك + قرار 05/10 ≈17:20): الجرد بالباركود — شاشة مستقلة
+           عن «جرد المخزون لكل مستودع» اليدوي، بنفس أعمدته الخمسة، والعدّ بالماسح الضوئي صنف-صنف. -->
+      <button class="nav-btn" data-view="stockCount">🧮  الجرد بالباركود</button>
       <button class="nav-btn" data-view="customers">👨‍💼  دليل العملاء</button>
       <button class="nav-btn" data-view="suppliers">📦  دليل الموردين</button>
       </div>
@@ -461,6 +464,76 @@
             <tbody></tbody>
           </table>
         </div>
+
+      </section>
+
+      <!-- ═══════ 🧮 بناء 144 — شاشة «الجرد بالباركود» ═══════
+           قرار المالك الحرفي (05/10 ≈17:20): «عايز الجرد اللى بالباركود يكون زى الجرد التانى
+           فى ان يكون جمب عدد كل صنف تم جرده بالباركود عدد الموجود منه فى المخازن و امكانية
+           اعتماد الجرد فيتغير الموجود فى البرنامج لو صاحب الشركه اختار اعتماد الجرد»
+           ⇒ نفس الأعمدة الخمسة بالظبط (كود · اسم · عدد البرنامج · المعدود · الفرق)، والفرق إن
+           «المعدود» بيزيد بكل مسحة وممكن يتظبط بالإيد. الشاشة **مستقلة**: «جرد المخزون لكل
+           مستودع» اليدوي ما اتلمسش. ورقة الجرد بتتحفظ على جهاز العميل بس (مافيش جدول سحابي). -->
+      <section class="view view-stockcount" id="viewStockCount" data-id="stockCount" hidden>
+
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnScNew" class="btn dark" type="button">🆕 ورقة جرد جديدة</button>
+            <button id="btnScSave" class="btn green" type="button">💾 حفظ الورقة على الجهاز</button>
+            <button id="btnScExport" class="btn green" type="button">📥 تصدير إلى Excel</button>
+            <button id="btnScPrint" class="btn sky" type="button">🖨️ طباعة الجرد</button>
+            <button id="btnScApply" class="btn teal" type="button" title="لصاحب الشركة ومالك البرنامج فقط — يغيّر الموجود في البرنامج ويكتب قيد بالفروق">✅ اعتماد الجرد وتسوية الفروق</button>
+          </div>
+          <h1 class="view-title">🧮 الجرد بالباركود<span class="screen-only"> - By Adel Samir - واتس: 01002655282</span></h1>
+        </div>
+
+        <div class="pos-fields">
+          <div class="pos-row">
+            <div class="fld"><label>المخزن:</label><select id="scWarehouse"></select></div>
+            <div class="fld fld-code"><label>📷 باركود / كود:</label><input id="txtScCode" autocomplete="off" placeholder="إسكانر أو كتابة" /></div>
+            <div class="fld fld-qty"><label>عدد كل مسحة:</label><input id="numScQty" type="text" value="1" /></div>
+            <div class="fld fld-btn"><button id="btnScScanArm" class="btn small sky" type="button" title="جهّز خانة الباركود للماسح الضوئي">📷 مسح</button></div>
+            <div class="fld grow">
+              <div class="fld-card">
+                <label class="lbl-accent">🔍 اسم الصنف ثم Enter (عدّ بالإيد):</label>
+                <div class="stock-hint" id="scStockHint">📦 رصيد: -</div>
+              </div>
+              <input id="txtScSearch" autocomplete="off" />
+            </div>
+            <div class="fld fld-btn"><button id="btnScManualAdd" class="btn sky" type="button">عدّ ➕</button></div>
+          </div>
+          <div class="scan-hint" id="scScanHint" hidden></div>
+        </div>
+
+        <div class="sc-bar">
+          <span class="sc-sum" id="scSummary"></span>
+        </div>
+
+        <!-- الورق المحفوظ: على الجهاز ده وبالشركة دي بس (بيتمسح مع أي تبديل شركة زي باقي البيانات) -->
+        <div class="sc-sheets">
+          <label for="scSheetList">📂 ورق الجرد المحفوظ على هذا الجهاز:</label>
+          <select id="scSheetList"></select>
+          <button id="btnScLoadSheet" class="btn gray small" type="button">📂 فتح</button>
+          <button id="btnScDeleteSheet" class="btn red small" type="button">🗑 حذف الورقة</button>
+          <span class="sc-state" id="scStateNote"></span>
+        </div>
+
+        <div class="table-wrap">
+          <table id="dgvStockCount" class="dgv">
+            <thead>
+              <tr>
+                <th style="width:18%">كود الصنف</th>
+                <th style="width:32%">اسم الصنف</th>
+                <th style="width:20%">العدد الفعلي على البرنامج</th>
+                <th style="width:15%">العدد المعدود</th>
+                <th style="width:15%">الفرق</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <p class="stk-hint">📷 كل مسحة بتزوّد «العدد المعدود» بمقدار «عدد كل مسحة» (لوحة ١ = صنف واحد). تقدر تكتب العدد بنفسك في الخانة، وتلغي سطر صنف بزرار ✕. «اعتماد الجرد» للـصاحب الشركة ومالك البرنامج بس: بيعدّل الموجود في البرنامج وبيكتب قيد بالفروق — والأصناف اللي ما انمسحتش ليك قرار سطر-سطر في نافذة الاعتماد.</p>
 
       </section>
 
@@ -1899,6 +1972,26 @@
         </table>
       </section>
 
+      <!-- ====== 🧮 بناء 144 — صفحة «الجرد بالباركود» للطباعة ======
+           نفس أعمدة الورق اليدوي الخمسة + سطر يورّي رقم الورقة وعدد المسحات. اسم **الشركة**
+           على الورقة (مش المالك) — درس بناء 111، وبيتملى من `printSection`. -->
+      <section class="print-only statement-page" id="stockCountPage">
+        <div class="statement-head">
+          <div class="inv-brand-name" id="sckOrgName"></div>
+          <h2>🧮 جرد بالباركود — مستودع: <span id="sckWh"></span></h2>
+          <p>رقم الورقة: <span id="sckNo"></span> | تاريخ الطباعة: <span id="sckDate"></span> | أصناف معدودة: <span id="sckCount"></span></p>
+          <p id="sckMeta"></p>
+        </div>
+        <table class="stmt-table">
+          <thead>
+            <tr>
+              <th>كود الصنف</th><th>اسم الصنف</th><th>العدد الفعلي على البرنامج</th><th>العدد المعدود</th><th>الفرق</th>
+            </tr>
+          </thead>
+          <tbody id="sckBody"></tbody>
+        </table>
+      </section>
+
       <!-- ====== صفحة فاتورة المبيعات للطباعة ====== -->
       <section class="print-only statement-page inv-page" id="invoicePage">
         <div class="inv-head">
@@ -2783,6 +2876,37 @@
         <button id="btnApplyStockTake" class="btn green" type="button">💾 اعتماد الجرد وتسوية الفروق</button>
       </div>
       <p class="stk-hint">✏️ اكتب «العدد المعدود» بجوار كل صنف عند الجرد الفعلي، وسيظهر «الفرق» تلقائياً، ثم اضغط اعتماد الجرد لتسوية الفروق وترحيل حركات الجرد. الأصناف التي تظل فارغة (أو مطابقة) لا تُسوّى لأن لا فرق فيها.</p>
+    </div>
+  </div>
+
+  <!-- ═══ 🧮 بناء 144 — نافذة قرار «الأصناف اللي ما انمسحتش» ═══
+       قرار المالك (05/10 ≈17:20): «لم يتم جرد الأصناف كذا — هل تريد جعل رصيدها صفر؟» بعلامة صح
+       قدام **كل صنف**. ⇒ مافيش تصفير تلقائي جملي أبدًا، ومافيش تسريب: اللي ما اتعلّمش عليه
+       صح بيفضل برصيد زي ما هو. النافذة دي جزء من مسار «اعتماد الجرد» (صاحب الشركة + المالك). -->
+  <div class="modal-overlay" id="mScZero" hidden>
+    <div class="modal m760 modal-tall" id="mScZeroBox">
+      <h3>🧮 أصناف ما اتلمستش في ورقة الجرد</h3>
+      <p class="stk-hint" id="scZeroLead"></p>
+      <div class="stk-grid-wrap">
+        <table id="dgvScZero" class="dgv">
+          <thead>
+            <tr>
+              <th style="width:12%">تصفير؟</th>
+              <th style="width:18%">كود الصنف</th>
+              <th style="width:40%">اسم الصنف</th>
+              <th style="width:15%">رصيده في البرنامج</th>
+              <th style="width:15%">الوحدة</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="modal-actions">
+        <button id="btnScZeroCancel" class="btn red" type="button">↩ إلغاء الاعتماد</button>
+        <button id="btnScZeroMarkAll" class="btn sky" type="button">☑️ علّم الكل</button>
+        <button id="btnScZeroApply" class="btn green" type="button">✅ تصفير المختار وأكمل الاعتماد</button>
+      </div>
+      <p class="stk-hint" id="scZeroFoot"></p>
     </div>
   </div>
 
