@@ -5403,6 +5403,21 @@
       " | 💰 سعر البيع: " + fmt(p.salePrice) + " ج.م";
   }
 
+  /* 🔧 طلب المالك الحيّ 06/10 ≈23:20 — بحرفه: «اخر كمية … لسه موجودة معلقة في الفاتورة
+     الجديدة». السبب الجذري: `posNewInvoice` كانت بتمسّح الخانات بس، و**حالة الماسح**
+     (`posQtyTyped` + `lastPosScan` + نافذة الباركود + رسالة المسح + عدّاد السلسلة الباردة)
+     كانت بتتصفّر في `posNewInvoiceClean` **وحدها** — بينما الحفظ («فاتورة اتسجلت وفتحت
+     الجديدة») و«فتح فاتورة باسم عميل» وإقلاع الشاشة بينادوا `posNewInvoice` الخام
+     ⇒ المسحة الجاية بتلاقي كمية/صنف/رسالة من الفاتورة اللي فاتت معلقة.
+     الحل: **مصدر واحد** — التصفير الكامل يدخل جوه `posNewInvoice` نفسها فأي مسار
+     «فاتورة جديدة» بيمسح كل أثر للماسح، والـ Clean يفضل غلاف (تصفير + فوكس). */
+  function posScanStateClear() {
+    lastPosScan = "";
+    posQtyTyped = false;
+    coldReset();
+    scanHint("#posScanHint");      /* بتمسّ الرسالة وتقفل لوحة الباركود مع بعض (3156) */
+  }
+
   function posNewInvoice() {
     posItems = [];
     $("#txtInvoiceNo").value = nextInvoiceNumber();
@@ -5413,6 +5428,7 @@
     $("#txtPosCode").value = "";
     $("#numPosQty").value = "1";
     $("#txtPosPrice").value = "";
+    posScanStateClear();
     posSelectDefaultCustomer();
     posPaymentVisibility();
     posUpdateBadge(null);
@@ -6248,6 +6264,14 @@
       " | 💰 سعر الشراء: " + fmt(p.purchasePrice) + " ج.م";
   }
 
+  /* نفس مصدر التصفير الوحيد في فاتورة الشراء (انظر `posScanStateClear` فوق). */
+  function ppScanStateClear() {
+    lastPpScan = "";
+    ppQtyTyped = false;
+    coldReset();
+    scanHint("#ppScanHint");
+  }
+
   function ppNewInvoice() {
     ppItems = [];
     $("#txtPInvNo").value = nextPurchaseInvoiceNumber();
@@ -6258,6 +6282,7 @@
     $("#txtPPCode").value = "";
     $("#numPPQty").value = "1";
     $("#txtPPPrice").value = "";
+    ppScanStateClear();
     ppSelectDefaultSupplier();
     ppPaymentVisibility();
     ppUpdateBadge(null);
