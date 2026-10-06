@@ -4474,7 +4474,19 @@
      اتوهّط عليها، وبعدين ينادي **نفس** دالة المسح القديمة بحرفيتها. */
   function coldFlush() {
     if (coldQuiet) { clearTimeout(coldQuiet); coldQuiet = null; }
-    const raw = coldBuf, mode = coldMode, el = coldEl, base = coldBase, inv = coldInvoice();
+    const all = coldBuf, mode = coldMode, el = coldEl, typed = coldBase, inv = coldInvoice();
+    /* 🔴 الفاصل بين «رقم البائع» و«مسحة الإسكانر» — من **نفس مصدر القرار**، بس في آخر لحظة.
+       البائع بيكتب الكمية بإيده (١٦٠ms+) وبعدها بيمرّر الماسح على طول قبل ما عدّاد الصمت
+       ٤٠٠ms يخلص ⇒ الوعاء بيقعّ الرقمين فوق بعض: "2" + ١٣ خانة ⇒ «ملقتش صنف بالرقم
+       22000000000015» (مقاس حيًّا ٠٦/١٠ في ص-٣ب البيع و ص-٦ج الشراء).
+       `scanKey("cold")` بيعدّي السلسلة السريعة بكل حرف (بنفس `SCAN_MAX_GAP_MS` اللي
+       `scanIsBurst` بيفرّق بيها) ⇒ «طول آخر سلسلة» حرفيًا = كام حرف من الوعاء جايين من
+       الماكينة. اللي قبلهم صابع ⇒ بيفضلوا في الخانة (أساس جديد = المكتوب + المتسيّب)
+       وما يدخلوش الرقم. ممنوع ساعة تانية أو عتبة تانية — وممنوع قصّ في نص المسحة:
+       السلسلة القصيرة (`< SCAN_MIN_LEN`) ما بتتقصّش خالص. */
+    const run = Math.min(all.length, (scanTrace.cold || {}).streak || 0);
+    const raw = run >= SCAN_MIN_LEN && run < all.length ? all.slice(all.length - run) : all;
+    const base = typed + all.slice(0, all.length - raw.length);
     const isScan = raw !== "" && coldBurstOf(mode, raw);
     coldReset();
     if (!isScan || !inv) return;                       // صابع بطيئة أو شاشة تانية ⇒ مافيش أثر
