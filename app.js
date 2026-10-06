@@ -1998,6 +1998,9 @@
   }
 
   function showView(name) {
+    // 📷 بناء 144: البائع يسيب الفاتورة ويروح شاشة تانية ⇒ الكاميرا تقفل والمسدس ياخد
+    // عادي. القفل هنا مش في الزرار بس — أي خروج من الشاشة (شريط/قائمة/برمجي) بيقفلها.
+    if (scanCam.on) scanCamClose();
     // حماية: تبويب «إعدادات ونسخ احتياطي المالك» لحسابات شركة المالك (بناء 133)
     // أي حساب تاني — حتى لو حاول فتحه برمجيًا — يتحوّل لـ«إعدادات مؤسستك».
     const isOwner = ownerHasAllAccess() || !!window.__isOwner;
@@ -3004,8 +3007,9 @@
     return /[ \t\u00A0]/.test(String(raw == null ? "" : raw));
   }
 
-  // حدود الإكمال اليدوي: من رقمين (ولا الشاشة تبقى ضجيج) لسقف ٦ أرقام في الرسالة
-  const SCAN_SUGGEST_MIN = 2;
+  // حدود الإكمال اليدوي: من **رقم واحد** (طلب 06/10 حرفيًا: «لما بكتب … رقم 2») لسقف ٦ أرقام
+  // في القائمة عشان الشاشة ما تبقىش ضجيج.
+  const SCAN_SUGGEST_MIN = 1;
   const SCAN_SUGGEST_MAX = 6;
 
   // كل مطابقات الرقم الممسوح، مرتّبة بالدقة: 1 باركود · 2 كود · 3/4 بنفس الرقم بلا أصفار
@@ -3033,54 +3037,94 @@
   }
 
   /* ══ «كل ما اكتب رقم من الباركود يبحث في المخزون ويكمّلي الرقم» (طلب 05/10 ≈18:20) ══
-     الكتابة اليدوية في خانة الكود بتجيب تحتها أرقام الأصناف اللي **بتبدأ** باللي كتبه
-     (باركود أو كود)، بحد `SCAN_SUGGEST_MAX`، و«مفيش» لما الإسكانر هو اللي بيكتب
-     (`scanIsBurst`) — عشان الاقتراح ما يعطّش المسح المتتابع. الاختيار بيزوّد الخانة
-     الرقم كامل ومن ما بيضيفش سطر: المالك لسه يتأكد ويدوس ➕.
-     ⚠️ ممنوع `datalist`: في RTL بيخطف Enter ويغير مسار الإسكانر ⇒ الرسالة بتاعتنا
-     بأزرار `data-scan-pick` في نفس الـ hint اللي بستخدمه المسح أصلًا. */
+     الكتابة اليدوية في خانة الكود بتنزّل **قائمة منسدلة تحت الخانة** فيها أرقام الأصناف
+     اللي **بتنتهي** باللي كتبه (وبعدين اللي بتبدأ بيه)، من **رقم واحد**، بحد `SCAN_SUGGEST_MAX`.
+     ⚠️ سبب تقديم «النهاية» (طلب 06/10 بحرفه: «لما بكتب رقم 2 بيطلع لى تليفزيون… فالمفروض
+     تنزل قائمه من الخانة بها الارقام اللى بتنتهى بالرقم اللى انا كاتبه»): أرقام ميزان
+     الداخلية كلها بتبدأ بـ«200» ⇒ البادئة «2» مطابقة لكل الأصناف تقريبًا، والفرق الحقيقي
+     في آخر الرقم. الاختيار بيزوّد الخانة الرقم كامل ومن ما بيضيفش سطر: المالك لسه يتأكد
+     ويدوس ➕. و«ممنوع» الإسكانر يلاقي شريط اقتراح واقف أمامه ⇒ `scanIsBurst` بتنضّف وترجع false.
+     ⚠️ ممنوع `datalist`: في RTL بيخطف Enter ويغير مسار الإسكانر ⇒ القائمة بتاعتنا بأزرار
+     `data-scan-pick` في لوحة `.scan-drop` مربوطة بنفس الخانة. */
   function scanSuggestItems(raw) {
     const q = scanClean(raw).toUpperCase();
     if (q.length < SCAN_SUGGEST_MIN) return [];
-    const out = [];
+    const tail = [], head = [];
     products.forEach((p) => {
       if (!p.isActive) return;
       const b = bcDigits(p.barcode).toUpperCase();
       const c = String(p.code == null ? "" : p.code).trim().toUpperCase();
-      if (b && b.indexOf(q) === 0) out.push({ p: p, full: bcDigits(p.barcode), bc: true });
-      else if (c && c.indexOf(q) === 0) out.push({ p: p, full: c, bc: false });
+      const ends = (n) => !!n && n.length >= q.length && n.slice(-q.length) === q;
+      const starts = (n) => !!n && n.indexOf(q) === 0;
+      // «بتنتهي» أولًا، وبعدها «بتبدأ» — والرقم اللي في الخانة يبقى هو الرقم الكامل للصنف
+      if (ends(b)) tail.push({ p: p, full: bcDigits(p.barcode), bc: true });
+      else if (ends(c)) tail.push({ p: p, full: c, bc: false });
+      else if (starts(b)) head.push({ p: p, full: bcDigits(p.barcode), bc: true });
+      else if (starts(c)) head.push({ p: p, full: c, bc: false });
     });
-    out.sort((x, y) => (x.full.length - y.full.length) ||
+    const order = (arr) => arr.sort((x, y) => (x.full.length - y.full.length) ||
       String(x.p.nameAr || x.p.code).localeCompare(String(y.p.nameAr || y.p.code), "ar"));
-    return out.slice(0, SCAN_SUGGEST_MAX);
+    return order(tail).concat(order(head)).slice(0, SCAN_SUGGEST_MAX);
   }
 
-  // html الاقتراح — فاضية لو مافيش حاجة تطابق (والـ hint بيتقفل، مش يفضل عفا عليه الزمن)
+  // html القائمة — فاضية لو مافيش حاجة تطابق (واللوحة بتتقفل، مش يفضل عفا عليه الزمن)
   function scanSuggestHtml(raw) {
     const list = scanSuggestItems(raw);
     if (!list.length) return "";
     const q = scanClean(raw);
-    return "💡 في المخزون أصناف أرقامها بتبدأ بـ <b class='scan-code'>" + esc(q) + "</b> — دوس على الرقم يكمّل في الخانة:" +
+    return "💡 الأصناف اللي أرقامها بتنتهي بـ <b class='scan-code'>" + esc(q) + "</b> — دوس على الرقم يكمّل في الخانة:" +
       "<span class='scan-picks'>" + list.map((it) =>
         "<button type='button' class='scan-act' data-scan-pick='" + esc(it.full) + "'>" +
         esc(it.full) + (it.bc ? "" : " (كود)") + " — " + esc(it.p.nameAr || it.p.code) + "</button>"
       ).join("") + "</span>";
   }
 
-  /* بتنادي الاقتراح بعد أي كتابة يدوية. بترجع true لو عرض حاجة (والـ hint اتكتب)،
-     false لو الإسكانر بيكتب أو مافيش مطابق (فالـ hint بيتنضّف). */
+  /* اللوحة المنسدلة نفسها: مكانها تحت الخانة بالظبط (طلب «تنزل قائمه من الخانة»).
+     كل خانة كود ليها لوحتها (`#scanDrop-txtPosCode` / `#scanDrop-txtPPCode`) — واللوحة
+     مستحيل تبقى «شبح» من خانة تانية لأن اسمها بيتبنى من الـ fieldId نفسه.
+     ⚠️ `HINT_DROP_FIELD` = قرار واحد: أي رسالة مسح (نجاح / رفض / تصفير) **بتقفل** قائمة
+     الأرقام المرتبطة بيها، فمستحيل العميل يشوف قائمة قدام رسالة «اتضاف» أو العكس.
+     بناء 145 (الجرد بالباركود) بيضيف سطره هنا لما لوحة `#scanDrop-txtScCode` تدخل. */
+  const HINT_DROP_FIELD = { "#posScanHint": "txtPosCode", "#ppScanHint": "txtPPCode" };
+  function scanDropSel(fieldId) { return "#scanDrop-" + fieldId; }
+  function scanDropHide(fieldId) {
+    const el = $(scanDropSel(fieldId));
+    if (el) { el.hidden = true; el.innerHTML = ""; }
+  }
+  function scanDropOfHint(hintSel) {
+    const fieldId = HINT_DROP_FIELD[hintSel];
+    if (fieldId) scanDropHide(fieldId);
+  }
+
+  /* بتنادي الاقتراح بعد أي كتابة يدوية. بترجع true لو عرض حاجة (واللوحة مليانة)،
+     false لو الإسكانر بيكتب أو مافيش مطابق (فاللوحة والـ hint بيتنضّفوا). */
   function scanSuggestShow(hintSel, fieldId, raw) {
     // الإسكانر شغال ⇒ مافيش اقتراح، **واقتراح الكتابة السابقة يتنضّف**. من غير السطر ده
-    // لو المالك كان بيكتب رقم بإيده (والشريط تحتة مليان أرقام) وإسكانر اتوهّط على نفس
-    // الخانة، شريط 💡 كان بيفضل معلق قدام العميل طول المسح لحد Enter.
-    if (scanIsBurst(fieldId, scanClean(raw).length)) { scanHint(hintSel); return false; }
+    // لو المالك كان بيكتب رقم بإيده (واللوحة تحتة مليانة أرقام) وإسكانر اتوهّط على نفس
+    // الخانة، اللوحة كانت بيفضل معلق قدام العميل طول المسح لحد Enter.
+    if (scanIsBurst(fieldId, scanClean(raw).length)) { scanHint(hintSel); scanDropHide(fieldId); return false; }
     const html = scanSuggestHtml(raw);
-    if (!html) { scanHint(hintSel); return false; }
-    scanHint(hintSel, "info", html);
+    if (!html) { scanHint(hintSel); scanDropHide(fieldId); return false; }
+    // الكتابة من الصابع قرار جديد ⇒ رسالة المسح القديمة تتشال الأول (`scanHint` بتقفل
+    // اللوحة كمان بالـ map فوق)، وبعدين اللوحة تتملأ وتظهر — فالترتيب part من القرار.
+    scanHint(hintSel);
+    const el = $(scanDropSel(fieldId));
+    if (el) { el.className = "scan-drop"; el.innerHTML = html; el.hidden = false; }
     return true;
   }
 
-  // الدوس على رقم في الاقتراح ⇒ يمشي كامل في الخانة + يتعرّف على الصنف (بدون إضافة)
+  /* رقم ناقص (مش مطابق كامل) ⇒ ممنوع نقفل على صنف ونعرض رصيده. ده السبب الجذري لشكوى
+     06/10: «2» كانت بتلمس أول صنف بالبحث الجزئي («تليفزيون» + رصيده) واللي يقصد صنف تاني.
+     الأرقام الخالصة اللي مالهاش مطابقة حرفية بتستنى الاختيار من القائمة؛ أي حاجة فيها
+     حروف (اسم عربي ملصوق أو مكتوب) بتمشي على المسار القديم بالحرف. */
+  function scanPartialNumber(q) {
+    const s = scanClean(q);
+    if (!s || !/^[0-9]+$/.test(s)) return false;
+    return scanMatches(s, false).length === 0;
+  }
+
+
+  // الدوس على رقم في القائمة ⇒ يمشي كامل في الخانة + يتعرّف على الصنف (بدون إضافة)
   function scanSuggestPick(hintSel, fieldId, raw, onFilled) {
     const el = $("#" + fieldId);
     if (!el) return false;
@@ -3089,6 +3133,8 @@
     // Enter الجاي بيتعامل كمسح (كمية مطلوبة + 🧮) بدل المسار القديم (يضيف بالكمية 1).
     scanTraceClear(fieldId);
     scanHint(hintSel);
+    // الرقم اكتمل ⇒ القائمة اللي تحت الخانة اتحلت غرضها، تتقفل فورًا (مش قدام عين العميل)
+    scanDropHide(fieldId);
     if (onFilled) onFilled();
     el.focus();
     return true;
@@ -3127,6 +3173,9 @@
   function scanHint(sel, kind, html) {
     const el = $(sel);
     if (!el) return;
+    // 📷 بناء 144: رسالة المسح والقائمة المنسدلة **قرار واحد** — أي رسالة (أو تصفير)
+    // بتقفل قائمة الأرقام المرتبطة بخانتها، فمافيش قائمة قديمة تفضل قدام العميل.
+    scanDropOfHint(sel);
     if (!html) { el.hidden = true; el.innerHTML = ""; el.className = "scan-hint"; return; }
     el.className = "scan-hint " + (kind || "info");
     el.innerHTML = html;
@@ -3148,6 +3197,413 @@
       ") — اختار الصنف اللي تقصده بكتابة اسمه في خانة الاسم.";
     return "🔍 ملقتش صنف بالرقم " + scanMsg(res.code) +
       " — تقدر تكتب اسم الصنف في خانة الاسم، أو تسجّله صنف جديد بالرقم ده.";
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     📷 بناء 144 — «لما بضغط على زرار مسح المفروض يفتح لى الكاميرا فى الجزء العلوى
+     من الشاشة لعمل سكان للباركود» (طلب المالك بحرفه 06/10، البند «اولا»).
+
+     ⇒ زرار «📷 مسح» في رأس فاتورة البيع والشراء بقى يفتح **لوحة كاميرا فوق الشاشة**،
+       والكاميرا تقرأ لوحدها ⇒ الرقم يروح لنفس `posHandleScan`/`ppHandleScan` **بالحرف**
+       (نفس المسار اللي الإسكانر بيمشيه: الصنف يتعرّف ويختار نفسه، والكمية من يد البائع،
+       وممنوع أي مسحة — كاميرا أو إسكانر — تضيف سطرًا من نفسها).
+
+     القراءة بتحصل بطريقتين، والاتنين مقاسين في الحارس:
+       (أ) لو المتصفح عنده قارئ باركود جاهز (كروم على الموبايل) بيتقدّم ويُستخدم.
+       (ب) وإلا **الفكّ بتاعنا**: نفس جدول `BC128_BARS` اللي ببنائي بيطبع بيه الملصقات
+           (بناء 142) + جداول EAN-13 ⇒ أي ملصق «ميزان» مطبوع، وأي باركود مصنع ١٣ خانة.
+     ⚠️ رقم التحقق بوّابة (**mod-103** في CODE-128 و**GS1 mod-10** في EAN-13): أي شبه
+        قراءة غلط = مافيش إضافة خالص، مش إضافة ناقصة. وممنوع رقم يتسجّل مرتين في نفس
+        المرور (`CAM_DEDUPE_MS`) ⇒ الكاميرا ساقعة قدام الصنف ما تضاعفش الكمية.
+     ⚠️ اللوحة ما بتقفلش الشاشة: أي خروج أو تغيير شاشة أو Esc بيقفل الكاميرا فعلًا
+        و**بيوقف العدّاد بتاعها وبيطفي الـ track** (الكاميرا ما يفضلش شغالة وخلفها حد).
+     ══════════════════════════════════════════════════════════════════════════ */
+  const CAM_W = 640;          // عرض لقطة الالتقاط (كافية للخطوط وبتطلع سريع)
+  const CAM_H = 360;          // ارتفاعها
+  const CAM_ROWS = 13;        // عدد السطور الأفقية اللي بتتفحص في كل لقطة
+  const CAM_MIN_RUNS = 24;    // أقل عدد خطوط في السطر = باركود محتمل
+  const CAM_MIN_CONTRAST = 40; // أقل فرق بين الفاتح والغامق في السطر (نور كفاية)
+  const CAM_DEDUPE_MS = 1400;  // نفس الرقم متسجلش مرتين في نفس المرور
+  const CAM_MAX_BITS = 420;    // سقف سلسلة الوحدات (أكبر باركود مشنّاه هنا 178)
+
+  /* جداول EAN-13: الـ L منشور، والـ R = عكسه بيت-ببيت، والـ G = أرجوعي R (نفس تعريف
+     المواصفة). بنشتقهم بدل ما نكتبهم يدوي ⇒ مستحيل يحصل خطأ نسخ في دول. */
+  const CAM_EAN_L = ["0001101", "0011001", "0010011", "0111101", "0100011",
+    "0110001", "0101111", "0111011", "0110111", "0001011"];
+  const CAM_EAN_PARITY = ["LLLLLL", "LLGLGG", "LLGGLG", "LLGGGL", "LGLLGG",
+    "LGGLLG", "LGGGLL", "LGLGLG", "LGLGGL", "LGGLGL"];
+  function camBitsNot(s) {
+    let o = "";
+    for (let i = 0; i < s.length; i++) o += s.charAt(i) === "1" ? "0" : "1";
+    return o;
+  }
+  function camBitsRev(s) { return s.split("").reverse().join(""); }
+  const CAM_EAN_R = CAM_EAN_L.map(camBitsNot);
+  const CAM_EAN_G = CAM_EAN_R.map(camBitsRev);
+  // «ميزان» بيطبع CODE-128 من نفس الجدول ⇒ انعكاسه كمان جاهز من نفس المصدر
+  const CAM_BC_REV = (function () {
+    const m = {};
+    BC128_BARS.forEach((b, i) => { m[b] = i; });
+    return m;
+  })();
+
+  // حالة اللوحة — كائن واحد عشان الإيقاف الكامل يبقى سطر واحد (ممنوع track ضل شغال)
+  const scanCam = { on: false, stream: null, raf: 0, fieldId: "", det: null, ctx: null,
+    detBusy: false, last: "", lastAt: 0, frames: 0, ticking: false };
+
+  /* الخانة اللي الكاميرا بتخدمها: البيع والشراء (والجرد بيلحقهم في 145).
+     `run` = نفس دالة المسح بالضبط — مافيش نسخة ثانية من المنطق. */
+  function scanCamRoute(fieldId) {
+    if (fieldId === "txtPosCode") return { hint: "#posScanHint", run: posHandleScan, focus: "#numPosQty" };
+    if (fieldId === "txtPPCode") return { hint: "#ppScanHint", run: ppHandleScan, focus: "#numPPQty" };
+    return null;
+  }
+
+  // «الكاميرا متاحة؟» = المتصفح نفسه يسمح (https أو 127.0.0.1) وفيه جهاز تصوير
+  function camAvailable() {
+    return !!(window.navigator && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  }
+  // «القارئ الجاهز موجود؟» = مقاس مش مفترض: ديسكتوب كروم/إدچ مالهمش، وموبايل كروم عنده
+  function camNativeReader() {
+    return (typeof window.BarcodeDetector === "function");
+  }
+
+  /* الكاميرا **للموبايل والتابلت بس** — بأمر المالك الحرفي (06/10):
+     «كاميرا الموبايل هى المقصوده لكن الكمبيوتر و اللاب هيشتغل بجهاز مسدس الماسح الضوئى
+     للباركود».
+     التعريف بقى مقاس مش اسم: جهاز بلمس ومافيش مؤشر عائم (pointer: coarse + hover: none)،
+     أو متصفح موبايل صريح ⇒ الكاميرا. ماوس/ديسكتوب ⇒ الزرار يجهّز الخانة للمسدس وبلا أي
+     محاولة كاميرا خالص (ممنوع getUserMedia على اللاب). */
+  function camIsHandheld() {
+    const ua = (window.navigator && navigator.userAgent) || "";
+    if (/Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(ua)) return true;
+    try {
+      return !!(window.matchMedia && matchMedia("(pointer: coarse) and (hover: none)").matches);
+    } catch (e) { return false; }
+  }
+
+  function camSay(html, kind) {
+    const el = $("#camLast");
+    if (!el) return;
+    el.className = "cam-last" + (kind ? " " + kind : "");
+    el.innerHTML = html;
+  }
+  function camState(txt) {
+    const el = $("#camState");
+    if (el) el.textContent = txt;
+  }
+
+  /* ── فتح الكاميرا ── */
+  async function scanCamOpen(fieldId) {
+    const route = scanCamRoute(fieldId);
+    const panel = $("#scanCam");
+    if (!route || !panel) return false;
+    if (scanCam.on && scanCam.fieldId === fieldId) { scanCamClose(); return false; }
+    if (scanCam.on) scanCamClose();
+    panel.hidden = false;
+    panel.className = "cam-panel";
+    scanCam.on = true;      // اللوحة مفتوحة من دلوقتي — العدّاد يلحق لما الستريم يوصل
+    scanCam.fieldId = fieldId;
+    const v = $("#camVideo");
+    if (!camAvailable()) {
+      camState("مافيش كاميرا هنا");
+      if (v) v.hidden = true;
+      // ممنوع نص يقوله لموبايل «أنت على كمبيوتر» — السبب هنا إن المتصفح ما بيسمحش
+      // بالكاميرا إلا على النسخة المنشورة (https)، فالمخرج الآمن واحد: المسدس أو الكتابة.
+      camSay("الكاميرا محتاجة اتصال آمن عشان تشتغل — استعمل الماسح الضوئي أو اكتب الرقم، " +
+        "والقائمة اللي تحت الخانة شغّالة زي ما هي.", "warn");
+      const b = $("#camRetry");
+      if (b) b.hidden = true;
+      scanCam.on = true;   // اللوحة مفتوحة (رسالتها ودّية) بس مافيش العدّاد
+      return true;
+    }
+    camState("بفتّح الكاميرا…");
+    camSay("👀 وجه الكاميرا على الباركود — القراءة بتتم لوحدها.");
+    try {
+      scanCam.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: CAM_W }, height: { ideal: CAM_H } },
+        audio: false
+      });
+    } catch (e) {
+      camState("الكاميرا مقفولة");
+      if (v) v.hidden = true;
+      // ممنوع أي اصطلاح تقني (NotAllowedError/Constraint...) — عربي يدلّ على الخطوة
+      camSay("مقدرتش أفتح الكاميرا — لو المتصفح سأل عن إذن اختار «السماح»، " +
+        "ولو الكمبيوتر مالوش كاميرا استعمل الماسح أو اكتب الرقم.", "warn");
+      const b = $("#camRetry");
+      if (b) b.hidden = false;
+      scanCam.on = true;
+      return true;
+    }
+    scanCam.on = true;
+    scanCam.last = ""; scanCam.lastAt = 0; scanCam.frames = 0;
+    camState("الكاميرا شغّالة");
+    if (v) {
+      v.hidden = false;
+      v.srcObject = scanCam.stream;
+      v.setAttribute("playsinline", "");
+      try { await v.play(); } catch (e) { /* متصفح بيرحم التشغيل الذاتي — العدّاد شغال كمان */ }
+    }
+    // القارئ الجاهز (لو موجود) — والإضافة عليه اختيارية، مش شرط
+    scanCam.det = camNativeReader() ? new window.BarcodeDetector({ formats: ["code_128", "ean_13"] }) : null;
+    // ضوء الفلاش لو الجهاز بيدّيه (موبايل فيض)
+    const tb = $("#camTorch");
+    if (tb) {
+      const trk = scanCam.stream.getVideoTracks()[0];
+      const caps = trk && trk.getCapabilities ? trk.getCapabilities() : {};
+      tb.hidden = !(caps && caps.torch);
+    }
+    const r = $("#camRetry");
+    if (r) r.hidden = true;
+    scanCamLoop();
+    return true;
+  }
+
+  function scanCamClose() {
+    if (scanCam.raf) cancelAnimationFrame(scanCam.raf);
+    scanCam.raf = 0;
+    scanCam.ticking = false;
+    if (scanCam.stream) {
+      scanCam.stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} });
+    }
+    scanCam.stream = null;
+    const v = $("#camVideo");
+    if (v) { try { v.pause(); } catch (e) {} v.srcObject = null; }
+    scanCam.det = null;
+    scanCam.detBusy = false;
+    scanCam.on = false;
+    scanCam.fieldId = "";
+    scanCam.last = ""; scanCam.lastAt = 0;
+    const panel = $("#scanCam");
+    if (panel) { panel.hidden = true; panel.className = "cam-panel"; }
+  }
+
+  function scanCamToggle(fieldId) {
+    if (scanCam.on) { scanCamClose(); return; }
+    if (!camIsHandheld()) return;      // اللاب/الكمبيوتر = المسدس، وممنوع أي نداء كاميرا
+    scanCamOpen(fieldId);
+  }
+
+  /* رسالة الزرار بتتقاس من الحالة نفسها — مش نص ثابت: الموبايل فيه كاميرا مفتوحة/مقفولة،
+     والديسكتوب فيه المسدس. ممنوع أي اصطلاح تقني (getUserMedia/matchMedia/barcode). */
+  function camArmHint(sel, fieldId) {
+    if (!camIsHandheld()) {
+      scanHint(sel, "info", "👉 الخانة جاهزة للماسح الضوئي — مرّيه على الباركود، أو اكتب الكود/الاسم بنفسك.");
+      return;
+    }
+    const open = scanCam.on && scanCam.fieldId === fieldId;
+    scanHint(sel, "info", open
+      ? "📷 الكاميرا شغّالة فوق — وجّهها على الباركود والصنف يختار نفسه، والكمية من يدك."
+      : "📷 الكاميرا اتقفلت — دوس «📷 مسح» تاني ترجع، والمسح بالمسدس شغال في الحالتين.");
+  }
+
+  /* ── العدّاد: لقطة ⇒ أسطر ⇒ فكّ ── */
+  function scanCamLoop() {
+    if (!scanCam.on) return;
+    scanCam.raf = requestAnimationFrame(scanCamLoop);
+    const v = $("#camVideo"), g = $("#camGrab");
+    if (!scanCam.stream || !v || !g || v.hidden) return;      // لوحة بلا كاميرا = بلا عدّاد
+    if (v.readyState < 2 || !v.videoWidth) return;
+    if (g.width !== CAM_W) { g.width = CAM_W; g.height = CAM_H; }
+    if (!scanCam.ctx) scanCam.ctx = g.getContext("2d", { willReadFrequently: true });
+    const cx = scanCam.ctx;
+    if (!cx) return;
+    cx.drawImage(v, 0, 0, CAM_W, CAM_H);
+    scanCam.frames++;
+    // (أ) القارئ الجاهز — مرة كل لقطتين عشان الموبايل ما يسخنش
+    if (scanCam.det && !scanCam.detBusy && scanCam.frames % 2 === 0) {
+      scanCam.detBusy = true;
+      scanCam.det.detect(v).then((list) => {
+        scanCam.detBusy = false;
+        if (list && list.length) scanCamGot(String(list[0].rawValue || ""));
+      }).catch(() => { scanCam.detBusy = false; });
+    }
+    // (ب) فكّنا — دايمًا، حتى لو القارئ الجاهز موجود (ملصق ميزان على بعد شوية)
+    let img = null;
+    try { img = cx.getImageData(0, 0, CAM_W, CAM_H); } catch (e) { return; }
+    for (let k = 0; k < CAM_ROWS; k++) {
+      const y = Math.floor(CAM_H * (k + 1) / (CAM_ROWS + 1));
+      const code = camDecodeRow(img, y);
+      if (code) { scanCamGot(code); return; }
+    }
+  }
+
+  /* الرقم وصل من أي مصدر ⇒ بوّابة التكرار، وبعدين **نفس** دالة المسح.
+     لو الصنف اتعرّف فعلًا اللوحة تتقفل (البائع يكتب الكمية في هدوء)، ولو لأ تفضل
+     مفتوحة وتقول الخطوة الجاية — مقاس بـ `findProductByScan` (قراءة فقط، ما بيضيفش حاجة). */
+  function scanCamGot(raw) {
+    const code = bcDigits(raw);
+    if (!scanCam.on || !code) return false;
+    const now = Date.now();
+    if (code === scanCam.last && (now - scanCam.lastAt) < CAM_DEDUPE_MS) return false;
+    scanCam.last = code; scanCam.lastAt = now;
+    const route = scanCamRoute(scanCam.fieldId);
+    if (!route) return false;
+    const res = findProductByScan(code);
+    route.run(code);
+    if (res && res.prod) {
+      camSay("✅ " + esc(res.prod.nameAr || res.prod.code) + " — اتعرّف، اكتب الكمية.", "ok");
+      camState("اتقرأ");
+      // اللوحة تقفل والكمية تتكتب من غير ما العميل يدور على زرار
+      scanCamClose();
+      const q = $(route.focus);
+      if (q) { try { q.focus(); if (q.select) q.select(); } catch (e) {} }
+      return true;
+    }
+    camSay("؟ ملقتش صنف بالرقم " + scanMsg(code) + " — قرّب الكاميرا أو امسح بإيدك.", "warn");
+    return false;
+  }
+
+  // إضاءة نقطة (0..255) من ImageData — اللوما بدل RGB (الكاميرات بترجع YUV أصلًا)
+  function camLum(img, x, y) {
+    const i = (y * img.width + x) * 4;
+    const d = img.data;
+    return (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
+  }
+
+  /* أسطر السطر: أول خط غامق … آخر خط غامق ⇒ عدّفات متناوبة (العدّفات دي اللي بتتحول
+     لوحدات). مرفوض أي سطر إضاءته واحدة (نور كفاية؟ مافيش باركود في السطر ده). */
+  function camRowRuns(img, y) {
+    const w = img.width;
+    let mn = 255, mx = 0;
+    for (let x = 0; x < w; x++) { const v = camLum(img, x, y); if (v < mn) mn = v; if (v > mx) mx = v; }
+    if (mx - mn < CAM_MIN_CONTRAST) return null;
+    const th = (mn + mx) / 2;
+    let a = 0;
+    while (a < w && camLum(img, a, y) >= th) a++;
+    if (a >= w) return null;
+    let b = w - 1;
+    while (b > a && camLum(img, b, y) >= th) b--;
+    const runs = [];
+    let dark = true, len = 0;
+    for (let x = a; x <= b; x++) {
+      const isDark = camLum(img, x, y) < th;
+      if (isDark === dark) { len++; continue; }
+      runs.push({ dark: dark, len: len });
+      dark = isDark; len = 1;
+    }
+    runs.push({ dark: dark, len: len });
+    if (runs.length < CAM_MIN_RUNS) return null;
+    return { runs: runs, width: b - a + 1 };
+  }
+
+  // تحويل العدّفات لوحدات **بإصلاح الانحراف**: بنقارن الموضع التراكمي مش كل عدفة على حدة
+  function camModules(runs, m) {
+    if (!(m > 0.7)) return null;
+    let acc = 0, done = 0, out = [];
+    for (let i = 0; i < runs.length; i++) {
+      acc += runs[i].len;
+      const n = Math.round(acc / m) - Math.round(done / m);
+      if (n < 1) return null;
+      out.push(n); done = acc;
+    }
+    return out;
+  }
+  function camModsToBits(mods) {
+    let bits = "";
+    for (let i = 0; i < mods.length; i++) {
+      for (let k = 0; k < mods[i]; k++) bits += (i % 2 === 0) ? "1" : "0";
+      if (bits.length > CAM_MAX_BITS) return "";
+    }
+    return bits;
+  }
+
+  /* CODE-128: بداية A/B + رموز بيانات ١١ وحدة + رمز مراجعة + وقوف ١٣ وحدة.
+     رقم المراجعة (mod 103) لازم يطابق ⇒ أي سلسلة ناقصة أو مقروبة غلط بترجع فاضية. */
+  function camDecodeC128(bits) {
+    if (bits.length < 57) return "";
+    if (bits.slice(-13) !== BC128_BARS[BC128_STOP]) return "";
+    const s = CAM_BC_REV[bits.slice(0, 11)];
+    if (s !== 103 && s !== 104) return "";
+    const body = bits.slice(11, bits.length - 13);
+    if (!body.length || body.length % 11 !== 0) return "";
+    const vals = [];
+    for (let i = 0; i < body.length; i += 11) {
+      const v = CAM_BC_REV[body.slice(i, i + 11)];
+      if (v === undefined || v > 102) return "";    // 103..105 رموز بداية/تحويل — ممنوع في الجسم
+      vals.push(v);
+    }
+    if (vals.length < 2) return "";
+    const check = vals.pop();
+    let sum = s;
+    for (let i = 0; i < vals.length; i++) sum += vals[i] * (i + 1);
+    if (sum % BC128_MODULO !== check) return "";
+    let text = "";
+    for (let i = 0; i < vals.length; i++) {
+      if (vals[i] > 95) return "";                   // خارج الحروف المطبوعة
+      text += String.fromCharCode(vals[i] + BC128_MIN_CH);
+    }
+    if (!/^[0-9A-Za-z\-]{3,}$/.test(text)) return "";
+    return text;
+  }
+
+  /* EAN-13: ٩٥ وحدة بالظبط — وحده = عرض الخطوط ÷ ٩٥ (ده اللي بيخلي القياس مستقر).
+     أول خانة بتيجي من نقشة L/G النصف الشمال، ورقم التحقق GS1 بوّابة أخيرة. */
+  function camDecodeEan13(bits) {
+    if (bits.length !== 95) return "";
+    if (bits.slice(0, 3) !== "101") return "";
+    if (bits.slice(45, 50) !== "01010") return "";
+    if (bits.slice(90, 95) !== "101") return "";
+    const left = bits.slice(3, 45), right = bits.slice(50, 90);
+    let pat = "", out = "";
+    for (let i = 0; i < 6; i++) {
+      const ch = left.slice(i * 7, i * 7 + 7);
+      const li = CAM_EAN_L.indexOf(ch), gi = CAM_EAN_G.indexOf(ch);
+      if (li >= 0 && gi >= 0) return "";             // غامضة ⇒ مرفوضة (ممنوع التخمين)
+      if (gi >= 0) { pat += "G"; out += String(gi); }
+      else if (li >= 0) { pat += "L"; out += String(li); }
+      else return "";
+    }
+    const first = CAM_EAN_PARITY.indexOf(pat);
+    if (first < 0) return "";
+    out = String(first) + out;
+    for (let i = 0; i < 6; i++) {
+      const ri = CAM_EAN_R.indexOf(right.slice(i * 7, i * 7 + 7));
+      if (ri < 0) return "";
+      out += String(ri);
+    }
+    if (gs1CheckDigit(out.slice(0, 12)) !== out.charAt(12)) return "";
+    return out;
+  }
+
+  // السطر كامل: عدّفات ⇒ مرشّحات عرض الوحدة ⇒ CODE-128 أو EAN-13
+  function camDecodeRow(img, y) {
+    const r = camRowRuns(img, y);
+    if (!r) return "";
+    let mn = 999;
+    for (let i = 0; i < r.runs.length; i++) if (r.runs[i].len < mn) mn = r.runs[i].len;
+    const cands = [r.width / 95, r.width / 95 * 1.02, r.width / 95 * 0.98,
+      mn, mn * 1.06, mn * 0.94, mn * 1.12];
+    for (let i = 0; i < cands.length; i++) {
+      const mods = camModules(r.runs, cands[i]);
+      if (!mods) continue;
+      const bits = camModsToBits(mods);
+      if (!bits) continue;
+      const c = camDecodeC128(bits);
+      if (c) return c;
+      const e = camDecodeEan13(bits);
+      if (e) return e;
+    }
+    return "";
+  }
+
+  // الفلاش (لو الجهاز بيدّيه) — أي رفض يتبلع بلا رسالة تقنية
+  function scanCamTorch() {
+    const tb = $("#camTorch");
+    if (!scanCam.stream || !tb) return;
+    const trk = scanCam.stream.getVideoTracks()[0];
+    if (!trk || !trk.applyConstraints) return;
+    const on = tb.getAttribute("data-on") !== "1";
+    trk.applyConstraints({ advanced: [{ torch: on }] }).then(() => {
+      tb.setAttribute("data-on", on ? "1" : "0");
+      tb.textContent = on ? "🔦 نور شغال" : "🔦 نور";
+    }).catch(() => { tb.hidden = true; });
+  }
+
+  function scanCamRetry() {
+    const f = scanCam.fieldId;
+    scanCamClose();
+    if (f) scanCamOpen(f);
   }
 
   /* التوليد الجماعي: اللي ملوش باركود بس ⇒ ياخد رقم ميزان.
@@ -4170,6 +4626,10 @@
   function posOnCode() {
     const q = $("#txtPosCode").value.trim();
     if (!q) return;
+    // طلب 06/10: «رقم 2 بيطلّع تليفزيون في عدد الموجود بالمخزن» ⇒ رقم ناقص مالوش مطابقة
+    // حرفية **ممنوع** يقفل على صنف بالبحث الجزئي — القائمة المنسدلة تحت الخانة هي اللي
+    // بتكمّله. أي كتابة فيها حروف (اسم/كود حرفي) بتفضل على المسار القديم بالحرف.
+    if (scanPartialNumber(q)) { posUpdateBadge(null); return; }
     const p = findProductFlexible(q);
     if (p) {
       posUpdateBadge(p);
@@ -4386,7 +4846,8 @@
     if (!el) return;
     el.focus();
     el.select();
-    scanHint("#posScanHint", "info", "👉 الخانة جاهزة — مرّر الماسح على الباركود، أو اكتب الكود/الاسم بنفسك.");
+    scanCamToggle("txtPosCode");
+    camArmHint("#posScanHint", "txtPosCode");
   }
 
   // نفس الزرار في رأس فاتورة الشراء
@@ -4395,7 +4856,8 @@
     if (!el) return;
     el.focus();
     el.select();
-    scanHint("#ppScanHint", "info", "👉 الخانة جاهزة — مرّر الماسح على الباركود، أو اكتب الكود/الاسم بنفسك.");
+    scanCamToggle("txtPPCode");
+    camArmHint("#ppScanHint", "txtPPCode");
   }
 
   /* ══ المسح «بلا زرار» (تفسير لنفس طلب الزرار، قاله المالك 05/10 ≈20:40 بحرفه:
@@ -5002,6 +5464,8 @@
   function ppOnCode() {
     const q = $("#txtPPCode").value.trim();
     if (!q) return;
+    // نفس قرار البيع بالحرف: رقم ناقص ⇒ القائمة المنسدلة بتكمّله، مش القفل على صنف بالبحث الجزئي
+    if (scanPartialNumber(q)) { ppUpdateBadge(null); return; }
     const p = findProductFlexible(q);
     if (p) {
       ppUpdateBadge(p);
@@ -10542,14 +11006,27 @@
     });
     $("#btnPosAdd").addEventListener("click", () => { posAddItem(); posQtyTyped = false; scanHint("#posScanHint"); });
     $("#btnPosNew").addEventListener("click", posNewInvoiceClean);
-    // 📷 زر المسح في رأس الفاتورة (05/10 ≈18:05) = يجهّز الخانة وبس
+    // 📷 زر المسح في رأس الفاتورة (05/10 ≈18:05) = يجهّز الخانة + يفتح الكاميرا (بناء 144)
     $("#btnPosScanArm").addEventListener("click", posScanArm);
-    // 📷 لو الرقم الممسوح ملوش صنف ⇒ زرار في الرسالة يفتح نافذة الصنف والخانة مملانة بالرقم
-    //    + لو المالك بيكتب باليد ⇒ زرار الاقتراح (`data-scan-pick`) يكمّل الرقم في الخانة
-    $("#posScanHint").addEventListener("click", (e) => {
-      if (e.target.closest("[data-scan-new]")) { openProductDialogForScan(lastPosScan); return; }
+    // 📷 بناء 144: أزرار لوحة الكاميرا (الموبايل) — تقفلها من الزرار أو Escape
+    $("#camClose").addEventListener("click", () => scanCamClose());
+    $("#camRetry").addEventListener("click", scanCamRetry);
+    $("#camTorch").addEventListener("click", scanCamTorch);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && scanCam.on) scanCamClose();
+    });
+    // 📷 بناء 144 (طلب 06/10 حرفيًا: «تنزل قائمه من الخانة»): القائمة بقت **لوحة تحت الخانة**
+    // (`#scanDrop-txtPosCode`) مش رسالة في الشريط ⇒ الدوس بيتقاس عليها. `mousedown` بيمنع
+    // الافتراضي عشان التركيز ما يسقطش من الخانة قبل `click`، و`blur` بيقفل اللوحة.
+    $("#scanDrop-txtPosCode").addEventListener("mousedown", (e) => e.preventDefault());
+    $("#scanDrop-txtPosCode").addEventListener("click", (e) => {
       const pk = e.target.closest("[data-scan-pick]");
       if (pk) scanSuggestPick("#posScanHint", "txtPosCode", pk.getAttribute("data-scan-pick"), posOnCode);
+    });
+    $("#txtPosCode").addEventListener("blur", () => scanDropHide("txtPosCode"));
+    // 📷 لو الرقم الممسوح ملوش صنف ⇒ زرار في الرسالة يفتح نافذة الصنف والخانة مملانة بالرقم
+    $("#posScanHint").addEventListener("click", (e) => {
+      if (e.target.closest("[data-scan-new]")) { openProductDialogForScan(lastPosScan); return; }
     });
     $("#btnPosSave").addEventListener("click", savePosInvoice);
     $("#txtPosDiscount").addEventListener("input", posRecalc);
@@ -10621,10 +11098,15 @@
        الجدول أو جسم الشاشة (تفسير المالك لنفس طلب زرار المسح). مستمع الخانات الخاصة لسه
        هو اللي بيتصرّف لو البائع واقف على خانة بيكتب فيها (`coldFocusMode` بترجع null). */
     document.addEventListener("keydown", coldScanKey, true);
-    $("#ppScanHint").addEventListener("click", (e) => {
-      if (e.target.closest("[data-scan-new]")) { openProductDialogForScan(lastPpScan); return; }
+    // 📷 بناء 144: نفس مسار البيع بالحرف في فاتورة الشراء (لوحة تحت خانة الكود)
+    $("#scanDrop-txtPPCode").addEventListener("mousedown", (e) => e.preventDefault());
+    $("#scanDrop-txtPPCode").addEventListener("click", (e) => {
       const pk = e.target.closest("[data-scan-pick]");
       if (pk) scanSuggestPick("#ppScanHint", "txtPPCode", pk.getAttribute("data-scan-pick"), ppOnCode);
+    });
+    $("#txtPPCode").addEventListener("blur", () => scanDropHide("txtPPCode"));
+    $("#ppScanHint").addEventListener("click", (e) => {
+      if (e.target.closest("[data-scan-new]")) { openProductDialogForScan(lastPpScan); return; }
     });
     $("#btnPPSave").addEventListener("click", savePurchaseInvoice);
     $("#txtPPDiscount").addEventListener("input", ppRecalc);
@@ -11045,6 +11527,9 @@
 
   /* ================== شاشات الدخول (النظام الأونلاين) ================== */
   function showLogin() {
+    // 📷 بناء 144: أي مسار خروج (زرار/شاشة رفض/حساب شركتك) بيمرّ من هنا ⇒ الكاميرا
+    // تتقفل واللمبة/المؤشر بتاع المتصفح يطفي — مافيش كاميرا تفضل شغالة بعد الخروج.
+    if (scanCam.on) scanCamClose();
     // 🛡 تنظيف أي أثر للحساب السابق (الخروج لازم يمسح الهوية مش البيانات فقط)
     resetSessionState();
     hideLoginExpiry();

@@ -2067,6 +2067,30 @@ td.c-tax.tax-hidden {
    مجموعة أزرار تلف مع النص في نفس شريط الرسالة، والرقم نفسه لاتجاهه إنجليزي دايمًا. */
 .scan-hint .scan-picks { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .scan-picks .scan-act { direction: ltr; unicode-bidi: isolate; font-family: "Courier New", monospace; }
+/* 📷 بناء 144 (طلب المالك 06/10 بحرفه: «تنزل قائمه من الخانة بها الارقام اللى بتنتهى
+   بالرقم اللى انا كاتبه»): الكتابة اليدوية في خانة الباركود بتنزّل **قائمة تحت الخانة نفسها**،
+   مش رسالة في الشريط تحت الفاتورة (البعيد عن الإصبع في الموبايل). اللوحة مربوطة بحاويتها
+   `.fld-code` بـ `position: relative` فمستحيل تنزل تحت خانة تانية، ورقم كل صنف يفضل
+   لاتجاهه إنجليزي. الارتفاع سقفه ٦ أصناف (`SCAN_SUGGEST_MAX`) بس `max-height` + تمرير
+   يضمن إن القائمة ما تدبّش الفاتورة. */
+.fld-code { position: relative; }
+.scan-drop {
+  position: absolute; top: 100%; right: 0; left: 0; z-index: 60;
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 210px; overflow-y: auto; overscroll-behavior: contain;
+  margin-top: 3px; padding: 6px 8px;
+  background: #fff; color: var(--text-primary);
+  border: 1px solid var(--info); border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .16);
+  font-size: 11.5px; font-weight: 700; line-height: 1.5; text-align: right;
+}
+.scan-drop[hidden] { display: none; }
+.scan-drop .scan-picks { display: flex; flex-direction: column; gap: 4px; }
+.scan-drop .scan-act {
+  width: 100%; text-align: right; border-radius: 8px; padding: 4px 8px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-primary);
+}
+.scan-drop .scan-act:hover { border-color: var(--accent); background: #fff; }
 .bc-field .btn { flex: 0 0 auto; white-space: nowrap; }
 
 /* 📱 بناء 143 (طلب المالك 05/10 ≈18:05: «نفس الشكل اللى هتظهر على الكمبيوتر والموبايل»):
@@ -2081,6 +2105,56 @@ td.c-tax.tax-hidden {
   .fld-btn { flex: 0 0 auto; }
   .scan-hint { font-size: 12.5px; }
 }
+
+/* ═══ 📷 بناء 144 (أمر المالك 06/10 بحرفه: «كاميرا الموبايل هى المقصوده لكن الكمبيوتر و
+   اللاب هيشتغل بجهاز مسدس الماسح الضوئى للباركود») ═══
+   اللوحة بتنزل في **أعلى الشاشة** (`position: fixed; top: 0`) عشان الكاميرا تكون قدام وش
+   البائع وهو ماسك الموبايل، مش تحت الفاتورة. `z-index` فوق الشريط العلوي (`topbar`) وفوق
+   أي نافذة، والكانفس اللي بيقرا منه الكود **مخفي** (1px + opacity 0) لأنه أداة قياس مش
+   صورة — اللي البائع بيشوفه هو <video> بس. مافيش أي لون hex هنا (حارس الدردشة بيمنع
+   الرموز بعد `.wa-toolbar`) كله rgb()/rgba() ومتغيرات، والبياض #fff حصريًا.
+   القاعدة دي جاية **قبل** `@media print` عشان الورق ما يطبعش الكاميرا أبدًا. */
+.cam-panel {
+  position: fixed; top: 0; right: 0; left: 0; z-index: 1400;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 10px 10px;
+  background: rgba(15, 23, 42, .94); color: #fff;
+  border-bottom: 2px solid var(--accent);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .35);
+  font-size: 12.5px; font-weight: 700; line-height: 1.45; text-align: right;
+}
+.cam-panel[hidden] { display: none; }
+.cam-head { display: flex; align-items: center; gap: 8px; }
+.cam-title { flex: 0 0 auto; }
+.cam-state {
+  flex: 1 1 auto; font-size: 11px; color: rgb(226, 232, 240);
+  background: rgba(255, 255, 255, .14); border-radius: 999px; padding: 2px 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cam-stage {
+  position: relative; width: 100%; max-height: 46vh; overflow: hidden;
+  border-radius: 12px; background: rgb(2, 6, 23);
+}
+.cam-stage video { display: block; width: 100%; height: 100%; max-height: 46vh; object-fit: cover; }
+.cam-stage video[hidden] { display: none; }
+.cam-stage canvas {
+  position: absolute; top: 0; left: 0; width: 1px; height: 1px;
+  opacity: 0; pointer-events: none;
+}
+/* إطار التصويب: أربعة زوايا بس — النص الداخلي للكانفس ما بيشوشش على الباركود */
+.cam-sight {
+  position: absolute; top: 12%; right: 6%; bottom: 12%; left: 6%;
+  border: 2px solid rgba(255, 255, 255, .82); border-radius: 14px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, .28); pointer-events: none;
+}
+.cam-foot { display: flex; align-items: center; gap: 8px; }
+.cam-last { flex: 1 1 auto; }
+.cam-last.ok { color: rgb(134, 239, 172); }
+.cam-last.warn { color: rgb(253, 224, 71); }
+.cam-btns { display: flex; gap: 6px; flex: 0 0 auto; }
+.cam-panel .btn { background: rgba(255, 255, 255, .16); color: #fff; border: 1px solid rgba(255, 255, 255, .38); }
+.cam-panel .btn:hover { background: rgba(255, 255, 255, .28); }
+@media print { .cam-panel { display: none; } }
 
 /* 🔳 بناء 139 — المقاسات على الورق: A4 ثلاث أعمدة، A5 عمودين، الحراري عمود واحد.
    ممنوع أي تغيير لقاعدة الـ 5mm اللي جوه @media print الرئيسي (حارس بناء 112). */
