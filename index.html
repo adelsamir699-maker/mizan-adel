@@ -85,10 +85,10 @@
       <button class="sec-btn" type="button" data-sec-toggle="stock">📦 المخزون والأطراف <i class="chev">▾</i></button>
       <div class="drop">
       <button class="nav-btn" data-view="products">🏷️  الأصناف والمخزون</button>
-      <!-- 🧮 بناء 144: زرار «الجرد بالباركود» **متأجل للبناء اللي بعده** (145) — هيكل الشاشة
-           موجود جوّه `#viewStockCount` بس `app.js` لسه ما بيرسمهاش، وزرار يفتح شاشة فاضية
-           مرفوض (قرار المالك: «أي شاشة مالهاش صلاحية بتتشال من الأساس»). الزرار يرجع مع
-           منطق العدّ والاعتماد في 145. -->
+      <!-- 🧮 بناء 145: زرار «الجرد بالباركود» — الزرار كان متطوّلاً في 144 (الهيكل وحده
+           وممنوع زرار يفتح شاشة فاضية). دلوقتي المنطق كامل في `app.js` (عدّ بالماسح +
+           اعتماد يغيّر الموجود + قيد فروق) ⇒ الزرار فتح شاشته. ⇒ أزرار الشريط بقت ٢٣. -->
+      <button class="nav-btn" data-view="stockCount">🧮  الجرد بالباركود</button>
       <button class="nav-btn" data-view="customers">👨‍💼  دليل العملاء</button>
       <button class="nav-btn" data-view="suppliers">📦  دليل الموردين</button>
       </div>
@@ -494,7 +494,7 @@
         <div class="pos-fields">
           <div class="pos-row">
             <div class="fld"><label>المخزن:</label><select id="scWarehouse"></select></div>
-            <div class="fld fld-code"><label>📷 باركود / كود:</label><input id="txtScCode" autocomplete="off" placeholder="إسكانر أو كتابة" /></div>
+            <div class="fld fld-code"><label>📷 باركود / كود:</label><input id="txtScCode" autocomplete="off" placeholder="إسكانر أو كتابة" /><div class="scan-drop" id="scanDrop-txtScCode" hidden></div></div>
             <div class="fld fld-qty"><label>عدد كل مسحة:</label><input id="numScQty" type="text" value="1" /></div>
             <div class="fld fld-btn"><button id="btnScScanArm" class="btn small sky" type="button" title="جهّز خانة الباركود للماسح الضوئي">📷 مسح</button></div>
             <div class="fld grow">
@@ -511,6 +511,13 @@
 
         <div class="sc-bar">
           <span class="sc-sum" id="scSummary"></span>
+          <!-- 🧮 بناء 145: «اعتماد الجرد» بيكتب قيد بالفروق — الحساب المقابل للمخزون (1.1.4).
+              افتراضيًا أي حساب طرفي اسمه «فروق جرد»، وإلا أول حساب مصروفات طرفي. ممنوع
+               استخدام «إيرادات المبيعات» (4.1): فرق الجرد مش بيع، وده قرار المالك. -->
+          <span class="sc-acc">
+            <label for="scDiffAcc">🧾 حساب فروق الجرد:</label>
+            <select id="scDiffAcc"></select>
+          </span>
         </div>
 
         <!-- الورق المحفوظ: على الجهاز ده وبالشركة دي بس (بيتمسح مع أي تبديل شركة زي باقي البيانات) -->
@@ -526,11 +533,12 @@
           <table id="dgvStockCount" class="dgv">
             <thead>
               <tr>
-                <th style="width:18%">كود الصنف</th>
-                <th style="width:32%">اسم الصنف</th>
-                <th style="width:20%">العدد الفعلي على البرنامج</th>
+                <th style="width:15%">كود الصنف</th>
+                <th style="width:28%">اسم الصنف</th>
+                <th style="width:18%">العدد الفعلي على البرنامج</th>
                 <th style="width:15%">العدد المعدود</th>
-                <th style="width:15%">الفرق</th>
+                <th style="width:16%">الفرق</th>
+                <th style="width:8%">إلغاء</th>
               </tr>
             </thead>
             <tbody></tbody>

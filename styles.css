@@ -772,7 +772,74 @@ body {
 .diff-neg { color: var(--danger); font-weight: bold; }
 .diff-zero { color: var(--text-muted); }
 
-/* ===== شاشة فواتير المبيعات (POS) ===== */
+/* ===== شاشة الجرد بالباركود (بناء 145) ===== */
+/* مافيش أي لون شباك (#hex) هنا: الألوان كلها من متغيرات الثيم (var(--*))،
+   عشان نفس النظام اللي ماشي على كامل الملف، وللون الأبيض اللي على الكروم وحده. */
+.sc-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--sel-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin: 10px 0;
+}
+
+.sc-sum {
+  flex: 1 1 auto;
+  color: var(--primary-dark);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.sc-acc { display: inline-flex; align-items: center; gap: 6px; }
+.sc-acc label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+
+.sc-acc select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: bold;
+  background: #fff;
+  min-width: 220px;
+}
+
+.sc-sheets {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding: 6px 12px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.sc-sheets label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+
+.sc-sheets select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: bold;
+  background: var(--bg);
+  min-width: 240px;
+}
+
+.sc-state { color: var(--text-muted); font-size: 11.5px; }
+
+.sc-count-input { width: 110px; }
+#dgvStockCount .stk-diff { text-align: center; }
+#dgvStockCount td:last-child { text-align: center; }
+
+/* شاشة فواتير المبيعات (POS) */
 .btn.dark { background: var(--primary-dark); }
 .btn.dark:hover { background: #020617; }
 

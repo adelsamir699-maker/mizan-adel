@@ -34,12 +34,14 @@
   const LS_ATT_SETTINGS = "mizan_att_settings_v1";
   // 🆕 مهمة 98: سجل الأصول الثابتة (غير المتداولة / غير الملموسة)
   const LS_FIXED_ASSETS = "mizan_fixed_assets_v1";
+  // 🧮 بناء 145: ورق «الجرد بالباركود» — على جهاز العميل بس (مافيش جدول سحابي ومافيش ترقية)
+  const LS_STOCK_SHEETS = "mizan_sc_sheets_v1";
   // كل مفاتيح البيانات المحلية (مشتركة بين كل الحسابات في نفس المتصفح)
   const LS_ALL_KEYS = [
     LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_ACTIVITY, LS_SALES, LS_TREASURY,
     LS_SUPPLIERS, LS_SUP_TXS, LS_PURCHASES, LS_ACCOUNTS, LS_JOURNAL,
     LS_USERS, LS_VOUCHERS, LS_SALE_RETURNS, LS_PURCHASE_RETURNS, LS_SETTINGS,
-    LS_EMPLOYEES, LS_ATTENDANCE, LS_ATT_SETTINGS, LS_FIXED_ASSETS
+    LS_EMPLOYEES, LS_ATTENDANCE, LS_ATT_SETTINGS, LS_FIXED_ASSETS, LS_STOCK_SHEETS
   ];
   // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
@@ -343,6 +345,7 @@
       accounts = []; journalEntries = []; users = []; vouchers = [];
       saleReturns = []; purchaseReturns = []; employees = []; attendance = [];
       attSettings = defaultAttSettings(); fixedAssets = [];
+      scSheets = []; scSheetCur = null;
       openingBaseline = null;
       // خريطة معرّفات السحابة بتاعت الشركة السابقة لو فضلت ممكن تُنسب سطر جديد
       // لـ uuid قديم من شركة تانية — تفضى معاهم.
@@ -372,6 +375,11 @@
   let attSettings = null;   // كائن واحد لكل شركة: {id, workStart, workEnd, graceMin, lunchMin}
   // 🆕 مهمة 98: سجل الأصول الثابتة — لكل أصل: اسم/تصنيف (noncurrent|intangible)/فئة/تاريخ/تكلفة/إهلاك
   let fixedAssets = [];
+  // 🧮 بناء 145: «الجرد بالباركود» — ورق الجرد على **جهاز العميل بس** (قرار المالك 05/10):
+  // `scSheets` = كل الورق المحفوظ على الجهاز ده، `scSheetCur` = الورقة اللي العدّاد واقف عليها.
+  // مافيش جدول سحابي ومافيش ترقية: المفتاح في localStorage وبره mirror()/pushTable().
+  let scSheets = [];
+  let scSheetCur = null;
   let settings = {};
   let editingId = null;
 
@@ -969,6 +977,9 @@
       attSettings = JSON.parse(localStorage.getItem(LS_ATT_SETTINGS)) || defaultAttSettings();
       // 🆕 مهمة 98: سجل الأصول الثابتة — شركة جديدة تبدأ بقائمة فاضية (مافيش بيانات تجريبية)
       fixedAssets = JSON.parse(localStorage.getItem(LS_FIXED_ASSETS)) || [];
+      // 🧮 بناء 145: ورق «الجرد بالباركود» — على الجهاز ده وبالشركة دي بس (مافيش زرع تجريبي)
+      scSheets = scSheetsRead();
+      scSheetCur = null;
       settings = Object.assign({}, defaultSettings, JSON.parse(localStorage.getItem(LS_SETTINGS)) || {});
       TAX.enabled = settings.taxEnabled == null ? TAX.enabled : Boolean(settings.taxEnabled);
       if (settings.taxRate != null) {
@@ -995,6 +1006,7 @@
       attendance = [];
       attSettings = defaultAttSettings();
       fixedAssets = [];
+      scSheets = []; scSheetCur = null;
       settings = Object.assign({}, defaultSettings);
     }
     // 🛡 بناء 122: ذيل «أثبّت الفاضي على القرص» ما يقعّش الإقلاع. في متصفح بيرفض
@@ -1457,6 +1469,7 @@
     purchasePage: "فاتورة شراء",
     statementPage: "كشف حساب",
     stockPage: "تقرير المخزون",
+    stockCountPage: "الجرد بالباركود",
     balancePage: "كشف الأرصدة",
     treStmtPage: "كشف الخزينة",
     attReportPage: "تقرير الحضور والانصراف",
@@ -1489,7 +1502,7 @@
     // اسم الشركة من الضبط (لكل شركة على حدة) يظهر في كل صفحات الطباعة
     // ملاحظة: صفحتا الفاتورة (بيع/شراء) تملآن ترويستهما بنفسها احترامًا لصناديق «على الفاتورة».
     const org = invOrgName();
-    [["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"], ["bcpOrgName"]].forEach(([id]) => {
+    [["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"], ["bcpOrgName"], ["sckOrgName"]].forEach(([id]) => {
       const x = document.getElementById(id);
       if (x) x.textContent = org;
     });
@@ -1516,7 +1529,7 @@
     // 🆕 بناء 125: دول كانوا **ناقصين من القائمة** فزرار «كشف حساب الحسابات»
     // (build 117) وزرار «الأصول الثابتة» (build 117) كانوا بيرموا «قيد التطوير»
     // بدل ما يفتحوا الشاشة — باگ حيّ على 124، اتصلّح هنا وبالحارس الثابت.
-    "accStatement", "fixedAssets",
+    "accStatement", "fixedAssets", "stockCount",
     // 💬 الدردشة الداخلية (بند 16)
     "chat"];
 
@@ -1653,7 +1666,7 @@
    * القاعدة هنا: **أي «لأ» صريحة في أي مستوى = مقفول**، وأدرج المالك (عادل) محصّن
    * فوق ده كلها بـ `ownerHasAllAccess()` (قراره في build 119 ما اتغيرش).
    */
-  const VIEW_FEAT_KEY = { returnsReg: "returnsManager", accStatement: "journal" };
+  const VIEW_FEAT_KEY = { returnsReg: "returnsManager", accStatement: "journal", stockCount: "products" };
   function featKeyOf(viewName) { return VIEW_FEAT_KEY[viewName] || viewName; }
   function permExplicitlyOff(viewName) {
     var DE = window.DATA || {};
@@ -2110,6 +2123,8 @@
     if (name === "balance") renderBalance();
     // 🆕 مهمة 98: سجل الأصول الثابتة — الربط مرة واحدة ثم الرسم
     if (name === "fixedAssets") { fixedBindOnce(); renderFixedAssets(); }
+    // 🧮 بناء 145: الجرد بالباركود — المخزن + الورقة الحالية + حساب الفروق، وكلها من الجهاز
+    if (name === "stockCount") scOpenView();
     if (name === "treasuryStatements") { recalculateTreasuryBalances(); renderTreStmt(); }
     if (name === "reports") renderReports();
     if (name === "attendance") renderAttendanceView();
@@ -2929,6 +2944,59 @@
     const t = scanTrace[fieldId];
     return len >= SCAN_MIN_LEN && !!t && t.streak >= SCAN_BURST_CHARS;
   }
+  /* ═══ مصدر قرار «ده مسح» الوحيد: **الزنة + الشكل** ═══
+     `scanIsBurst` لوحدها بتقيس السرعة بس ⇒ الكتابة السريعة بالإيد كانت بتتحوّل لمسار
+     الباركود: البائع اللي بيكتب «تيل خلفي» في خانة الاسم (25ms بين الحرفين = أسرع من
+     حد الأمان) كان بياخد «🔍 ملقتش صنف بالرقم تيلخلفي» بدل ما يتعدّى بالإيد — والرفض
+     بيخلي الكلمة قدامه والسطر ما ينزلش (باگ حيّ مقاس في قيادة 145، وعادي كان بيحصل
+     في فاتورة البيع والشراء كمان من بناء 143).
+     القرار بقى نفس قاعدة اللصق (`scanPasteRun` كان بيعملها حرفيًا): **رقم يشبه باركود
+     ⇒ مسح، وكلام ⇒ مسار الكتابة اليدوي**. ممنوع أي نداء «ده مسح» يقيس السرعة وحدها. */
+  function scanBurstOf(fieldId, raw) {
+    const cleaned = scanClean(raw);
+    return scanLooksCode(cleaned) && scanIsBurst(fieldId, cleaned.length);
+  }
+  /* «ذيل المسحة» — نفس قرار `coldFlush` بس في الخانة المركّز عليها:
+     لو الإسكانر مرّر مسحة جديدة والخانة لسه شايلة رقم مرفوض من مسحة قبلها (الرفض **بيمدي**
+     الرقم قدام البائع بالعمد عشان يصلّح الكمية ويدوس Enter)، الرقم الجديد كان بيركّب وراه
+     ⇒ «ملقتش صنف بالرقم 2000000000021200000000039» للأبد، وكل مسحة بعدها بتبقى أسوأ.
+     `scanTrace[fieldId].streak` = كام حرف جايين من الماكينة في آخر سلسلة سريعة (نفس
+     العدّاد اللي `scanIsBurst` بيقراه — مافيش ساعة تانية)، فاللي قبله صابع بيتساب.
+     السلسلة القصيرة (`< SCAN_MIN_LEN`) أو الخانة اللي فيها المسحة كلها ⇒ بلا قصّ خالص.
+     ⚠️ القصّ بيبدأ من **المؤشر** (`selectionStart`) مش من آخر الخانة: الماكينة بتكتب عند
+     المؤشر، واللي بيختار خانة بفأرة بيوصل المؤشر في **نص** الرقم اللي قبلها ⇒ المسحة
+     بتنغرس في النص («2000000» + «0000021» + «039»). لو قصّينا من الآخر كان بيبقى
+     «0039000000021» — رقم مش حقيقي لحد في الخانة، وبيرفض للأبد (مقاس في قيادة 145 على
+     الخانات التلاتة: الجرد والبيع والشراء). المؤشر براRange أو ناقص ⇒ رجوع لآخر الخانة
+     (سلوك بناء 143 حرفيًا، فأي مسحة تخلص في الآخر ما بيتغيّرش قرارها). */
+  function scanTailOf(fieldId, raw) {
+    const all = String(raw == null ? "" : raw);
+    const t = scanTrace[fieldId];
+    const run = t ? Math.min(all.length, Number(t.streak) || 0) : 0;
+    if (run < SCAN_MIN_LEN || run >= all.length) return all;
+    let caret = all.length;
+    try {
+      const el = document.getElementById(fieldId);
+      const s = el && el.selectionStart;
+      if (typeof s === "number" && s >= run && s <= all.length) caret = s;
+    } catch (e) { /* خانة ما بتنقّlush المؤشر (contenteditable قديم) ⇒ آخر الخانة */ }
+    return all.slice(caret - run, caret);
+  }
+  /* نفس `scanTailOf` بس **بيظبّط الخانة** كمان. السبب: الرفض بيمدي الرقم قدام البائع
+     بالعمد عشان يصلّح الكمية ويدوس Enter — لوسابيناه متلخبط («2000000» + «0000021» + «039»
+     = ٢٦ رقم) كان هيفضل قدامه للأبد وكل مسحة تنغرس فيه من تاني. اللي يظهر في الخانة بقى
+     = اللي الرسالة بتتكلم عليه بالضبط. مافيش كتابة خالص لو الذيل هو الخانة نفسها. */
+  function scanTailNorm(fieldId) {
+    const el = document.getElementById(fieldId);
+    if (!el) return "";
+    const all = String(el.value == null ? "" : el.value);
+    const tail = scanTailOf(fieldId, all);
+    if (tail !== all) {
+      el.value = tail;
+      try { el.setSelectionRange(tail.length, tail.length); } catch (e) { /* خانة بلا مؤشر */ }
+    }
+    return tail;
+  }
   /*الثالث اللي بيقدر يكتب في `scanTrace`: **طمس** الطابع (مش مسح). السبب الحقيقي:
      الطابع بيفضل في الخانة بعد أي مسح، فالفعل التالي لو بشري (لصق اسم بدل رقم، أو الدوس
      على رقم من الاقتراح) كان بيسرق المسار القديم بقرار من مسح **قديم**. كل استعمال ليها
@@ -3085,7 +3153,7 @@
      ⚠️ `HINT_DROP_FIELD` = قرار واحد: أي رسالة مسح (نجاح / رفض / تصفير) **بتقفل** قائمة
      الأرقام المرتبطة بيها، فمستحيل العميل يشوف قائمة قدام رسالة «اتضاف» أو العكس.
      بناء 145 (الجرد بالباركود) بيضيف سطره هنا لما لوحة `#scanDrop-txtScCode` تدخل. */
-  const HINT_DROP_FIELD = { "#posScanHint": "txtPosCode", "#ppScanHint": "txtPPCode" };
+  const HINT_DROP_FIELD = { "#posScanHint": "txtPosCode", "#ppScanHint": "txtPPCode", "#scScanHint": "txtScCode" };
   function scanDropSel(fieldId) { return "#scanDrop-" + fieldId; }
   function scanDropHide(fieldId) {
     const el = $(scanDropSel(fieldId));
@@ -3102,7 +3170,7 @@
     // الإسكانر شغال ⇒ مافيش اقتراح، **واقتراح الكتابة السابقة يتنضّف**. من غير السطر ده
     // لو المالك كان بيكتب رقم بإيده (واللوحة تحتة مليانة أرقام) وإسكانر اتوهّط على نفس
     // الخانة، اللوحة كانت بيفضل معلق قدام العميل طول المسح لحد Enter.
-    if (scanIsBurst(fieldId, scanClean(raw).length)) { scanHint(hintSel); scanDropHide(fieldId); return false; }
+    if (scanBurstOf(fieldId, raw)) { scanHint(hintSel); scanDropHide(fieldId); return false; }
     const html = scanSuggestHtml(raw);
     if (!html) { scanHint(hintSel); scanDropHide(fieldId); return false; }
     // الكتابة من الصابع قرار جديد ⇒ رسالة المسح القديمة تتشال الأول (`scanHint` بتقفل
@@ -3256,6 +3324,8 @@
   function scanCamRoute(fieldId) {
     if (fieldId === "txtPosCode") return { hint: "#posScanHint", run: posHandleScan, focus: "#numPosQty" };
     if (fieldId === "txtPPCode") return { hint: "#ppScanHint", run: ppHandleScan, focus: "#numPPQty" };
+    // 🧮 بناء 145: الجرد بالباركود — نفس اللوحة ونفس مسار المسح، والتركيز بعد القراءة على «عدد كل مسحة»
+    if (fieldId === "txtScCode") return { hint: "#scScanHint", run: scHandleScan, focus: "#numScQty" };
     return null;
   }
 
@@ -4349,6 +4419,763 @@
     printSection($("#stockPage"));
   }
 
+  /* ══════════════════════════════════════════════════════════════════════════════
+     🧮 بناء 145 — «الجرد بالباركود» (سطر ٤ من خطة المالك / بند 18)
+
+     قراره الحرفي (05/10 ≈17:20): «عايز الجرد اللى بالباركود يكون زى الجرد التانى فى ان
+     يكون جمب عدد كل صنف تم جرده بالباركود عدد الموجود منه فى المخازن و امكانية اعتماد
+     الجرد فيتغير الموجود فى البرنامج لو صاحب الشركه اختار اعتماد الجرد»
+     ⇒ خمس قرارات متسجّلة، وكل واحدة ليها فحص مسمّى في `check_stocktake_scan_145.js`:
+       (١) **نفس الأعمدة الخمسة** بتاعة الجرد اليدوي بالترتيب (كود · اسم · العدد الفعلي
+           على البرنامج · العدد المعدود · الفرق). عمود الـ ✕ للإلغاء بس — مافيش بيانات.
+       (٢) **المسح = زيادة مش بديلة** (نفس قاعدة بناء 143): كل مسحة بتزوّد «المعدود»
+           بمقدار «عدد كل مسحة»، والخانة يدوية كمان. ونجاح المسحة = «المعدود» **زاد
+           فعلًا** (نفس روح `invoiceQtyOf`) — مش «الرقم لقى صنف».
+       (٣) **العدد الفعلي على البرنامج حيّ من مصدر واحد**: `stockAt(p, wh)` وقت الرسم
+           ووقت الاعتماد ⇒ مستحيل الشاشة تقول رقم والاعتماد يطبّق رقم تاني (لو حصلت
+          بيعة في نص الجرد الرقم على الشاشة بيتحدّث والمسافة تتحسب من الجديد).
+       (٤) **الاعتماد لصاحب الشركة ومالك البرنامج بس** (زرار مخفي عن الباقي + بوابة
+           تانية جوّه الدالة)، و**يعدّل الموجود في البرنامج ويكتب قيد فروق** بنفس بدائل
+           بناء 134 (`nextJournalId` + `settleJrnLines` + `refType/refId` لمنع التكرار).
+       (٥) **الأصناف اللي ما اتلمستش = قرار سطر-سطر** في نافذة `#mScZero`: ممنوع تصفير
+           تلقائي جملي، وممنوع تسريبهم بلا سؤال — اللي ما تتعلّمش عليه صح بيفضل برصيد
+           زي ما هو.
+     الورق كله على **جهاز العميل بس** (`LS_STOCK_SHEETS` في `LS_ALL_KEYS` ⇒ بيتمسح مع
+     تبديل الشركة زي باقي بيانات الجهاز): **مافيش جدول `stock_counts` على السحابة
+     ومافيش ترقية ٥١**، وممنوع إدخال المفتاح في `mirror()` أو `pushTable()`.
+     ══════════════════════════════════════════════════════════════════════════════ */
+
+  /* ---- الورق على الجهاز (مافيش رفع سحابي خالص) ---- */
+  function scSheetsRead() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_STOCK_SHEETS));
+      if (!Array.isArray(raw)) return [];
+      // ورقة بلا `lines` مصفوفة = كتابة قديمة/تالفة ⇒ تتجاهلها أحسن من شاشة فاضية أو زعلة
+      return raw.filter((s) => s && typeof s === "object" && Array.isArray(s.lines));
+    } catch (e) { return []; }
+  }
+  // مافيش `pushTable` ومافيش `syncToLocalDisk`: الورقة أداة عدّ على الجهاز ده، مش بيانات شركة.
+  function scSheetsWrite() {
+    try {
+      localStorage.setItem(LS_STOCK_SHEETS, JSON.stringify(scSheets));
+    } catch (e) {
+      toast("المتصفح رفض يحفظ الورقة على الجهاز — العدّاد شغال في الذاكرة، بس الورقة ما بتفضلش بعد قفل الصفحة.", "warning");
+    }
+  }
+  function scNewNo() {
+    let m = 0;
+    scSheets.forEach((s) => {
+      const n = parseInt(String((s && s.no) || "").replace(/^SC-?/i, ""), 10);
+      if (isFinite(n) && n > m) m = n;
+    });
+    return "SC-" + String(m + 1).padStart(4, "0");
+  }
+  function scNewSheet() {
+    const el = $("#scWarehouse");
+    const wh = el && el.value ? el.value : WAREHOUSES[0];
+    scSheetCur = { no: scNewNo(), wh: wh, date: todayISO(), createdAt: new Date().toISOString(), savedAt: "", lines: [], diffAcc: "", appliedAt: "", appliedJrn: "" };
+    scPersist();
+    return scSheetCur;
+  }
+  // كل تعديل في العدّاد بيتقفل على الجهاز فورًا (ممنوع «عدّيت ٤٠ صنف والصفحة اتقفلت»)
+  function scPersist() {
+    const sh = scSheetCur;
+    if (!sh) return;
+    sh.savedAt = new Date().toISOString();
+    const i = scSheets.findIndex((s) => s && s.no === sh.no);
+    if (i >= 0) scSheets[i] = sh; else scSheets.push(sh);
+    scSheetsWrite();
+  }
+  function scCur() {
+    if (!scSheetCur) scNewSheet();
+    return scSheetCur;
+  }
+  function scWh() {
+    const el = $("#scWarehouse");
+    const v = el && el.value ? el.value : (scSheetCur && scSheetCur.wh) || WAREHOUSES[0];
+    if (scSheetCur) scSheetCur.wh = v;
+    return v;
+  }
+
+  /* ---- سطور الورقة ---- */
+  function scLine(sh, pid, make) {
+    const id = Number(pid);
+    const i = sh.lines.findIndex((l) => Number(l.id) === id);
+    if (i >= 0) return sh.lines[i];
+    if (!make) return null;
+    const l = { id: id, counted: 0, tally: 0 };
+    sh.lines.push(l);
+    return l;
+  }
+  function scProductOf(line) {
+    return products.find((p) => Number(p.id) === Number(line && line.id)) || null;
+  }
+  function scCountedOf(sh, pid) {
+    const l = scLine(sh, pid, false);
+    return l ? (Number(l.counted) || 0) : 0;
+  }
+  // المصدر الوحيد ل«العدد الفعلي على البرنامج» — نفس `stockAt` اللي بتاعه اليدوي والفاتورة
+  function scSys(p, wh) { return Number(stockAt(p, wh)) || 0; }
+  function scSysOf(p) { return scSys(p, scWh()); }
+  function scNum(n) { return Number(n || 0).toLocaleString("en-US"); }
+  function scCostOf(p) { return round2(Number(p.weightedAvgCost) || Number(p.purchasePrice) || 0); }
+
+  // «عدد كل مسحة»: فاضي = ١ (مسحة صنف واحد)، رقم موجب = كما هو، حاجة تانية = مرفوض
+  // ⚠️ دي مش قاعدة الفاتورة: في البيع والشراء «ممنوع المسح يخترع كمية»، لكن هنا الخانة
+  //    اسمها «عدد كل مسحة» — وقيمتها قرار البائع نفسه، فالمسحة بتنفّذ اللي مكتوب.
+  function scPerScan() {
+    const el = $("#numScQty");
+    const s = String(el && el.value != null ? el.value : "").trim();
+    if (s === "") return 1;
+    const n = parseFloat(s.replace(/,/g, ""));
+    if (!isFinite(n) || n <= 0) return null;
+    return Math.round(n * 100) / 100;
+  }
+
+  /* الزيادة نفسها — والمقياس الوحيد للنجاح إن «المعدود» بقى أكبر من قبل كده.
+     لو المسح ما زادش حاجة (كمية صفر أو صنف اتشال) السطر الوهمي بيتشال، فالورقة
+     ما تبانش فيها صنف «اتمسح» وعدّاده صفر. */
+  function scCountAdd(pid, qty) {
+    const sh = scCur();
+    const before = scCountedOf(sh, pid);
+    const isNew = !scLine(sh, pid, false);
+    const line = scLine(sh, pid, true);
+    line.counted = round2((Number(line.counted) || 0) + qty);
+    line.tally = (Number(line.tally) || 0) + 1;
+    const ok = scCountedOf(sh, pid) > before;
+    if (!ok) {
+      line.counted = before;
+      if (isNew) {
+        const i = sh.lines.findIndex((l) => Number(l.id) === Number(pid));
+        if (i >= 0) sh.lines.splice(i, 1);
+      }
+      return false;
+    }
+    scPersist();
+    renderStockCount();
+    return true;
+  }
+
+  /* ---- المسح (نفس مسار الإسكانر/الكاميرا في الفاتورة — مافيش نسخة تانية) ---- */
+  function scHandleScan(raw) {
+    const res = findProductByScan(raw);
+    if (!res.prod) {
+      scanBeep("no");
+      scanHint("#scScanHint", "warn", scanFailText(res) +
+        " <span class='scan-sub'>أو اكتب اسم الصنف في خانة الاسم ودوس «عدّ ➕».</span>");
+      return;
+    }
+    const p = res.prod;
+    const qty = scPerScan();
+    if (qty == null) {
+      scanBeep("no");
+      scanHint("#scScanHint", "warn", "🧮 (" + esc(p.nameAr || p.code) + ") اتعرّف — بس «عدد كل مسحة» مش رقم. اكتب عدد صحيح أكبر من صفر (أو سيّبه فاضي = صنف واحد) ومرّر الماسح تاني.");
+      const q = $("#numScQty");
+      if (q) { q.focus(); if (q.select) q.select(); }
+      return;
+    }
+    $("#txtScSearch").value = "";
+    const before = scCountedOf(scCur(), p.id);
+    const ok = scCountAdd(p.id, qty);
+    const after = scCountedOf(scCur(), p.id);
+    if (!ok) {
+      scanBeep("no");
+      scanHint("#scScanHint", "warn", "⚠️ (" + esc(p.nameAr || p.code) + ") ما اتعدّش — جرّب تاني أو اكتب العدد بإيدك في الخانة.");
+      return;
+    }
+    /* ✅ النجاح = خانة الباركود **تتفرّغ** والتركيز يفضل فيها.
+       الفرق عن الفاتورة (بناء 143): هناك الخطوة الجاية خانة الكمية فالرقم اللي في خانة
+       الكود ما بيضرّش؛ هنا البائع بيمرّر الماسح صنف ورا صنف من نفس الخانة، ولو الرقم
+       القديم فضل مكتوب ⇒ المسحة الجاية تركّب وراه («200…011» + «200…021» = ٢٦ رقم)
+       وتترفض بـ «ملقتش صنف». القياس: حارس 145 (مسحتين ورا بعض = سطر واحد معدوده ٢).
+       ⚠️ أي **رفض** (كمية غلط / صنف ملوش / ما اتعدّش) بيخلي الرقم في الخانة كما هو —
+       عشان قدام البائع يصلّح «عدد كل مسحة» ويدوس Enter على نفس الرقم من غير ما يعيد المسح. */
+    $("#txtScCode").value = "";
+    const cc = $("#txtScCode");
+    if (cc) cc.focus();
+    scanBeep("ok");
+    const sys = scSysOf(p);
+    const d = round2(after - sys);
+    scanHint("#scScanHint", "ok", "📷 " + esc(p.nameAr || p.code) + " — اتعدّ +" + scNum(qty) +
+      " ⇒ المعدود " + scNum(after) + " " + esc(p.unit || "") +
+      "<span class='scan-sub'>العدد الفعلي على البرنامج: " + scNum(sys) + " · الفرق: " +
+      (d > 0 ? "+" : "") + scNum(d) + " — امسّح الصنف اللي بعده.</span>");
+  }
+
+  /* Enter في خانة الكود — في البيع والشراء كان بيفرّق (الإسكانر = اختيار، والصابع =
+     إضافة السطر). هنا القرار واحد بطبيعته: **اللي في الخانة = اللي يتعدّ**، سواء جاي من
+     الماسح أو مكتوب بإيدك. والمسار واحد (`scHandleScan` → `findProductByScan`) فمستحيل
+     المسح والكتابة يطلّعوا نتيجتين مختلفتين لنفس الرقم. */
+  /* Enter في خانة الكود = «عدّ الرقم اللي آخر مسحة». `scanTailOf` بتاخد **ذيل السلسلة
+     السريعة** بس، فالرقم اللي سابته مسحة مرفوضة قبل كده (بيتساب بالعمد عشان البائع
+     يعدّل الكمية) ما يدخلش في رقم المسحة الجاية ويروّعه. */
+  function scCodeEnter() {
+    const raw = $("#txtScCode").value;
+    scHandleScan(scanTailNorm("txtScCode"));
+  }
+
+  /* العد بالإيد (لو مافيش ماكينة، أو الصنف ملوش باركود): خانة الاسم + «عدّ ➕».
+     كل ضغطة = واحدة، فاللي يعدّ ٧ قطع بإيده يدوس ٧ مرات — ونفس السطر بيتزوّد.
+     الصنف الموقوف بيُعدّ هنا (على عكس المسح اللي بيرفضه): الجرد بيشوف الموجود في
+     المخزن فعلًا، والرفض في المسح سببه إن «موقوف» مش للبيع — مش إن مش موجود. */
+  function scManualAdd() {
+    const raw = $("#txtScSearch").value;
+    if (!String(raw || "").trim()) {
+      toast("اكتب اسم الصنف أو كوده في خانة الاسم الأول، وبعدين دوس «عدّ ➕».", "warning");
+      return;
+    }
+    const p = findProductFlexible(raw);
+    if (!p) {
+      scanBeep("no");
+      scanHint("#scScanHint", "warn", "🔍 ملقتش صنف بـ («" + esc(raw) + "») — جرّب جزء من الاسم، أو امسّح باركوده.");
+      return;
+    }
+    const ok = scCountAdd(p.id, 1);
+    const after = scCountedOf(scCur(), p.id);
+    if (!ok) {
+      scanBeep("no");
+      scanHint("#scScanHint", "warn", "⚠️ (" + esc(p.nameAr || p.code) + ") ما اتعدّش — جرّب تاني.");
+      return;
+    }
+    scanBeep("ok");
+    scanHint("#scScanHint", "ok", "✍️ " + esc(p.nameAr || p.code) + " — اتعدّ بالإيد ⇒ المعدود " + scNum(after) +
+      " " + esc(p.unit || "") +
+      "<span class='scan-sub'>العدد الفعلي على البرنامج: " + scNum(scSysOf(p)) +
+      (!p.isActive ? " · الصنف موقوف عن البيع بس لسه موجود في المخزن، فبيتعدّ طبيعي." : "") + "</span>");
+  }
+
+  function scRemove(pid) {
+    const sh = scCur();
+    const i = sh.lines.findIndex((l) => Number(l.id) === Number(pid));
+    if (i < 0) return;
+    const p = scProductOf(sh.lines[i]);
+    sh.lines.splice(i, 1);
+    scPersist();
+    renderStockCount();
+    scanHint("#scScanHint", "info", "🗑 سطر (" + esc((p && p.nameAr) || "الصنف") + ") اتشال من الورقة — المخزون ما اتلمستش.");
+  }
+
+  // كتابة العدد يدويًا في الخانة = قرار نهائي (مش زيادة)
+  function scSetCountFromInput(pid, raw) {
+    const sh = scCur();
+    const s = String(raw == null ? "" : raw).trim();
+    const line = scLine(sh, pid, !!s);
+    if (!line) return false;
+    const n = parseFloat(s.replace(/,/g, ""));
+    if (s !== "" && (!isFinite(n) || n < 0)) {
+      renderStockCount();     // الخانة ترجع لآخر عدد صحيح بدل ما تستقبل نص غلط
+      toast("اكتب عددًا صحيحًا (٠ أو أكبر) في خانة «العدد المعدود»، أو سيّبها فاضية.", "warning");
+      return false;
+    }
+    line.counted = s === "" ? 0 : round2(n);
+    scPersist();
+    renderStockCount();
+    return true;
+  }
+
+  /* ---- الرسم ---- */
+  function renderStockCount() {
+    const tb = $("#dgvStockCount tbody");
+    if (!tb) return;
+    const sh = scCur();
+    const wh = scWh();
+    tb.innerHTML = "";
+    sh.lines.forEach((l) => {
+      const p = scProductOf(l);
+      const counted = Number(l.counted) || 0;
+      const sys = p ? scSys(p, wh) : 0;
+      const diff = round2(counted - sys);
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td>' + esc(p ? p.code : "—") + '</td>' +
+        '<td>' + (p ? esc(p.nameAr) : "<span class='diff-neg'>صنف اتشال من الدليل</span>") + '</td>' +
+        '<td>' + scNum(sys) + '</td>' +
+        '<td><input class="stk-qty-input sc-count-input" type="text" data-id="' + Number(l.id) + '" value="' + (counted ? scNum(counted) : "") + '" autocomplete="off" /></td>' +
+        '<td class="stk-diff ' + (diff > 0 ? "diff-pos" : diff < 0 ? "diff-neg" : "diff-zero") + '">' +
+        (diff ? (diff > 0 ? "+" : "") + scNum(diff) : "-") + '</td>' +
+        '<td><button type="button" class="btn red small" data-sc-del="' + Number(l.id) + '" title="شيل السطر من الورقة (المخزون ما بيتلمنش)">✕</button></td>';
+      tb.appendChild(tr);
+    });
+    scPaintSummary();
+    scFillDiffAcc();
+    scFillSheetList();
+  }
+
+  /* الأرقام دي بتتحسب من نفس `scSys`/`stockAt` اللي بترسم الخانات، وبتتنادى بعد كل مسحة
+     وبعد كل كتابة في الخانة — فالملخص والسطر والقيد ما يختلفوش أبدًا (درس بناء 135:
+     «مصدر واحد للحساب» أحسن من أي التزام بالتوازي). */
+  function scTotalsOf(sh) {
+    const wh = scWh();
+    let tallies = 0, over = 0, under = 0, valueSum = 0;
+    (sh.lines || []).forEach((l) => {
+      const p = scProductOf(l);
+      const diff = round2((Number(l.counted) || 0) - (p ? scSys(p, wh) : 0));
+      tallies += Number(l.tally) || 0;
+      if (diff > 0) over++; else if (diff < 0) under++;
+      if (p) valueSum += round2(diff * scCostOf(p));
+    });
+    return { tallies: tallies, over: over, under: under, valueSum: round2(valueSum) };
+  }
+  function scPaintSummary() {
+    const sh = scCur();
+    const t = scTotalsOf(sh);
+    const sum = $("#scSummary");
+    if (sum) {
+      sum.textContent = sh.lines.length
+        ? ("📋 أصناف معدودة: " + scNum(sh.lines.length) + " · مسحات وعدّات: " + scNum(t.tallies) +
+          " · زيادة: " + scNum(t.over) + " · نقص: " + scNum(t.under) +
+          " · قيمة الفروق (تقديري بالتكلفة): " + fmt(t.valueSum) + " ج.م")
+        : "📋 الورقة لسه فاضية — مرّر الماسح على الأصناف، أو اكتب الاسم ودوس «عدّ ➕».";
+    }
+    const note = $("#scStateNote");
+    if (note) {
+      note.textContent = (sh.appliedAt ? "✅ الورقة " + sh.no + " اتاعتمدت" + (sh.appliedJrn ? " (قيد " + sh.appliedJrn + ")" : "") : "🟢 الورقة " + sh.no + " شغّالة") +
+        " — مخزن («" + scWh() + "») · محفوظة على الجهاز" + (sh.savedAt ? " الساعة " + scClock(sh.savedAt) : "");
+    }
+    // «اعتماد الجرد» = صاحب الشركة ومالك البرنامج بس (قرار المالك) — والعدّ والطباعة للكل
+    const ap = $("#btnScApply");
+    if (ap) ap.hidden = !scCanApprove();
+  }
+
+  /* الكتابة في «العدد المعدود» بتحدّث **السطر والملخص بس** — ممنوع إعادة رسم الجدول
+     أثناء الكتابة: التركيز بيطير من الخانة وكل حرف بيدوّر الجدول من الأول (فالفارق بين
+     `scLiveFromInput` و`scSetCountFromInput` هو اللحظة، مش النتيجة). */
+  function scLiveFromInput(inp) {
+    const sh = scCur();
+    const line = scLine(sh, Number(inp.dataset.id), false);
+    if (!line) return;
+    const s = String(inp.value == null ? "" : inp.value).trim();
+    const n = parseFloat(s.replace(/,/g, ""));
+    const valid = (s === "") || (isFinite(n) && n >= 0);
+    /* «abc» أثناء الكتابة = مش عدد، **وممنوع تصفّر صنف عدّه البائع قبل كده** (الغلطة الحيّة
+       اللي قاستها رحلة J4: «17» ⇒ كتب «abc» ⇒ المعدود بقى ٠ والفرق -40 والرقم ضاع).
+       فالحالة دي: العدد اللي في الورقة يفضل آخر عدد سليم، والفرق والملخص يتحسبوا منه،
+       والخانة نفسها تستنى `change` (`scSetCountFromInput`) يرجّعها للرقم ده. */
+    if (valid) line.counted = (s === "") ? 0 : round2(n);
+    const tr = inp.closest("tr");
+    if (tr && tr.cells[4]) {
+      const p = scProductOf(line);
+      const diff = round2(line.counted - (p ? scSys(p, scWh()) : 0));
+      tr.cells[4].textContent = diff ? (diff > 0 ? "+" : "") + scNum(diff) : "-";
+      tr.cells[4].className = "stk-diff " + (diff > 0 ? "diff-pos" : diff < 0 ? "diff-neg" : "diff-zero");
+    }
+    if (valid) scPersist();
+    scPaintSummary();
+  }
+
+  // «📦 رصيد: -» تحت خانة الاسم — بيتحدّث مع الكتابة عشان البائع يعرف عدّ أنهي صنف
+  function scShowStock() {
+    const el = $("#scStockHint");
+    if (!el) return;
+    const raw = $("#txtScSearch") ? $("#txtScSearch").value : "";
+    if (!String(raw || "").trim()) { el.className = "stock-hint"; el.textContent = "📦 رصيد: -"; return; }
+    const p = findProductFlexible(raw);
+    if (!p) { el.className = "stock-hint"; el.textContent = "📦 رصيد: - (ملقاش صنف بالاسم ده)"; return; }
+    el.className = "stock-hint";
+    el.textContent = "📦 " + (p.nameAr || p.code) + " — رصيد البرنامج في («" + scWh() + "»): " +
+      scNum(scSysOf(p)) + " " + (p.unit || "") + " · المعدود في الورقة: " + scNum(scCountedOf(scCur(), p.id));
+  }
+
+  /* زرار «📷 مسح» في رأس شاشة الجرد = يجهّز الخانة، وللموبايل يفتح الكاميرا فوق
+     (نفس `posScanArm`/`ppScanArm` حرفيًا — مافيش منطق كاميرا تاني للجرد). */
+  function scScanArm() {
+    const el = $("#txtScCode");
+    if (!el) return;
+    el.focus();
+    el.select();
+    scanCamToggle("txtScCode");
+    camArmHint("#scScanHint", "txtScCode");
+  }
+
+  // ورقة جديدة = عدّاد فاضي + خانتين ناضفتين + نفس المخزن اللي واقف عليه
+  function scStartNew() {
+    scNewSheet();
+    $("#txtScCode").value = "";
+    $("#txtScSearch").value = "";
+    $("#numScQty").value = "1";
+    $("#scStockHint").className = "stock-hint";
+    $("#scStockHint").textContent = "📦 رصيد: -";
+    scanHint("#scScanHint");
+    renderStockCount();
+    $("#txtScCode").focus();
+    toast("ورقة جرد جديدة (" + scSheetCur.no + ") في مخزن («" + scWh() + "») — ابدأ المسح.", "success");
+  }
+
+  function scClock(iso) {
+    try {
+      const d = new Date(iso);
+      const p = (x) => String(x).padStart(2, "0");
+      return p(d.getHours()) + ":" + p(d.getMinutes());
+    } catch (e) { return ""; }
+  }
+
+  function scOpenView() {
+    fillWhSelect("#scWarehouse", scSheetCur ? scSheetCur.wh : null);
+    scCur();
+    renderStockCount();
+    const el = $("#txtScCode");
+    if (el) el.focus();
+  }
+
+  /* ---- ورق الجهاز: فتح/حذف/حفظ ---- */
+  function scFillSheetList() {
+    const sel = $("#scSheetList");
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = "";
+    scSheets.slice().sort((a, b) => String(b.no).localeCompare(String(a.no))).forEach((s) => {
+      const o = document.createElement("option");
+      o.value = s.no;
+      o.textContent = s.no + " — " + (s.wh || "-") + " — " + scNum((s.lines || []).length) +
+        " صنف" + (s.appliedAt ? " (اتاعتمدت)" : "");
+      sel.appendChild(o);
+    });
+    const cur = scSheetCur && scSheetCur.no;
+    if (cur && scSheets.some((s) => s.no === cur)) sel.value = cur;
+    else if (prev) sel.value = prev;
+  }
+  function scLoadSheet() {
+    const no = $("#scSheetList").value;
+    const s = scSheets.find((x) => x && x.no === no);
+    if (!s) { toast("اختار ورقة من القائمة الأول.", "warning"); return; }
+    scSheetCur = s;
+    fillWhSelect("#scWarehouse", s.wh || null);
+    const el = $("#scWarehouse");
+    if (el && s.wh) el.value = s.wh;
+    renderStockCount();
+    scanHint("#scScanHint", "info", "📂 الورقة " + s.no + " (مخزن «" + esc(s.wh || "-") + "») اتفتحت — " +
+      scNum((s.lines || []).length) + " صنف. (ساعة ما تتلمسش الأصناف دي؟ رجّع المخزن في القائمة قبل ما تعدّ)");
+  }
+  function scDeleteSheet() {
+    const no = $("#scSheetList").value;
+    if (!no) { toast("اختار الورقة اللي عايز تمسحها الأول.", "warning"); return; }
+    const s = scSheets.find((x) => x && x.no === no);
+    if (!s) return;
+    if (s.appliedAt && !confirm("الورقة " + no + " **اتاعتمدت** والقيد بتاعها (" + (s.appliedJrn || "-") + ") مسجّل في القيود.\n\nمسح الورقة من الجهاز ما بيرجّعش القيد ولا المخزون — متأكد؟")) return;
+    else if (!confirm("مسح ورقة الجرد " + no + " من على هذا الجهاز؟")) return;
+    scSheets = scSheets.filter((x) => x.no !== no);
+    scSheetsWrite();
+    if (scSheetCur && scSheetCur.no === no) scSheetCur = null;
+    if (!scSheetCur) scNewSheet();
+    renderStockCount();
+    toast("الورقة " + no + " اتمسحت من الجهاز.", "success");
+  }
+  function scSaveSheet() {
+    const sh = scCur();
+    scPersist();
+    renderStockCount();
+    toast("ورقة الجرد " + sh.no + " محفوظة على هذا الجهاز (بره السحابة — مافيش أي رفع).", "success");
+  }
+
+  /* ---- التصدير والطباعة ---- */
+  function scExportCSV() {
+    const sh = scCur();
+    const wh = scWh();
+    if (!sh.lines.length) { toast("الورقة لسه فاضية — مافيش حاجة تتصدّر.", "warning"); return; }
+    const rows = [["كود الصنف", "اسم الصنف", "العدد الفعلي على البرنامج", "العدد المعدود", "الفرق"]];
+    sh.lines.forEach((l) => {
+      const p = scProductOf(l);
+      const counted = Number(l.counted) || 0;
+      const sys = p ? scSys(p, wh) : 0;
+      const diff = round2(counted - sys);
+      rows.push([p ? p.code : "—", p ? p.nameAr : "صنف اتشال من الدليل", scNum(sys), scNum(counted), (diff > 0 ? "+" : "") + scNum(diff)]);
+    });
+    downloadCSV("جرد_بالباركود_" + sh.no + ".csv", rows);
+    toast("تم تصدير ورقة الجرد إلى CSV (يفتح في Excel).", "success");
+  }
+
+  function scPrintSheet() {
+    const sh = scCur();
+    const wh = scWh();
+    $("#sckWh").textContent = wh;
+    $("#sckNo").textContent = sh.no;
+    const p = (x) => String(x).padStart(2, "0");
+    const d = new Date();
+    $("#sckDate").textContent = d.getFullYear() + "/" + p(d.getMonth() + 1) + "/" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+    $("#sckCount").textContent = scNum(sh.lines.length);
+    let over = 0, under = 0;
+    sh.lines.forEach((l) => {
+      const pr = scProductOf(l);
+      const diff = round2((Number(l.counted) || 0) - (pr ? scSys(pr, wh) : 0));
+      if (diff > 0) over++; else if (diff < 0) under++;
+    });
+    $("#sckMeta").textContent = "زيادة: " + scNum(over) + " صنف · نقص: " + scNum(under) +
+      " صنف · الحالة: " + (sh.appliedAt ? ("اتاعتمدت" + (sh.appliedJrn ? " بقيد " + sh.appliedJrn : "") ) : "لسه معتمدة") +
+      " · الجرد بالإسكانر على جهاز العميل";
+    const tb = $("#sckBody");
+    tb.innerHTML = "";
+    sh.lines.forEach((l) => {
+      const pr = scProductOf(l);
+      const counted = Number(l.counted) || 0;
+      const sys = pr ? scSys(pr, wh) : 0;
+      const diff = round2(counted - sys);
+      const tr2 = document.createElement("tr");
+      tr2.innerHTML =
+        '<td>' + esc(pr ? pr.code : "—") + '</td>' +
+        '<td>' + esc(pr ? pr.nameAr : "صنف اتشال من الدليل") + '</td>' +
+        '<td>' + scNum(sys) + '</td>' +
+        '<td>' + scNum(counted) + '</td>' +
+        '<td>' + (diff ? (diff > 0 ? "+" : "") + scNum(diff) : "-") + '</td>';
+      tb.appendChild(tr2);
+    });
+    printSection($("#stockCountPage"));
+  }
+
+  /* ---- الصلاحية + حساب الفروق ---- */
+  function scCanApprove() { return isSuperAcct() || isCompanyOwnerAcct(); }
+
+  // حسابات الفروق = أي حساب طرفي تحت «مصروفات» (5…)، أو أي طرفي اسمه «فروق جرد».
+  // الحسابات اللي تحت الإيراد (4… وبينها 4.1) **خارج القائمة خالص**: فرق الجرد مش بيع.
+  function scDiffOptions() {
+    const out = [];
+    accounts.forEach((a) => {
+      if (!a || a.isActive === false) return;
+      const code = String(a.code || "");
+      if (!/^[0-9]/.test(code)) return;
+      const leaf = !accounts.some((x) => x && x !== a && String(x.code || "").indexOf(code + ".") === 0);
+      if (!leaf) return;
+      if (/^4(\.|$)/.test(code)) return;
+      const isCost = /^5(\.|$)/.test(code);
+      const named = String(a.nameAr || "").indexOf("فروق جرد") >= 0;
+      if (isCost || named) out.push(a);
+    });
+    out.sort((x, y) => String(x.code).localeCompare(String(y.code), "en"));
+    return out;
+  }
+  function scFillDiffAcc() {
+    const sel = $("#scDiffAcc");
+    if (!sel) return;
+    const list = scDiffOptions();
+    const sh = scSheetCur;
+    const want = String((sh && sh.diffAcc) || sel.value || "");
+    sel.innerHTML = "";
+    list.forEach((a) => {
+      const o = document.createElement("option");
+      o.value = String(a.code);
+      o.textContent = a.code + " — " + (a.nameAr || "");
+      sel.appendChild(o);
+    });
+    if (!list.length) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = "مافيش حساب فروق في دليلك — ضيفه من «الحسابات»";
+      sel.appendChild(o);
+      return;
+    }
+    let pick = list.find((a) => String(a.code) === want) || list.find((a) => String(a.code) === "5.1") || list[0];
+    sel.value = String(pick.code);
+    if (sh) sh.diffAcc = String(pick.code);
+  }
+  function scDiffAccount() {
+    const sel = $("#scDiffAcc");
+    const code = sel ? String(sel.value || "") : "";
+    return accByCode(code, "فروق جرد") || accByCode("5.1", "فروق جرد") || null;
+  }
+
+  // الأصناف اللي ليها رصيد في المخزن ده والورقة ما انمسحتش عليها ⇒ قرار التصفير سطر-سطر
+  function scUntouched() {
+    const sh = scCur();
+    const wh = scWh();
+    const ids = {};
+    sh.lines.forEach((l) => { ids[Number(l.id)] = true; });
+    return products.filter((p) => !ids[Number(p.id)] && scSys(p, wh) > 0);
+  }
+
+  /* ---- خطة القيد (قراءة فقط — ما تغيّرش حاجة) ---- */
+  function scJrnRef() { return "جرد بالباركود"; }
+  function scJrnKey(no) { const s = String(no || "").trim(); return s ? "SC:" + s : ""; }
+  function scJrnOf(no) {
+    const key = scJrnKey(no);
+    if (!key) return null;
+    const ref = scJrnRef();
+    return journalEntries.find((j) => j && String(j.refId || "") === key && (j.refType === ref || j.ref === ref)) || null;
+  }
+  function scMissText(err) {
+    if (err === "1.1.4") return "حساب «المخزون» (1.1.4) مش موجود في دليل حساباتك";
+    if (err === "diff") return "مافيش حساب طرفي للفروقات في دليل حساباتك — ضيف حسابًا باسم «فروق جرد» تحت المصروفات (مثل 5.1) من شاشة «الحسابات»";
+    return "فيه حساب ناقص في دليل حساباتك";
+  }
+  function scDiffPlan(sh, zeroIds) {
+    const wh = sh.wh;
+    const rows = [];
+    sh.lines.forEach((l) => {
+      const p = scProductOf(l);
+      if (!p) return;                       // سطر يتيم (صنف اتشال) — ما يدخلش القيد
+      const counted = Number(l.counted) || 0;
+      const sys = scSys(p, wh);
+      const diff = round2(counted - sys);
+      if (!diff) return;
+      const cost = scCostOf(p);
+      rows.push({ id: p.id, nameAr: p.nameAr, code: p.code, unit: p.unit || "", sys: sys, counted: counted, diff: diff, cost: cost, value: round2(diff * cost), set: counted });
+    });
+    (zeroIds || []).forEach((pid) => {
+      if (rows.some((r) => Number(r.id) === Number(pid))) return;
+      const p = products.find((x) => Number(x.id) === Number(pid));
+      if (!p) return;
+      const sys = scSys(p, wh);
+      if (!(sys > 0)) return;
+      const cost = scCostOf(p);
+      rows.push({ id: p.id, nameAr: p.nameAr, code: p.code, unit: p.unit || "", sys: sys, counted: 0, diff: round2(-sys), cost: cost, value: round2(-sys * cost), set: 0 });
+    });
+    const total = round2(rows.reduce((m, r) => m + r.value, 0));
+    const stock = accByCode("1.1.4", "المخزون");
+    const diffAcc = scDiffAccount();
+    if (Math.abs(total) > 0.0001) {
+      if (!stock) return { error: "1.1.4" };
+      if (!diffAcc) return { error: "diff" };
+    }
+    const lines = [];
+    if (Math.abs(total) > 0.0001) {
+      const abs = round2(Math.abs(total));
+      if (total > 0) {
+        lines.push({ accountId: Number(stock.id), debit: abs, credit: 0 });
+        lines.push({ accountId: Number(diffAcc.id), debit: 0, credit: abs });
+      } else {
+        lines.push({ accountId: Number(diffAcc.id), debit: abs, credit: 0 });
+        lines.push({ accountId: Number(stock.id), debit: 0, credit: abs });
+      }
+    }
+    return { rows: rows, total: total, lines: lines, stock: stock, diffAcc: diffAcc,
+      debit: round2(lines.reduce((m, l) => m + (Number(l.debit) || 0), 0)),
+      credit: round2(lines.reduce((m, l) => m + (Number(l.credit) || 0), 0)) };
+  }
+
+  /* ---- الاعتماد ---- */
+  function scApply() {
+    if (!scCanApprove()) {
+      toast("«اعتماد الجرد» وتسوية الفروق لصاحب الشركة ومالك البرنامج فقط — العدّ والطباعة والتصدير شغالين لباقي الحسابات.", "error");
+      return;
+    }
+    const sh = scCur();
+    if (!sh.lines.length) {
+      toast("الورقة لسه فاضية — امسّح أصناف أو عدّها بإيدك الأول، وبعدها اعتمد الجرد.", "warning");
+      return;
+    }
+    if (scJrnOf(sh.no)) {
+      const j = scJrnOf(sh.no);
+      toast("ورقة الجرد " + sh.no + " اتاعتمدت قبل كده (قيد " + (j.number || "-") + ") — عايز تعتمد مرة تانية اعمل «ورقة جرد جديدة».", "warning");
+      return;
+    }
+    const ut = scUntouched();
+    if (ut.length) { openScZeroModal(ut); return; }   // قرار التصفير سطر-سطر، وبعدها يكمل
+    scFinishApply(sh, []);
+  }
+
+  let scZeroPending = false;
+  function openScZeroModal(untouched) {
+    const sh = scCur();
+    const tb = $("#dgvScZero tbody");
+    tb.innerHTML = "";
+    untouched.forEach((p) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td><input type="checkbox" class="sc-zero-chk" data-id="' + Number(p.id) + '" /></td>' +
+        '<td>' + esc(p.code) + '</td>' +
+        '<td>' + esc(p.nameAr) + '</td>' +
+        '<td>' + scNum(scSysOf(p)) + '</td>' +
+        '<td>' + esc(p.unit || "") + '</td>';
+      tb.appendChild(tr);
+    });
+    $("#scZeroLead").textContent = "في " + scNum(untouched.length) + " صنف ليهم رصيد في مخزن («" + sh.wh + "») والورقة ما انمسحتش عليها. الجرد ما بيكملش غير بقرارك فيهم واحد واحد:";
+    $("#scZeroFoot").textContent = "✔️ اللي تعلّم عليه = تعدّه صفر (يسجّل فرق في القيد زي باقي الأصناف). اللي ما تعلّمش عليه = يفضل برصيد زي ما هو تمامًا، ومافيش أي تصفير تلقائي.";
+    scZeroPending = true;
+    showModal("mScZero");
+  }
+  function scZeroIds() {
+    const out = [];
+    document.querySelectorAll("#dgvScZero tbody .sc-zero-chk").forEach((c) => { if (c.checked) out.push(Number(c.dataset.id)); });
+    return out;
+  }
+  function scZeroMarkAll() {
+    const list = document.querySelectorAll("#dgvScZero tbody .sc-zero-chk");
+    let allOn = list.length > 0;
+    list.forEach((c) => { if (!c.checked) allOn = false; });
+    list.forEach((c) => { c.checked = !allOn; });
+    $("#btnScZeroMarkAll").textContent = allOn ? "☑️ علّم الكل" : "⬜ سيّب الكل";
+  }
+  function scZeroCancel() {
+    hideModal("mScZero");
+    scZeroPending = false;
+    toast("الاعتماد اتلغى — الورقة والمخزون زي ما هما تمامًا، ما اتغيّرش حاجة.", "info");
+  }
+  function scZeroApply() {
+    const ids = scZeroIds();
+    hideModal("mScZero");
+    scZeroPending = false;
+    scFinishApply(scCur(), ids);
+  }
+
+  /* النفاذ الحقيقي: يتأكد إن مافيش تكرار، يعدّل المخزون، وبعدين يكتب القيد — والاتنين
+     من نفس الأرقام اللي على الشاشة (`scSys`/`stockAt`)، ولا رقم بيتحسب من لقطة قديمة. */
+  function scFinishApply(sh, zeroIds) {
+    if (!scCanApprove()) {
+      toast("«اعتماد الجرد» وتسوية الفروق لصاحب الشركة ومالك البرنامج فقط.", "error");
+      return;
+    }
+    if (!sh || !sh.lines.length) { toast("الورقة لسه فاضية.", "warning"); return; }
+    const dup = scJrnOf(sh.no);
+    if (dup) { toast("ورقة الجرد " + sh.no + " اتاعتمدت قبل كده (قيد " + (dup.number || "-") + ") — ممنوع اعتماد نفس الورقة مرتين.", "warning"); return; }
+    const plan = scDiffPlan(sh, zeroIds || []);
+    if (plan.error) {
+      toast("اعتماد الجرد ما كملش لأن " + scMissText(plan.error) + ". الورقة سليمة والمخزون ما اتلمستش — ضيف الحساب من شاشة «الحسابات» وبعدها اعتمد.", "error");
+      return;
+    }
+    if (!plan.rows.length) {
+      toast("مافيش فرق بين «العدد المعدود» و«العدد الفعلي على البرنامج» في الورقة دي، وعليه مافيش حاجة تتعدّل.", "info");
+      return;
+    }
+    let over = 0, under = 0;
+    plan.rows.forEach((r) => { if (r.diff > 0) over++; else under++; });
+    const msg = "سيتم اعتماد ورقة الجرد " + sh.no + " في مخزن («" + sh.wh + "»):\n\n" +
+      "• أصناف تتسوّى: " + plan.rows.length + " (زيادة " + over + " · نقص " + under + ")\n" +
+      "• قيمة الفروق بالتكلفة: " + fmt(plan.total) + " ج.م\n" +
+      "• القيد: " + (plan.lines.length ? (plan.total > 0 ? "مدين «المخزون» (" + fmt(plan.total) + ") / دائن «" + (plan.diffAcc.nameAr || plan.diffAcc.code) + "»" :
+        "مدين «" + (plan.diffAcc.nameAr || plan.diffAcc.code) + "» (" + fmt(Math.abs(plan.total)) + ") / دائن «المخزون»") : "مافيش قيد — الفروق متزنينة") + "\n\nهل أنت متأكد من المتابعة؟";
+    if (!confirm(msg)) return;
+
+    // ١) المخزون يتعدّل أول — بنفس أرقام الخطة اللي اتعرضت
+    plan.rows.forEach((r) => {
+      const p = products.find((x) => Number(x.id) === Number(r.id));
+      if (!p) return;
+      setStockAt(p, sh.wh, r.set);
+      if (!(Number(p.weightedAvgCost) > 0)) p.weightedAvgCost = Number(p.purchasePrice) || 0;
+    });
+    saveProducts();
+    try { renderProducts(); } catch (e) { }
+
+    // ٢) قيد الفروق — نفس بدائل بناء 134 (تسوية سطر-سطر + refId يمنع التكرار)
+    let jrnNo = "";
+    if (plan.lines.length) {
+      const j = {
+        id: nextJournalId(),
+        number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+        date: todayISO(),
+        desc: scJrnRef() + " ورق " + sh.no + " — مخزن («" + sh.wh + "») — " + plan.rows.length + " صنف — فروق " + fmt(plan.total) + " ج.م",
+        ref: scJrnRef(),
+        refType: scJrnRef(),
+        refId: scJrnKey(sh.no),
+        debit: plan.debit,
+        credit: plan.credit,
+        lines: plan.lines
+      };
+      settleJrnLines(j.lines, 1);
+      journalEntries.push(j);
+      persistJournal();
+      saveAccounts();
+      jrnNo = j.number;
+      try { renderJournal(); } catch (e) { }
+    }
+    sh.appliedAt = new Date().toISOString();
+    sh.appliedJrn = jrnNo;
+    sh.diffAcc = $("#scDiffAcc") ? String($("#scDiffAcc").value || "") : sh.diffAcc;
+    scPersist();
+    addActivity("اعتماد جرد بالباركود", "ورق " + sh.no + " — مخزن («" + sh.wh + "») — " + plan.rows.length + " صنف — فروق " + fmt(plan.total) + " ج.م" + (jrnNo ? " — قيد " + jrnNo : " — بلا قيد"));
+    renderStockCount();
+    try { renderDashboard(); } catch (e) { }
+    toast("✅ اعتمدنا الجرد: " + plan.rows.length + " صنف اتسوّى في («" + sh.wh + "»)" +
+      (jrnNo ? " و اتكتب القيد " + jrnNo : " (الفروق متزنينة — مافيش قيد)") + ".", "success");
+  }
+
   /* ---- نقل الأصناف بين المخازن ---- */
   function openTransferModal() {
     fillWhSelect("#trFrom", null);
@@ -4808,14 +5635,14 @@
   // Enter في خانة الكود: إمّا إنهاء مسح (سريع) ⇒ نختار الصنف، أو إنهاء كتابة ⇒ المسار القديم
   function posCodeEnter() {
     const raw = $("#txtPosCode").value;
-    if (scanIsBurst("txtPosCode", scanClean(raw).length)) { posHandleScan(raw); return; }
+    if (scanBurstOf("txtPosCode", raw)) { posHandleScan(scanTailNorm("txtPosCode")); return; }
     posAddVia("code");
   }
 
   // الإسكانر بيتوّه أحيانًا على خانة الاسم — بنستقبله هناك بنفس الذكاء
   function posSearchEnter() {
     const raw = $("#txtPosSearch").value;
-    if (scanIsBurst("txtPosSearch", scanClean(raw).length)) { posHandleScan(raw); return; }
+    if (scanBurstOf("txtPosSearch", raw)) { posHandleScan(scanTailNorm("txtPosSearch")); return; }
     posAddVia("search");
   }
 
@@ -4874,7 +5701,7 @@
        (٣) اللي عليه Focus مش خانة بيكتب فيها البائع حالًا (كود/اسم ⇒ مستمعها القديم شغال)
        (٤) السلسلة سريعة فعلًا (`scanKey("cold")` + `scanIsBurst`) ⇒ الصابع البشري ما يتسرقش
      والإسكانرات اللي ما ترسلش Enter بتتوجه بعد صمت `COLD_SCAN_QUIET_MS` — البائع ما يستناشش. */
-  const COLD_SCAN_VIEWS = [["viewSales", "pos"], ["viewPurchases", "pp"]];
+  const COLD_SCAN_VIEWS = [["viewSales", "pos"], ["viewPurchases", "pp"], ["viewStockCount", "sc"]];
   const COLD_SCAN_QUIET_MS = 400;
   /* 🔴 درس القياس الحيّ (كيبورد حقيقي على الحزمة المنشورة، ٠٦/١٠): البائع اللي بيكتب
      الكمية بإيده على النمرات بيسبق الإسكانر في نفس الخانة — فـ «السلسلة السريعة» لوحدها
@@ -4888,7 +5715,7 @@
   /* الخانات اللي البائع بيكتب فيها وبعدها بيمرّر الماسح وهو لسه واقف عليها ⇒ رقم الإسكانر
      بيوقع فيها. نتعامل معاتها بالحرف زي خانة الاسم: سيّب الحروف تعدى (عشان لو كان صابع
     فضل زي ما هو)، ولو اتأكد إنه إسكانر **ارجّع الخانة لقيمتها قبل السلسلة** ووجّه الرقم. */
-  const COLD_SCAN_REVERT = ["numPosQty", "numPPQty", "txtPPPrice"];
+  const COLD_SCAN_REVERT = ["numPosQty", "numPPQty", "txtPPPrice", "numScQty"];
   let coldBuf = "";
   let coldMode = null;      // "type" (خانة رجّاعة) | "capture" (مافيش كتابة)
   let coldEl = null;
@@ -4933,7 +5760,7 @@
     const n = scanClean(raw).length;
     if (n < SCAN_MIN_LEN) return false;
     if (mode === "type" && n < COLD_SCAN_TYPE_MIN) return false;
-    return scanIsBurst("cold", n);
+    return scanLooksCode(scanClean(raw)) && scanIsBurst("cold", n);
   }
 
   function coldReset() {
@@ -4975,6 +5802,7 @@
       else if (el.id === "numPPQty") ppQtyTyped = base !== "";
     }
     if (inv === "pos") posHandleScan(code);
+    else if (inv === "sc") scHandleScan(code);
     else ppHandleScan(code);
   }
 
@@ -5593,13 +6421,13 @@
 
   function ppCodeEnter() {
     const raw = $("#txtPPCode").value;
-    if (scanIsBurst("txtPPCode", scanClean(raw).length)) { ppHandleScan(raw); return; }
+    if (scanBurstOf("txtPPCode", raw)) { ppHandleScan(scanTailNorm("txtPPCode")); return; }
     ppAddVia("code");
   }
 
   function ppSearchEnter() {
     const raw = $("#txtPPSearch").value;
-    if (scanIsBurst("txtPPSearch", scanClean(raw).length)) { ppHandleScan(raw); return; }
+    if (scanBurstOf("txtPPSearch", raw)) { ppHandleScan(scanTailNorm("txtPPSearch")); return; }
     ppAddVia("search");
   }
 
@@ -11028,6 +11856,84 @@
     $("#posScanHint").addEventListener("click", (e) => {
       if (e.target.closest("[data-scan-new]")) { openProductDialogForScan(lastPosScan); return; }
     });
+
+    /* ══ 🧮 بناء 145 — الجرد بالباركود ══
+       الخانات دي بتستخدم **نفس** بدائل المسح اللي في الفاتورة (`scanKey` / `scanIsBurst` /
+       `scanPasteRun` / `scanSuggestShow` / `scanSuggestPick` / `scanDropHide` / `scanCamToggle`)،
+       فأي تظبيط في تمييز الإسكانر أو قائمة الأرقام بيصل للجرد من غير ما حد يلمس سطر هنا. */
+    $("#btnScNew").addEventListener("click", scStartNew);
+    $("#btnScSave").addEventListener("click", scSaveSheet);
+    $("#btnScExport").addEventListener("click", scExportCSV);
+    $("#btnScPrint").addEventListener("click", scPrintSheet);
+    $("#btnScApply").addEventListener("click", scApply);
+    $("#btnScScanArm").addEventListener("click", scScanArm);
+    $("#btnScManualAdd").addEventListener("click", scManualAdd);
+    $("#scWarehouse").addEventListener("change", () => { renderStockCount(); scShowStock(); });
+    // كل حرف من الماسح بيمرّ على `scanKey` ⇒ السلسلة الزمنية بتتقاس أثناء الكتابة (درس 143)
+    $("#txtScCode").addEventListener("input", () => {
+      scanKey("txtScCode");
+      scanSuggestShow("#scScanHint", "txtScCode", $("#txtScCode").value);
+    });
+    $("#txtScCode").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); scCodeEnter(); }
+    });
+    $("#txtScCode").addEventListener("paste", () => scanPasteRun("txtScCode", scCodeEnter));
+    $("#txtScCode").addEventListener("blur", () => scanDropHide("txtScCode"));
+    // قائمة الأرقام «اللي بتنتهي» بالمدخول (نفس لوحة 144) — الدوس يكمّل الخانة وما يعدّش
+    $("#scanDrop-txtScCode").addEventListener("mousedown", (e) => e.preventDefault());
+    $("#scanDrop-txtScCode").addEventListener("click", (e) => {
+      const pk = e.target.closest("[data-scan-pick]");
+      if (pk) scanSuggestPick("#scScanHint", "txtScCode", pk.getAttribute("data-scan-pick"), scShowStock);
+    });
+    $("#txtScSearch").addEventListener("input", () => { scanKey("txtScSearch"); scShowStock(); });
+    $("#txtScSearch").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const raw = $("#txtScSearch").value;
+      if (scanBurstOf("txtScSearch", raw)) { scHandleScan(scanTailNorm("txtScSearch")); return; }
+      scManualAdd();
+    });
+    $("#txtScSearch").addEventListener("paste", () => scanPasteRun("txtScSearch", () => {
+      const raw = $("#txtScSearch").value;
+      if (scanBurstOf("txtScSearch", raw)) { scHandleScan(scanTailNorm("txtScSearch")); return; }
+      scManualAdd();
+    }));
+    /* Enter في «عدد كل مسحة»: لو خانة الكود لسه فيها رقم (بيفضل بعد أي رفض بالعمد) ⇒
+       نفس Enter يعدّه على طول. ولو فاضية ⇒ يروح لخانة الكود يستنى المسحة الجاية.
+       الهدف: البائع اللي كتب «١٠» غلط مسارها ما يحتاجش Enter مرتين. */
+    $("#numScQty").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const pending = String($("#txtScCode").value || "").trim();
+      if (pending) { scCodeEnter(); return; }
+      $("#txtScCode").focus();
+    });
+    // حساب فروق الجرد بيتختار من الورقة وبيفضل معها (ولو ما اتختارش ⇒ الافتراضي الموثّق)
+    $("#scDiffAcc").addEventListener("change", () => {
+      const sh = scCur();
+      sh.diffAcc = String($("#scDiffAcc").value || "");
+      scPersist();
+    });
+    $("#btnScLoadSheet").addEventListener("click", scLoadSheet);
+    $("#btnScDeleteSheet").addEventListener("click", scDeleteSheet);
+    // «العدد المعدود» خانة يدوية: `input` يحدّث السطر والملخص بلا إعادة رسم، و`change`
+    // (لما يسيب الخانة) ينضّف التنسيق. ممنوع نعيد رسم الجدول أثناء الكتابة — التركيز بيطير.
+    $("#dgvStockCount").addEventListener("input", (e) => {
+      const inp = e.target.closest(".sc-count-input");
+      if (inp) scLiveFromInput(inp);
+    });
+    $("#dgvStockCount").addEventListener("change", (e) => {
+      const inp = e.target.closest(".sc-count-input");
+      if (inp) scSetCountFromInput(inp.dataset.id, inp.value);
+    });
+    $("#dgvStockCount").addEventListener("click", (e) => {
+      const del = e.target.closest("[data-sc-del]");
+      if (del) scRemove(Number(del.getAttribute("data-sc-del")));
+    });
+    // نافذة «أصناف ما انمسحتش»: التصفير سطر-سطر، و«إلغاء الاعتماد» بيرجّع الورقة كاملة
+    $("#btnScZeroMarkAll").addEventListener("click", scZeroMarkAll);
+    $("#btnScZeroCancel").addEventListener("click", scZeroCancel);
+    $("#btnScZeroApply").addEventListener("click", scZeroApply);
     $("#btnPosSave").addEventListener("click", savePosInvoice);
     $("#txtPosDiscount").addEventListener("input", posRecalc);
     $("#cmbPosWarehouse").addEventListener("change", () => {
