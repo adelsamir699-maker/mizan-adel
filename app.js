@@ -157,9 +157,45 @@
     { id: 5, code: "PRD-005", barcode: "6222012000232", nameAr: "شاي العروسة", nameEn: "El Arosa Tea", category: "مشروبات", unit: "علبة", defaultWarehouse: "المخزن الرئيسي", purchasePrice: 85, weightedAvgCost: 85, salePrice: 95, discountPercent: 3, discountStart: "2026-09-10", discountEnd: "2026-09-20", qty: 12, reorder: 25, isActive: true }
   ];
 
-  const CATEGORIES = ["عام", "ألبان", "مخبوزات", "زيوت", "سكريات", "مشروبات", "معلبات", "عصائر", "منظفات"];
-  const UNITS = ["حبة", "عبوة", "كيس", "علبة", "كارتون", "طبق", "كيلو", "لتر", "زجاجة"];
-  const WAREHOUSES = ["المخزن الرئيسي", "مخزن المنصورة", "مخزن الزقازيق"];
+  /* 🆕 بناء 145 — قرار المالك الحيّ 07/10 بحرفه:
+     «عايزك تضيف افتراضى لكل الشركات الجديدة فى التصنيفات كيلو قطعه دسته كرتونه و تكون فى كل
+     الشركات الجديدة ثابتة لحين اضافه اى تصنيف اخر من طرف المستخدم و مش عايزه يتمسح»
+     «المستودعات مكتوب للشركات الجديدة مستودعين تجريبى بينزلوا افتراضى مع انشاء شركة تقريبا
+     الزقازيق منهم صلح ده» + «امسح المستودعين دول المنصورة و الزقازيق من كل الشركات الموجوده».
+     ⇒ القوائم الافتراضية بقت **حقول نظام** مش بيانات تجريبية:
+       · أربع وحدات محمية (`DEFAULT_UNITS`) تنزل لكل شركة جديدة، واللي يزيد عليها المستخدم يتعدّل
+         ويمسح، لكن دول **ممنوع مسحهم** (في الواجهة وفي الحمولة اللي بترفع للسحابة).
+       · مخزن واحد «المخزن الرئيسي» — «مخزن المنصورة» و«مخزن الزقازيق» اتشالوا من أساس التعريف،
+         فأي شركة جديدة أو شركة محذوف قوائمها مابقاش فيها مستودع وهمي.
+       · التصنيفات الافتراضية = «عام» بس (مافيش أصناف ألبان/مخبوزات تجريبية تفتح مع شركة جديدة).
+     ⚠️ قياس القاعدة الحيّة 07/10: `public.warehouses` = **صفر سطر** في كل الشركات ⇒ الأسماء
+     التجريبية كانت بتيجي من السطر ده في الكود (`warehouseList()` بترجع الثابت لو القائمة
+     المحفوظة فاضية) — مش من القاعدة. */
+  const DEFAULT_UNITS = ["كيلو", "قطعة", "دسته", "كرتونة"];
+  const CATEGORIES = ["عام"];
+  const UNITS = DEFAULT_UNITS.slice();
+  const WAREHOUSES = ["المخزن الرئيسي"];
+  // «ثابتة» = الوحدة دي مش بتتمسح ولا بتمسح نفسها من الحمولة: مطابقة الاسم بعد تنضيف المسافات
+  function isProtectedUnit(n) {
+    const s = String(n || "").trim();
+    return !!s && DEFAULT_UNITS.some((d) => d === s);
+  }
+  // أي قائمة units (محفوظة أو معلّقة أو حمولة هتترفع) لازم تبدأ بالأربع المحمية بلا تكرار
+  function withProtectedUnits(list) {
+    const norm = (u) => (u && typeof u === "object")
+      ? Object.assign({}, u, { name: String(u.name || u.symbol || "").trim() })
+      : { name: String(u || "").trim(), symbol: "" };
+    const out = [];
+    const has = (n) => out.some((x) => String(x.name || "").trim() === n);
+    DEFAULT_UNITS.forEach((d) => { if (!has(d)) out.push({ name: d, symbol: "" }); });
+    (Array.isArray(list) ? list : []).forEach((u) => {
+      const r = norm(u);
+      if (!r.name || has(r.name)) return;
+      out.push(r);
+    });
+    return out;
+  }
+
 
   const seedActivity = [
     { ts: "09:12:44", user: "admin", action: "تسجيل دخول", desc: "دخول مالك الشركة" },
@@ -353,6 +389,11 @@
       saleReturns = []; purchaseReturns = []; employees = []; attendance = [];
       attSettings = defaultAttSettings(); fixedAssets = [];
       scSheets = []; scSheetCur = null;
+      // 🧮 بناء 145: ورق الجرد على القرص **ما اتمسحش** (مفتاحه بره LS_ALL_KEYS عمدًا)، بس
+      // الذاكرة اتفضّت ⇒ لازم «آخر مفتاح قرينا منه» يمسح هو كمان. بدون ده `scResyncOrg()`
+      // تلاقي المفتاح زي ما هو وترجع مصفوفة فاضية، والورق يبان ضايع رغم إنه على الجهاز
+      // («ورقة الجرد مش بتنزل» — نفس الشكوى، مسار مختلف: خروج ودخول **لنفس الشركة**).
+      scLoadedKey = null;
       openingBaseline = null;
       // خريطة معرّفات السحابة بتاعت الشركة السابقة لو فضلت ممكن تُنسب سطر جديد
       // لـ uuid قديم من شركة تانية — تفضى معاهم.
@@ -1013,7 +1054,7 @@
       attendance = [];
       attSettings = defaultAttSettings();
       fixedAssets = [];
-      scSheets = []; scSheetCur = null;
+      scSheets = []; scSheetCur = null; scLoadedKey = null;   // المتصفح رفض القراءة ⇒ أساس الذاكرة راح
       settings = Object.assign({}, defaultSettings);
     }
     // 🛡 بناء 122: ذيل «أثبّت الفاضي على القرص» ما يقعّش الإقلاع. في متصفح بيرفض
@@ -4018,6 +4059,8 @@
 
   function productUnits() {
     const list = [];
+    // 🆕 145: الأربع الوحدات الأساسية دايمًا موجودين (شركة جديدة = جاهزة، وممنوع القائمة تفضل فاضية)
+    DEFAULT_UNITS.forEach((d) => { if (list.indexOf(d) === -1) list.push(d); });
     [csetData, ssetData].forEach((src) => {
       if (src && Array.isArray(src.units)) {
         src.units.forEach((u) => {
@@ -4032,7 +4075,9 @@
   function fillUnitSelect(sel, current) {
     const apply = (unitsArr) => {
       const list = [];
-      (unitsArr || []).forEach((u) => {
+      /* 🆕 145: الوحدات المحمية الأربعة بتتنزّل أول حاجة في القائمة ⇒ خانة «الوحدة» في
+         الصنف والفاتورة ما تبqاش فاضية في شركة جديدة (كانت بتعتمد على اللي محفوظ فقط). */
+      withProtectedUnits(unitsArr).forEach((u) => {
         const n = (u && (typeof u === "string" ? u : (u.name || u.symbol))) || u;
         if (n && list.indexOf(n) === -1) list.push(n);
       });
@@ -10224,9 +10269,12 @@
         else v = esc(v || (f === "is_active" ? "🟢 نشط" : "-"));
         h += "<td>" + v + "</td>";
       });
+      const lockedUnit = key === "units" && isProtectedUnit(r && (r.name || r.symbol));
       h += "<td>" +
         "<button class=\"btn small blue\" type=\"button\" onclick=\"window.__settEdit('" + prefix + "','" + type + "'," + idx + ")\">✏️</button> " +
-        "<button class=\"btn small red\" type=\"button\" onclick=\"window.__settDel('" + prefix + "','" + type + "'," + idx + ")\">🗑️</button>" +
+        (lockedUnit
+          ? "<button class=\"btn small\" type=\"button\" title=\"وحدة أساسية في ميزان — مافيش حذف\" disabled>🔒</button>"
+          : "<button class=\"btn small red\" type=\"button\" onclick=\"window.__settDel('" + prefix + "','" + type + "'," + idx + ")\">🗑️</button>") +
         "</td></tr>";
     });
     if (!rows.length) h += '<tr><td colspan="' + (heads.length + 1) + '">لا توجد بيانات بعد.</td></tr>';
@@ -10319,6 +10367,13 @@
     const list = data[key] || [];
     const rec = list[idx];
     const nm = rec ? (rec.name || "هذا السجل") : "هذا السجل";
+    /* 🆕 145 — «مش عايزه يتمسح» (بحرفه): الأربع وحدات الأساسية ثابتة في كل شركة.
+       بيظهر قفل 🔒 في الجدول بدل زرار الحذف، ولو حد نادى الدالة دي من غير الواجهة
+       refuse هنا كمان — والرسالة ودّية بلا أي اصطلاح تقني. */
+    if (key === "units" && isProtectedUnit(nm)) {
+      toast("«" + nm + "» وحدة أساسية في ميزان ومافيهاش حذف — إضافة وحدات تانية ليك مفتوحة.", "warning");
+      return;
+    }
     if (type === "wallet" || type === "bank") {
       // الرصيد المرجعي: سجل الخزينة المرتبط (المحسوب فعليًا من الحركات) إن وجد،
       // وإلا الرصيد المكتوب في الإعدادات.
@@ -10516,6 +10571,11 @@
     settLoad[prefix] = prefix === "s"
       ? { ok: true, err: "", at: new Date().toISOString(), orgId: orgId || (settLoad.s && settLoad.s.orgId) || null }
       : { ok: true, err: "", at: new Date().toISOString() };
+    /* 🆕 145: الأربع وحدات المحمية بتنضم للقائمة **وقت التحميل** (من السحابة أو من نسخة الجهاز)
+       ⇒ شركة جديدة تلاقي «كيلو/قطعة/دسته/كرتونة» جاهزة، وأي شركة موجودة ما تنقصهاش وحدة منهم.
+       عشان كده الأساس (baseline) بيتحسب **بعد** الضم، فـ«التفريغ» اللي بيطلب تأكيد ما يغلطش
+       بين «اللي الجاي من السحابة» و«اللي إحنا زودناه». */
+    if (payload) payload.units = withProtectedUnits(payload.units);
     const b = {};
     SETT_LIST_KEYS.forEach((k) => { b[k] = Array.isArray(payload && payload[k]) ? payload[k].length : 0; });
     settBaseline[prefix] = b;
@@ -10562,7 +10622,7 @@
       if (!(k in src)) return;
       const v = settSafeList(prefix, k);
       if (v === null) { skipped.push(k); return; }
-      out[k] = v;
+      out[k] = k === "units" ? withProtectedUnits(v) : v;
     });
     return { payload: out, skipped: skipped, noPayload: false };
   }
@@ -10757,7 +10817,7 @@
     settMarkFailed("c", "لا يوجد اتصال بالسحابة");
     csetData = {
       org: { name: settings.orgName || "", phone: settings.orgPhone || "", address: settings.orgAddress || "", tax_number: settings.orgVat || "", org_note: settings.orgNote || "", tax_enabled: !!settings.taxEnabled, tax_rate: Math.round((settings.taxRate || 0) * 100), tax_title: "", paper_size: settings.paperSize || "A4", warranty_terms: settings.orgWarranty || "", invoice_fields: normalizeInvFields(settings.invFields) },
-      categories: [], units: [], warehouses: [], owners: [], wallets: [], banks: []
+      categories: [], units: withProtectedUnits([]), warehouses: [], owners: [], wallets: [], banks: []
     };
     try {
       // الوحدات/القوائم المحفوظة على الجهاز تظهر حتى من غير شبكة (بدل شاشة فاضية)
@@ -10866,7 +10926,7 @@
         toast("تعذّر تحميل «" + ttl + "» من السحابة، فحفظناها على جهازك ومنعنا رفعها عشان ما تُمسحش. اضغط «🔄 تحديث» وبعدين احفظ.", "warning");
         return;
       }
-      payload[paneKey] = list.slice();
+      payload[paneKey] = paneKey === "units" ? withProtectedUnits(list) : list.slice();
     }
     const after = () => {
       if (payload.org) {
