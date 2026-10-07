@@ -9,6 +9,13 @@
 
   // رقم الإصدار المعروض للمستخدم — مصدره window.MIZAN_VERSION في index.html (تعديل هناك بس)
   const APP_VERSION = window.MIZAN_VERSION || "1.4.1";
+  /* 🔴 07/10 أمر المالك الحرفي: «و كل ما تحدث تغير ال V للرقم الجديد» ⇒ الختم المعروض
+     **مش** رقم المنتج لحاله، ده `window.mizanVerLabel()` بتاعة index.html (رقم المنتج +
+     عدّاد النشر) — وديماً بقراءة حيّة وقت الرسم، فلو السكربت اتأخر أو اتغيّر المصدر
+     الشاشة بتكتب الرقم الصحيح لنفس البناء اللي اتحمّل. المرجع الوحيد للزيادة هو
+     `window.MIZAN_BUILD` في index.html ⇒ كل نشر بيشيل رقمه معاه لوحده. */
+  const verLabel = () =>
+    (typeof window.mizanVerLabel === "function") ? window.mizanVerLabel() : APP_VERSION;
 
   /* ================== التخزين ================== */
   const LS_CUSTOMERS = "mizan_customers_v1";
@@ -17368,10 +17375,13 @@ const pwEye = document.getElementById("btnShowPass");
   /* ================== البداية ================== */
   function init() {
     wireTopNav();
+    /* 146: الختم من `verLabel()` = **رقم التحديث** (أمر المالك 07/10 ≈21:36: «ماتكتبش 1.4.1
+       اكتب 146»)، مش من `APP_VERSION` (رقم المنتج). مقاس في كروم الحقيقي: السطحين بياخدوا
+       من نفس مصدر `window.mizanVerLabel()`، وده بيتنفذ **قبل** ختم `index.html` (آخر مكتِب). */
     const fv = document.getElementById("ftrVer");
-    if (fv) fv.textContent = APP_VERSION;
+    if (fv) fv.textContent = verLabel();
     const lv = document.getElementById("loginVer");
-    if (lv) lv.textContent = APP_VERSION;
+    if (lv) lv.textContent = verLabel();
     // 🛡 لقطة وجود مفاتيح localStorage قبل أي تحميل — تُستخدم للاسترجاع
     // الموثوق من ملف الديسك عند فتح البرنامج على origin جديد أو بعد مسح الكاش.
     try {

@@ -10,8 +10,8 @@
   <title>mizan web - برنامج ميزان للمحاسبة وإدارة الأعمال</title>
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
-    window.MIZAN_VERSION = "1.4.1"; // نسخة المنتج (اللي يشوفه العميل)
-    window.MIZAN_BUILD = 146;       // عدّاد البناء والكاش (للتطوير فقط)
+    window.MIZAN_VERSION = "1.4.1"; // رقم المنتج (داخلي — قرار المالك ما بيتغيرش كل نشر)
+    window.MIZAN_BUILD = 146;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
 
     (function () {
       var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
@@ -19,18 +19,33 @@
       window.addEventListener("pageshow", function (e) { if (e.persisted) location.reload(); });
     })();
 
+    /* 🔴 المصدر الوحيد لنص النسخة اللي يشوفه العميل — أمر المالك الحرفي 07/10 ≈21:36:
+       «طيب ما تخلي ال V يسجل رقم التحديث 146 وكل مره نحدث فيها يكتب التحديث رقمه الصحيح كام»
+       ثم «لا لا تذكر 1.4.1 اكتب 146» ⇒ **اللي على الشاشة = رقم التحديث لوحده** (مش رقم المنتج،
+       ومش «1.4.1 · تحديث 146») — واللي بيزيد كل نشر هو `window.MIZAN_BUILD`، فالشاشة بتكتب
+       رقم البناء الصحيح لوحدها من غير أي تعديل يدوي في أي موضع.
+       ⚠️ تصحيح قياس (07/10 ≈21:34، متقاس في كروم الحقيقي بتتبّع كل كتابة على العقدتين):
+       ⇒ ترتيب المكتِبين هو `app.js` أول (سطر 17381/17383) ثم هذا المستمع في `index.html` **آخر**
+       ⇒ هذا هو اللي على الشاشة. قبل كده كنت بقول إن `init()` في app.js «بتمسّح» الرقم —
+       القياس بيقول العكس: بتكتب **أول**. السبب الحقيقي لتجمّد الشاشة على «1.4.1» من بناء 141
+       أبسط من كده: المكتِبين الاتنين كانوا بياخدوا `MIZAN_VERSION` (رقم المنتج) لحالها.
+       ⇒ كلهم بقوا بياخدوا من المصدر الواحد ده، وموضع واحد بس فيه الصيغة. */
+    window.mizanVerLabel = function () {
+      return String(window.MIZAN_BUILD);
+    };
+
     // ختم النسخة في كل المواضع من المصدر الواحد
     window.addEventListener("DOMContentLoaded", function () {
       var f = document.getElementById("ftrVer");
-      if (f) f.textContent = window.MIZAN_VERSION;
+      if (f) f.textContent = window.mizanVerLabel();
       var l = document.getElementById("loginVer");
       /* أمر المالك الحرفي 07/10 ≈20:05: «اكتب رقم ال version الصح فى شاشة تسجيل الدخول
-         علشان نعرف رقم الفيرجن لما يتحدث» ⇒ شاشة الدخول بقى فيها **رقم المنتج + عدّاد النشر**
-         الاتنين من نفس المصدر الواحد (قبل كده كان النص «83» مكتوب بإيدو في الـ HTML واللي
-         بيتغطّى بـ MIZAN_VERSION لوحدها ⇒ «1.4.1» ثابتة من 141 فمابقاش يعرف نزل بناء جديد
-         ولا لأ). الفوتر بيفضّل رقم المنتج بس — زي ما هو قراره. */
-      if (l) l.textContent = window.MIZAN_VERSION + " · تحديث " + window.MIZAN_BUILD;
-      console.info("mizan " + window.MIZAN_VERSION + " (build " + window.MIZAN_BUILD + ")");
+         علشان نعرف رقم الفيرجن لما يتحدث» و07/10 ≈21:36: «طيب ما تخلي ال V يسجل رقم التحديث 146
+         وكل مره نحدث فيها يكتب التحديث رقمه الصحيح كام» ⇒ شاشة الدخول بتكتب **رقم التحديث**
+         من المصدر الوحيد فوق (ممنوع رقم متكتب باليد هنا — قبل كده كان «83» حرفي في الـ HTML،
+         وبعدين «1.4.1» ثابتة من بناء 141 فمابقاش يعرف نزل بناء جديد ولا لأ). */
+      if (l) l.textContent = window.mizanVerLabel();
+      console.info("mizan تحديث " + window.MIZAN_BUILD + " (منتج " + window.MIZAN_VERSION + ")");
     });
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
