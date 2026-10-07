@@ -2978,11 +2978,29 @@
   const SCAN_MIN_LEN = 4;
   const SCAN_BURST_CHARS = 3;
   const scanTrace = {};
+  /* ═══ 145: الساعة بتقرأ **وقت وصول الحرف**، مش «وقت ما المعالج فات» ═══
+     القياس الحيّ (كروم، ١٤ صنف مزروع، أول مسحة بعد فتح الفاتورة): أول حرف بيشغّل أول
+     رسم للوحة الاقتراح ⇒ الفارق بين أول معالج وتاني معالج اتقيس **85ms** (وفي الرحلة
+     الكاملة عدّى 90) ⇒ `gap > SCAN_MAX_GAP_MS` ⇒ السلسلة بتبتدي من الحرف التاني ⇒ ذيل
+     المسحة «2000000000114» بقى «000000000114» ⇒ «🔍 ملقتش صنف بالرقم …» والسطر ما ينزلش.
+     دي مش بطء الإسكانر — الماسح بيرمي حروفه كل ~10ms، والمتصفح بيأخّر اللي وراه في
+     الطابور وهو بيرسم الاقتراحات، فالوقت الحقيقي للوصول محفوظ في الحدث نفسه (`event.timeStamp`).
+     الصابع البشري برده بيتقاس من وصول الحرف (فوق 150ms)، فحدّ الأمان 90ms ما اتغيّرش. */
+  function scanArrival(ev) {
+    try {
+      const to = performance && performance.timeOrigin;
+      const ts = ev && ev.timeStamp;
+      if (typeof to === "number" && to > 1e11 && typeof ts === "number" && isFinite(ts) && ts >= 0) return to + ts;
+    } catch (e) { /* متصفح قديم بلا `timeOrigin` ⇒ رجوع لساعة النظام (سلوك 143 بالأحرف) */ }
+    return Date.now();
+  }
   /* ⚠️ تُنادى مع **كل حرف** يدخل الخانة (من مستمع `input`)، مش عند Enter.
      لو نناديها عند Enter بس ⇒ السلسلة ما تتقاسش خالص (streak يفضل 1) والإسكانر
-     يتعامل معاملة الصابع. الدالة دي بتكتب الطابع الزمني وبتعدّ السلسلة. */
-  function scanKey(fieldId) {
-    const now = Date.now();
+     يتعامل معاملة الصابع. الدالة دي بتكتب الطابع الزمني وبتعدّ السلسلة.
+     الوسيط التاني (`ev`) = الحدث اللي جاب الحرف، ومنه بنقرا وقت الوصول؛ ولو اتنادت
+     من غير حدث (اللصق/الماسح البارد) بتقع على ساعة النظام. */
+  function scanKey(fieldId, ev) {
+    const now = scanArrival(ev);
     const t = scanTrace[fieldId];
     const gap = t ? now - t.last : 0;
     scanTrace[fieldId] = { last: now, streak: t && gap >= 0 && gap <= SCAN_MAX_GAP_MS ? t.streak + 1 : 1 };
@@ -5963,7 +5981,7 @@
     }
     if (mode === "capture") { e.preventDefault(); e.stopPropagation(); }
     coldBuf += k;
-    scanKey("cold");
+    scanKey("cold", e);
     coldArmQuiet();
   }
 
@@ -11964,8 +11982,8 @@
     // + الإكمال اليدوي (طلب 05/10 ≈18:20: «كل ما اكتب رقم من الباركود يبحث في المخزون
     // علشان يكمل لى الرقم»): `scanSuggestShow` بترجع false أثناء المسح ⇒ الاقتراح ما
     // يعطّش رسالة الإسكانر ولا يقطع المسح المتتابع.
-    $("#txtPosCode").addEventListener("input", () => {
-      scanKey("txtPosCode");
+    $("#txtPosCode").addEventListener("input", (e) => {
+      scanKey("txtPosCode", e);
       posOnCode();
       scanSuggestShow("#posScanHint", "txtPosCode", $("#txtPosCode").value);
     });
@@ -11975,7 +11993,7 @@
     });
     // 📷 إسكانر بيلصق الرقم دفعة واحدة (فئة من الماكينات + تطبيقات المسح على الموبايل)
     $("#txtPosCode").addEventListener("paste", () => scanPasteRun("txtPosCode", posCodeEnter));
-    $("#txtPosSearch").addEventListener("input", () => { scanKey("txtPosSearch"); posOnSearch(); });
+    $("#txtPosSearch").addEventListener("input", (e) => { scanKey("txtPosSearch", e); posOnSearch(); });
     $("#txtPosSearch").addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); posSearchEnter(); }
     });
@@ -12027,8 +12045,8 @@
     $("#btnScManualAdd").addEventListener("click", scManualAdd);
     $("#scWarehouse").addEventListener("change", () => { renderStockCount(); scShowStock(); });
     // كل حرف من الماسح بيمرّ على `scanKey` ⇒ السلسلة الزمنية بتتقاس أثناء الكتابة (درس 143)
-    $("#txtScCode").addEventListener("input", () => {
-      scanKey("txtScCode");
+    $("#txtScCode").addEventListener("input", (e) => {
+      scanKey("txtScCode", e);
       scanSuggestShow("#scScanHint", "txtScCode", $("#txtScCode").value);
     });
     $("#txtScCode").addEventListener("keydown", (e) => {
@@ -12042,7 +12060,7 @@
       const pk = e.target.closest("[data-scan-pick]");
       if (pk) scanSuggestPick("#scScanHint", "txtScCode", pk.getAttribute("data-scan-pick"), scShowStock);
     });
-    $("#txtScSearch").addEventListener("input", () => { scanKey("txtScSearch"); scShowStock(); });
+    $("#txtScSearch").addEventListener("input", (e) => { scanKey("txtScSearch", e); scShowStock(); });
     $("#txtScSearch").addEventListener("keydown", (e) => {
       if (e.key !== "Enter") return;
       e.preventDefault();
@@ -12131,8 +12149,8 @@
       const firstProd = products.find((p) => p.id === (ppItems[0] && ppItems[0].productId));
       ppUpdateBadge(firstProd || null);
     });
-    $("#txtPPCode").addEventListener("input", () => {
-      scanKey("txtPPCode");
+    $("#txtPPCode").addEventListener("input", (e) => {
+      scanKey("txtPPCode", e);
       ppOnCode();
       scanSuggestShow("#ppScanHint", "txtPPCode", $("#txtPPCode").value);
     });
@@ -12141,7 +12159,7 @@
       if (e.key === "Enter") { e.preventDefault(); ppCodeEnter(); }
     });
     $("#txtPPCode").addEventListener("paste", () => scanPasteRun("txtPPCode", ppCodeEnter));
-    $("#txtPPSearch").addEventListener("input", () => { scanKey("txtPPSearch"); ppOnSearch(); });
+    $("#txtPPSearch").addEventListener("input", (e) => { scanKey("txtPPSearch", e); ppOnSearch(); });
     $("#txtPPSearch").addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); ppSearchEnter(); }
     });
