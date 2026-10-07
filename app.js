@@ -5957,6 +5957,14 @@
   function coldScanKey(e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;     // أي اختصار حقيقي مالوش دعوى بالمسح
     const k = e.key;
+    /* 🔴 باگ حيّ مقاس 07/10 (بحرفه: «لما بكتب صنف فى الفاتوره بتطلع الرساله دى» +
+       `TypeError: Cannot read properties of undefined (reading 'length') coldScanKey`):
+       في ماكينات/لوحات (سكانرات وطرق إدخال) بترسل `keydown` **بلا `key` خالص** (بلا `keyCode`
+       بس، أو حدث مولّد من طبقة إدخال) ⇒ السطر اللي بيقرا `k.length` كان بيرمي TypeError
+       على شاشة البائع. الطبقة دي تعنيها **الحروف المقروءة بس** (مسحة الباركود)، فأي حدث
+       مالوش سلسلة حروف = مش مسح ⇒ سيّبه يعدي لمسار الخانة القديم بلا أي تدخل (ممنوع رفض
+       صامت للكتابة الحقيقية: أي حرف فعلي بيمشي زي الأول بالحرف). */
+    if (typeof k !== "string" || !k) return;
     const inv = coldInvoice();
     if (!inv) { if (coldBuf) coldReset(); return; }     // بره الفاتورتين ⇒ الكيبورد صاحبه زي الأول
     if (k === "Enter") {
