@@ -192,14 +192,25 @@
     const norm = (u) => (u && typeof u === "object")
       ? Object.assign({}, u, { name: String(u.name || u.symbol || "").trim() })
       : { name: String(u || "").trim(), symbol: "" };
-    const out = [];
-    const has = (n) => out.some((x) => String(x.name || "").trim() === n);
-    DEFAULT_UNITS.forEach((d) => { if (!has(d)) out.push({ name: d, symbol: "" }); });
+    // 1) تنظيف + إزالة التكرار من المدخول (نفس قرار 145 بالحرف)
+    const rows = [];
+    const seen = new Set();
     (Array.isArray(list) ? list : []).forEach((u) => {
       const r = norm(u);
-      if (!r.name || has(r.name)) return;
-      out.push(r);
+      if (!r.name || seen.has(r.name)) return;
+      seen.add(r.name);
+      rows.push(r);
     });
+    // 2) الأربع المحمية أول القائمة — و⚠️ **بسطر المحفوظ نفسه** لو كان موجود (رمزه «ق» وهويته).
+    //    تصحيح 146: نسخة 145 كانت بتحط {name, symbol:""} الأول وتتشاور على السطر المحفوظ
+    //    (`has(d)` بيبقى true) ⇒ أي شركة كاتبهة «قطعة / ق» كان رمزها بيمسح نفسه من السحابة
+    //    أول ما الحفظ يمشي. المنطق ده بيطابق قياس `D:/_work/temp/_pu_probe.js` قبل/بعد.
+    const out = [];
+    DEFAULT_UNITS.forEach((d) => {
+      const hit = rows.find((r) => r.name === d);
+      out.push(hit || { name: d, symbol: "" });
+    });
+    rows.forEach((r) => { if (DEFAULT_UNITS.indexOf(r.name) === -1) out.push(r); });
     return out;
   }
 
