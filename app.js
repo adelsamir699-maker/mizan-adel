@@ -7978,6 +7978,9 @@
       rec.txId = tx.id;
     }
 
+    // 🆕 بناء 149 (سطر ٣): المرتجع يترحّل بقيد عكسي — نفس أطراف فاتورته ونسبة ضريبتها بالحرف
+    postReturnJournal(isSales ? "sale" : "purchase", rec, inv, tr);
+
     // 3) الحفظ + التسلسل + سجل النشاط
     retList(isSales).push(rec);
     if (isSales) saveSaleReturns(); else savePurchaseReturns();
@@ -8056,6 +8059,10 @@
       saveSuppliers();
       saveSupplierTxs();
     }
+    // 🆕 بناء 149 (سطر ٣): حذف المرتجع بيرجع قيده هو كمان (تراجع كامل — نفس عرف الفاتورة)
+    const retJrnRemoved = removeReturnJournal(isSales ? "sale" : "purchase", r.id);
+    if (retJrnRemoved) { renderJournal(); renderLedger(); }
+
     // 3) حذف السطر نفسه
     if (isSales) { saleReturns = saleReturns.filter((x) => x.id !== r.id); saveSaleReturns(); }
     else { purchaseReturns = purchaseReturns.filter((x) => x.id !== r.id); savePurchaseReturns(); }
@@ -9495,6 +9502,113 @@
     saveAccounts();
     try { renderJournal(); } catch (e) { }
     return { j: j, already: false };
+  }
+
+  /* ================== 🆕 بناء 149 — سطر ٣ من الخطة: المرتجع يترحّل بقيد عكسي ==================
+     مرتجع البيع/الشراء كان بيلمس **المخزون + السند أو حركة الحساب** وبلا أي قيد (مقياس:
+     7 مرتجعات بيع + 1 شراء = صفر قيود) ⇒ الإيراد والمخزون ما بيرجعوش في الدليل، فرصيد
+     «4.1/21» و«1.1.4/114» بيتقدّم عن الحركة الحقيقية، والمركز المالي ما بيتطابقش مع الكشوف.
+     القيد هنا **عكس أطراف فاتورته نفسها** — بنفس حسابات بناء 134 وبنفس نسبة الضريبة:
+       • مرتجع بيع:  مدين «إيرادات المبيعات» بالصافي (+ مدين «الضريبة» بحصّتها) · دائن الطرف
+       • مرتجع شراء: مدين الطرف بالإجمالي · دائن «المخزون» بالصافي (+ دائن «الضريبة»)
+     «الطرف» = الحساب اللي اتسوّت بيه المرتجع: **رد قيمة** ⇒ خزينة/بنك/محفظة (`accForTreasuryAcc`)،
+     و**خصم من الرصيد** ⇒ `1.1.5` للعميل و`2.1.1` للمورد. الصافي والضريبة بيتقاسوا
+     من **نفس الفاتورة الأصلية** (`splitReturnNetTax`) بنسبة قيمة المرتجع من إجماليها، فمافيش
+     اختراع رقم: المرتجع بياخد حصّته العادلة بس. مفتاح `refId` = «SR:»/«PR:» + id المرتجع.
+     **بلا ترحيل بأثر رجعي** و**حذف المرتجع بيرجع قيده** (`deleteReturn`) زي تراجع الفاتورة. */
+  const RETURN_JRN = {
+    sale: { ref: "مرتجع مبيعات", prefix: "SR:", lineCode: "4.1", lineName: "إيرادات المبيعات", dueCode: "1.1.5", dueName: "مديونيات العملاء" },
+    purchase: { ref: "مرتجع مشتريات", prefix: "PR:", lineCode: "1.1.4", lineName: "المخزون", dueCode: "2.1.1", dueName: "مستحقات الموردين" }
+  };
+  function returnJrnKey(kind, id) {
+    const cfg = RETURN_JRN[kind];
+    const n = Number(id);
+    return (cfg && n > 0) ? cfg.prefix + n : "";
+  }
+  function returnJrnOf(kind, id) {
+    const key = returnJrnKey(kind, id);
+    if (!key) return null;
+    return journalEntries.find((j) => j && String(j.refId || "") === key) || null;
+  }
+  // حصّة المرتجع من صافي الفاتورة ومن ضريبتها — نسبة مقيسة من الفاتورة نفسها، بلا أي رقم جديد
+  function splitReturnNetTax(rec, inv) {
+    const total = round2(rec && rec.grandTotal);
+    const g = round2(inv && inv.grandTotal);
+    const taxAll = round2(inv && inv.taxAmount);
+    if (!(g > 0) || !(taxAll > 0)) return { total: total, net: total, tax: 0 };
+    const tax = round2((total * taxAll) / g);
+    return { total: total, net: round2(total - tax), tax: tax };
+  }
+  function returnJrnPlan(kind, rec, inv, tr) {
+    const cfg = RETURN_JRN[kind];
+    const part = splitReturnNetTax(rec, inv);
+    if (!(part.total > 0)) return { error: "amount" };
+    const refund = String((rec && rec.settlement) || "") === "refund";
+    const partyAcc = refund ? accForTreasuryAcc(tr) : accByCode(cfg.dueCode, cfg.dueName);
+    if (!partyAcc) return { error: refund ? "cash" : cfg.dueCode };
+    const lineAcc = accByCode(cfg.lineCode, cfg.lineName);
+    if (!lineAcc) return { error: cfg.lineCode };
+    const taxAcc = part.tax > 0 ? accByCode("2.1.2", "ضريبة") : null;
+    if (part.tax > 0 && !taxAcc) return { error: "2.1.2" };
+    const lines = [];
+    if (kind === "sale") {
+      lines.push({ accountId: Number(lineAcc.id), debit: part.net, credit: 0 });
+      if (part.tax > 0) lines.push({ accountId: Number(taxAcc.id), debit: part.tax, credit: 0 });
+      lines.push({ accountId: Number(partyAcc.id), debit: 0, credit: part.total });
+    } else {
+      lines.push({ accountId: Number(partyAcc.id), debit: part.total, credit: 0 });
+      lines.push({ accountId: Number(lineAcc.id), debit: 0, credit: part.net });
+      if (part.tax > 0) lines.push({ accountId: Number(taxAcc.id), debit: 0, credit: part.tax });
+    }
+    const d = round2(lines.reduce((m, l) => m + (Number(l.debit) || 0), 0));
+    const c = round2(lines.reduce((m, l) => m + (Number(l.credit) || 0), 0));
+    if (Math.abs(d - c) > 0.01) return { error: "unbalanced" };
+    return { lines: lines, debit: d, credit: c, part: part, partyAcc: partyAcc, lineAcc: lineAcc, taxAcc: taxAcc };
+  }
+  function postReturnJournal(kind, rec, inv, tr) {
+    const cfg = RETURN_JRN[kind];
+    if (!cfg || !rec || !rec.id) return null;
+    const done = returnJrnOf(kind, rec.id);
+    if (done) return { j: done, already: true };
+    const plan = returnJrnPlan(kind, rec, inv, tr);
+    if (plan.error) {
+      toast("المرتجع اتسجّل تمام. الترحيل التلقائي للقيود ما كملش لأن " +
+        invoiceJrnMissText(plan.error) + " — ضيفه من شاشة الحسابات وبعدها سجّل القيد من «القيود اليومية».", "warning");
+      return null;
+    }
+    const p = plan.part;
+    const j = {
+      id: nextJournalId(),
+      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      date: rec.date || rec.returnDate || todayISO(),
+      desc: cfg.ref + " رقم (" + (rec.returnNumber || rec.returnNo || "") + ") — " +
+        (kind === "sale" ? (rec.customerName || rec.customer || "") : (rec.supplierName || rec.supplier || "")) +
+        " — " + fmt(p.total) + " ج.م" + (p.tax > 0 ? " (منها ضريبة " + fmt(p.tax) + ")" : ""),
+      ref: cfg.ref,
+      refType: cfg.ref,
+      refId: returnJrnKey(kind, rec.id),
+      debit: plan.debit,
+      credit: plan.credit,
+      lines: plan.lines
+    };
+    settleJrnLines(j.lines, 1);
+    journalEntries.push(j);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    return { j: j, already: false };
+  }
+  function removeReturnJournal(kind, id) {
+    const j = returnJrnOf(kind, id);
+    if (!j) return null;
+    settleJrnLines(j.lines, -1);
+    const i = journalEntries.findIndex((x) => x === j);
+    if (i >= 0) journalEntries.splice(i, 1);
+    JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(j.id) || 0);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    return j;
   }
 
   /* ---- دفتر حركة الحسابات: كل الحركات اللي تمت جوه أي حساب ---- */
