@@ -962,6 +962,26 @@ body {
   margin-inline-start: auto;
 }
 
+/* 🆕 سطر ٢ (09/10): سطر «مجاميع الفرز» في استعلام الفواتير — الأرقام كلها من
+   `invQueryTotals` في app.js، وده تنسيق بس (بلا أي `#hex` — قاعدة الثيم). */
+.inv-q-tots {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--primary-dark);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.inv-q-tots.inv-q-empty {
+  color: var(--text-secondary);
+  font-weight: normal;
+  border-inline-start-color: var(--border);
+}
+
 .fld-inline {
   display: flex;
   align-items: center;

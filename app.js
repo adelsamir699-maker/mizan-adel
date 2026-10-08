@@ -7234,6 +7234,39 @@
   // الحسابات الفرعية للأعضاء ما بيشفوش الزرار ولا يقدروا يستدعوا الحذف.
   function canDeleteInvoices() { return isCompanyOwnerAcct() || isSuperAcct(); }
 
+  /* 🆕 سطر ٢ من طلب المالك (09/10): «بالنسبة للاستعلام عن الفواتير خلال فترة محددة من و الى
+   * يتكتب بنفس الطريقة السابقة مجموع الفواتير بناءا على الفرز».
+   * «بالطريقة السابقة» = نمط بناء 148 بالحرف: **مصدر واحد** (`invQueryTotals`) يقرا
+   * **القائمة المفلترة** (بعد «من/إلى» + بعد البحث) مش القائمة الكاملة، ومنه يتغذي سطر
+   * المجاميع. مافيش هنا «رصيد مرحّل» لأن الفواتير ما ليهاش مرحّل ⇒ الفرق الوحيد عن
+   * `stmPeriodTotals` إن كل حاجة بتتحسب من اللي ظهر فعلاً.
+   * ممنوع: أي مجموع من `sales`/`purchases` كلها، وممنوع أي رقم متكتب باليد في الـ HTML. */
+  function invQueryTotals(list) {
+    const rows = (list || []).filter(Boolean);
+    let total = 0, cash = 0, ajal = 0, tax = 0;
+    rows.forEach((inv) => {
+      const g = round2(inv.grandTotal);
+      total += g;
+      tax += round2(inv.taxAmount);
+      if (String(inv.paymentMethod || "") === "آجل") ajal += g; else cash += g;
+    });
+    return { count: rows.length, total: round2(total), cash: round2(cash), ajal: round2(ajal), tax: round2(tax) };
+  }
+  function invQueryTotalsText(t) {
+    if (!t || !t.count) return "لا توجد فواتير في هذا الفرز — المجموع 0.00 ج.م";
+    return "الفواتير الظاهرة: " + t.count + " · مجموعها: " + fmt(t.total) + " ج.م · نقدًا: " + fmt(t.cash) +
+      " · آجل: " + fmt(t.ajal) + (t.tax > 0 ? " · الضريبة: " + fmt(t.tax) + " ج.م" : "");
+  }
+  function renderInvQueryTotals(selId, list) {
+    const el = $(selId);
+    if (!el) return null;
+    const t = invQueryTotals(list);
+    el.textContent = invQueryTotalsText(t);
+    el.hidden = false;
+    el.className = "inv-q-tots" + (t.count ? "" : " inv-q-empty");
+    return t;
+  }
+
   function renderInvoiceQuery() {
     const fromS = $("#dtpFromS").value || "2000-01-01";
     const toS = $("#dtpToS").value || "2999-12-31";
@@ -7278,8 +7311,14 @@
       return normalizeAr(inv.invoiceNumber).includes(q) || normalizeAr(name).includes(q) || normalizeAr(inv.paymentMethod).includes(q) || fmt(inv.grandTotal).includes(q);
     };
 
-    fill($("#dgvInvS tbody"), sales.filter((i) => inRange(i.invoiceDate || i.date, fromS, toS)).filter((i) => match(i, qs, i.customerName || i.customer)), true);
-    fill($("#dgvInvP tbody"), purchases.filter((i) => inRange(i.invoiceDate || i.date, fromP, toP)).filter((i) => match(i, qp, i.supplierName || i.supplier)), false);
+    // 🆕 القائمة تُبنى **مرة واحدة** وتُستخدم للسطين: الجدول وسطر المجاميع ⇒ المستحيل
+    //       المجموع يتجاهل الفرز (شكوى المالك). أي تغيير في الفلتر = نفس الكائن للاتنين.
+    const listS = sales.filter((i) => inRange(i.invoiceDate || i.date, fromS, toS)).filter((i) => match(i, qs, i.customerName || i.customer));
+    const listP = purchases.filter((i) => inRange(i.invoiceDate || i.date, fromP, toP)).filter((i) => match(i, qp, i.supplierName || i.supplier));
+    fill($("#dgvInvS tbody"), listS, true);
+    fill($("#dgvInvP tbody"), listP, false);
+    renderInvQueryTotals("#invTotS", listS);
+    renderInvQueryTotals("#invTotP", listP);
   }
 
   // حذف فاتورة (بيع/شراء) بتراجع كامل: المخزون + أثر الدفع (خزينة أو أرصدة وقيود) + السطر نفسه.
