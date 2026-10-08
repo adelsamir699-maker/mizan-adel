@@ -16540,7 +16540,7 @@ const pwEye = document.getElementById("btnShowPass");
         const oid = o.org_id;
         // 🛡 بند 17: شركة المالك ما ليهاش خانة تاريخ ولا زرار تجديد — سطر ودّي واحد
         if (isProtectedOrg(o)) {
-          h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '" data-protected="1">' +
+          h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '" data-protected="1" data-srch="' + subsSrchText(o) + '">' +
             '<td><b>' + (o.org_name || "بدون اسم") + '</b> <span class="badge-ok">🔒</span></td>' +
             '<td colspan="5"><span class="login-sub">شركة المالك — بلا تاريخ اشتراك ومحمية من أي قفل بالتاريخ، فمافيش حاجة تتجدد هنا.</span></td>' +
             '<td><span class="badge-ok">🟢 مفتوحة دايمًا</span></td>' +
@@ -16555,7 +16555,7 @@ const pwEye = document.getElementById("btnShowPass");
         const wasTxt = subsStoredEnd(o)
           ? (subsStoredStart(o) ? fmtDate(subsStoredStart(o)) + " ← " : "") + fmtDate(subsStoredEnd(o))
           : (subsStoredStart(o) ? "من " + fmtDate(subsStoredStart(o)) + " (من غير نهاية)" : "لا يوجد");
-        h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '" data-stored-end="' + subsStoredEnd(o) + '">' +
+        h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '" data-stored-end="' + subsStoredEnd(o) + '" data-srch="' + subsSrchText(o) + '">' +
           '<td><b>' + (o.org_name || "بدون اسم") + '</b></td>' +
           '<td><select class="inp subs-plan">' +
             '<option value="f">🎁 تجربة مجانية</option>' +
@@ -16585,10 +16585,70 @@ const pwEye = document.getElementById("btnShowPass");
         tr.querySelector(".subs-go").addEventListener("click", () => subsApply(o, tr));
         subsPaintAction(tr);
       });
+      subsWireFilter();
       box.scrollIntoView({ behavior: "smooth", block: "start" });
     }).catch((e) => {
       lst.innerHTML = '<p class="login-msg err">تعذّر التحميل: ' + (e.message || e) + "</p>";
     });
+  }
+  /* 🔎 بحث جدول الاشتراكات بالاسم وبرقم التليفون — أمر المالك الحرفي (08/10):
+     «فى قائمة الاشتراكات عايز مربع بحث بنفس الطريقه اللى بنعملها يبحث برقم التليفون
+      و بالاسم و كمان البحث يكون سواء الياء تحتها نقطتين او لا و هكذا الالف و الواو»
+     ⇒ **نفس** منطق صناديق لوحة الإدارة (`adminOrgMatches` في بناء 110): رقم ⇒ يطابق
+        تليفون الشركة، وحروف ⇒ تطابق اسم الشركة **أو اسم المسئول**، والتطبيع بيوحّد
+        (أ/إ/آ/ٱ → ا) و(ى → ي) و(ؤ → و) و(ئ → ي) و(ة → ه) + التشكيل + ضغط المسافات.
+     ⚠️ الدوال الأربعة دي جوه **بلوك الاشتراكات** عمدًا — درس 120/124/127/131: الحارس
+        بيقتطع البلوك ويقيّمه لوحده في كروم، فأي مساعدة بره الشريحة = `ReferenceError`
+        وجدول فاضي. عشان كده التطبيع مكتوب هنا مباشرة (مش `normalizeAr`)، والصندوق بيتوصل
+        بـ `getElementById` (مش `$`) ⇒ الرحلة تفضل شغّالة حتى في نسخة الحارس اللي مافيهاش `$`،
+        ولو الصندوق نفسه مش موجود (شاشة قديمة) الفلترة بتعدّ «كل السطور» بلا ما تكسر حاجة. */
+  function subsNormKey(s) {
+    return String(s == null ? "" : s).toLowerCase()
+      .replace(/[ً-ْـ]/g, "")
+      .replace(/[أإآٱ]/g, "ا").replace(/ى/g, "ي").replace(/ؤ/g, "و").replace(/ئ/g, "ي").replace(/ة/g, "ه")
+      .replace(/\s+/g, " ").trim();
+  }
+  // مفتاح البحث المحفوظ في السطر نفسه: «اسم الشركة + اسم المسئول | أرقام التليفون»
+  // ⚠️ تصفية رموز HTML بتكتب بلا علامات اقتباس حرفية جوّه الـ regex (\x22 \x27 \x60) — نفس
+  //    المعنى بالحرف، بس مغلق الاعتماديات في الحارس بيستّر النصوص قبل الـ regex literals
+  //    (درس 124)، فالعلامة الحرفية جوّه класса الأحرف كانت بتلخبط الستر وتولّد نداءات وهمية.
+  function subsSrchText(o) {
+    const txt = subsNormKey([o && o.org_name, o && o.owner_name].join(" ")).replace(/[&<>\x22\x27\x60]/g, "");
+    const dig = String((o && o.org_phone) || "").replace(/\D/g, "");
+    return txt + "|" + dig;
+  }
+  function subsFilterRows() {
+    const el = document.getElementById("subsSearch");
+    const list = document.getElementById("adminSubsList");
+    if (!list) return;
+    const raw = el ? String(el.value || "") : "";
+    const dig = raw.replace(/\D/g, "");
+    const txt = subsNormKey(raw.replace(/[0-9\-+().]/g, ""));
+    let shown = 0, total = 0;
+    list.querySelectorAll("tr[data-subs]").forEach((tr) => {
+      total++;
+      const parts = String(tr.getAttribute("data-srch") || "").split("|");
+      const nameKey = parts[0] || "";
+      const phoneDigits = parts[1] || "";
+      let hit = !dig && !txt;
+      if (dig && phoneDigits.indexOf(dig) !== -1) hit = true;
+      if (!hit && txt && nameKey.indexOf(txt) !== -1) hit = true;
+      tr.style.display = hit ? "" : "none";
+      if (hit) shown++;
+    });
+    const cnt = document.getElementById("subsSearchCount");
+    if (!cnt) return;
+    cnt.textContent = (!dig && !txt) ? ""
+      : ("🔍 " + shown + " من " + total + " شركة" + (shown ? "" : " — جرّب حروف أقل من الاسم، أو ٣ أرقام من التليفون"));
+  }
+  // يوصل الصندوق مرة واحدة (لو اللوحة اتفتحت تاني — وزرار «إعادة فحص» بينايمها مرتين)
+  function subsWireFilter() {
+    const el = document.getElementById("subsSearch");
+    if (el && el.dataset.wired !== "1") {
+      el.dataset.wired = "1";
+      el.addEventListener("input", subsFilterRows);
+    }
+    subsFilterRows();
   }
   function subsCalc(tr, refreshPrice) {
     const P = SUB_PLANS();
