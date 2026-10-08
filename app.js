@@ -8391,6 +8391,7 @@
     fillTreasurySelect("#vTreasury"); // 🆕 بناء 118: الأرصدة تبان في القائمة (النقدية أولًا) بدل اسم بس
     $("#vDate").value = todayISO();
     $("#vAmount").value = "";
+    fillVoucherAccSelect(mode); // 🆕 بناء 149 (سطر ٢): الحساب المقابل — أطراف الدليل بس
     $("#vDesc").value = mode === "in" ? "إيراد (سند قبض)" : "مصروف (سند صرف)";
     $("#vHint").textContent = mode === "in"
       ? "✅ المبلغ هينزل في الحساب اللي هتختاره، والرصيد بيتحدّث تلقائيًا."
@@ -8424,17 +8425,20 @@
     }
     const sign = voucherMode === "in" ? 1 : -1;
     t.balance = round2(t.balance + sign * amount);
-    vouchers.push({
+    const vRow = {
       id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
       type: voucherMode,
       treasuryId: tid,
       date: $("#vDate").value || todayISO(),
       amount: Math.round(amount * 100) / 100,
       desc: $("#vDesc").value.trim() || (voucherMode === "in" ? "إيراد" : "مصروف")
-    });
+    };
+    vouchers.push(vRow);
     saveTreasury();
     syncTreasuryItemToSett(t);
     saveVouchers();
+    // 🆕 بناء 149 (سطر ٢): السند يترحّل لقيد بالحساب المقابل المختار (بلا اختيار = بلا قيد)
+    postVoucherJournal(vRow, t, chosenVoucherAcc());
     hideModal("mVoucher");
     addActivity(voucherMode === "in" ? "سند قبض" : "سند صرف", (voucherMode === "in" ? "قبض إيراد" : "صرف مصروف") + " بمبلغ " + fmt(amount) + " ج.م (" + t.name + ")");
     toast("تم حفظ السند بنجاح.", "success");
@@ -9382,6 +9386,115 @@
     saveAccounts();
     try { renderJournal(); } catch (e) { }
     return j;
+  }
+
+  /* ================== 🆕 بناء 149 — سطر ٢ من الخطة: سند القبض/الصرف يترحّل لقيد ==================
+     «سند قبض/صرف» (نافذة `#mVoucher`) كان بيلمس **الخزينة والسند بس** ⇒ الحساب المقابل
+     (إيراد/مصروف) خارج الدليل خالص (مقياس: 21 سندًا على السحابة بصفر قيود).
+     المقطع ده بيزود **الحساب المقابل** في النافذة (`#vAcc`) وبيرحّل:
+       • قبض: مدين «الصندوق/البنك/المحفظة» · دائن الحساب المختار
+       • صرف: مدين الحساب المختار · دائن «الصندوق/البنك/المحفظة»
+     **بلا اختراع:** القائمة بتعرض **أطراف الدليل** بس (`voucherAccChoices`) — الإيراد للقبض
+     والمصروف للصرف، ولو الشركة مالهاش بنود من النوع ده القائمة بتعرض كل الأطراف. الاختيار
+     المسبق = أول حساب في القائمة **ظاهر ومقاس**، والبائع يغيّره لو عايز. لو مافيش أي طرف في
+     الدليل ⇒ السند يتحفظ زي الأول **بلا قيد** وبلا أي رقم متخيّل.
+     **ممنوع ازدواج:** سندات «تسجيل مصروفات/إيرادات» (`saveSimpleEntry`) ليها قيودها بالفعل،
+     وسندات التحصيل/السداد ليها قيودها من سطر ١ — المقطع ده بيشتغل من `saveVoucher` وبس،
+     ومفتاح `refId` = «VC:» + id السند يمنع أي إعادة ترحيل. */
+  function jrnAccLeaf(a) {
+    return !!a && a.isActive !== false &&
+      !accounts.some((x) => x.isActive !== false && Number(x.parentId) === Number(a.id));
+  }
+  function voucherAccChoices(mode) {
+    const side = mode === "in" ? "revenue" : "expense";
+    const leaves = accounts.filter(jrnAccLeaf);
+    const typed = leaves.filter((a) => a.type === side);
+    return (typed.length ? typed : leaves)
+      .slice()
+      .sort((a, b) => String(a.code).localeCompare(String(b.code), "en"));
+  }
+  function fillVoucherAccSelect(mode) {
+    const el = $("#vAcc");
+    if (!el) return 0;
+    el.innerHTML = "";
+    const list = voucherAccChoices(mode);
+    const ph = document.createElement("option");
+    ph.value = "";
+    ph.textContent = list.length ? "— اختار الحساب المقابل —" : "— مافيش حسابات في الدليل —";
+    el.appendChild(ph);
+    list.forEach((a) => {
+      const o = document.createElement("option");
+      o.value = String(a.id);
+      o.textContent = String(a.code) + " · " + (a.nameAr || "");
+      el.appendChild(o);
+    });
+    // الاختيار المسبق: أول حساب في القائمة (ظاهر على الشاشة ومقاس) — بلا أي حساب متخيّل
+    if (list.length) el.value = String(list[0].id);
+    return list.length;
+  }
+  function chosenVoucherAcc() {
+    const el = $("#vAcc");
+    const id = el ? parseInt(el.value, 10) : 0;
+    if (!id) return null;
+    return accounts.find((a) => Number(a.id) === id && a.isActive !== false) || null;
+  }
+  function voucherJrnKey(vId) {
+    const id = Number(vId);
+    return id > 0 ? "VC:" + id : "";
+  }
+  function voucherJrnRef(type) { return type === "in" ? "سند قبض" : "سند صرف"; }
+  function voucherJrnOf(vId) {
+    const key = voucherJrnKey(vId);
+    if (!key) return null;
+    return journalEntries.find((j) => j && String(j.refId || "") === key) || null;
+  }
+  function voucherJrnPlan(type, cashAcc, otherAcc, amount) {
+    const amt = round2(amount);
+    if (!(amt > 0)) return { error: "amount" };
+    if (!cashAcc) return { error: "cash" };
+    if (!otherAcc) return { error: "acc" };
+    const lines = type === "in"
+      ? [{ accountId: Number(cashAcc.id), debit: amt, credit: 0 }, { accountId: Number(otherAcc.id), debit: 0, credit: amt }]
+      : [{ accountId: Number(otherAcc.id), debit: amt, credit: 0 }, { accountId: Number(cashAcc.id), debit: 0, credit: amt }];
+    const d = round2(lines.reduce((m, l) => m + (Number(l.debit) || 0), 0));
+    const c = round2(lines.reduce((m, l) => m + (Number(l.credit) || 0), 0));
+    if (Math.abs(d - c) > 0.01) return { error: "unbalanced" };
+    return { lines: lines, debit: d, credit: c };
+  }
+  function postVoucherJournal(v, t, otherAcc) {
+    if (!v || !v.id) return null;
+    const done = voucherJrnOf(v.id);
+    if (done) return { j: done, already: true };
+    const amount = round2(v.amount);
+    if (!(amount > 0)) return null;
+    const cashAcc = accForTreasuryAcc(t);
+    // طرف واحد بس (حساب الخزينة نفسه) أو مافيش طرف تاني ⇒ بلا قيد: ممنوع رقم متخيّل
+    if (!otherAcc || Number(otherAcc.id) === Number(cashAcc && cashAcc.id)) return null;
+    const plan = voucherJrnPlan(v.type, cashAcc, otherAcc, amount);
+    if (plan.error) {
+      toast("السند اتحفظ تمام. الترحيل التلقائي للقيود ما كملش لأن " +
+        invoiceJrnMissText(plan.error) + " — ضيفه من شاشة الحسابات وبعدها سجّل القيد من «القيود اليومية».", "warning");
+      return null;
+    }
+    const ref = voucherJrnRef(v.type);
+    const j = {
+      id: nextJournalId(),
+      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      date: v.date || todayISO(),
+      desc: ref + " — " + (v.desc || "") + " — " + fmt(amount) + " ج.م",
+      ref: ref,
+      refType: ref,
+      refId: voucherJrnKey(v.id),
+      debit: plan.debit,
+      credit: plan.credit,
+      lines: plan.lines
+    };
+    settleJrnLines(j.lines, 1);
+    journalEntries.push(j);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    return { j: j, already: false };
   }
 
   /* ---- دفتر حركة الحسابات: كل الحركات اللي تمت جوه أي حساب ---- */
