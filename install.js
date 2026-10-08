@@ -139,6 +139,86 @@
     });
   }
 
+  /* ================= MIZAN_FRESH_PROBE_BEGIN (build 147) =================
+   * «ليه جهاز العميل يفضل شايف الشاشة القديمة؟» — القياس مش التخمين:
+   *   الأداة D:/_work/temp/cachetest147 (خارج المتودع) بتحاكي رِس GitHub Pages حرفيًا
+   *   (`Cache-Control: max-age=600` + ETag + 304) وقاست بالعدّاد على السيرفر إن:
+   *   (١) السو القديم (`fetch(event.request)`) بيقدّم الشاشة القديمة بـ **صفر طلب شبكة**
+   *       ⇒ القِدم = `max-age` بالظبط (نفس الجهاز بيشفي نفسه لوحده على max-age=3).
+   *   (٢) كروم ما بيعيدش جلب `sw.js` في التنقّل العادي ⇒ `registration.update()` هو اللي
+   *       بيجيبه (متقاس: بعد الأمر، التنقّل اللي بعده = البناء الجديد).
+   *   (٣) الفحص ده (مقارنة `SW_VERSION` من الشبكة بالمبني المرسوم في الصفحة) بيشفي
+   *       **في نفس الزيارة بإعادة تحميل واحدة**، وبلا حلقة وبلا أخطاء صفحة.
+   *
+   * شروط صارمة:
+   *   - **ممنوع** نقطع إدخال بيانات ⇒ إعادة التحميل بتحصل **بس وهى على شاشة الدخول**
+   *     (لو المستخدم جوّه الشركة، العلامة بتفضل معلّقة لحد ما يطلع شاشة الدخول).
+   *   - **ممنوع** حلقة ⇒ مفتاح في `sessionStorage` لكل تبويب: جلسة واحدة = محاولة واحدة.
+   *   - صفر نص تقني للعميل ⇒ مافيش هنا أي رسالة على الشاشة خالص.
+   * ======================================================================== */
+  const FRESH_KEY = "mizanFreshReloadV1";
+  let swReg = null;
+  let freshPending = false;
+  let freshArmed = false;
+  let lastSwUpdateAt = 0;
+
+  // هل شاشة الدخول ظاهرة دلوقتي؟ (أمان إعادة التحميل)
+  function loginShowing() {
+    const el = document.getElementById("loginScreen");
+    return !!(el && !el.hidden);
+  }
+
+  function swUpdateOnce() {
+    try {
+      if (!swReg || typeof swReg.update !== "function") return;
+      const now = Date.now();
+      if (now - lastSwUpdateAt < 60000) return;   // مرة كل دقيقة كفاية
+      lastSwUpdateAt = now;
+      swReg.update();
+    } catch (e) { /* تجاهل */ }
+  }
+
+  function freshReload() {
+    try { sessionStorage.setItem(FRESH_KEY, "1"); } catch (e) { /* تجاهل */ }
+    try { location.replace("./index.html?fresh=" + Date.now()); } catch (e) { /* تجاهل */ }
+  }
+
+  // لو المستخدم جوّه الشركة: نستنى لحد شاشة الدخول بدل ما نقطعه
+  function armFreshGate() {
+    if (freshArmed) return;
+    freshArmed = true;
+    const el = document.getElementById("loginScreen");
+    if (!el || typeof MutationObserver !== "function") return;
+    try {
+      new MutationObserver(() => {
+        if (freshPending && loginShowing()) { freshPending = false; freshReload(); }
+      }).observe(el, { attributes: true, attributeFilter: ["hidden"] });
+    } catch (e) { /* تجاهل */ }
+  }
+
+  function probeFresh() {
+    try {
+      if (sessionStorage.getItem(FRESH_KEY)) return;            // الجلسة دي اتعاملت خلاص
+      const u = "sw.js?cb=" + Date.now() + Math.floor(Math.random() * 1e6);
+      fetch(u, { cache: "no-store" }).then((r) => r.text()).then((t) => {
+        const m = /SW_VERSION\s*=\s*([0-9]+)/.exec(t);
+        if (!m) return;                                          // مقدرناش نقرا — مافيش إجراء
+        if (String(m[1]) === String(window.MIZAN_BUILD)) return; // كل حاجة حديثة
+        swUpdateOnce();
+        armFreshGate();
+        if (loginShowing()) { freshReload(); return; }
+        freshPending = true;
+      }).catch(() => { /* زعلة شبكة: سيّب الصفحة زي ما هي */ });
+    } catch (e) { /* تجاهل */ }
+  }
+
+  // التبويب رجع للواجهة (موبايل/لاب نام) ⇒ اجلب السو من غير ما نستنى ٢٤ ساعة
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    swUpdateOnce();
+  });
+  /* ================== MIZAN_FRESH_PROBE_END (build 147) ================== */
+
   function init() {
     const b = btn();
     if (b) b.addEventListener("click", onClick);
@@ -149,9 +229,14 @@
                      location.hostname === "localhost" ||
                      location.hostname === "127.0.0.1";
       if (secure) {
-        navigator.serviceWorker.register("sw.js").catch((e) => {
+        navigator.serviceWorker.register("sw.js").then((reg) => {
+          swReg = reg || null;
+          // build 147: كروم بيؤجّل إعادة فحص السو (≈٢٤ ساعة) ⇒ أمر صريح بالفحص
+          swUpdateOnce();
+        }).catch((e) => {
           console.warn("SW register failed:", e && e.message);
         });
+        probeFresh();
       }
     }
 
