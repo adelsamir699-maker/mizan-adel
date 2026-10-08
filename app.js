@@ -16672,8 +16672,15 @@ const pwEye = document.getElementById("btnShowPass");
         وجدول فاضي. عشان كده التطبيع مكتوب هنا مباشرة (مش `normalizeAr`)، والصندوق بيتوصل
         بـ `getElementById` (مش `$`) ⇒ الرحلة تفضل شغّالة حتى في نسخة الحارس اللي مافيهاش `$`،
         ولو الصندوق نفسه مش موجود (شاشة قديمة) الفلترة بتعدّ «كل السطور» بلا ما تكسر حاجة. */
+  // 🆕 بناء 148: الأرقام بتتنزّل من شكلها العربي (٠-٩) والفارسي (۰-۹) قبل أي مقارنة —
+  //    الاستخراج اللاتيني السابق كان بيسيب تليفونًا مكتوبًا بالعربي بلا نتيجة.
+  function subsLatinDigits(s) {
+    return String(s == null ? "" : s)
+      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+  }
   function subsNormKey(s) {
-    return String(s == null ? "" : s).toLowerCase()
+    return subsLatinDigits(s).toLowerCase()
       .replace(/[ً-ْـ]/g, "")
       .replace(/[أإآٱ]/g, "ا").replace(/ى/g, "ي").replace(/ؤ/g, "و").replace(/ئ/g, "ي").replace(/ة/g, "ه")
       .replace(/\s+/g, " ").trim();
@@ -16684,7 +16691,7 @@ const pwEye = document.getElementById("btnShowPass");
   //    (درس 124)، فالعلامة الحرفية جوّه класса الأحرف كانت بتلخبط الستر وتولّد نداءات وهمية.
   function subsSrchText(o) {
     const txt = subsNormKey([o && o.org_name, o && o.owner_name].join(" ")).replace(/[&<>\x22\x27\x60]/g, "");
-    const dig = String((o && o.org_phone) || "").replace(/\D/g, "");
+    const dig = subsLatinDigits(String((o && o.org_phone) || "")).replace(/\D/g, "");
     return txt + "|" + dig;
   }
   function subsFilterRows() {
@@ -16692,8 +16699,8 @@ const pwEye = document.getElementById("btnShowPass");
     const list = document.getElementById("adminSubsList");
     if (!list) return;
     const raw = el ? String(el.value || "") : "";
-    const dig = raw.replace(/\D/g, "");
-    const txt = subsNormKey(raw.replace(/[0-9\-+().]/g, ""));
+    const dig = subsLatinDigits(raw).replace(/\D/g, "");
+    const txt = subsNormKey(subsLatinDigits(raw).replace(/[0-9\-+().]/g, ""));
     let shown = 0, total = 0;
     list.querySelectorAll("tr[data-subs]").forEach((tr) => {
       total++;
