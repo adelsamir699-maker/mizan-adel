@@ -3351,6 +3351,278 @@
       " — تقدر تكتب اسم الصنف في خانة الاسم، أو تسجّله صنف جديد بالرقم ده.";
   }
 
+  /* ══════════════════════════════════════════════════════════════════════════════
+     📷 بناء 147 — سطر ٨ / #99 «المسح الضوئي في دليل العملاء/الموردين: اكتشف الإسكانر
+     واستخدمه» (طلب المالك 08/10 بحرفه: «اعمل مهمه 4 اللى هى بتاعة الماسح الضوئى»).
+
+     **القياس قبل التصميم:** مافيش عمود باركود لعميل ولا لمورد على السحابة — العمود الوحيد
+     `products.barcode` (ترقية ٣٩). ⇒ البناء ده **صفر كتابة سحابية وصفر ترقية جديدة**،
+     والماسح بيقرا اللي على كارت العميل/المورد فعلًا: **كود ميزان** أو **رقم الموبايل/المحفظة**
+     (أعمدة حيّة في `customers` و`suppliers` وبتظهر في الجدول نفسه).
+
+     القواعد مأخوذة **حرفيًا** من مسار الأصناف (بناء 143) عشان مافيش سلوكين للمسح في البرنامج:
+       (١) **مطابقة حرفية** فقط — «1234» ما تجيبش اللي فيه «12345» (ممنوع تخمين رقم ناقص،
+           وده نفس سبب بوابة `scanPartialNumber` في الفاتورة).
+       (٢) التسامح الوحيد = **الأصفار على الشمال من الجهتين** (نفس تسامح EAN/UPC بتاع 143)
+           لطبعة كارت بتبدأ بصفر، وبيقعد في **طبقة أدنى** من المطابقة الحرفية ⇒ كود حرفي
+           يكسب موبايل متسامح، والعكس مستحيل.
+       (٣) ترتيب الطبقات من مصدر واحد (`DIR_SCAN_CONF.fields` + `dirScanRank`):
+           كود › موبايل › هاتف تاني › محفظة، وكل واحدة منها (حرفي قبل متسامح).
+       (٤) رقم طابق **أكتر من سطر في نفس الطبقة** ⇒ مافيش اختيار خالص، والرسالة تسمّيهم.
+     **شرط رؤية السطر = نفس شرط جدول الدليل حرفيًا** (`renderTable` و`renderSuppliers`) —
+     ممنوع المسح يدلّك على عميل الجدول مخبّيه («العميل النقدي»/المحمي/كود «1»)، والحارس
+     بيقارن المجموعتين سلوكيًا مش بالنص.
+     **مسار واحد للخمسة مصادر** (إسكانر بلا تركيز = `coldFlush` · Enter في الخانة · صمت
+     الماكينة · اللصق · الكاميرا) وكلهم بينادوا `dirHandleScan` — وممنوع أي رسالة تقنية.
+     ══════════════════════════════════════════════════════════════════════════════ */
+  const DIR_SCAN_FIELD_LABEL = {
+    code: "الكود", phone: "رقم الموبايل", secondaryPhone: "الهاتف التاني", walletPhone: "المحفظة",
+  };
+  const DIR_SCAN_CONF = {
+    cust: {
+      what: "العميل", indef: "عميل", plural: "العملاء",
+      field: "txtCustomerSearch",
+      hint: "#custScanHint",
+      // نفس فلتر جدول «دليل العملاء» (app.js:2303) — نسخة مستقلة عمدًا، والحارس بيقارن
+      // **مجموعة الأسطر** سلوكيًا (مش النص) ⇒ أي تغيير في الجدول يمسكه قبل ما يخدّم المسح.
+      visible: () => customers.filter((c) => !c.protected && c.code !== "1" && c.id !== 1 &&
+        !(c.nameAr && c.nameAr.includes("العميل النقدي"))),
+      render: () => renderTable(),
+      open: (r) => openActions(r),
+      addNew: () => openAddEdit(null),
+      codeField: "#fCode",
+      rowSel: (id) => '#dgvCustomers tbody tr[data-id="' + id + '"]',
+      fields: [["code", 1], ["phone", 2], ["secondaryPhone", 3], ["walletPhone", 4]],
+    },
+    supp: {
+      what: "المورد", indef: "مورد", plural: "الموردين",
+      field: "txtSupplierSearch",
+      hint: "#suppScanHint",
+      // نفس فلتر جدول «دليل الموردين» (app.js:6929)
+      visible: () => suppliers.filter((s) => !s.protected && s.code !== "1" && s.id !== 1 &&
+        !(s.nameAr && s.nameAr.includes("المورد النقدي"))),
+      render: () => renderSuppliers(),
+      open: (r) => openSuppActions(r),
+      addNew: () => openSuppAddEdit(null),
+      codeField: "#fSCode",
+      rowSel: (id) => '#dgvSuppliers tbody tr[data-sid="' + id + '"]',
+      fields: [["code", 1], ["phone", 2], ["walletPhone", 3]],
+    },
+  };
+
+  // طبقة واحدة لكل حقل: الحرفي `rank*2` والمتسامح `rank*2+1` ⇒ الحرفي يكسب دائمًا
+  function dirScanRank(rank, tolerant) { return rank * 2 + (tolerant ? 1 : 0); }
+
+  // كل أسطر الدليل المطابقة للرقم (قراءة فقط — مافيش لمس ولا إضافة ولا كتابة)
+  function dirScanMatches(kind, raw) {
+    const conf = DIR_SCAN_CONF[kind];
+    const s = scanClean(raw);
+    const out = [];
+    if (!conf || !s) return out;
+    const up = s.toUpperCase();
+    const bare = up.replace(/^0+/, "");
+    conf.visible().forEach((r) => {
+      conf.fields.forEach((f) => {
+        const v = scanClean(r[f[0]] == null ? "" : r[f[0]]).toUpperCase();
+        if (!v) return;
+        if (v === up) { out.push({ r: r, tier: dirScanRank(f[1], false), field: f[0] }); return; }
+        if (bare && v.replace(/^0+/, "") === bare) out.push({ r: r, tier: dirScanRank(f[1], true), field: f[0] });
+      });
+    });
+    return out;
+  }
+
+  /* { best, rivals, ambiguous } — `ambiguous` صح ⇒ أكتر من سطر في **نفس الطبقة**
+     وده رفض مش اختيار (ممنوع البرنامج يخمن مين يقصد العميل). */
+  function dirScanBest(kind, raw) {
+    const hits = dirScanMatches(kind, raw);
+    if (!hits.length) return { best: null, rivals: [], ambiguous: false };
+    let best = hits[0];
+    hits.forEach((h) => { if (h.tier < best.tier) best = h; });
+    const rivals = hits.filter((h) => h.tier === best.tier && h.r.id !== best.r.id);
+    return { best: best, rivals: [best.r].concat(rivals.map((h) => h.r)), ambiguous: rivals.length > 0 };
+  }
+
+  const dirNamesOf = (list) => list.map((r) => esc(r.nameAr || r.code)).join(" · ");
+  const dirBalOf = (r) => fmt(r.currentBalance || 0) + " ج.م";
+
+  /* آخر رقم مرفوض لكل دليل — عشان زرار «سجّله جديد» يمشي نفس الرقم **حرفيًا**، مش مخمن. */
+  const dirScanLast = { cust: "", supp: "" };
+
+  // السطر الناجح: الاسم + الكود + الرصيد + زرار يفتح نفس نافذة السطر + زرار يرجّع القائمة
+  function dirScanOkText(kind, r, matchedField) {
+    const conf = DIR_SCAN_CONF[kind];
+    const via = matchedField && matchedField !== "code"
+      ? " — اتعرّف عليه من " + (DIR_SCAN_FIELD_LABEL[matchedField] || "الرقم") : "";
+    return "✅ " + esc(r.nameAr || r.code) + " — كود " + scanMsg(r.code) +
+      " — الرصيد الحالي " + dirBalOf(r) + via +
+      "<button type='button' class='scan-act' data-dir-open='" + kind + ":" + esc(r.id) + "'>🧾 كشف الحساب والعمليات</button>" +
+      "<button type='button' class='scan-act' data-dir-clear='" + kind + "'>✖️ رجّع كل " + conf.plural + "</button>";
+  }
+
+  function dirScanMissText(kind, code) {
+    const conf = DIR_SCAN_CONF[kind];
+    return "🔍 ملقتش " + conf.indef + " بالرقم " + scanMsg(code) +
+      " — تقدر تكتب اسمه في خانة البحث، أو تسجّله جديد بالرقم ده:" +
+      "<button type='button' class='scan-act' data-dir-new='" + kind + "'>➕ سجّل " + conf.indef + " جديد بالرقم ده</button>";
+  }
+
+  function dirScanAmbiguousText(kind, list) {
+    const conf = DIR_SCAN_CONF[kind];
+    return "⚠️ الرقم ده مسجّل عند أكتر من " + conf.indef + " (" + dirNamesOf(list) +
+      ") — اختار اللي تقصده من الجدول، أو وضّح بكتابة اسمه في خانة البحث.";
+  }
+
+  /* الجدول بيبني سطور من الصفر ⇒ العلامة بتحصل **بعد** الرسم. مافيش سكرول قسري ومافيش أي
+     تعديل بيانات — إشارة بصرية بس. */
+  function dirScanHighlight(kind, id) {
+    const conf = DIR_SCAN_CONF[kind];
+    try {
+      const tr = document.querySelector(conf.rowSel(id));
+      if (tr) tr.classList.add("scan-hit");
+    } catch (e) { /* الجدول اتبدل في نص الرحلة ⇒ مافيش أثر على الشغل */ }
+  }
+
+  /* ══ المنفّذ الوحيد للمسح في الدليل (بيتنادى من ٥ مصادر، ومسار واحد) ══
+     النجاح = الخانة تستقبل كود السطر + الجدول يفلتر + السطر يتعلّم عليه + زنة الماكينة.
+     الرفض = رسالة تسمّي الرقم وتعطي الخطوة الجاية (زي 143 حرفيًا) — وممنوع أي كتابة بيانات. */
+  function dirHandleScan(kind, raw) {
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return false;
+    const code = scanClean(raw);
+    const el = $("#" + conf.field);
+    if (!code) {
+      dirScanLast[kind] = "";
+      scanHint(conf.hint, "info", "📷 مافيش رقم وصل — مرّر الماسح على الكارت، أو اكتب كود " + conf.what + " أو اسمه بنفسك.");
+      scanBeep("no");
+      return false;
+    }
+    const res = dirScanBest(kind, code);
+    if (res.ambiguous) {
+      dirScanLast[kind] = "";
+      scanHint(conf.hint, "warn", dirScanAmbiguousText(kind, res.rivals));
+      scanBeep("no");
+      return false;
+    }
+    if (res.best) {
+      const r = res.best.r;
+      dirScanLast[kind] = "";
+      // الخانة تستقبل **كود السطر** ⇒ الجدول يفلتر على سطر واحد، والعميل يقدر يكمّل كتابة
+      if (el) el.value = String(r.code == null ? code : r.code);
+      conf.render();
+      dirScanHighlight(kind, r.id);
+      scanHint(conf.hint, "ok", dirScanOkText(kind, r, res.best.field));
+      scanBeep("ok");
+      if (el) { try { el.focus(); } catch (e) { /* مافيش تركيز — الرسالة والسطر ماشيين */ } }
+      return true;
+    }
+    dirScanLast[kind] = code;
+    scanHint(conf.hint, "warn", dirScanMissText(kind, code));
+    scanBeep("no");
+    return false;
+  }
+
+  /* زراير الرسالة نفسها — تفويض واحد على `document` (ممنوع listener لكل سطر):
+     «🧾 كشف الحساب والعمليات» = **نفس** فعل الدبل كليك على السطر (`openActions`/`openSuppActions`)
+     و«➕ سجّله جديد» = نفس نافذة الإضافة، والخانة تتملأ بالرقم المرفوض حرفيًا (زي 142)
+     و«✖️ رجّع الكل» = ينضّف البحث والرسالة (مافيش أي حذف بيانات). */
+  function dirScanActionClick(e) {
+    const b = e.target && e.target.closest ?
+      e.target.closest("[data-dir-open],[data-dir-new],[data-dir-clear]") : null;
+    if (!b) return;
+    const op = b.getAttribute("data-dir-open");
+    const nw = b.getAttribute("data-dir-new");
+    const cl = b.getAttribute("data-dir-clear");
+    if (op) {
+      const p = String(op).split(":");
+      const conf = DIR_SCAN_CONF[p[0]];
+      if (!conf) return;
+      const r = conf.visible().find((x) => String(x.id) === p[1]);
+      if (!r) { scanHint(conf.hint, "warn", "⚠️ السطر ده مش موجود دلوقتي — مرّر الماسح تاني."); return; }
+      e.preventDefault();
+      conf.open(r);
+      return;
+    }
+    if (nw) {
+      const conf = DIR_SCAN_CONF[nw];
+      if (!conf) return;
+      e.preventDefault();
+      const code = dirScanLast[nw];
+      conf.addNew();
+      const f = $(conf.codeField);
+      if (f && code) { f.value = code; f.disabled = false; }
+      scanHint(conf.hint, "info", "📷 الرقم " + scanMsg(code) + " في خانة الكود — اكتب الاسم وباقي البيانات ودوس «حفظ».");
+      if (code) scanBeep("new");
+      return;
+    }
+    if (cl) {
+      const conf = DIR_SCAN_CONF[cl];
+      if (!conf) return;
+      e.preventDefault();
+      const el = $("#" + conf.field);
+      if (el) { el.value = ""; try { el.focus(); } catch (err) { /* خانة مابتنفعش تركيز */ } }
+      scanHint(conf.hint);
+      conf.render();
+    }
+  }
+
+  /* «الماكينة ما دعتش Enter» — نفس فكرة صمت الفاتورة (`coldArmQuiet`) بس على الخانة نفسها،
+     ومن **نفس مصدر القرار** (`scanBurstOf`) ⇒ ممنوع ساعة تانية أو عتبة تانية.
+     الكتابة البشرية البطيئة ما بتفعّلش حاجة والفلتر القديم سايب زي ما هو بالحرف. */
+  const dirScanQuietTimers = {};
+  function dirScanQuietCancel(kind) {
+    if (dirScanQuietTimers[kind]) { clearTimeout(dirScanQuietTimers[kind]); dirScanQuietTimers[kind] = null; }
+  }
+  function dirScanQuietArm(kind) {
+    const conf = DIR_SCAN_CONF[kind];
+    dirScanQuietCancel(kind);
+    dirScanQuietTimers[kind] = setTimeout(() => {
+      dirScanQuietTimers[kind] = null;
+      const el = $("#" + conf.field);
+      if (!el) return;
+      if (!scanBurstOf(conf.field, el.value)) return;
+      dirHandleScan(kind, scanTailNorm(conf.field));
+    }, COLD_SCAN_QUIET_MS);
+  }
+
+  // زرار «📷 مسح» في رأس الدليل: الكمبيوتر = يجهّز الخانة للمسدس، والموبايل = نفس الكاميرا
+  function dirScanArm(kind) {
+    const conf = DIR_SCAN_CONF[kind];
+    const el = $("#" + conf.field);
+    if (!el) return;
+    el.focus();
+    if (el.select) { try { el.select(); } catch (e) { /* خانة بلا تحديد */ } }
+    scanCamToggle(conf.field);
+    camArmHint(conf.hint, conf.field, conf.what);
+  }
+
+  /* ربط الخانتين: كل حرف بيعدي من `scanKey` (نفس ختم السلسلة)، وEnter = إنهاء مسح **لو**
+     السلسلة إسكانر؛ غير كده دي كتابة المالك وبتفضل فلتر عادي (ممنوع أكل Enter الحقيقي). */
+  function dirScanWire(kind) {
+    const conf = DIR_SCAN_CONF[kind];
+    const el = $("#" + conf.field);
+    if (!el) return;
+    el.addEventListener("input", (e) => {
+      scanKey(conf.field, e);
+      dirScanQuietArm(kind);
+    });
+    el.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      if (!scanBurstOf(conf.field, el.value)) return;
+      e.preventDefault();
+      dirScanQuietCancel(kind);
+      dirHandleScan(kind, scanTailNorm(conf.field));
+    });
+    el.addEventListener("paste", () => {
+      scanPasteRun(conf.field, () => {
+        const v = scanClean(el.value);
+        if (!scanLooksCode(v)) return;          // اسم ملصوق ⇒ فلتر عادي، مافيش مسح
+        dirHandleScan(kind, v);
+      });
+    });
+    el.addEventListener("blur", () => dirScanQuietCancel(kind));
+  }
+
   /* ══════════════════════════════════════════════════════════════════════════
      📷 بناء 144 — «لما بضغط على زرار مسح المفروض يفتح لى الكاميرا فى الجزء العلوى
      من الشاشة لعمل سكان للباركود» (طلب المالك بحرفه 06/10، البند «اولا»).
