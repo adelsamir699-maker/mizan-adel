@@ -2509,7 +2509,7 @@
       syncTreasuryItemToSett(tr);
     }
     const txId = nextTxId();
-    txs.push({
+    const txRow = {
       id: txId,
       customerId: cid,
       treasuryId: tr ? tr.id : (trId || null),
@@ -2518,7 +2518,8 @@
       desc: notes,
       debit: 0,
       credit: amount
-    });
+    };
+    txs.push(txRow);
     vouchers.push({
       id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
       type: "in",
@@ -2532,6 +2533,8 @@
     saveCustomers();
     saveTxs();
     saveVouchers();
+    // 🆕 بناء 149 (سطر ١): التحصيل يترحّل لقيد — مدين النقدية/البنك/المحفظة، دائن «مديونيات العملاء»
+    postPartyTxJournal("cust", txRow, tr, cust ? cust.nameAr : "");
     hideModal("mPayDebt");
     addActivity("تحصيل مديونية", "تحصيل مبلغ " + fmt(amount) + " ج.م من " + (cust ? cust.nameAr : "") + (tr ? " (" + tr.name + ")" : ""));
     toast("تم تسجيل السداد بنجاح وتحديث رصيد الحساب.", "success");
@@ -2788,6 +2791,8 @@
     const vBefore = vouchers.length;
     vouchers = vouchers.filter((v) => !(v.refType === (isSup ? "supplier_tx" : "customer_tx") && Number(v.refId) === Number(tx.id)));
     pool.splice(idx, 1);
+    // 🆕 بناء 149 (سطر ١): حذف الحركة بيرجع قيدها كمان — تراجع كامل بنفس عرف الفاتورة (بناء 134)
+    const jRemoved = removePartyTxJournal(isSup ? "supp" : "cust", tx.id);
     if (isSup) {
       recalculateSupplierBalances();
       addActivity("حذف حركة مورد", "حذف حركة " + tx.desc + " — " + fmt(amount) + " ج.م (" + partyName + ")");
@@ -2801,7 +2806,8 @@
     else { saveTxs(); saveVouchers(); saveCustomers(); }
     saveTreasury();
     toast("تم حذف الحركة — " + fmt(amount) + " ج.م رجع لـ«" + (accName || "الحساب") + "»." +
-      (vBefore !== vouchers.length ? " والسند المرتبط اتشال معاه." : ""), "success");
+      (vBefore !== vouchers.length ? " والسند المرتبط اتشال معاه." : "") +
+      (jRemoved ? " والقيد المرتبط اتراجع." : ""), "success");
     // تحديث الشاشات المفتوحة
     try { if (statementCtx) refreshStatementView(); } catch (e) { }
     try { if (isSup) renderSuppliers(); else renderTable(); } catch (e) { }
@@ -7198,7 +7204,7 @@
       syncTreasuryItemToSett(tr);
     }
     const txId = supplierTxs.reduce((m, x) => Math.max(m, x.id), 0) + 1;
-    supplierTxs.push({
+    const txRow = {
       id: txId,
       supplierId: sid,
       treasuryId: tr ? tr.id : (trId || null),
@@ -7207,7 +7213,8 @@
       desc: $("#psNotes").value.trim() || "سداد مستحقات مورد",
       debit: 0,
       credit: amount
-    });
+    };
+    supplierTxs.push(txRow);
     vouchers.push({
       id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
       type: "out",
@@ -7221,6 +7228,8 @@
     saveSuppliers();
     saveSupplierTxs();
     saveVouchers();
+    // 🆕 بناء 149 (سطر ١): السداد يترحّل لقيد — مدين «مستحقات الموردين»، دائن النقدية/البنك/المحفظة
+    postPartyTxJournal("supp", txRow, tr, supp ? supp.nameAr : "");
     hideModal("mPaySuppDebt");
     addActivity("سداد مورد", "سداد مستحقات " + supp.nameAr + " بمبلغ " + fmt(amount) + " ج.م" + (tr ? " من " + tr.name : ""));
     toast("تم تسجيل السداد بنجاح وتحديث رصيد الحساب.", "success");
@@ -9266,6 +9275,104 @@
   // حذف الفاتورة = تراجع القدها كمان (المخزون والأرصدة بترجع قبل كده في deleteInvoiceQuery)
   function removeInvoiceJournal(kind, inv) {
     const j = invoiceJrnOf(kind, inv);
+    if (!j) return null;
+    settleJrnLines(j.lines, -1);
+    const i = journalEntries.findIndex((x) => x === j);
+    if (i >= 0) journalEntries.splice(i, 1);
+    JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(j.id) || 0);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    return j;
+  }
+
+  /* ================== 🆕 بناء 149 — سطر ١ من «مراجعة-ترحيل-الحسابات-08-10.md» §٩ ==================
+     **التحصيل من عميل والسداد لمورد ما كانلهمش أي قيد خالص** (مقياس: `1.1.5 مديونيات العملاء` و
+     `2.1.1 مستحقات الموردين` عليهما **صفر أسطر** في كل السحابة) ⇒ الذمة تفضل دائنة للأبد،
+     وكشف حساب الحسابات ما بيوصلش للصفر، والرصيد ما بيتطابقش مع قائمة المركز المالي.
+     المقطع ده بيضيف ترحيل لحظي بنفس عرف بناء 134 بالحرف:
+       • تحصيل: مدين «الصندوق/البنك/المحفظة» (`accForTreasuryAcc`) · دائن `1.1.5`
+       • سداد:  مدين `2.1.1` · دائن «الصندوق/البنك/المحفظة»
+       • **منع التكرار** بمفتاح `refId` = «CT:» أو «ST:» + id الحركة (الحركة مالهاش رقم فواتير،
+         و`id` تسلسلي لكل شركة وبيترفع للسحابة ⇒ جهاز تاني ما يرحّش نفس الحركة)
+       • **تراجع كامل** عند حذف الحركة (`window.__stmDelTx`) بنفس نمط `removeInvoiceJournal`
+       • **الفاتورة/الحركة ما تلغيش لو الترحيل تعثّر**: رسالة ودّية باسم الحساب الناقص
+         (نفس `invoiceJrnMissText` — مصدر واحد، وممنوع أي مصطلح تقني للعميل)
+     **بلا ترحيل بأثر رجعي:** الحركات اللي قبل المقطع ده ما تتلمسش — الترحيل بيحصل لحظة
+     تسجيل الحركة الجديدة وبس (كتابة البيانات القديمة على السحابة محتاجة أمر المالك الحرفي لوحده).
+     **ممنوع** أن يتنادى على حركة «فاتورة آجلة» (`debit>0` في `txs` / `supplierTxs`) ولا «رصيد
+     افتتاحي» — دول بيترحلوا في مسارهم الخاص، والنداء المزدوج = المبلغ بيتعدّى مرتين (درس 147). */
+  const PARTY_JRN = {
+    cust: { ref: "تحصيل من عميل", prefix: "CT:", dueCode: "1.1.5", dueName: "مديونيات العملاء" },
+    supp: { ref: "سداد لمورد", prefix: "ST:", dueCode: "2.1.1", dueName: "مستحقات الموردين" }
+  };
+  function partyJrnKey(kind, txId) {
+    const cfg = PARTY_JRN[kind];
+    const id = Number(txId);
+    return (cfg && id > 0) ? cfg.prefix + id : "";
+  }
+  function partyJrnOf(kind, txId) {
+    const key = partyJrnKey(kind, txId);
+    if (!key) return null;
+    const ref = PARTY_JRN[kind].ref;
+    return journalEntries.find((j) => j && String(j.refId || "") === key &&
+      (j.refType === ref || j.ref === ref)) || null;
+  }
+  // الحركة نفسها بتجيب المبلغ والتاريخ: التحصيل والسداد بيتسجلوا credit في حركة الطرف
+  function partyTxAmountOf(tx) {
+    return tx ? round2(Number(tx.credit) || 0) : 0;
+  }
+  function partyJrnPlan(kind, tr, amount) {
+    const amt = round2(amount);
+    if (!(amt > 0)) return { error: "amount" };
+    const cfg = PARTY_JRN[kind];
+    const cashAcc = accForTreasuryAcc(tr);
+    if (!cashAcc) return { error: "cash" };
+    const dueAcc = accByCode(cfg.dueCode, cfg.dueName);
+    if (!dueAcc) return { error: cfg.dueCode };
+    const lines = kind === "cust"
+      ? [{ accountId: Number(cashAcc.id), debit: amt, credit: 0 }, { accountId: Number(dueAcc.id), debit: 0, credit: amt }]
+      : [{ accountId: Number(dueAcc.id), debit: amt, credit: 0 }, { accountId: Number(cashAcc.id), debit: 0, credit: amt }];
+    const d = round2(lines.reduce((m, l) => m + (Number(l.debit) || 0), 0));
+    const c = round2(lines.reduce((m, l) => m + (Number(l.credit) || 0), 0));
+    if (Math.abs(d - c) > 0.01) return { error: "unbalanced" };
+    return { lines: lines, debit: d, credit: c, cashAcc: cashAcc, dueAcc: dueAcc };
+  }
+  function postPartyTxJournal(kind, tx, tr, partyName) {
+    const cfg = PARTY_JRN[kind];
+    if (!cfg || !tx) return null;
+    const amount = partyTxAmountOf(tx);
+    if (!(amount > 0)) return null;                      // حركة آجلة/افتتاحية/غير سداد — برّه المقطع
+    const done = partyJrnOf(kind, tx.id);
+    if (done) return { j: done, already: true };
+    const plan = partyJrnPlan(kind, tr, amount);
+    if (plan.error) {
+      toast("الحركة اتسجّلت تمام. الترحيل التلقائي للقيود ما كملش لأن " +
+        invoiceJrnMissText(plan.error) + " — ضيفه من شاشة الحسابات وبعدها سجّل القيد من «القيود اليومية».", "warning");
+      return null;
+    }
+    const j = {
+      id: nextJournalId(),
+      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      date: tx.date || todayISO(),
+      desc: cfg.ref + (partyName ? ": " + partyName : "") + " — " + fmt(amount) + " ج.م",
+      ref: cfg.ref,
+      refType: cfg.ref,
+      refId: partyJrnKey(kind, tx.id),
+      debit: plan.debit,
+      credit: plan.credit,
+      lines: plan.lines
+    };
+    settleJrnLines(j.lines, 1);
+    journalEntries.push(j);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    return { j: j, already: false };
+  }
+  // حذف الحركة = تراجع قيدها كمان (نفسعرف removeInvoiceJournal: تسوية −1 ثم إسقاط ثم حفظ)
+  function removePartyTxJournal(kind, txId) {
+    const j = partyJrnOf(kind, txId);
     if (!j) return null;
     settleJrnLines(j.lines, -1);
     const i = journalEntries.findIndex((x) => x === j);
