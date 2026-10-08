@@ -2654,6 +2654,48 @@
     return out;
   }
 
+  /* 🆕 بناء 148 (سطر المالك 08/10 ≈18:20): «لما أحدّد من/إلى المجموع بيتجاهل الفرز وبيفضل ثابت».
+     مجاميع الفترة بتتحسب من سطور الكشف نفسها في دالة واحدة، والشاشة والورقة بيقرئوا نفس الرقم.
+     قبل كده «الرصيد الحالي» كان كامل السجل دايمًا — فمع أي فترة كان الرقم ثابت ما بيتحرّكش.
+     قاعدة: سطر «▷ رصيد مرحّل» توضيحي (مدين=دائن=0) فماندخلش في المجاميع، وبيدي أول المدة بس. */
+  function stmIsCarryRow(r) { return /رصيد مرحّل/.test(String((r && r.desc) || "")); }
+  function stmPeriodOn() { return !!(stmFilter.from || stmFilter.to); }
+  function stmPeriodTotals(all, vis) {
+    const list = all || [];
+    const shown = vis || [];
+    const moves = shown.filter((r) => !stmIsCarryRow(r));
+    const carry = shown.filter(stmIsCarryRow)[0];
+    const first = list[0];
+    const opening = carry ? Number(carry.balance) || 0
+      : (first ? round2(Number(first.balance) - (Number(first.debit) || 0) + (Number(first.credit) || 0)) : 0);
+    const sumIn = round2(moves.reduce((m, r) => m + (Number(r.debit) || 0), 0));
+    const sumOut = round2(moves.reduce((m, r) => m + (Number(r.credit) || 0), 0));
+    const closing = moves.length ? Number(moves[moves.length - 1].balance) || 0 : opening;
+    return { opening: round2(opening), sumIn: sumIn, sumOut: sumOut, closing: round2(closing), moves: moves.length };
+  }
+  function stmBalCls(v) { return v > 0 ? "balance-debit" : "balance-credit"; }
+  // النص الموحّد: شاشة وورقة من نفس السطور — «مدين/دائن» زي أسماء أعمدة الجدول بالحرف
+  function stmTotsHtml(t) {
+    return "رصيد أول المدة: <b class=\"" + stmBalCls(t.opening) + "\">" + fmt(t.opening) + "</b>" +
+      " | مدين الفترة: <b>" + fmt(t.sumIn) + "</b>" +
+      " | دائن الفترة: <b>" + fmt(t.sumOut) + "</b>" +
+      " | رصيد آخر المدة: <b class=\"" + stmBalCls(t.closing) + "\">" + fmt(t.closing) + " ج.م</b>";
+  }
+  function stmTotsText(t) {
+    return "رصيد أول المدة: " + fmt(t.opening) + " | مدين الفترة: " + fmt(t.sumIn) +
+      " | دائن الفترة: " + fmt(t.sumOut) + " | رصيد آخر المدة: " + fmt(t.closing) + " ج.م";
+  }
+  // رأس ورقة كشف الحساب: اللقب لازم يوصف الرقم فعلًا (درس المالك: «المجموع ثابت»)
+  function stmPrintHead(hasPeriod, tot) {
+    const lbl = $("#stmBalLabel");
+    if (lbl) lbl.textContent = hasPeriod ? "رصيد آخر المدة" : "الرصيد الحالي";
+    const line = $("#stmTotsPrint");
+    if (line) {
+      line.textContent = hasPeriod ? stmTotsText(tot) : "";
+      line.hidden = !hasPeriod;
+    }
+  }
+
   function stmRowsNow() {
     if (!statementCtx) return [];
     const all = statementCtx.type === "supplier"
@@ -2770,10 +2812,16 @@
   function refreshStatementView() {
     if (!statementCtx) return;
     const o = statementCtx.obj;
+    const rows = stmRowsNow();
+    // 🆕 بناء 148: مع «من/إلى» المجاميع بتتحسب من سطور الفترة نفسها (نفس مصدر الورقة)
+    const per = stmPeriodOn();
+    const tot = per ? stmPeriodTotals(
+      statementCtx.type === "supplier" ? getSupplierStatement(o) : getStatement(o), rows) : null;
     $("#stmHeadMini").innerHTML =
       "الكود: <b>" + esc(o.code) + "</b> | الفترة: <b>" + stmPeriodLabel() + "</b> | " +
-      "الرصيد الحالي: <b class=\"" + (o.currentBalance > 0 ? "balance-debit" : "balance-credit") + "\">" + fmt(o.currentBalance) + " ج.م</b>";
-    const rows = stmRowsNow();
+      (per ? stmTotsHtml(tot) + " | " : "") +
+      (per ? "الرصيد الحالي (كل السجل): " : "الرصيد الحالي: ") +
+      "<b class=\"" + (o.currentBalance > 0 ? "balance-debit" : "balance-credit") + "\">" + fmt(o.currentBalance) + " ج.م</b>";
     // 🔁 بناء 119: عمود الإجراءات على الشاشة فقط (المالك/صاحب الشركة)، والورقة 5 أعمدة
     const canAct = !!actKindForStm();
     renderStmRows($("#stmBodyMini"), rows, "لا توجد حركات على هذا الحساب في هذه الفترة.", canAct);
@@ -2816,9 +2864,15 @@
     $("#stmName").textContent = cust.nameAr;
     $("#stmCode").textContent = cust.code;
     $("#stmRange").textContent = stmPeriodLabel(); // 🆕 مهمة 96: الفترة المعروضة = الفلتر الفعلي
+    // 🆕 بناء 148: الورقة من نفس مصدر الشاشة — اللقب والمجاميع بتتغيّروا مع الفترة
+    const per = stmPeriodOn();
+    const all = getStatement(cust);
+    const tot = stmPeriodTotals(all, stmVisibleRows(all));
+    stmPrintHead(per, tot);
+    const shown = per ? tot.closing : cust.currentBalance;
     const bal = $("#stmBal");
-    bal.textContent = fmt(cust.currentBalance);
-    bal.className = cust.currentBalance > 0 ? "balance-debit" : "balance-credit";
+    bal.textContent = fmt(shown);
+    bal.className = shown > 0 ? "balance-debit" : "balance-credit";
     fillStatementTable($("#stmBody"), cust);
     printSection($("#statementPage"));
   }
@@ -6891,12 +6945,17 @@
   }
 
   function printStatementDoc(opts) {
+    // 🆕 بناء 148: اللي عنده فترة يمرّ مجاميعها، واللي مالوش فترة (قيد/حركة سريعة) زي ما كان بالحرف
+    const per = !!opts.hasPeriod;
+    const tot = per ? opts.totals : null;
+    stmPrintHead(per, tot);
+    const shown = per ? tot.closing : opts.balance;
     $("#stmName").textContent = opts.name;
     $("#stmCode").textContent = opts.code;
     $("#stmRange").textContent = opts.range;
     const bal = $("#stmBal");
-    bal.textContent = fmt(opts.balance);
-    bal.className = opts.balance > 0 ? "balance-debit" : "balance-credit";
+    bal.textContent = fmt(shown);
+    bal.className = shown > 0 ? "balance-debit" : "balance-credit";
     const tb = $("#stmBody");
     tb.innerHTML = "";
     if (!opts.rows || opts.rows.length === 0) {
@@ -7073,11 +7132,14 @@
   }
 
   function printSupplierStatement(s) {
+    // 🆕 بناء 148: مجاميع الفترة من نفس مصدر الشاشة — الورقة ما تقولش رقم كامل السجل وهي عارضة فترة
+    const all = getSupplierStatement(s);
     printStatementDoc({
       name: s.nameAr,
       code: s.code,
       range: stmPeriodLabel(), // 🆕 مهمة 96: الفترة على الورقة = الفلتر الفعلي
       balance: s.currentBalance,
+      hasPeriod: stmPeriodOn(), totals: stmPeriodTotals(all, stmVisibleRows(all)), // 🆕 بناء 148
       rows: stmVisibleRows(getSupplierStatement(s)) // 🆕 مهمة 96: الطباعة تحترم فلتر الفترة
     });
   }
@@ -9816,6 +9878,8 @@
     if (acsFilter.from) return "من " + ar(acsFilter.from) + " وحتى اليوم";
     return "من أول السجل إلى " + ar(acsFilter.to);
   }
+  // 🆕 بناء 148: نفس مقياس مهمة 96 — «فيه فترة محددة» (مصدر واحد للراس والورقة)
+  function acsPeriodOn() { return !!(acsFilter.from || acsFilter.to); }
   function acsRenderList() {
     const sel = $("#acsList");
     const list = acsMatches();
@@ -9858,11 +9922,16 @@
     }
     const led = acsAllRows(acc);
     const rows = acsVisibleRows(led);
+    // 🆕 بناء 148: الراس بيشوف المجاميع من نفس سطور الفترة اللي جدولها ظاهر (مصدر واحد)
+    const per = acsPeriodOn();
+    const tot = per ? stmPeriodTotals(led.rows, rows) : null;
     if (head) {
       head.innerHTML = "الكود: <b>" + esc(acc.code) + "</b> — " + esc(acc.nameAr || "") +
         " | الفترة: <b>" + esc(acsPeriodLabel()) + "</b>" +
         (led.members > 1 ? " | <b>مع الفروع</b> (" + led.members + " حساب)" : "") +
-        " | الرصيد الحالي: <b class=\"" + (led.current >= 0 ? "balance-debit" : "balance-credit") + "\">" + fmt(led.current) + " ج.م</b>";
+        (per ? " | " + stmTotsHtml(tot) : "") +
+        " | " + (per ? "الرصيد الحالي (كل السجل): " : "الرصيد الحالي: ") +
+        "<b class=\"" + (led.current >= 0 ? "balance-debit" : "balance-credit") + "\">" + fmt(led.current) + " ج.م</b>";
     }
     tbody.innerHTML = "";
     if (led.opening) {
@@ -9936,6 +10005,7 @@
       code: acc.code + (led.members > 1 ? " (مع الفروع)" : ""),
       range: acsPeriodLabel(),
       balance: led.current,
+      hasPeriod: acsPeriodOn(), totals: stmPeriodTotals(led.rows, rows), // 🆕 بناء 148
       rows: rows.map((r) => ({
         date: r.date, desc: (r.number && r.number !== "—" ? r.number + " — " : "") + r.desc,
         debit: r.debit, credit: r.credit, balance: r.balance
