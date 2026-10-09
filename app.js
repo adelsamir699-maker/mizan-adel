@@ -515,6 +515,27 @@
     return lt[name] === true;
   }
 
+  /* ⏳ بناء 149 (سطر ٥) — «لا توجد حركات» الكذّابة:
+     `journal_entries` و`journal_lines` جوه LAZY (`data.js:25`) وبينزلوا في `loadLazyAll`
+     (`cloud.js:974`). أي شاشة قيود تتفتح قبل ما السحب يخلص (أو على جهاز مالوش لقطة محلية)
+     كانت تلاقي `journalEntries` فاضي وتقول للمشترى «لا توجد قيود بعد» — وهو كلام غلط،
+     وجزء من إحساسه «الحسابات مش بتترحل».
+     البوابة: لسه ما نزلتش ⇒ ما فيش حكم. الشاشة تعرض «لسه بتنزل…» وتعيد رسم نفسها
+     لوحدها لما البيانات توصل فعلًا (mizanOnLazyReady بتتنادى بعد adoptCloud). */
+  let lazyWaitingScreens = {};
+  function jrnStillLoading() { return !!A.online && !bigDataLoaded("journal_entries"); }
+  function lazyHold(key) { lazyWaitingScreens[key] = true; }
+  function lazyRelease(key) { delete lazyWaitingScreens[key]; }
+  const JRN_WAIT_TEXT = "⏳ قيودك لسه بتنزل من السحابة… هتظهر هنا نفسها لحظة ما توصل.";
+  function mizanOnLazyReady() {
+    const keys = Object.keys(lazyWaitingScreens);
+    lazyWaitingScreens = {};
+    if (!keys.length) return;
+    if (keys.indexOf("journal") >= 0) { try { renderJournal(); renderLedger(); } catch (e) { } }
+    if (keys.indexOf("accStatement") >= 0) { try { renderAccStatementView(); } catch (e) { } }
+  }
+  window.mizanOnLazyReady = mizanOnLazyReady;
+
   function recalculateCustomerBalances() {
     ensureCashEntities();
     if (!customers || !txs) return false;
@@ -8576,6 +8597,13 @@
   function renderJournal() {
     const tbody = $("#dgvJournal tbody");
     tbody.innerHTML = "";
+    // 🆕 بناء 149 (سطر ٥): الفاضي هنا مش دليل على «مافيش قيود» — يمكن لسه بتنزل
+    if (jrnStillLoading()) {
+      lazyHold("journal");
+      tbody.innerHTML = '<tr><td colspan="7">' + JRN_WAIT_TEXT + '</td></tr>';
+      return;
+    }
+    lazyRelease("journal");
     const q = normalizeAr($("#txtJournalSearch").value);
     const list = journalEntries.filter((j) => {
       if (!q) return true;
@@ -9682,6 +9710,13 @@
       if (info) info.textContent = "";
       return;
     }
+    // 🆕 بناء 149 (سطر ٥): دفتر الحركة بيتبني من القيود — نفس البوابة قبل أي حكم «مافيش»
+    if (jrnStillLoading()) {
+      lazyHold("journal");
+      tbody.innerHTML = '<tr><td colspan="6">' + JRN_WAIT_TEXT + '</td></tr>';
+      if (info) info.textContent = "";
+      return;
+    }
     const led = computeLedger();
     if (!led) {
       tbody.innerHTML = '<tr><td colspan="6">الحساب غير موجود في دليل الحسابات.</td></tr>';
@@ -10515,7 +10550,20 @@
   function renderAccStatementView() {
     if (!acsGate()) return;
     acsBindOnce();
+    // 🆕 بناء 149 (سطر ٥): الكشف بيقرأ journalEntries — بلا بوابة كان بيقول
+    // «لا توجد حركات على هذا الحساب» والقيود لسه بتنزل (شكوى المالك).
+    if (jrnStillLoading()) { lazyHold("accStatement"); acsShowWaiting(); return; }
+    lazyRelease("accStatement");
     acsRenderList();
+  }
+  // سطر الانتظار نفسه في نفس مكان جدول الكشف (بلا أي حكم على البيانات)
+  function acsShowWaiting() {
+    const tbody = $("#dgvAcs tbody");
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="bal-empty">' + JRN_WAIT_TEXT + '</td></tr>';
+    const info = $("#acsInfo"), head = $("#acsHead"), cnt = $("#acsCount");
+    if (info) info.textContent = "";
+    if (cnt) cnt.textContent = "⏳ مستني القيود توصل…";
+    if (head) head.textContent = "الحركات جاية من القيود اليومية — هتظهر هنا نفسها.";
   }
   // من «حركة حساب داخل القيود» في شاشة القيود → نفس الحساب في الكشف الكامل بالفترة
   function openAccStatementFor(text) {
@@ -13491,6 +13539,9 @@ const pwEye = document.getElementById("btnShowPass");
       return window.CLOUD.loadAll().then(() => {
         const changed = adoptCloud();
         A.adopting = false;
+        // 🆕 بناء 149 (سطر ٥): القيود دي نزلت فعلًا ⇒ أي شاشة كانت مستنية «لسه بتنزل»
+        // بتترسم من جديد بالبيانات الحقيقية (مافيش «لا توجد قيود بعد» كذّابة).
+        try { window.mizanOnLazyReady(); } catch (e) { }
         persistLocalFromCloud();
         // 🔑 ختم ملكية الحالة: اللي في المتصفح ده دلوقتي = بيانات هذه الشركة بالذات
         try { stampStateOrg(DATA.org && DATA.org() ? DATA.org().id : null); } catch (e) { }
