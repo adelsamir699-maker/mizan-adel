@@ -9470,9 +9470,12 @@
      **ممنوع ازدواج:** سندات «تسجيل مصروفات/إيرادات» (`saveSimpleEntry`) ليها قيودها بالفعل،
      وسندات التحصيل/السداد ليها قيودها من سطر ١ — المقطع ده بيشتغل من `saveVoucher` وبس،
      ومفتاح `refId` = «VC:» + id السند يمنع أي إعادة ترحيل. */
+  // 🆕 بناء 149 (سطر ٤ تكملة): في الأدلة بلا نقاط `parent_id = null` لكل الحسابات
+  // (قياس على الشركات السبعة)، فالحرس القديم على parentId وحده كان بيعدّ **كل** حساب طرف ⇒
+  // قائمة السند كانت تعرض الأب («2 الإيرادات») جنب الابن («21 إيرادات المبيعات»)، ولو اختاره
+  // البائع القيد بينزل على حساب مجمّع. نفس مصدر الفروع اللي بتستخدمه الكشوف: acsGroupAccounts.
   function jrnAccLeaf(a) {
-    return !!a && a.isActive !== false &&
-      !accounts.some((x) => x.isActive !== false && Number(x.parentId) === Number(a.id));
+    return !!a && a.isActive !== false && acsGroupAccounts(a).length <= 1;
   }
   function voucherAccChoices(mode) {
     const side = mode === "in" ? "revenue" : "expense";
