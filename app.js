@@ -12086,6 +12086,191 @@
     return msg + ". التفاصيل في سجل النشاط.";
   }
 
+  /* ================== 🆕 بناء 150 — السدّ: الاستعادة ما تفرّغش حاجة ==================
+     **السبب الجذري المسجّل (08/10: سطرا «قيد العمال.xlsx» من `mizan_documents` ضاعوا):**
+     `mizan_admin_restore_full` على السيرفر بيعمل **TRUNCATE لـ٣٦ جدول من كل الشركات** ثم يزرع
+     اللي في الملف (مقيس حرفيًا في `db/supabase-upgrade-38-backup-fixed-assets.sql` سطر 120:
+     `execute format('truncate table %s', ... 'organizations','profiles' || tables)`).
+     ⇒ ملف فيه مفتاح جدول **فاضي** (`"mizan_documents": []`) بيمرّ من `backupCoverage` و
+     `restoreBriefing` بلا أي تحذير (الاتنين بيسألوا «المفتاح موجود؟» مش «فيه سطور؟»)، والسحابة
+     بتفقد سطورها **في صمت**. ده حصل فعلًا لسطرين، مش نظرية.
+     **المقطع ده (واجهة/منطق بس — صفر كتابة سحابية):** قبل أي استعادة بنقرا اللقطة الحيّة
+     (قراءة فقط — `adminBackupFull` نفس اللي `verifyRestore` بيستخدمه) وبنقيس **سطر-بسطر**:
+     لكل جدول هيتفرّغ — كام سطر على السحابة مقابل كام سطر في النسخة. ولو النسخة أنقص ⇒
+     تلات اختيارات واضحة: **يقف** / **يضمّ الناقص من السحابة** (تكمل النسخة من اللقطة الحيّة،
+     فلا سطر ضايع) / **يكتب «امسح» حرفيًا** لو عايز المسح فعلًا. **ممنوع `confirm` وحده**:
+     نقرة «موافق» على «تحذير شديد» ما ترضيش لطّم بيانات — والدليل إن التحذير القديم كان موجودًا
+     وما منعش اللي صار، لأنه كان بيسأل عن «الجداول الناقصة» بس.
+     **المسارات المأمورة:** `ownerRestoreFullFile` (عام لكل الشركات — الخطر الحقيقي) و
+     `ownerRestoreFile` (شركة واحدة أو «الكل» — السيرفر بيرشّط بتاعة كل شركة لوحدها من
+     `RESTORE_ONE_COVERS`). **`clientRestoreFile` متعمّدًا برّا:** السيرفر بيرشّط الجداول اللي
+     الملف يعرفها بس (`if p_payload ? 'sale_returns'` — ترقية ٣٢ سطر 263) وما بيلمسش
+     `mizan_documents` خالص، فأي إضافة هناك = تقييد بلا سبب مقاس. */
+  // الأسماء الودّية — ممنوع اسم جدول إنجليزي يوصل لشاشة العميل
+  var RESTORE_TABLE_AR = {
+    organizations: "بيانات الشركات", profiles: "حسابات الدخول والعضويات",
+    accounts: "دليل الحسابات", audit_logs: "سجل النشاط", categories: "التصنيفات",
+    customer_txs: "حركات العملاء", customers: "دليل العملاء",
+    journal_entries: "القيود اليومية", journal_lines: "تفاصيل القيود",
+    mizan_created_accounts: "الحسابات اللي اتفتحت", mizan_invoice_seq: "عدّاد أرقام الفواتير",
+    mizan_pw_store: "كلمات مرور الحسابات", owners: "المُلاّك",
+    password_changes: "سجل تغيير كلمات المرور", presence: "حالة الأجهزة المتصلة",
+    products: "الأصناف", purchase_items: "سطور فواتير المشتريات", purchases: "فواتير المشتريات",
+    sale_items: "سطور فواتير المبيعات", sales: "فواتير المبيعات",
+    supplier_txs: "حركات الموردين", suppliers: "دليل الموردين",
+    treasury: "الخزائن والبنوك والمحافظ", units: "وحدات القياس", vouchers: "السندات",
+    warehouses: "المخازن", sale_returns: "مرتجعات المبيعات",
+    sale_return_items: "سطور مرتجعات المبيعات", purchase_returns: "مرتجعات المشتريات",
+    purchase_return_items: "سطور مرتجعات المشتريات",
+    mizan_documents: "📁 مستندات العملاء والموردين",
+    mizan_retired_codes: "أرقام العملاء والموردين المتقاعدة",
+    employees: "الموظفون", attendance: "الحضور والانصراف", att_settings: "إعدادات الحضور",
+    fixed_assets: "الأصول الثابتة"
+  };
+  function restoreTableAr(t) { return RESTORE_TABLE_AR[t] || String(t); }
+  // في نطاق أي مسار، كام سطر من الجدول ده هيتلمسح فعلًا
+  function restoreWipeScope(mode) {
+    return mode === "full" ? FULL_RESTORE_TABLES : RESTORE_ONE_COVERS;
+  }
+  function rowsInScope(rows, orgId) {
+    if (!Array.isArray(rows)) return null;
+    if (!orgId) return rows;
+    return rows.filter((r) => r && String(r.org_id) === String(orgId));
+  }
+  function restoreRowKey(r, i) {
+    if (r && r.id !== undefined && r.id !== null) return "i:" + String(r.id);
+    if (r && r.doc_id !== undefined && r.doc_id !== null) return "d:" + String(r.doc_id);
+    try { return "j:" + JSON.stringify(r); } catch (e) { return "x:" + i; }
+  }
+  // الفحص: النسخة ↔ السحابة في جدول واحد (نفس نطاق الحذف على السيرفر)
+  function wipeGapOf(payload, live, t, orgId) {
+    const cloud = rowsInScope(live && live[t], orgId);
+    const pack = rowsInScope(payload && payload[t], orgId);
+    if (cloud === null || pack === null) return null;   // مفتاح ناقص ⇒ restoreBriefing بيحذّر منه
+    if (pack.length >= cloud.length) return null;
+    return { t: t, cloud: cloud.length, pack: pack.length, lost: cloud.length - pack.length };
+  }
+  // 🆕 الجدول اللي **مش موجود في النسخة خالص** أخطر من الفاضي: السيرفر بيفرّغه وزرع صفر
+  function wipeMissingOf(payload, live, t, orgId) {
+    if (!live || !Array.isArray(live[t])) return null;
+    if (payload && Array.isArray(payload[t])) return null;
+    const cloud = rowsInScope(live[t], orgId);
+    if (!cloud || !cloud.length) return null;
+    return { t: t, cloud: cloud.length, pack: 0, lost: cloud.length, missing: true };
+  }
+  function newScanShell() {
+    return { items: [], lost: 0, checked: 0, unreadable: false, singleOrgPack: false, packOrgName: "" };
+  }
+  // شركة واحدة أو «كل الشركات في الملف» (نطاق restore_one لكل شركة على حدة)
+  function restoreWipeScan(payload, live, mode, orgId) {
+    const s = newScanShell();
+    if (!payload || !live || !Array.isArray(live.organizations)) { s.unreadable = true; return s; }
+    if (payload.org && payload.org.id) { s.singleOrgPack = true; s.packOrgName = payload.org.name || ""; }
+    const ids = mode === "full" ? [null] : (orgId ? [orgId] :
+      (Array.isArray(payload.organizations) ? payload.organizations.map((o) => o && o.id).filter(Boolean) : [null]));
+    restoreWipeScope(mode).forEach((t) => {
+      let cloud = 0, pack = 0, any = false, miss = false;
+      ids.forEach((one) => {
+        const c = rowsInScope(live[t], one), p = rowsInScope(payload[t], one);
+        if (c === null) return;
+        if (p === null) { miss = true; any = true; cloud += c.length; return; }
+        any = true; cloud += c.length; pack += p.length;
+      });
+      if (!any || pack >= cloud) return;
+      s.items.push({ t: t, cloud: cloud, pack: pack, lost: cloud - pack, missing: miss && pack === 0 });
+      s.lost += cloud - pack;
+    });
+    s.checked = ids.length;
+    return s;
+  }
+  function wipeScanText(scan, mode) {
+    const head = mode === "full"
+      ? "الاستعادة الكاملة بتنضّف الجداول دي من كل الشركات، وبعدها بتزرع اللي في الملف بس."
+      : "استعادة الشركة بتنضّف الجداول دي للشركة دي بس، وبعدها بتزرع اللي في الملف بس.";
+    const lines = scan.items.slice(0, 10).map((d) =>
+      "• " + restoreTableAr(d.t) + ": على السحابة " + d.cloud + " سطر · في النسخة " + d.pack +
+      " ⇒ هيتمسح " + d.lost);
+    const more = scan.items.length > 10
+      ? "\n• وفي " + (scan.items.length - 10) + " جدول تاني بنفس الوضع" : "";
+    return "⚠️ النسخة دي أنقص من السحابة في " + scan.items.length + " جدول — الفرق " + scan.lost + " سطر.\n\n" +
+      head + "\n\n" + lines.join("\n") + more;
+  }
+  // الضمّ: أسطر السحابة الناقصة تدخل النسخة — من نفس اللقطة الحيّة (قراءة فقط)، بلا أي كتابة
+  function packMergedWithLive(payload, live, scan, mode, orgId) {
+    let out;
+    try { out = JSON.parse(JSON.stringify(payload)); } catch (e) { return null; }
+    const ids = mode === "full" ? [null] : (orgId ? [orgId] :
+      (Array.isArray(payload.organizations) ? payload.organizations.map((o) => o && o.id).filter(Boolean) : [null]));
+    scan.items.forEach((d) => {
+      if (!Array.isArray(out[d.t])) out[d.t] = [];
+      const seen = {};
+      const inScope = (rows) => {
+        const a = Array.isArray(rows) ? rows : [];
+        if (!orgId && mode === "full") return a;
+        if (ids.length === 1 && !ids[0]) return a;
+        return a.filter((r) => r && ids.indexOf(String(r.org_id)) !== -1);
+      };
+      inScope(out[d.t]).forEach((r, i) => { seen[restoreRowKey(r, i)] = 1; });
+      ids.forEach((one) => {
+        (rowsInScope(live[d.t], one) || []).forEach((r, i) => {
+          const k = restoreRowKey(r, i);
+          if (seen[k]) return;
+          seen[k] = 1;
+          out[d.t].push(r);
+        });
+      });
+    });
+    return out;
+  }
+  // البوابة نفسها: بتنادي onGo(النسخة النهائية) بعد ما المالك يختار، أو متناديش خالص لو وقف
+  function gateRestoreWipe(payload, mode, orgId, onGo) {
+    if (!(A.online && DATA && DATA.adminBackupFull)) { onGo(payload); return; }
+    const blocked = (why) => {
+      toast("الاستعادة اتوقفت — مافيش حاجة اتغيرت على السحابة.", "info");
+      addActivity("سدّ الاستعادة", "مرفوض: " + why);
+    };
+    const askHard = (head) => {
+      const word = prompt(head +
+        "\n\nعايز تلغي؟ ⇒ أقفل المربع ده أو اكتب أي حاجة تانية.\n" +
+        "وأنت متأكد إن الفرق ده لازم يتمسح؟ ⇒ اكتب الكلمة دي بالحرف: امسح");
+      if (!word || String(word).trim() !== "امسح") { blocked("المالك ما كتبش «امسح»"); return; }
+      addActivity("سدّ الاستعادة", "تأكيد حرفي («امسح») — الفرق هيتلمسح بقرار المالك");
+      onGo(payload);
+    };
+    DATA.adminBackupFull().then((live) => {
+      const scan = restoreWipeScan(payload, live, mode, orgId);
+      if (scan.unreadable) {
+        askHard("ما قدرناش نقرا حالة السحابة دلوقتي عشان نتأكد إن النسخة فيها كل اللي فيها.\n\n" +
+          "الاستعادة بتنضّف وبتزرع من الملف — فلو النسخة أنقص، بيانات على السحابة هتتمسح.");
+        return;
+      }
+      if (!scan.items.length) { onGo(payload); return; }
+      let head = wipeScanText(scan, mode);
+      if (mode === "full" && scan.singleOrgPack) {
+        head = "📌 النسخة دي لشركة واحدة («" + (scan.packOrgName || "بلا اسم") + "»)، والزرار ده للنسخة الكاملة.\n\n" +
+          head + "\n\nالصح إنك تستخدم «📥 استعادة/استيراد نسخة» فهي بترجّع الشركة المختارة من غير ما تلمس باقي الشركات.";
+      }
+      const merge = confirm(head +
+        "\n\n«موافق» = كمّل الناقص من السحابة للنسخة واستعيد ⇒ مافيش سطر ضايع.\n" +
+        "«إلغاء» = وقّف (لو عايز المسح فعلاً هيسألك تأكيد مكتوب).");
+      if (merge) {
+        const merged = packMergedWithLive(payload, live, scan, mode, orgId);
+        if (!merged) { blocked("ما قدرناش نكمّل النسخة من السحابة"); return; }
+        const re = restoreWipeScan(merged, live, mode, orgId);
+        if (re.items.length) { blocked("الضمّ ما غطّاش كل الفرق (" + re.lost + " سطر فاضل)"); return; }
+        addActivity("سدّ الاستعادة", "ضمّ " + scan.items.length + " جدول (" + scan.lost +
+          " سطر) من السحابة قبل الاستعادة ⇒ صفر بيانات ضايعة");
+        toast("✅ الناقص انضمّ للنسخة (" + scan.lost + " سطر) — هتستعيد من غير ما حاجة تتمسح.", "success");
+        onGo(merged);
+        return;
+      }
+      askHard(head);
+    }).catch(() => {
+      askHard("قراءة حالة السحابة فشلَت دلوقتي، فالفرق ماقدرناش نحسبه.\n\n" +
+        "الاستعادة بتنضّف وبتزرع من الملف — لو أكملت وبياناتك على السحابة أزيد، هتتمسح.");
+    });
+  }
+
   function deployStamp() {
     const d = new Date(), p = (n) => String(n).padStart(2, "0");
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "_" + p(d.getHours()) + p(d.getMinutes());
@@ -12280,7 +12465,7 @@
       toast("النسخة دي «سورس بيور» — مفيهاش بيانات شركات عشان تُنشر، والسيرفر الحالي ما اتلمسش. لتنزيلها على سيرفر جديد اتبع خطوات README اللي جوه المجلد.", "info");
       return;
     }
-    const brief = restoreBriefing(payload);
+    let brief = restoreBriefing(payload);
     const doRestore = (freshServer) => {
       toast(freshServer ? "جارٍ نشر النسخة على السيرفر الجديد..." : "جارٍ الاستعادة الكاملة...", "info");
       DATA.adminRestoreFull(payload).then((msg) => {
@@ -12297,8 +12482,7 @@
         });
       }).catch((e) => toast("خطأ في الاستعادة (لم يُمسح شيء): " + (e.message || e), "error"));
     };
-    const afterServerCheck = (curOrgs) => {
-      if (curOrgs === 0) { doRestore(true); return; }
+    const proceedChain = (curOrgs) => {
       const w = confirm("السيرفر الحالي فيه بيانات (" + curOrgs + " شركة عاملة).\n\n" +
         brief.text + "\n\n" +
         "نشرها معناه استبدال بيانات السيرفر ببيانات الملف (لو حصل أي خطأ في الوسط لا يُمسح شيء — العملية كتلة واحدة).\n\nهل تريد الاستبدال فعلًا؟");
@@ -12310,6 +12494,16 @@
         if (!hard) { toast("تم الإلغاء — لم يتغير أي شيء على السيرفر.", "info"); return; }
       }
       doRestore(false);
+    };
+    const afterServerCheck = (curOrgs) => {
+      if (curOrgs === 0) { doRestore(true); return; }
+      // 🆕 بناء 150 (السدّ): السحابة فيها سطور والنسخة ما تجيبهاش ⇒ نقرة «موافق» ما تكفيش.
+      // بنقيس الأول، ولو الفرق موجود بيكون الاختيار: وقف / ضمّ الناقص من السحابة / كتابة «امسح».
+      gateRestoreWipe(payload, "full", null, (finalPack) => {
+        payload = finalPack;
+        brief = restoreBriefing(payload);
+        proceedChain(curOrgs);
+      });
     };
     if (A.online && DATA && DATA.adminOrgs) {
       DATA.adminOrgs().then((list) => afterServerCheck(Array.isArray(list) ? list.length : 1))
@@ -12336,7 +12530,7 @@
     let payload;
     try { payload = JSON.parse(jsonStr); } catch (e) { toast("الملف غير صالح أو تالف.", "warning"); return; }
     if (!payload || typeof payload !== "object") { toast("ملف النسخة غير صحيح.", "warning"); return; }
-    const brief = restoreBriefing(payload);
+    let brief = restoreBriefing(payload);
     const sel = document.getElementById("setRestoreScope");
     // لو الملف نسخة شركة واحدة (يحتوي org) نستعيد الشركة مباشرة بمعرّفها من الملف نفسه
     // — فيعمل حتى لو كانت الشركة محذوفة من السحابة (تُعاد إنشاؤها بكل بياناتها)
@@ -12346,17 +12540,48 @@
       ? (payload.org.name || "شركة محذوفة") + " (من الملف)"
       : (sel && sel.selectedOptions.length ? sel.selectedOptions[0].textContent.trim() : "الكل (كل العملاء)");
     if (singleOrgId) {
-      const again = confirm("أعد استعادة شركة «" + scopeName + "»؟\n" + brief.text +
-        "\nستُعاد بياناتها المخزنة من الملف إلى السحابة (نفس الشركة — تُنشأ مجددًا إن كانت محذوفة)." +
-        "\nملاحظة: حسابات أعضاء الشركة لا تُستعاد من الملف — ستعيد إنشاء حساب دخولها من شاشة الإدارة بعد الاستعادة." +
-        restoreOneLimitNote(payload) +
-        "\n\nهل أنت متأكد؟");
-      if (!again) { toast("تم إلغاء الاستعادة.", "info"); return; }
+      const runOne = () => {
+        const again = confirm("أعد استعادة شركة «" + scopeName + "»؟\n" + brief.text +
+          "\nستُعاد بياناتها المخزنة من الملف إلى السحابة (نفس الشركة — تُنشأ مجددًا إن كانت محذوفة)." +
+          "\nملاحظة: حسابات أعضاء الشركة لا تُستعاد من الملف — ستعيد إنشاء حساب دخولها من شاشة الإدارة بعد الاستعادة." +
+          restoreOneLimitNote(payload) +
+          "\n\nهل أنت متأكد؟");
+        if (!again) { toast("تم إلغاء الاستعادة.", "info"); return; }
+        if (!DATA) { toast("وضع السحابة غير متاح.", "error"); return; }
+        toast("جارٍ استعادة الشركة من الملف...", "info");
+        DATA.adminRestoreOne(singleOrgId, payload).then(() => {
+          addActivity("نسخ احتياطي شامل", "استعادة شركة واحدة من الملف (" + scopeName + ") — " + brief.text);
+          toast("تمت استعادة الشركة بنجاح.", "success");
+          return verifyRestore(payload).then((v) => {
+            const note = restoreVerifyNote(v);
+            addActivity("تحقق الاستعادة", note);
+            if (v && v.diffs.length) toast(note, "warning");
+            setTimeout(() => window.location.reload(), 2200);
+          });
+        }).catch((e) => {
+          const msg = e && e.message ? e.message : String(e);
+          toast("خطأ في الاستعادة: " + (msg.length > 140 ? msg.slice(0, 140) : msg), "error");
+        });
+      };
+      // 🆕 بناء 150 (السدّ): نفس القياس — السيرفر بيرشّط جداول الشركة دي قبل ما يزرع،
+      // فملف أندر من السحابة في جدول من `RESTORE_ONE_COVERS` = سطور بتتمسح صامتة.
+      gateRestoreWipe(payload, "one", singleOrgId, (finalPack) => {
+        payload = finalPack;
+        brief = restoreBriefing(payload);
+        runOne();
+      });
+      return;
+    }
+    const runScoped = () => {
+      const w = confirm("تحذير شديد ⚠️⚠️⚠️\n\nستُستبدل بيانات: «" + scopeName + "»\nببيانات هذا الملف نهائيًا. لا يمكن التراجع.\n\n" +
+        brief.text + restoreOneLimitNote(payload) + "\n\nهل أنت متأكد تمامًا؟");
+      if (!w) { toast("تم إلغاء الاستعادة.", "info"); return; }
       if (!DATA) { toast("وضع السحابة غير متاح.", "error"); return; }
-      toast("جارٍ استعادة الشركة من الملف...", "info");
-      DATA.adminRestoreOne(singleOrgId, payload).then(() => {
-        addActivity("نسخ احتياطي شامل", "استعادة شركة واحدة من الملف (" + scopeName + ") — " + brief.text);
-        toast("تمت استعادة الشركة بنجاح.", "success");
+      toast("جارٍ استعادة النسخة...", "info");
+      const prom = orgId ? DATA.adminRestoreOne(orgId, payload) : DATA.adminRestoreAll(payload);
+      prom.then(() => {
+        toast("تمت استعادة النسخة بنجاح.", "success");
+        addActivity("نسخ احتياطي شامل", "استعادة نسخة (" + scopeName + ") — " + brief.text);
         return verifyRestore(payload).then((v) => {
           const note = restoreVerifyNote(v);
           addActivity("تحقق الاستعادة", note);
@@ -12367,26 +12592,12 @@
         const msg = e && e.message ? e.message : String(e);
         toast("خطأ في الاستعادة: " + (msg.length > 140 ? msg.slice(0, 140) : msg), "error");
       });
-      return;
-    }
-    const w = confirm("تحذير شديد ⚠️⚠️⚠️\n\nستُستبدل بيانات: «" + scopeName + "»\nببيانات هذا الملف نهائيًا. لا يمكن التراجع.\n\n" +
-      brief.text + restoreOneLimitNote(payload) + "\n\nهل أنت متأكد تمامًا؟");
-    if (!w) { toast("تم إلغاء الاستعادة.", "info"); return; }
-    if (!DATA) { toast("وضع السحابة غير متاح.", "error"); return; }
-    toast("جارٍ استعادة النسخة...", "info");
-    const prom = orgId ? DATA.adminRestoreOne(orgId, payload) : DATA.adminRestoreAll(payload);
-    prom.then(() => {
-      toast("تمت الاستعادة بنجاح.", "success");
-      addActivity("نسخ احتياطي شامل", "استعادة نسخة (" + scopeName + ") — " + brief.text);
-      return verifyRestore(payload).then((v) => {
-        const note = restoreVerifyNote(v);
-        addActivity("تحقق الاستعادة", note);
-        if (v && v.diffs.length) toast(note, "warning");
-        setTimeout(() => window.location.reload(), 2200);
-      });
-    }).catch((e) => {
-      const msg = e && e.message ? e.message : String(e);
-      toast("خطأ في الاستعادة: " + (msg.length > 140 ? msg.slice(0, 140) : msg), "error");
+    };
+    // 🆕 بناء 150 (السدّ): «الكل» = restore_all بيمشي شركة-شركة على شركات الملف ⇒ نفس الفحص
+    gateRestoreWipe(payload, "one", orgId || null, (finalPack) => {
+      payload = finalPack;
+      brief = restoreBriefing(payload);
+      runScoped();
     });
   }
 
