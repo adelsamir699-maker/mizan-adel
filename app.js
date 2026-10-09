@@ -8798,15 +8798,24 @@
   }
 
   // خزينة → حساب الدليل المقابل (نقدية 1.1.1 / بنك 1.1.2 / محفظة 1.1.3) مع احتياطي بالاسم ثم بالنقدية
+  // 🆕 بناء 149 (سطر ٤): في الأدلة بلا نقاط الكود يبقى 111/112/113، وكان الاحتياطي بالاسم
+  // مشروطًا بـ Number(parentId) !== 0 — و parent_id في الشركات كلها null ⇒ Number(null)===0 ⇒
+  // الاحتياطي كان ميت ⇒ الدالة بترجع null ⇒ invoiceJrnPlan يرد {error:"cash"} ⇒ **الترحيل بيتلغى**.
+  // الإصلاح: الكود بالحرف ⇒ نسخة الكود بلا نقاط ⇒ بالاسم (بلا شرط parentId) ⇒ النقدية.
   function accForTreasuryAcc(t) {
     const byCode = { cash: "1.1.1", bank: "1.1.2", wallet: "1.1.3" };
     const byName = { cash: "صناديق", bank: "البنوك", wallet: "المحافظ" };
     const key = t && byCode[t.type] ? t.type : "cash";
     let a = accounts.find((x) => String(x.code) === byCode[key] && x.isActive);
     if (a) return a;
-    a = accounts.find((x) => x.type === "asset" && Number(x.parentId) !== 0 && x.isActive && (x.nameAr || "").includes(byName[key]));
+    const bare = byCode[key].replace(/\./g, "");
+    a = accounts.find((x) => x && x.isActive && String(x.code || "").replace(/\./g, "") === bare);
     if (a) return a;
-    return accounts.find((x) => String(x.code) === "1.1.1" && x.isActive) || null;
+    a = accounts.find((x) => x.type === "asset" && x.isActive && (x.nameAr || "").includes(byName[key]));
+    if (a) return a;
+    a = accounts.find((x) => String(x.code) === "1.1.1" && x.isActive);
+    if (a) return a;
+    return accounts.find((x) => x && x.isActive && String(x.code || "") === "111") || null;
   }
 
   // قائمة خزائن بملصق الرصيد، والنقدية أولًا (المفضل) ثم البنوك فالمحافظ
@@ -9180,9 +9189,34 @@
       (j.refType === ref || j.ref === ref)) || null;
   }
   // حساب بالدليل من كوده، وباحتياطي بالاسم لو الشركة عدّلت الكود
+  // 🆕 بناء 149 (سطر ٤): فيه أدلة شركات بلا نقاط خالص (111/115/132…) من زرع السحابة،
+  // و«الحسابات اللي الشركة ممكن تنشئها» بتفضل بنفس الأسماء ⇒ الكود بيُقرأ بالحرف،
+  // ثم بنسخة الكود من غير نقاط، ثم بمرادف الدليل بلا نقاط، وفي الآخر بالاسم.
+  // الدالة self-contained (بلا مساعدات جديدة) عشان حراس 118/95/134 ما يحتاجوش حقن حاجة زيادة.
   function accByCode(code, nameHint) {
     let a = accounts.find((x) => String(x.code) === String(code) && x.isActive !== false);
     if (a) return a;
+    // (ب) نفس الكود من غير نقاط — في الأدلة اللي مالهاش نقاط
+    const bare = String(code == null ? "" : code).replace(/\./g, "");
+    if (bare) {
+      a = accounts.find((x) => x && x.isActive !== false && String(x.code || "").indexOf(".") < 0 && String(x.code) === bare);
+      if (a) return a;
+    }
+    // (ج) مرادفات معروفة للأدلة بلا نقاط (ترقيم السحابة: 13=الالتزامات، 132=مستحقات الموردين، 21=إيرادات المبيعات)
+    //     بتشتغل في الدليل اللي مافيهوش أي نقطة خالص، عشان ما تخمش حساب في دليل بالنقاط
+    const dotFree = accounts.length > 0 && !accounts.some((x) => x && String(x.code || "").indexOf(".") >= 0);
+    const ALIAS = dotFree ? {
+      "1.1": ["11"], "1.1.1": ["111"], "1.1.2": ["112"], "1.1.3": ["113"], "1.1.4": ["114"], "1.1.5": ["115"],
+      "2.1": ["131"], "2.1.1": ["132"], "2.1.2": ["133"],
+      "3.1": ["141"], "3.2": ["142"], "4.1": ["21"], "5.1": ["31"]
+    } : {};
+    const al = ALIAS[String(code)];
+    if (al) {
+      for (let i = 0; i < al.length; i++) {
+        a = accounts.find((x) => x && x.isActive !== false && String(x.code) === al[i]);
+        if (a) return a;
+      }
+    }
     if (nameHint) a = accounts.find((x) => x.isActive !== false && String(x.nameAr || "").indexOf(nameHint) >= 0);
     return a || null;
   }
@@ -10037,16 +10071,44 @@
    * المقابلة ليها (BS_OPERATIONAL) بتتاستنى من المجموع عشان العد مرتين ما يحصلش.
    */
   const BS_OPERATIONAL = ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "2.1.1", "2.1.2"];
+  // 🆕 بناء 149 (سطر ٤): الاستبعاد يبقى **بالدور** مش بالنص الحرفي — أدلة 6 شركات بلا نقاط خالص
+  // (111 صناديق / 115 مديونيات العملاء / 132 مستحقات الموردين / 133 ضريبة…) كانت بتتحسب
+  // **مرتين** في المركز المالي: مرة من الحركة (خزائن/عملاء/موردين/أصناف) ومرة من الدليل،
+  // وده بالظبط «رصيد الحساب في كشف حساب الحسابات ≠ رصيده في قائمة المركز المالي».
+  const BS_OP_ROLES = [
+    { codes: ["1.1.1", "111"], names: ["الصناديق النقدية"] },
+    { codes: ["1.1.2", "112"], names: ["البنوك والحسابات البنكية", "البنوك"] },
+    { codes: ["1.1.3", "113"], names: ["المحافظ الإلكترونية"] },
+    { codes: ["1.1.4", "114"], names: ["المخزون (بضاعة)", "المخزون"] },
+    { codes: ["1.1.5", "115"], names: ["مديونيات العملاء"] },
+    { codes: ["2.1.1", "132"], names: ["مستحقات الموردين"] },
+    { codes: ["2.1.2", "133"], names: ["ضريبة المبيعات المستحقة"] }
+  ];
+  function bsIsOperational(a) {
+    const c = String((a && a.code) || "");
+    const n = String((a && a.nameAr) || "").trim();
+    for (let i = 0; i < BS_OP_ROLES.length; i++) {
+      const r = BS_OP_ROLES[i];
+      if (r.codes.indexOf(c) >= 0) return true;
+      if (n && r.names.indexOf(n) >= 0) return true;   // الاسم الحرفي للدور (لو الشركة غيّرت الكود)
+    }
+    return false;
+  }
   const bsRound = (n) => Math.round((Number(n) || 0) * 100) / 100;
   // في النموذج الحالي openingBalance = الرصيد الجاري بعلامة المدين، فأرصدة الدائن بتترجع للإشارة الصح
   const bsLedgerValue = (a) => bsRound((a.openingBalance || 0) * (a.type === "asset" || a.type === "expense" ? 1 : -1));
   const bsHasChild = (a) => accounts.some((x) => Number(x.parentId) === Number(a.id));
   // مطابقة المجموعة على مستوى جزء كامل: "1.1" تاخد 1.1 و 1.1.x لكن ما تاخدش 1.10
-  const bsInGroup = (code, groups) => groups.some((g) => code === g || String(code).indexOf(g + ".") === 0);
+  // + في الدليل بلا نقاط: المجموعة "3.1" تطابق كود "141"؟ لأ — بتطابق نسختها بلا نقاط "31"،
+  // وده آمن لأن bsLeaves بيفلتربالنوع أولًا (31 مصروف فما يدخلش في حقوق الملكية).
+  const bsGroupMatches = (code, g) => String(code) === String(g) ||
+    String(code).indexOf(String(g) + ".") === 0 ||
+    (String(code).indexOf(".") < 0 && String(code) === String(g).replace(/\./g, ""));
+  const bsInGroup = (code, groups) => groups.some((g) => bsGroupMatches(code, g));
 
   // أوراق الدليل (من غير الحسابات الأب) لنوع معيّن داخل مجموعات الكود دي، مرتبة بالكود
   function bsLeaves(type, groups, restGroups) {
-    const leaves = accounts.filter((a) => a.isActive && a.type === type && !bsHasChild(a) && BS_OPERATIONAL.indexOf(String(a.code || "")) < 0);
+    const leaves = accounts.filter((a) => a.isActive && a.type === type && !bsHasChild(a) && !bsIsOperational(a));
     const hit = leaves.filter((a) => bsInGroup(String(a.code || ""), groups));
     if (restGroups) {
       // أي ورقة خارج الأقسام المعروفة تنزل في القسم الافتراضي عشان مافيش بند يضيع من القائمة
@@ -10183,12 +10245,56 @@
     return false;
   }
   const acsAll = () => accounts.filter((a) => a && a.isActive !== false);
-  const acsChildCount = (a) => accounts.filter((x) => Number(x.parentId) === Number(a.id)).length;
-  // كل أكواد المجموعة (النفس + الفروع) على مستوى جزء كامل
-  function acsGroupAccounts(acc) {
-    const code = String(acc.code || "");
-    return accounts.filter((a) => a && (String(a.code) === code || String(a.code).indexOf(code + ".") === 0));
+  // 🆕 بناء 149 (سطر ٤): مصدر واحد مضمون for «الفروع» — شجرة parentId + الأكواد بجزء كامل (1.1 ⇒ 1.1.x)
+  // + في الأدلة بلا نقاط (6 شركات من 8 مقاسة) الابن المباشر = كود بيسبق بكود الأب وأبوُه الأطول هو الأب نفسه،
+  // فـ 11 بيلمّ 111..115 و13 بيلمّ 131/132/133 من غير ما 1 يبتلع الالتزامات.
+  function acsIsDotFreeChart() {
+    return accounts.length > 0 && !accounts.some((a) => a && String(a.code || "").indexOf(".") >= 0);
   }
+  // أطول كود تاني موجود في الدليل وهو بادئة الكود ده (= أبوُه في دليل بلا نقاط)
+  function acsBareParentCode(code) {
+    let best = "";
+    accounts.forEach((x) => {
+      const c = String((x && x.code) || "");
+      if (!c || c === code) return;
+      if (code.indexOf(c) === 0 && c.length > best.length) best = c;
+    });
+    return best;
+  }
+  // كل أعضاء المجموعة (النفس + الفروع) — بترتيب مصفوفة accounts زي ما كان
+  function acsGroupAccounts(acc) {
+    if (!acc) return [];
+    const code = String(acc.code || "");
+    const selfId = Number(acc.id);
+    const dotFree = acsIsDotFreeChart();
+    // إغلاق شجرة parentId (transitive) تحت الأب
+    const byId = {};
+    accounts.forEach((a) => { if (a) byId[Number(a.id)] = a; });
+    const underTree = (a) => {
+      let p = Number(a && a.parentId);
+      const seen = {};
+      while (p && !seen[p]) {
+        seen[p] = 1;
+        if (p === selfId) return true;
+        p = Number(byId[p] && byId[p].parentId);
+      }
+      return false;
+    };
+    return accounts.filter((a) => {
+      if (!a) return false;
+      if (Number(a.id) === selfId) return true;
+      const c = String(a.code || "");
+      if (!code) return underTree(a);
+      if (c === code) return true;                            // نفس الكود (معرّفات مكرّرة في بيانات قديمة)
+      if (c.indexOf(code + ".") === 0) return true;          // فروع بالنقاط (جزء كامل)
+      if (underTree(a)) return true;                          // شجرة parentId
+      // ابن مباشر في دليل بلا نقاط: 111 أبوه الأطول = 11 ⇒ عضو في 11 (و 131 أبوه 13 مش 1)
+      if (dotFree && c.length > code.length && c.indexOf(code) === 0 && acsBareParentCode(c) === code) return true;
+      return false;
+    });
+  }
+  // نفس مصدر «الفروع» بالظبط — عشان العدّاد والورقة والكشف ما يختلفوش
+  const acsChildCount = (a) => acsGroupAccounts(a).length - 1;
   function acsAccountName(id) {
     const a = accounts.filter((x) => Number(x.id) === Number(id))[0];
     return a ? (a.nameAr || "") : "";
