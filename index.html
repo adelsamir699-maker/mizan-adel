@@ -301,7 +301,7 @@
                 <th style="width:8%">الكمية</th>
                 <th style="width:11%" id="thPosPrice">السعر (قبل الضريبة)</th>
                 <th style="width:8%">الخصم</th>
-                <th style="width:11%" id="thPosTax" class="c-tax">الضريبة (14%)</th>
+                <th style="width:11%" id="thPosTax" class="c-tax">ضريبة القيمة المضافة</th>
                 <th style="width:14%" id="thPosTotal">الإجمالي شامل الضريبة</th>
                 <th style="width:6%">حذف</th>
               </tr>
@@ -314,7 +314,7 @@
           <div class="pos-foot-row">
             <span id="lblPosSubTotal" class="ft-sub">المجموع: 0.00 ج.م</span>
             <span class="fld-inline"><label>خصم إضافي:</label><input id="txtPosDiscount" type="text" value="0" /></span>
-            <span id="lblPosTax" class="ft-tax">ضريبة المبيعات (14%): 0.00 ج.م</span>
+            <span id="lblPosTax" class="ft-tax">ضريبة القيمة المضافة: 0.00 ج.م</span>
           </div>
           <div class="pos-foot-row">
             <span id="lblPosTotal" class="ft-total">الصافي النهائي: 0.00 ج.م</span>
@@ -380,7 +380,7 @@
                 <th style="width:8%">الكمية</th>
                 <th style="width:11%" id="thPPPrice">السعر (قبل الضريبة)</th>
                 <th style="width:8%">الخصم</th>
-                <th style="width:11%" id="thPPTax" class="c-tax">الضريبة (14%)</th>
+                <th style="width:11%" id="thPPTax" class="c-tax">ضريبة القيمة المضافة</th>
                 <th style="width:14%" id="thPPTotal">الإجمالي شامل الضريبة</th>
                 <th style="width:6%">حذف</th>
               </tr>
@@ -393,7 +393,7 @@
           <div class="pos-foot-row">
             <span id="lblPPSubTotal" class="ft-sub">المجموع: 0.00 ج.م</span>
             <span class="fld-inline"><label>خصم إضافي:</label><input id="txtPPDiscount" type="text" value="0" /></span>
-            <span id="lblPPTax" class="ft-tax">ضريبة المبيعات (14%): 0.00 ج.م</span>
+            <span id="lblPPTax" class="ft-tax">ضريبة القيمة المضافة: 0.00 ج.م</span>
           </div>
           <div class="pos-foot-row">
             <span id="lblPPTotal" class="ft-total">الصافي النهائي: 0.00 ج.م</span>
@@ -1552,12 +1552,16 @@
           <div class="sett-box">
             <div class="panel-title">🧾 الضريبة وبيانات الفاتورة</div>
             <div class="form-grid">
-              <label for="setTaxEnabled">تطبيق ضريبة المبيعات:</label>
+              <label for="setTaxEnabled">تطبيق ضريبة القيمة المضافة:</label>
               <select id="setTaxEnabled"><option value="1">نشطة 🟢</option><option value="0">معطلة 🔴</option></select>
-              <label for="setTaxRate">نسبة الضريبة (%):</label>
+              <label for="setTaxRate">نسبة الضريبة على المبيعات (%):</label>
               <input type="text" id="setTaxRate" autocomplete="off" />
+              <label for="setTaxBuyEnabled">تطبيق ضريبة القيمة المضافة على المشتريات:</label>
+              <select id="setTaxBuyEnabled"><option value="1">نشطة 🟢</option><option value="0">معطلة 🔴</option></select>
+              <label for="setTaxRateBuy">نسبة الضريبة على المشتريات (%):</label>
+              <input type="text" id="setTaxRateBuy" autocomplete="off" />
               <label for="setTaxTitle">عنوان عمود الضريبة في الفاتورة:</label>
-              <input type="text" id="setTaxTitle" autocomplete="off" placeholder="مثال: ضريبة المبيعات" />
+              <input type="text" id="setTaxTitle" autocomplete="off" placeholder="مثال: ضريبة القيمة المضافة" />
               <label for="setPaper">حجم ورق طباعة الفواتير:</label>
               <select id="setPaper">
                 <option value="A4">A4</option>
@@ -1781,12 +1785,16 @@
           <div class="sett-box">
             <div class="panel-title">🧾 الضريبة وبيانات الفاتورة</div>
             <div class="form-grid">
-              <label for="csetTaxEnabled">تطبيق ضريبة المبيعات:</label>
+              <label for="csetTaxEnabled">تطبيق ضريبة القيمة المضافة:</label>
               <select id="csetTaxEnabled"><option value="1">نشطة 🟢</option><option value="0">معطلة 🔴</option></select>
-              <label for="csetTaxRate">نسبة الضريبة (%):</label>
+              <label for="csetTaxRate">نسبة الضريبة على المبيعات (%):</label>
               <input type="text" id="csetTaxRate" autocomplete="off" />
+              <label for="csetTaxBuyEnabled">تطبيق ضريبة القيمة المضافة على المشتريات:</label>
+              <select id="csetTaxBuyEnabled"><option value="1">نشطة 🟢</option><option value="0">معطلة 🔴</option></select>
+              <label for="csetTaxRateBuy">نسبة الضريبة على المشتريات (%):</label>
+              <input type="text" id="csetTaxRateBuy" autocomplete="off" />
               <label for="csetTaxTitle">عنوان عمود الضريبة في الفاتورة:</label>
-              <input type="text" id="csetTaxTitle" autocomplete="off" placeholder="مثال: ضريبة المبيعات" />
+              <input type="text" id="csetTaxTitle" autocomplete="off" placeholder="مثال: ضريبة القيمة المضافة" />
               <label for="csetPaper">حجم ورق طباعة الفواتير:</label>
               <select id="csetPaper">
                 <option value="A4">A4</option>

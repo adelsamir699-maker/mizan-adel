@@ -71,20 +71,27 @@
   // وبين "بيانات محلية حقيقية" (المفتاح كان موجود → لا ندهسها بديسك أقدم).
   let bootLsPresent = {};
 
-  const TAX = { enabled: true, rate: 0.14 };
+  // 🆕 ترقية ٥٢: ضريبة القيمة المضافة — مفتاحان ونسبتان مستقلان (مبيعات/مشتريات).
+  //     لا يوجد أي تثبيت لـ14% في الكود: كل القيم تيجي من ضبط المؤسسة (أو صفر لحد ما تُضبط).
+  const TAX = { enabled: true, rate: 0, buyEnabled: false, rateBuy: 0 };
   function getTaxPercent() {
     return Math.round((TAX.rate || 0) * 100);
+  }
+  function getTaxBuyPercent() {
+    return Math.round((TAX.rateBuy || 0) * 100);
   }
   function updatePosTaxUI() {
     const en = Boolean(TAX.enabled);
     const pct = getTaxPercent();
+    const enBuy = Boolean(TAX.buyEnabled);
+    const pctBuy = getTaxBuyPercent();
     const thPrice = $("#thPosPrice");
     if (thPrice) thPrice.textContent = en ? "السعر (قبل الضريبة)" : "السعر";
     const thTax = $("#thPosTax");
     if (thTax) {
       thTax.style.display = en ? "" : "none";
       thTax.classList.toggle("tax-hidden", !en);
-      thTax.textContent = en ? ("الضريبة (" + pct + "%)") : "";
+      thTax.textContent = en ? ("ضريبة القيمة المضافة (" + pct + "%)") : "";
     }
     const thTotal = $("#thPosTotal");
     if (thTotal) thTotal.textContent = en ? "الإجمالي شامل الضريبة" : "الإجمالي";
@@ -94,27 +101,34 @@
       lblTax.hidden = !en;
     }
     const thPPPrice = $("#thPPPrice");
-    if (thPPPrice) thPPPrice.textContent = en ? "السعر (قبل الضريبة)" : "السعر";
+    if (thPPPrice) thPPPrice.textContent = enBuy ? "السعر (قبل الضريبة)" : "السعر";
     const thPPTax = $("#thPPTax");
     if (thPPTax) {
-      thPPTax.style.display = en ? "" : "none";
-      thPPTax.classList.toggle("tax-hidden", !en);
-      thPPTax.textContent = en ? ("الضريبة (" + pct + "%)") : "";
+      thPPTax.style.display = enBuy ? "" : "none";
+      thPPTax.classList.toggle("tax-hidden", !enBuy);
+      thPPTax.textContent = enBuy ? ("ضريبة القيمة المضافة (" + pctBuy + "%)") : "";
     }
     const thPPTotal = $("#thPPTotal");
-    if (thPPTotal) thPPTotal.textContent = en ? "الإجمالي شامل الضريبة" : "الإجمالي";
+    if (thPPTotal) thPPTotal.textContent = enBuy ? "الإجمالي شامل الضريبة" : "الإجمالي";
     const lblPPTax = $("#lblPPTax");
     if (lblPPTax) {
-      lblPPTax.style.display = en ? "" : "none";
-      lblPPTax.hidden = !en;
+      lblPPTax.style.display = enBuy ? "" : "none";
+      lblPPTax.hidden = !enBuy;
     }
   }
-  function applyTaxSettings(enabled, rawRate) {
+  function applyTaxSettings(enabled, rawRate, buyEnabled, rawBuy) {
     TAX.enabled = Boolean(enabled);
     const r = parseFloat(rawRate) || 0;
     TAX.rate = r > 1 ? r / 100 : (r > 0 ? r : 0);
+    if (buyEnabled !== undefined && buyEnabled !== null) TAX.buyEnabled = Boolean(buyEnabled);
+    if (rawBuy !== undefined && rawBuy !== null && String(rawBuy) !== "") {
+      const rb = parseFloat(rawBuy) || 0;
+      TAX.rateBuy = rb > 1 ? rb / 100 : (rb > 0 ? rb : 0);
+    }
     settings.taxEnabled = TAX.enabled;
     settings.taxRate = TAX.rate;
+    settings.taxBuyEnabled = TAX.buyEnabled;
+    settings.taxRateBuy = TAX.rateBuy;
     saveSettings();
     updatePosTaxUI();
     if (typeof posRecalc === "function") posRecalc();
@@ -261,7 +275,8 @@
     { id: 10, code: "2", nameAr: "الالتزامات", type: "liability", parentId: 0, openingBalance: 0, isActive: true },
     { id: 11, code: "2.1", nameAr: "الالتزامات المتداولة", type: "liability", parentId: 10, openingBalance: 0, isActive: true },
     { id: 12, code: "2.1.1", nameAr: "مستحقات الموردين", type: "liability", parentId: 11, openingBalance: 0, isActive: true },
-    { id: 13, code: "2.1.2", nameAr: "ضريبة المبيعات المستحقة", type: "liability", parentId: 11, openingBalance: 0, isActive: true },
+    { id: 13, code: "2.1.2", nameAr: "ضريبة القيمة المضافة المحصلة", type: "liability", parentId: 11, openingBalance: 0, isActive: true },
+    { id: 22, code: "2.1.3", nameAr: "ضريبة القيمة المضافة المدفوعة", type: "liability", parentId: 11, openingBalance: 0, isActive: true },
     { id: 14, code: "3", nameAr: "حقوق الملكية", type: "equity", parentId: 0, openingBalance: 0, isActive: true },
     { id: 15, code: "3.1", nameAr: "رأس المال", type: "equity", parentId: 14, openingBalance: 0, isActive: true },
     { id: 16, code: "3.2", nameAr: "الأرباح المحتجزة", type: "equity", parentId: 14, openingBalance: 0, isActive: true },
@@ -288,6 +303,8 @@
     orgNote: "شكراً لتعاملكم معنا - جميع الأسعار شاملة الضريبة",
     taxEnabled: TAX.enabled,
     taxRate: TAX.rate,
+    taxBuyEnabled: TAX.buyEnabled,
+    taxRateBuy: TAX.rateBuy,
     plan: "فردي (مستخدم واحد)",
     planEnd: "",
     planStatus: "تجربة 🧪"
@@ -1073,6 +1090,11 @@
         const r = parseFloat(settings.taxRate) || 0;
         TAX.rate = r > 1 ? r / 100 : r;
       }
+      TAX.buyEnabled = settings.taxBuyEnabled == null ? TAX.buyEnabled : Boolean(settings.taxBuyEnabled);
+      if (settings.taxRateBuy != null) {
+        const rb = parseFloat(settings.taxRateBuy) || 0;
+        TAX.rateBuy = rb > 1 ? rb / 100 : rb;
+      }
     } catch (e) {
       customers = demo ? seedCustomers : systemOnlyRows(seedCustomers);
       txs = demo ? seedTxs : [];
@@ -1508,10 +1530,12 @@
   }
 
   function invTotalRows(isSale, inv) {
-    const taxLabel = String(orgSettValue("tax_title", "") || "الضريبة").trim() || "الضريبة";
+    const taxLabel = String(orgSettValue("tax_title", "") || "ضريبة القيمة المضافة").trim() || "ضريبة القيمة المضافة";
     const rows = [{ label: "المجموع", value: fmt(inv.subTotal) + " ج.م" }];
     if (Number(inv.discountAmount)) rows.push({ label: "الخصم الإضافي", value: fmt(inv.discountAmount) + " ج.م" });
-    if ((inv.taxAmount > 0) || (TAX.enabled && TAX.rate > 0)) rows.push({ label: taxLabel, value: fmt(inv.taxAmount) + " ج.م" });
+    const taxOn = isSale ? TAX.enabled : TAX.buyEnabled;
+    const taxRate = isSale ? TAX.rate : TAX.rateBuy;
+    if ((inv.taxAmount > 0) || (taxOn && (Number(TAX.rateBuy) >= 0) && (isSale ? TAX.rate : TAX.rateBuy) > 0)) rows.push({ label: taxLabel, value: fmt(inv.taxAmount) + " ج.م" });
     const rt = retTotalsFor(isSale, inv);
     if (rt.count) {
       rows.push({ label: "الصافي النهائي", value: fmt(inv.grandTotal) + " ج.م" });
@@ -4119,7 +4143,7 @@
 
   function applyTaxSettingsFromSett(p) {
     if (p && p.org && p.org.tax_enabled !== undefined && p.org.tax_enabled !== null) {
-      applyTaxSettings(p.org.tax_enabled === true || p.org.tax_enabled === 1 || p.org.tax_enabled === "1", p.org.tax_rate);
+      applyTaxSettings(p.org.tax_enabled === true || p.org.tax_enabled === 1 || p.org.tax_enabled === "1", p.org.tax_rate, p.org.tax_buy_enabled, p.org.tax_rate_buy);
     }
   }
 
@@ -6134,7 +6158,7 @@
     if (grand < 0) grand = 0;
     const pct = getTaxPercent();
     $("#lblPosSubTotal").textContent = (TAX.enabled ? "المجموع: " : "الإجمالي: ") + fmt(sub) + " ج.م";
-    $("#lblPosTax").textContent = TAX.enabled ? ("ضريبة المبيعات (" + pct + "%): " + fmt(tax) + " ج.م") : "";
+    $("#lblPosTax").textContent = TAX.enabled ? ("ضريبة القيمة المضافة (" + pct + "%): " + fmt(tax) + " ج.م") : "";
     $("#lblPosTax").style.display = TAX.enabled ? "" : "none";
     $("#lblPosTax").hidden = !TAX.enabled;
     $("#lblPosTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الصافي: ") + fmt(grand) + " ج.م";
@@ -6724,7 +6748,7 @@
   function ppCalcRow(idx) {
     const it = ppItems[idx];
     const sub = Math.max(it.qty * it.price - it.discount, 0);
-    it.tax = TAX.enabled ? Math.round(sub * TAX.rate * 100) / 100 : 0;
+    it.tax = TAX.buyEnabled ? Math.round(sub * TAX.rateBuy * 100) / 100 : 0;
     it.total = Math.round((sub + it.tax) * 100) / 100;
   }
 
@@ -6740,11 +6764,11 @@
     const extra = parseFloat(String($("#txtPPDiscount").value).replace(/,/g, "")) || 0;
     let grand = Math.round((sub + tax - extra) * 100) / 100;
     if (grand < 0) grand = 0;
-    const pct = getTaxPercent();
-    $("#lblPPSubTotal").textContent = (TAX.enabled ? "المجموع: " : "الإجمالي: ") + fmt(sub) + " ج.م";
-    $("#lblPPTax").textContent = TAX.enabled ? ("ضريبة المبيعات (" + pct + "%): " + fmt(tax) + " ج.م") : "";
-    $("#lblPPTax").style.display = TAX.enabled ? "" : "none";
-    $("#lblPPTax").hidden = !TAX.enabled;
+    const pct = getTaxBuyPercent();
+    $("#lblPPSubTotal").textContent = (TAX.buyEnabled ? "المجموع: " : "الإجمالي: ") + fmt(sub) + " ج.م";
+    $("#lblPPTax").textContent = TAX.buyEnabled ? ("ضريبة القيمة المضافة (" + pct + "%): " + fmt(tax) + " ج.م") : "";
+    $("#lblPPTax").style.display = TAX.buyEnabled ? "" : "none";
+    $("#lblPPTax").hidden = !TAX.buyEnabled;
     $("#lblPPTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الصافي: ") + fmt(grand) + " ج.م";
     return { sub: sub, tax: tax, extra: extra, grand: grand };
   }
@@ -6763,7 +6787,7 @@
         '<td><input class="cell-input" data-f="qty" type="text" value="' + esc(it.qty) + '" /></td>' +
         '<td><input class="cell-input" data-f="price" type="text" value="' + fmt(it.price) + '" /></td>' +
         '<td><input class="cell-input" data-f="discount" type="text" value="' + fmt(it.discount) + '" /></td>' +
-        '<td class="c-tax' + (TAX.enabled ? '' : ' tax-hidden') + '"' + (TAX.enabled ? '' : ' style="display:none"') + '>' + fmt(it.tax) + '</td>' +
+        '<td class="c-tax' + (TAX.buyEnabled ? '' : ' tax-hidden') + '"' + (TAX.buyEnabled ? '' : ' style="display:none"') + '>' + fmt(it.tax) + '</td>' +
         '<td class="c-total">' + fmt(it.total) + '</td>' +
         '<td class="cell-actions"><button class="btn small red" type="button" data-f="del">❌</button></td>';
       tr.addEventListener("mouseenter", () => ppUpdateBadge(products.find((p) => Number(p.id) === Number(it.productId)) || null));
@@ -6902,7 +6926,7 @@
     $("#ppSuppPrint").textContent = inv.supplierName;
     $("#ppWhPrint").textContent = inv.warehouse;
     $("#ppPayPrint").textContent = inv.paymentMethod;
-    const hasTax = (inv.taxAmount > 0) || (TAX.enabled && TAX.rate > 0);
+    const hasTax = (inv.taxAmount > 0) || (TAX.buyEnabled && TAX.rateBuy > 0);
     const thTax = $("#thPPPrintTax");
     if (thTax) thTax.style.display = hasTax ? "" : "none";
     const tb = $("#ppBody");
@@ -9280,7 +9304,7 @@
       lines.push({ accountId: Number(due.id), debit: total, credit: 0 });
       lines.push({ accountId: Number(rev.id), debit: 0, credit: net });
       if (tax > 0) {
-        const tx = accByCode("2.1.2", "ضريبة");
+        const tx = accByCode("2.1.2", "المحصلة");
         if (!tx) return { error: "2.1.2" };
         lines.push({ accountId: Number(tx.id), debit: 0, credit: tax });
       }
@@ -9291,8 +9315,8 @@
       if (!pay) return { error: ajal ? "2.1.1" : "cash" };
       lines.push({ accountId: Number(stock.id), debit: net, credit: 0 });
       if (tax > 0) {
-        const tx = accByCode("2.1.2", "ضريبة");
-        if (!tx) return { error: "2.1.2" };
+        const tx = accByCode("2.1.3", "المدفوعة");
+        if (!tx) return { error: "2.1.3" };
         lines.push({ accountId: Number(tx.id), debit: tax, credit: 0 });
       }
       lines.push({ accountId: Number(pay.id), debit: 0, credit: total });
@@ -9317,7 +9341,8 @@
     if (err === "1.1.4") return "حساب «المخزون» (1.1.4) مش موجود في دليل حساباتك";
     if (err === "1.1.5") return "حساب «مديونيات العملاء» (1.1.5) مش موجود في دليل حساباتك";
     if (err === "2.1.1") return "حساب «مستحقات الموردين» (2.1.1) مش موجود في دليل حساباتك";
-    if (err === "2.1.2") return "حساب «ضريبة المبيعات المستحقة» (2.1.2) مش موجود في دليل حساباتك";
+    if (err === "2.1.2") return "حساب «ضريبة القيمة المضافة المحصلة» (2.1.2) مش موجود في دليل حساباتك";
+    if (err === "2.1.3") return "حساب «ضريبة القيمة المضافة المدفوعة» (2.1.3) مش موجود في دليل حساباتك";
     if (err === "cash") return "حساب النقدية/البنك/المحفظة مش موجود في دليل حساباتك";
     if (err === "amount") return "مبلغ الفاتورة مش صالح للترحيل";
     if (err === "unbalanced") return "الطرفان مش متزنيين";
@@ -9626,8 +9651,8 @@
     if (!partyAcc) return { error: refund ? "cash" : cfg.dueCode };
     const lineAcc = accByCode(cfg.lineCode, cfg.lineName);
     if (!lineAcc) return { error: cfg.lineCode };
-    const taxAcc = part.tax > 0 ? accByCode("2.1.2", "ضريبة") : null;
-    if (part.tax > 0 && !taxAcc) return { error: "2.1.2" };
+    const taxAcc = part.tax > 0 ? (kind === "sale" ? accByCode("2.1.2", "المحصلة") : accByCode("2.1.3", "المدفوعة")) : null;
+    if (part.tax > 0 && !taxAcc) return { error: kind === "sale" ? "2.1.2" : "2.1.3" };
     const lines = [];
     if (kind === "sale") {
       lines.push({ accountId: Number(lineAcc.id), debit: part.net, credit: 0 });
@@ -10196,7 +10221,7 @@
    * البنود اللي ليها مصدر حركي (خزائن/عملاء/موردون/مخزون/ضريبة) بتتحسب من الحركة نفسها، وحسابات الدليل
    * المقابلة ليها (BS_OPERATIONAL) بتتاستنى من المجموع عشان العد مرتين ما يحصلش.
    */
-  const BS_OPERATIONAL = ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "2.1.1", "2.1.2"];
+  const BS_OPERATIONAL = ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "2.1.1", "2.1.2", "2.1.3"];
   // 🆕 بناء 149 (سطر ٤): الاستبعاد يبقى **بالدور** مش بالنص الحرفي — أدلة 6 شركات بلا نقاط خالص
   // (111 صناديق / 115 مديونيات العملاء / 132 مستحقات الموردين / 133 ضريبة…) كانت بتتحسب
   // **مرتين** في المركز المالي: مرة من الحركة (خزائن/عملاء/موردين/أصناف) ومرة من الدليل،
@@ -10208,7 +10233,8 @@
     { codes: ["1.1.4", "114"], names: ["المخزون (بضاعة)", "المخزون"] },
     { codes: ["1.1.5", "115"], names: ["مديونيات العملاء"] },
     { codes: ["2.1.1", "132"], names: ["مستحقات الموردين"] },
-    { codes: ["2.1.2", "133"], names: ["ضريبة المبيعات المستحقة"] }
+    { codes: ["2.1.2", "133"], names: ["ضريبة القيمة المضافة المحصلة", "ضريبة المبيعات المستحقة"] },
+    { codes: ["2.1.3"], names: ["ضريبة القيمة المضافة المدفوعة"] }
   ];
   function bsIsOperational(a) {
     const c = String((a && a.code) || "");
@@ -10280,7 +10306,7 @@
       liabs: [
         {
           key: "cur", title: "📉 التزامات متداولة", short: "الالتزامات المتداولة",
-          rows: [["مستحقات الموردين", suppDebts], ["ضريبة المبيعات المستحقة", Math.max(taxLiability, 0)]].concat(bsLeaves("liability", ["2.1"], ["2.1", "2.2", "2.3", "2.4"]))
+          rows: [["مستحقات الموردين", suppDebts], ["ضريبة القيمة المضافة (الصافي)", Math.max(taxLiability, 0)]].concat(bsLeaves("liability", ["2.1"], ["2.1", "2.2", "2.3", "2.4"]))
         },
         {
           key: "non", title: "🏦 التزامات غير متداولة (قروض طويلة الأجل)", short: "الالتزامات غير المتداولة",
@@ -11157,11 +11183,18 @@
     const p = settPayload(prefix);
     const org = (p && p.org) || {};
     const en = org.tax_enabled === true || org.tax_enabled === "true" || org.tax_enabled === 1 || org.tax_enabled === "1";
+    const enBuy = org.tax_buy_enabled === true || org.tax_buy_enabled === "true" || org.tax_buy_enabled === 1 || org.tax_buy_enabled === "1";
     let rt = Number(org.tax_rate != null ? org.tax_rate : 0);
     if (rt > 0 && rt <= 1) rt = Math.round(rt * 100);
     else if (rt === 0 && settings.taxRate != null && en) {
       let sr = Number(settings.taxRate);
       rt = sr > 1 ? sr : Math.round(sr * 100);
+    }
+    let rtb = Number(org.tax_rate_buy != null ? org.tax_rate_buy : 0);
+    if (rtb > 0 && rtb <= 1) rtb = Math.round(rtb * 100);
+    else if (rtb === 0 && settings.taxRateBuy != null && enBuy) {
+      const sb = Number(settings.taxRateBuy);
+      rtb = sb > 1 ? sb : Math.round(sb * 100);
     }
     const g = (name, val) => { const el = settFieldEl(prefix, name); if (el) el.value = val == null ? "" : String(val); };
     g("setOrgName", org.name || "");
@@ -11170,7 +11203,9 @@
     g("setOrgVat", org.tax_number || "");
     g("setOrgNote", org.org_note || "");
     g("setTaxEnabled", en ? "1" : "0");
-    g("setTaxRate", rt || (en ? "14" : "0"));
+    g("setTaxRate", rt || "0");
+    g("setTaxBuyEnabled", enBuy ? "1" : "0");
+    g("setTaxRateBuy", rtb || "0");
     g("setTaxTitle", org.tax_title || "");
     g("setPaper", org.paper_size || "A4");
     g("setWarranty", org.warranty_terms || "");
@@ -11198,6 +11233,10 @@
     if (taxSel !== null) org.tax_enabled = (taxSel === "1");
     const rawRateStr = v("setTaxRate");
     if (rawRateStr !== null) org.tax_rate = parseFloat(String(rawRateStr).replace(/[^\d.-]/g, "")) || 0;
+    const taxBuySel = v("setTaxBuyEnabled");
+    if (taxBuySel !== null) org.tax_buy_enabled = (taxBuySel === "1");
+    const rawBuyStr = v("setTaxRateBuy");
+    if (rawBuyStr !== null) org.tax_rate_buy = parseFloat(String(rawBuyStr).replace(/[^\d.-]/g, "")) || 0;
     put("tax_title", "setTaxTitle");
     const paper = v("setPaper");
     org.paper_size = paper || org.paper_size || "A4";
@@ -11512,7 +11551,7 @@
         settMarkLoaded("c", csetData);
         if (csetData && csetData.org) {
           if (csetData.org.tax_enabled !== undefined && csetData.org.tax_enabled !== null) {
-            applyTaxSettings(csetData.org.tax_enabled, csetData.org.tax_rate);
+            applyTaxSettings(csetData.org.tax_enabled, csetData.org.tax_rate, csetData.org.tax_buy_enabled, csetData.org.tax_rate_buy);
           }
           // مرآة محلية: الفاتورة تقرأ بيانات المنشأة واختيار «على الفاتورة» من نفس المصدر
           try { mirrorOrgToSettings(csetData.org); } catch (e) {}
@@ -11548,7 +11587,7 @@
     // وضع بلا شبكة: هيكل محلي للقراءة/العرض فقط — **مش محمّل من السحابة** ⇒ ممنوع يترفع
     settMarkFailed("c", "لا يوجد اتصال بالسحابة");
     csetData = {
-      org: { name: settings.orgName || "", phone: settings.orgPhone || "", address: settings.orgAddress || "", tax_number: settings.orgVat || "", org_note: settings.orgNote || "", tax_enabled: !!settings.taxEnabled, tax_rate: Math.round((settings.taxRate || 0) * 100), tax_title: "", paper_size: settings.paperSize || "A4", warranty_terms: settings.orgWarranty || "", invoice_fields: normalizeInvFields(settings.invFields) },
+      org: { name: settings.orgName || "", phone: settings.orgPhone || "", address: settings.orgAddress || "", tax_number: settings.orgVat || "", org_note: settings.orgNote || "", tax_enabled: !!settings.taxEnabled, tax_rate: Math.round((settings.taxRate || 0) * 100), tax_buy_enabled: !!settings.taxBuyEnabled, tax_rate_buy: Math.round((settings.taxRateBuy || 0) * 100), tax_title: "", paper_size: settings.paperSize || "A4", warranty_terms: settings.orgWarranty || "", invoice_fields: normalizeInvFields(settings.invFields) },
       categories: [], units: withProtectedUnits([]), warehouses: [], owners: [], wallets: [], banks: []
     };
     try {
@@ -11578,7 +11617,7 @@
       return;
     }
     const doAfter = () => {
-      applyTaxSettings(payload.org.tax_enabled, payload.org.tax_rate);
+      applyTaxSettings(payload.org.tax_enabled, payload.org.tax_rate, payload.org.tax_buy_enabled, payload.org.tax_rate_buy);
       mirrorOrgToSettings(payload.org);
       addActivity("إعدادات", "تعديل إعدادات المؤسسة");
       // اللي اترفع فعلًا يتشال من نسخة الجهاز، واللي لسه معلّق يفضل ظاهر في اللافتة
@@ -11662,7 +11701,7 @@
     }
     const after = () => {
       if (payload.org) {
-        applyTaxSettings(payload.org.tax_enabled, payload.org.tax_rate);
+        applyTaxSettings(payload.org.tax_enabled, payload.org.tax_rate, payload.org.tax_buy_enabled, payload.org.tax_rate_buy);
         // المرآة المحلية بتاعة الفاتورة بتاعة «شاشة العميل بشركته» بس —
         // مفيش منطق إن إعدادات شركة تانية تدخل في إعدادات المالك المحلي.
         if (prefix === "c") mirrorOrgToSettings(payload.org);
@@ -13869,7 +13908,7 @@ const pwEye = document.getElementById("btnShowPass");
           const org = DATA && DATA.org ? DATA.org() : null;
           if (org) {
             if (org.tax_enabled !== undefined && org.tax_enabled !== null) {
-              applyTaxSettings(org.tax_enabled, org.tax_rate);
+              applyTaxSettings(org.tax_enabled, org.tax_rate, org.tax_buy_enabled, org.tax_rate_buy);
             }
           }
           saveSettings();
