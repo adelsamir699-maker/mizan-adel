@@ -9248,10 +9248,11 @@
       a = accounts.find((x) => x && x.isActive !== false && String(x.code || "").indexOf(".") < 0 && String(x.code) === bare);
       if (a) return a;
     }
-    // (ج) مرادفات معروفة للأدلة بلا نقاط (ترقيم السحابة: 13=الالتزامات، 132=مستحقات الموردين، 21=إيرادات المبيعات)
-    //     بتشتغل في الدليل اللي مافيهوش أي نقطة خالص، عشان ما تخمش حساب في دليل بالنقاط
-    const dotFree = accounts.length > 0 && !accounts.some((x) => x && String(x.code || "").indexOf(".") >= 0);
-    const ALIAS = dotFree ? {
+    // (ج) مرادفات ترقيم السحابة بلا نقاط (13=الالتزامات، 132=مستحقات الموردين، 21=إيرادات المبيعات) —
+    //     بتشتغل في أي دليل فيه حساب مجرّد (بلا نقاط خالص أو مختلط)، وبتلاقي حساب المجرّد بس،
+    //     عشان عمرها ما تخمّش حساب منقّط في دليل بالنقاط
+    const hasBare = accounts.some((x) => { const c = String(x.code || ""); return c.indexOf(".") < 0 && /^\d{2,}$/.test(c); });
+    const ALIAS = hasBare ? {
       "1.1": ["11"], "1.1.1": ["111"], "1.1.2": ["112"], "1.1.3": ["113"], "1.1.4": ["114"], "1.1.5": ["115"],
       "2.1": ["131"], "2.1.1": ["132"], "2.1.2": ["133"],
       "3.1": ["141"], "3.2": ["142"], "4.1": ["21"], "5.1": ["31"]
@@ -9259,7 +9260,7 @@
     const al = ALIAS[String(code)];
     if (al) {
       for (let i = 0; i < al.length; i++) {
-        a = accounts.find((x) => x && x.isActive !== false && String(x.code) === al[i]);
+        a = accounts.find((x) => x && x.isActive !== false && String(x.code) === al[i] && String(x.code || "").indexOf(".") < 0);
         if (a) return a;
       }
     }
