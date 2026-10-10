@@ -1243,14 +1243,32 @@
   function addActivity(action, desc) {
     const d = new Date();
     const p = (x) => String(x).padStart(2, "0");
+    // 🆕 بناء 154: تاريخ كامل + اسم الحساب الحقيقي (مش «admin» ثابت) —
+    // وبيتسجّل على السحابة كمان (سجل مشترك لكل الشركة، ترقية 28).
+    const ts = p(d.getFullYear()) + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " +
+      p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+    const user = activityUser();
     activity.unshift({
-      ts: p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()),
-      user: "admin",
+      ts: ts,
+      user: user,
       action: action,
       desc: desc
     });
-    if (activity.length > 200) activity.length = 200;
+    if (activity.length > 500) activity.length = 500;
     saveActivity();
+    try {
+      if (window.DATA && DATA.logActivity) DATA.logActivity(action, desc);
+    } catch (e) { /* السجل المحلي كفاية لو السحابة مش متاحة */ }
+  }
+  // اسم صاحب الحساب الحالي لعرضه في سجل الإجراءات (الاسم الكامل ثم اليوزر ثم البريد).
+  function activityUser() {
+    try {
+      var DE = window.DATA || {};
+      var p = (DE.me && DE.me()) || (DE.getProfile && DE.getProfile()) || null;
+      if (p) return p.full_name || p.username || p.name || "";
+      if (DE.email && DE.email()) return DE.email();
+    } catch (e) { }
+    return "admin";
   }
 
   function saveCustomers() {
@@ -8636,6 +8654,9 @@
     }
     lazyRelease("journal");
     const q = normalizeAr($("#txtJournalSearch").value);
+    // 🆕 بناء 154: «معكوس» تُشتق من وجود قيد عكسي مربوط (ref_id = "RV:"+id) —
+    // الرابط يتخزن على السحابة (ref_type/ref_id) فيفضل صحيح بعد أي تنزيل ومن أي جهاز.
+    const revSet = jrnReversedIds();
     const list = journalEntries.filter((j) => {
       if (!q) return true;
       return normalizeAr(j.number).includes(q) || normalizeAr(j.desc).includes(q) || normalizeAr(j.ref).includes(q);
@@ -8645,6 +8666,9 @@
       // 🆕 بناء 123: القيد اللي على شجرة الإيرادات أخضر، واللي على المصروفات أحمر،
       // والاختلاط المتوازن ما يتلونش (مافيش لون على تخمين)
       const jdir = jrnDir(j);
+      // 🆕 بناء 154: القيد اللي اتعمله قيد عكسي يتعلّم (↩️ معكوس) ويتشطب بصريًا
+      const revd = revSet.has(Number(j.id));
+      const refTxt = String(j.ref || "") + (revd ? " ↩️ معكوس" : "");
       tr.innerHTML =
         '<td hidden></td>' +
         '<td>' + esc(j.number) + '</td>' +
@@ -8652,25 +8676,126 @@
         '<td style="text-align:right">' + esc(j.desc) + '</td>' +
         amtTd(j.debit, jdir) +
         amtTd(j.credit, jdir) +
-        '<td>' + esc(j.ref) + '</td>';
-      tr.addEventListener("dblclick", () => {
-        if (confirm("هل تريد طباعة كشف القيد رقم (" + j.number + ")؟")) {
-          printStatementDoc({
-            name: "قيد يومية " + j.number,
-            code: j.ref,
-            range: j.date,
-            balance: 0,
-            rows: [
-              { date: j.date, desc: "إجمالي المديون (قيد " + j.number + ")", debit: j.debit, credit: 0, balance: j.debit },
-              { date: j.date, desc: "إجمالي الدائن (قيد " + j.number + ")", debit: 0, credit: j.credit, balance: 0 }
-            ]
-          });
-        }
-      });
+        '<td>' + esc(refTxt) + '</td>';
+      if (revd) tr.classList.add("jrn-reversed");
+      tr.title = "اضغط ضغطتين على القيد لفتح قائمة (طباعة / حذف بعمل قيد عكسي)";
+      tr.addEventListener("dblclick", (ev) => jrnCtxMenu(ev, j));
       tbody.appendChild(tr);
     });
     if (!list.length) tbody.innerHTML = '<tr><td colspan="7">لا توجد قيود بعد.</td></tr>';
   }
+
+  /* ================== 🆕 بناء 154: حذف القيد بعمل قيد عكسي (الضغطتان) ==================
+     أمر المالك الحرفي: «حذف قيد معمول بالخطأ» + قرار التصميم: «صاحب المؤسسه يباه معه
+     هو الحذف دى شركته و هو حر فيها بس برده يكون فى شاشه مسجل بها الاجراء و مين عمله».
+     القواعد:
+       • **ممنوع حذف حقيقي:** الحذف = قيد عكسي متزن (يعكس مدين/دائن كل سطر) — كده
+         الأرصدة ترجع بالملّيمة والسجل يفضل يعرف إيه اللي حصل (بلا فقدان أثر).
+       • **مين يقدر:** صاحب الشركة أو المالك (`canDeleteJournal`) — زي بوابة «القيود اليومية».
+       • **الربط يتخزن:** القيد العكسي `ref_type="قيد عكسي"` و`ref_id="RV:"+أصلid` —
+         الاتنين على السحابة (journal_entries.ref_type/ref_id) ⇒ «معكوس» تفضل صحيحة
+         بعد أي تنزيل ومن أي جهاز، والحذف المكرر مستحيل (فحص `jrnReversedIds`).
+       • **ممنوع قيد عكسي «يتيم»:** لو القيد أصله مربوط بسند/فاتورة/حركة واتحذف من
+         دوال الحذف، بنشيل قيده العكسي معه جوّه نفس الدالة (`removeVoucherJournal`/
+         `removeInvoiceJournal`) فما تفضلش أرصدة مقلوبة بلا أصل. */
+  function isJrnReversal(j) {
+    return !!j && (String(j.refType || "") === "قيد عكسي" || String(j.ref || "") === "قيد عكسي");
+  }
+  function jrnReversalOf(j) {
+    if (!j) return null;
+    const key = "RV:" + Number(j.id);
+    return journalEntries.find((x) => x && String(x.refId || "") === key) || null;
+  }
+  function jrnReversedIds() {
+    const set = new Set();
+    journalEntries.forEach((x) => {
+      const id = String((x && x.refId) || "");
+      if (isJrnReversal(x) && /^RV:\d+$/.test(id)) set.add(Number(id.slice(3)));
+    });
+    return set;
+  }
+  function canDeleteJournal() {
+    return isSuperAcct() || isCompanyOwnerAcct();
+  }
+  function printJournalEntry(j) {
+    printStatementDoc({
+      name: "قيد يومية " + j.number,
+      code: j.ref,
+      range: j.date,
+      balance: 0,
+      rows: [
+        { date: j.date, desc: "إجمالي المديون (قيد " + j.number + ")", debit: j.debit, credit: 0, balance: j.debit },
+        { date: j.date, desc: "إجمالي الدائن (قيد " + j.number + ")", debit: 0, credit: j.credit, balance: 0 }
+      ]
+    });
+  }
+  function reverseJournalEntry(j) {
+    if (!j) return null;
+    if (isJrnReversal(j)) { toast("ده قيد عكسي أصلاً — ميتحذفش تاني.", "warning"); return null; }
+    if (jrnReversalOf(j)) { toast("القيد «" + j.number + "» اتعمله قيد عكسي بالفعل.", "warning"); return null; }
+    const lines = (j.lines || []).map((l) => ({ accountId: Number(l.accountId), debit: round2(l.credit), credit: round2(l.debit) }));
+    if (!lines.length) { toast("القيد بلا أسطر — ميتعكسش.", "warning"); return null; }
+    const rev = {
+      id: nextJournalId(),
+      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      date: todayISO(),
+      desc: "قيد عكسي للقيد " + j.number + " — " + (j.desc || ""),
+      ref: "قيد عكسي",
+      refType: "قيد عكسي",
+      refId: "RV:" + Number(j.id),
+      debit: round2(j.credit),
+      credit: round2(j.debit),
+      lines: lines
+    };
+    settleJrnLines(rev.lines, 1);
+    journalEntries.push(rev);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    addActivity("حذف قيد (قيد عكسي)", "عكس القيد " + j.number + " بقيد " + rev.number + " — " + (j.desc || "") + " — " + fmt(Number(j.debit) || 0) + " ج.م");
+    toast("تم عمل القيد العكسي «" + rev.number + "». القيد الأصلي «" + j.number + "» اتعلّم «معكوس».", "success");
+    return rev;
+  }
+  /* قائمة الضغطتين: بتتبني لحظيًا على body وتتقفل بأي كليك برّه / Escape / سكرول */
+  let jrnCtxEl = null;
+  function closeJrnCtx() {
+    if (jrnCtxEl) { try { jrnCtxEl.remove(); } catch (e) { } jrnCtxEl = null; }
+  }
+  function jrnCtxMenu(ev, j) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    closeJrnCtx();
+    const menu = document.createElement("div");
+    menu.className = "jrn-ctx";
+    const addRow = (label, cls, fn) => {
+      const b = document.createElement("div");
+      b.className = "jrn-ctx-item" + (cls ? " " + cls : "");
+      b.textContent = label;
+      b.addEventListener("click", (e) => { e.stopPropagation(); closeJrnCtx(); fn(); });
+      menu.appendChild(b);
+    };
+    addRow("🖨️ طباعة القيد", "", () => printJournalEntry(j));
+    if (canDeleteJournal()) {
+      if (jrnReversalOf(j)) addRow("↩️ معكوس بالفعل", "jrn-ctx-off", () => { });
+      else addRow("🗑️ حذف بعمل قيد عكسي", "jrn-ctx-danger", () => {
+        if (!confirm("هيتعمل «قيد عكسي» للقيد «" + j.number + "» (مش حذف نهائي) — الأرصدة هترجع زي قبل القيد. متأكد؟")) return;
+        reverseJournalEntry(j);
+      });
+    }
+    document.body.appendChild(menu);
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const rc = menu.getBoundingClientRect();
+    let x = (ev && (ev.clientX || ev.pageX)) || 0;
+    let y = (ev && (ev.clientY || ev.pageY)) || 0;
+    if (x + rc.width > vw - 8) x = vw - rc.width - 8;
+    if (y + rc.height > vh - 8) y = vh - rc.height - 8;
+    menu.style.left = Math.max(8, x) + "px";
+    menu.style.top = Math.max(8, y) + "px";
+    jrnCtxEl = menu;
+  }
+  document.addEventListener("click", closeJrnCtx);
+  document.addEventListener("scroll", closeJrnCtx, true);
+  window.addEventListener("resize", closeJrnCtx);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeJrnCtx(); });
 
   function openJournal() {
     journalEditingId = null;
@@ -9391,6 +9516,14 @@
     const i = journalEntries.findIndex((x) => x === j);
     if (i >= 0) journalEntries.splice(i, 1);
     JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(j.id) || 0);
+    // 🆕 بناء 154: نشيل القيد العكسي (لو موجود) مع أصله — ممنوع «قيد عكسي يتيم»
+    const rvKey = "RV:" + Number(j.id);
+    journalEntries.filter((x) => x && String(x.refId || "") === rvKey).forEach((x) => {
+      settleJrnLines(x.lines, -1);
+      const k = journalEntries.findIndex((y) => y === x);
+      if (k >= 0) journalEntries.splice(k, 1);
+      JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(x.id) || 0);
+    });
     persistJournal();
     saveAccounts();
     try { renderJournal(); } catch (e) { }
@@ -9914,6 +10047,14 @@
       if (i >= 0) journalEntries.splice(i, 1);
       JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(j.id) || 0);
       out.push(j);
+      // 🆕 بناء 154: نشيل القيد العكسي بتاع القيد ده معه (ممنوع «قيد عكسي يتيم»)
+      const rvKey = "RV:" + Number(j.id);
+      journalEntries.filter((x) => x && String(x.refId || "") === rvKey).forEach((x) => {
+        settleJrnLines(x.lines, -1);
+        const k = journalEntries.findIndex((y) => y === x);
+        if (k >= 0) journalEntries.splice(k, 1);
+        JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(x.id) || 0);
+      });
     });
     persistJournal();
     saveAccounts();
@@ -10936,24 +11077,47 @@
   }
 
   /* ================== سجل العمليات ================== */
+  // 🆕 بناء 154: السجل «مشترك» — يقرأ من جدول `audit_logs` السحابي (كل الشركة،
+  // كل الأجهزة، مين عمل إيه بحسابه)، ويرجع للسجل المحلي لو السحابة مش متاحة.
+  let auditCloudRows = null;
   function renderAudit() {
     const tbody = $("#dgvAudit tbody");
-    tbody.innerHTML = "";
     const q = normalizeAr($("#txtAuditSearch").value);
-    const list = activity.filter((a) => {
-      if (!q) return true;
-      return normalizeAr(a.ts).includes(q) || normalizeAr(a.user).includes(q) || normalizeAr(a.action).includes(q) || normalizeAr(a.desc).includes(q);
-    });
-    list.forEach((a) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML =
-        '<td>' + esc(a.ts) + '</td>' +
-        '<td>' + esc(a.user) + '</td>' +
-        '<td>' + esc(a.action) + '</td>' +
-        '<td style="text-align:right">' + esc(a.desc) + '</td>';
-      tbody.appendChild(tr);
-    });
-    if (!list.length) tbody.innerHTML = '<tr><td colspan="4">لا توجد عمليات.</td></tr>';
+    const draw = (rows) => {
+      const list = rows.filter((a) => {
+        if (!q) return true;
+        return normalizeAr(a.ts).includes(q) || normalizeAr(a.user).includes(q) || normalizeAr(a.action).includes(q) || normalizeAr(a.desc).includes(q);
+      });
+      tbody.innerHTML = "";
+      list.forEach((a) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td>' + esc(a.ts) + '</td>' +
+          '<td>' + esc(a.user) + '</td>' +
+          '<td>' + esc(a.action) + '</td>' +
+          '<td style="text-align:right">' + esc(a.desc) + '</td>';
+        tbody.appendChild(tr);
+      });
+      if (!list.length) tbody.innerHTML = '<tr><td colspan="4">لا توجد عمليات.</td></tr>';
+    };
+    const localRows = activity.map((a) => ({ ts: a.ts, user: a.user, action: a.action, desc: a.desc }));
+    draw((auditCloudRows && auditCloudRows.length) ? auditCloudRows : localRows);
+    // نحدّث من السحابة بعدين (بلا حجب الشاشة) — ولو الشاشة اتقفلت قبل ما توصل، نلغي الرسم
+    try {
+      if (window.DATA && DATA.listActivity) {
+        DATA.listActivity(500).then((rows) => {
+          if (!rows || !rows.length) return;
+          auditCloudRows = rows.map((r) => ({
+            ts: String(r.ts || "").replace("T", " ").slice(0, 19),
+            user: r.user_name || "—",
+            action: r.action || "",
+            desc: r.detail || ""
+          }));
+          const v = $("#viewAudit");
+          if (v && !v.hidden) draw(auditCloudRows);
+        }).catch(() => { });
+      }
+    } catch (e) { }
   }
 
   function exportAudit() {

@@ -2270,3 +2270,24 @@ td.c-tax.tax-hidden {
   #barcodePage.paper-thermal .bc-label { padding: 4px 2px; }
   #barcodePage.paper-thermal .statement-head { margin-bottom: 8px; }
 }
+
+/* 🆕 بناء 154 — القيد المعكوس + قائمة الضغطتين على القيد:
+   - .jrn-reversed: القيد اللي اتعمله قيد عكسي (شطب + بهتان) في «القيود اليومية».
+   - .jrn-ctx: قائمة عائمة (طباعة / حذف بعمل قيد عكسي) تظهر عند الضغط مرتين. */
+tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through; opacity: .72; }
+.jrn-ctx {
+  position: fixed; z-index: 4000; min-width: 220px; padding: 6px;
+  background: #fff; color: var(--text-primary, #0f172a);
+  border: 1px solid var(--border, #cbd5e1); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(2, 6, 23, .28);
+  font-size: 14px; user-select: none;
+}
+.jrn-ctx-item {
+  padding: 9px 12px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+}
+.jrn-ctx-item:hover { background: rgba(99, 102, 241, .14); }
+.jrn-ctx-danger { color: #b91c1c; }
+.jrn-ctx-danger:hover { background: rgba(185, 28, 28, .14); }
+.jrn-ctx-off { color: var(--text-secondary, #64748b); cursor: default; }
+.jrn-ctx-off:hover { background: transparent; }
+

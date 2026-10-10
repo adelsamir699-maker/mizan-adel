@@ -872,6 +872,26 @@ function changeMyPassword(oldPass, newPass) {
       return true;
     });
   }
+  // ---- 🆕 بناء 154: سجل الإجراءات المشترك (سحابي لكل الشركة) ----
+  // الكتابة عبر دالة SECURITY DEFINER `mizan_log_activity` (ترقية 28) — الشركة
+  // تُقرأ من هوية الحساب جوه القاعدة (بلا أي org_id من العميل)، والقراءة من
+  // `audit_logs` عبر RLS (نفس الشركة). failsafe: لو الحاجة ناقصة على السحابة
+  // بترجع false/[] بلا ما توقف التطبيق (السجل المحلي يفضل شغّال).
+  function logActivity(action, detail) {
+    if (!isOnline()) return Promise.resolve(false);
+    try {
+      return sb.rpc("mizan_log_activity", { p_action: action, p_detail: detail || null })
+        .then(function (r) { if (r.error) throw r.error; return true; })
+        .catch(function () { return false; });
+    } catch (e) { return Promise.resolve(false); }
+  }
+  function listActivity(limit) {
+    if (!isOnline()) return Promise.resolve([]);
+    return sb.from("audit_logs").select("ts, user_name, action, detail")
+      .order("ts", { ascending: false })
+      .limit(limit || 500)
+      .then(function (r) { if (r.error) throw r.error; return r.data || []; });
+  }
   // ---- المالك: تبويبات إعدادات أي شركة ----
   function adminSettLoad(orgId) {
     return sb.rpc("mizan_admin_sett_load", { p_org_id: orgId }).then(function (r) {
@@ -965,6 +985,8 @@ function changeMyPassword(oldPass, newPass) {
     saveClientSett: saveClientSett,
     clientExport: clientExport,
     clientRestore: clientRestore,
+    logActivity: logActivity,
+    listActivity: listActivity,
     adminSettLoad: adminSettLoad,
     adminSettSave: adminSettSave,
     orgInfo: orgInfo,
