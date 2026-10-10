@@ -8775,10 +8775,9 @@
       credit: c,
       lines: jrnLines.map((l) => ({ accountId: parseInt(l.accountId, 10), debit: parseFloat(l.debit) || 0, credit: parseFloat(l.credit) || 0 }))
     };
-    const dAccount = accounts.find((a) => a.id === j.lines[0].accountId);
-    const cAccount = accounts.find((a) => a.id === j.lines[j.lines.length - 1].accountId);
-    if (dAccount) dAccount.openingBalance = Math.round(((dAccount.openingBalance || 0) + d) * 100) / 100;
-    if (cAccount && cAccount.id !== dAccount.id) cAccount.openingBalance = Math.round(((cAccount.openingBalance || 0) - c) * 100) / 100;
+    // 🆕 بناء 152: توحيد التسوية على settleJrnLines (سطر-سطر) — بدل «أول سطر +إجمالي المدين
+    // وآخر سطر −إجمالي الدائن» اللي كان بيُهمل الأسطر الوسطى في القيود متعددة الأطراف.
+    settleJrnLines(j.lines, 1);
     journalEntries.push(j);
     persistJournal();
     saveAccounts();
@@ -9101,11 +9100,8 @@
       credit: amount,
       lines: lines
     };
-    // نفس تسوية saveJournal لأرصدة الدليل: الطرف المدين +، والدائن − (لو الحسابان مختلفان)
-    const dAcc = accounts.find((a) => Number(a.id) === lines[0].accountId);
-    const cAcc = accounts.find((a) => Number(a.id) === lines[lines.length - 1].accountId);
-    if (dAcc) dAcc.openingBalance = Math.round(((dAcc.openingBalance || 0) + amount) * 100) / 100;
-    if (cAcc && Number(cAcc.id) !== Number(dAcc.id)) cAcc.openingBalance = Math.round(((cAcc.openingBalance || 0) - amount) * 100) / 100;
+    // 🆕 بناء 152: نفس مصدر الحقيقة لتسوية أرصدة الدليل — settleJrnLines (سطر-سطر)
+    settleJrnLines(lines, 1);
     journalEntries.push(j);
     persistJournal();
     saveAccounts();
@@ -9179,10 +9175,8 @@
         credit: amount,
         lines: lines
       };
-      const dAcc = accounts.find((a) => Number(a.id) === lines[0].accountId);
-      const cAcc = accounts.find((a) => Number(a.id) === lines[lines.length - 1].accountId);
-      if (dAcc) dAcc.openingBalance = Math.round(((dAcc.openingBalance || 0) + amount) * 100) / 100;
-      if (cAcc && Number(cAcc.id) !== Number(dAcc.id)) cAcc.openingBalance = Math.round(((cAcc.openingBalance || 0) - amount) * 100) / 100;
+      // 🆕 بناء 152: نفس مصدر الحقيقة لتسوية أرصدة الدليل — settleJrnLines (سطر-سطر)
+      settleJrnLines(lines, 1);
       journalEntries.push(j);
       persistJournal();
       saveAccounts();
