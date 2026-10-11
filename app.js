@@ -9433,6 +9433,96 @@
     try { renderTreasury(); renderTreMoves(); } catch (e) { }
   }
 
+  /* 🆕 بناء 159 (طلب المالك 11/10): «إيداع/سحب أصحاب المؤسسة» — زرار بسيط لغير المحاسب:
+     يختار الشريك + الحساب (خزينة/بنك/محفظة) + المبلغ، والبرنامج يولّد القيد المحاسبي أوتوماتيك:
+       • إيداع: مدين «الخزينة/البنك/المحفظة» / دائن «رأس المال - الشريك» (حقوق الملكية تزيد).
+       • سحب: مدين «مسحوبات - الشريك» / دائن «الخزينة/البنك/المحفظة» (حقوق الملكية تنقص — وليست مصروفًا).
+     القيد بيتولّد من `postVoucherJournal` نفسه (مفتاح «VC:»+id السند) ⇒ مربوط بسنده: حذف السند يرجع قيده
+     ولا يتكرر، والمالك بيشوفه في «القيود اليومية» كسند قبض/صرف زي أي سند تاني. */
+  let ownerEntryMode = "deposit";
+  function ownerPartnerNames() {
+    const seen = {}, out = [];
+    cachedOwners().forEach((o) => {
+      const n = String((o && o.name) || "").trim();
+      if (!n || seen[n]) return;
+      if (o.is_active === false || o.is_active === "false") return;
+      seen[n] = 1; out.push(n);
+    });
+    return out;
+  }
+  function openOwnerEntry(mode) {
+    if (!simpleGate()) return;
+    ownerEntryMode = mode === "withdraw" ? "withdraw" : "deposit";
+    const dep = ownerEntryMode === "deposit";
+    $("#ownerTitle").textContent = dep ? "💵 إيداع أصحاب المؤسسة" : "💸 سحب أصحاب المؤسسة";
+    $("#lblOwnerTreasury").textContent = dep ? "إلى (يُقبض في): *" : "من (يُصرف من): *";
+    $("#btnSaveOwner").textContent = dep ? "💾 تسجيل الإيداع" : "💾 تسجيل السحب";
+    const sel = $("#ownerPartner");
+    sel.innerHTML = "";
+    const names = ownerPartnerNames();
+    if (!names.length) {
+      const ph = document.createElement("option");
+      ph.value = "";
+      ph.textContent = "— مفيش شركاء — ضيفهم من «إعدادات مؤسستك» ← «أصحاب المنشأة»";
+      sel.appendChild(ph);
+    } else {
+      names.forEach((n) => {
+        const o = document.createElement("option");
+        o.value = n;
+        o.textContent = n;
+        sel.appendChild(o);
+      });
+    }
+    $("#ownerAmount").value = "";
+    $("#ownerNotes").value = "";
+    $("#ownerDate").value = todayISO();
+    fillTreasurySelect("#ownerTreasury");
+    $("#ownerHint").textContent = dep
+      ? "✅ المبلغ هينزل فعليًا في الحساب اللي هتختاره، والبرنامج يسجّل السند والقيد تلقائيًا (رأس مال الشريك يزيد)."
+      : "✅ المبلغ هيطلع فعليًا من الحساب اللي هتختاره ويتسجّل «مسحوبات» على الشريك (مش مصروف)، والبرنامج يسجّل القيد تلقائيًا.";
+    rememberHintBase("#ownerHint");
+    wireLiveBalanceHint("owner", [{ amount: "#ownerAmount", treasury: "#ownerTreasury", hint: "#ownerHint", mode: () => (ownerEntryMode === "deposit" ? "income" : "expense") }]);
+    liveBalanceHint("#ownerAmount", "#ownerTreasury", "#ownerHint", ownerEntryMode === "deposit" ? "income" : "expense");
+    showModal("mOwnerEntry");
+    $("#ownerAmount").focus();
+  }
+  function saveOwnerEntry() {
+    if (!simpleGate()) return;
+    const dep = ownerEntryMode === "deposit";
+    const date = $("#ownerDate").value || todayISO();
+    const amount = Math.round((moneyVal("#ownerAmount") || 0) * 100) / 100;
+    const ownerName = String($("#ownerPartner").value || "").trim();
+    const tid = parseInt($("#ownerTreasury").value, 10);
+    const t = treasury.find((x) => Number(x.id) === tid);
+    if (!ownerName) { toast("اختار الشريك/صاحب المؤسسة — ولو مفيش، ضيفه من «إعدادات مؤسستك» ← «أصحاب المنشأة».", "warning"); return; }
+    if (!(amount > 0)) { toast("اكتب مبلغًا صحيحًا أكبر من الصفر.", "warning"); return; }
+    if (!t) { toast("اختار الحساب: خزينة نقدية أو بنك أو محفظة.", "warning"); return; }
+    try { ensurePartnerAccounts(); } catch (e) { }
+    const wantName = (dep ? OWN_CAP_PREFIX : OWN_WD_PREFIX) + ownerName;
+    const itemAcc = accounts.find((a) => a.type === "equity" && a.nameAr === wantName && a.isActive !== false);
+    if (!itemAcc) { toast("مافيش حساب للشريك ده — افتح «إعدادات مؤسستك» ← «أصحاب المنشأة» واحفظ القائمة مرة، وبعدها جرّب تاني.", "error"); return; }
+    if (!dep) {
+      const bal = round2(t.balance);
+      if (amount > bal) {
+        if (!confirm(shortfallText(t, amount) + "\n\nهل تريد المتابعة من «" + t.name + "» رغم ذلك؟")) return;
+      }
+    }
+    const note = $("#ownerNotes").value.trim();
+    const vDesc = (dep ? "إيداع أصحاب المؤسسة: " : "سحب أصحاب المؤسسة: ") + ownerName + (note ? " — " + note : "");
+    const v = { id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1, type: dep ? "in" : "out", treasuryId: Number(t.id), date: date, amount: amount, desc: vDesc };
+    vouchers.push(v);
+    saveVouchers();
+    recalculateTreasuryBalances();
+    postVoucherJournal(v, t, itemAcc);
+    hideModal("mOwnerEntry");
+    addActivity(dep ? "إيداع أصحاب المؤسسة" : "سحب أصحاب المؤسسة", vDesc + " (" + t.name + ")");
+    toast(dep ? "تم تسجيل الإيداع بنجاح." : "تم تسجيل السحب بنجاح.", "success");
+    try { renderJournal(); } catch (e) { }
+    try { renderLedger(); } catch (e) { }
+    try { renderChartTree(); } catch (e) { }
+    try { renderTreasury(); renderTreMoves(); } catch (e) { }
+  }
+
   function openTransferEntry() {
     if (!simpleGate()) return;
     $("#trAmount").value = "";
@@ -10270,6 +10360,36 @@
     return !!a && a.type === "equity" &&
       (String(a.nameAr || "").indexOf(OWN_CAP_PREFIX) === 0 || String(a.nameAr || "").indexOf(OWN_WD_PREFIX) === 0);
   }
+  /* 🆕 بناء 159 (قرار المالك 11/10): «أمسح أي حساب الشركة مش محتاجاه و رصيده صفر».
+     • الحسابات الأساسية/النظامية (الدليل القياسي + حسابات الشركاء + أي حساب أب) **محمية** — ماينفعش تتحذف.
+     • أي حساب تاني (بند فرعي أو حساب من إنشائك) يتحذف نهائيًا بشرطين: **رصيده صفر** و**مش مستخدم في أي قيد**. */
+  const STD_ACC_CODES = {
+    "1": 1, "1.1": 1, "1.1.1": 1, "1.1.2": 1, "1.1.3": 1, "1.1.4": 1, "1.1.5": 1, "1.3": 1, "1.3.1": 1,
+    "2": 1, "2.1": 1, "2.1.1": 1, "2.1.2": 1, "2.1.3": 1,
+    "3": 1, "3.1": 1, "3.2": 1, "3.3": 1, "4": 1, "4.1": 1, "5": 1, "5.1": 1, "5.2": 1
+  };
+  const STD_ACC_NAMES = {
+    "الأصول": "asset", "الأصول المتداولة": "asset", "الصناديق النقدية": "asset",
+    "البنوك والحسابات البنكية": "asset", "المحافظ الإلكترونية": "asset", "المخزون (بضاعة)": "asset",
+    "مديونيات العملاء": "asset", "الأصول الثابتة": "asset", "المباني والمعدات": "asset",
+    "الالتزامات": "liability", "الالتزامات المتداولة": "liability", "مستحقات الموردين": "liability",
+    "ضريبة القيمة المضافة المحصلة": "liability", "ضريبة القيمة المضافة المدفوعة": "liability",
+    "حقوق الملكية": "equity", "رأس المال": "equity", "الأرباح المحتجزة": "equity", "مسحوبات الشركاء": "equity",
+    "الإيرادات": "revenue", "إيرادات المبيعات": "revenue",
+    "المصروفات": "expense", "مصروفات عمومية وإدارية": "expense", "إيجارات وما شابه": "expense"
+  };
+  // الحساب الأساسي/النظامي: حسابات الشركاء + الدليل القياسي (بالكود أو بالاسم مع النوع عشان الشركات القديمة)
+  function isSystemAccount(a) {
+    if (!a) return false;
+    if (isPartnerAccount(a)) return true;
+    if (STD_ACC_CODES[String(a.code || "")]) return true;
+    return STD_ACC_NAMES[String(a.nameAr || "")] === a.type;
+  }
+  // رصيد حساب واحد بإشارته الطبيعية (نفس معنى الرصيد الجاري المحفوظ في openingBalance)
+  function accOwnBalance(a) {
+    const n = (Number(a.openingBalance) || 0) * (a.type === "asset" || a.type === "expense" ? 1 : -1);
+    return Math.round(n * 100) / 100;
+  }
   let chartTreeBound = false;
   function chartTreeBind() {
     if (chartTreeBound) return;
@@ -10287,14 +10407,16 @@
     if (!simpleGate()) return;
     const a = accounts.find((x) => Number(x.id) === Number(id));
     if (!a) return;
-    const uses = journalEntries.reduce((m, j) => m + ((j.lines || []).some((l) => Number(l.accountId) === Number(a.id)) ? 1 : 0), 0);
-    if (uses) { toast("ممنوع حذف بند مستخدم في القيود («" + a.nameAr + "» عليه " + uses + " قيد).", "error"); return; }
-    if (!confirm("حذف البند «" + a.nameAr + "»؟ لن يؤثر على أي قيد محفوظ.")) return;
+    if (isSystemAccount(a)) { toast("الحساب «" + a.nameAr + "» من الحسابات الأساسية — ماينفعش يتحذف.", "error"); return; }
+    if (accountHasActivity(a.id)) { toast("ممنوع حذف بند مستخدم في القيود («" + a.nameAr + "» عليه قيود مسجّلة).", "error"); return; }
+    const bal = accOwnBalance(a);
+    if (Math.abs(bal) > 0.009) { toast("ماينفعش تحذف «" + a.nameAr + "» لأن رصيده " + fmt(bal) + " مش صفر.", "warning"); return; }
+    if (!confirm("حذف الحساب «" + a.nameAr + "» نهائيًا؟ رصيده صفر ومش مستخدم في أي قيد.")) return;
     const idx = accounts.findIndex((x) => Number(x.id) === Number(a.id));
     if (idx >= 0) accounts.splice(idx, 1);
     saveAccounts();
     renderChartTree();
-    toast("تم حذف البند «" + a.nameAr + "\".", "success");
+    toast("تم حذف الحساب «" + a.nameAr + "\".", "success");
   }
   // كشف حساب أي حساب (بما فيها حساب الشريك) = شاشة «كشف حساب الحسابات» نفسها (من/إلى + إجمالي الفرز)
   function openAccountStatement(code) {
@@ -10329,10 +10451,16 @@
     show.forEach((r) => {
       const a = r.a;
       const v = Number(r.total) || 0;
-      const isItem = (a.type === "expense" || a.type === "revenue") && Number(a.parentId) !== 0 && r.leaf;
+      const isSystem = isSystemAccount(a);
       let action = "";
       if (r.leaf) action += '<button class="btn small blue" type="button" data-cstmt="' + esc(a.code) + '">🔎 كشف</button>';
-      if (isItem) action += ' <button class="btn small red" type="button" data-cdel="' + a.id + '">🗑️</button>';
+      if (isSystem) {
+        // حسابات النظام (الدليل القياسي + الشركاء) محمية — قفل بلا حذف
+        action += ' <button class="btn small" type="button" disabled title="حساب أساسي/نظامي — ماينفعش يتحذف">🔒</button>';
+      } else if (r.leaf) {
+        // أي حساب مش نظامي ورقّة: الزرار بيظهر، والرفض برسالة واضحة لو رصيده مش صفر أو مستخدم في قيد
+        action += ' <button class="btn small red" type="button" data-cdel="' + a.id + '">🗑️</button>';
+      }
       const tr = document.createElement("tr");
       tr.innerHTML =
         '<td>' + esc(a.code) + '</td>' +
@@ -13974,6 +14102,11 @@
     $("#btnExpEntry").addEventListener("click", () => openSimpleEntry("expense"));
     $("#btnIncEntry").addEventListener("click", () => openSimpleEntry("income"));
     $("#btnTransferEntry").addEventListener("click", openTransferEntry);
+    // 🆕 بناء 159: أزرار «إيداع/سحب أصحاب المؤسسة» — قيد محاسبي أوتوماتيك لغير المحاسب
+    $("#btnOwnerDeposit").addEventListener("click", () => openOwnerEntry("deposit"));
+    $("#btnOwnerWithdraw").addEventListener("click", () => openOwnerEntry("withdraw"));
+    $("#btnSaveOwner").addEventListener("click", saveOwnerEntry);
+    $("#btnCancelOwner").addEventListener("click", () => hideModal("mOwnerEntry"));
     $("#btnSaveSimple").addEventListener("click", saveSimpleEntry);
     $("#btnCancelSimple").addEventListener("click", () => hideModal("mSimpleEntry"));
     $("#btnSaveTransfer").addEventListener("click", saveTransfer);
