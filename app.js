@@ -1642,8 +1642,10 @@
     treStmtPage: "كشف الخزينة",
     attReportPage: "تقرير الحضور والانصراف",
     fixedAssetsPage: "سجل الأصول الثابتة",
-    barcodePage: "ملصقات الباركود",
-    barcodeSmallPage: "ملصق باركود",
+    // 🔳 تعديل المالك (بناء 162): الملصق **بلا أي كتابة فوقه** — عنوان المستند فاضي
+    // عمدًا عشان «رأس الصفحة» بتاع المتصفح ما يطبعش أي كلام على ورق الملصق.
+    barcodePage: "",
+    barcodeSmallPage: "",
   };
   const PAPER_TITLE_FALLBACK = "مستند"; // بلا اسم منتج ولا اسم شخص
   let screenDocTitle = "";
@@ -1653,7 +1655,7 @@
   function enterPaperTitle(docId) {
     if (paperTitleOn) return;
     try { screenDocTitle = document.title; } catch (e) { screenDocTitle = ""; }
-    paperDocTitle = (docId && PRINT_DOC_TITLES[docId]) || PAPER_TITLE_FALLBACK;
+    paperDocTitle = (docId && Object.prototype.hasOwnProperty.call(PRINT_DOC_TITLES, docId)) ? PRINT_DOC_TITLES[docId] : PAPER_TITLE_FALLBACK;
     document.title = paperDocTitle;
     paperTitleOn = true;
   }
@@ -4184,8 +4186,11 @@
     printSection($("#barcodePage"));
   }
 
-  /* 🖨️ T2 (طلب المالك): طباعة ملصق باركود **بحجم صغير** من جوّه نافذة تعديل الصنف —
-     بياخد القيم المكتوبة في النافذة نفسها (قبل الحفظ كمان) وما بيغيّرش أي بيانات. */
+  /* 🖨️ T2 (طلب المالك): طباعة ملصق باركود **من جوّه نافذة تعديل الصنف** —
+     بياخد القيم المكتوبة في النافذة نفسها (قبل الحفظ كمان) وما بيغيّرش أي بيانات.
+     ⚠️ تعديل المالك (بناء 162): بدل ما يطبع فورًا، بيفتح **نفس نافذة الطباعة**
+     (#mBarcodePrint) اللي فيها **حجم الملصق** — عشان مقاس الملصق يبقى من مكان واحد
+     واضح، ويطبع على «كامل الورقة». */
   function printProductBarcodeSmall() {
     const code = bcDigits(String($("#fPBarcode").value || "").trim()) ||
       bcDigits(String($("#fPCode").value || "").trim());
@@ -4194,16 +4199,11 @@
       $("#fPBarcode").focus();
       return;
     }
-    // طلب المالك: الملصق **شرط + أرقام فقط** على ورقة 3.7×2.6 سم — بلا أي كتابة أو سعر.
-    const node = document.createElement("div");
-    node.className = "bc-label bc-label-sm";
-    node.innerHTML =
-      '<div class="bc-bars">' + barcodeSvg(code, bcLabelScale()) + '</div>' +
-      '<div class="bc-hrt">' + esc(code) + '</div>';
-    const box = $("#bcpsLabels");
-    box.innerHTML = "";
-    box.appendChild(node);
-    printSection($("#barcodeSmallPage"));
+    openBarcodePrint({
+      barcode: code,
+      nameAr: String($("#fPNameAr").value || "").trim(),
+      code: String($("#fPCode").value || ""),
+    });
   }
 
   /* ================== شاشة الأصناف والمخزون ================== */
