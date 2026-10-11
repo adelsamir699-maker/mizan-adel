@@ -41,6 +41,9 @@
   const LS_ATT_SETTINGS = "mizan_att_settings_v1";
   // 🆕 مهمة 98: سجل الأصول الثابتة (غير المتداولة / غير الملموسة)
   const LS_FIXED_ASSETS = "mizan_fixed_assets_v1";
+  // 🆕 شجرة الحسابات: نسخة محلية من «أصحاب المنشأة» — عشان حسابات الشركاء (رأس المال/المسحوبات)
+  // تتولّد وتتزامن من غير ما نحتاج نفتح شاشة الإعدادات. بتُمسح مع تبديل الشركة (تصفير العزل).
+  const LS_OWNERS = "mizan_owners_v1";
   /* 🧮 بناء 145 → 146: ورق «الجرد بالباركود» على جهاز العميل بس (مافيش جدول سحابي ومافيش ترقية).
      ⚠️ المفتاح **بره** `LS_ALL_KEYS` عندنا عمدًا، والسبب مقاس حيًّا (طلب المالك 06/10 ≈23:50:
      «مش بيحفظ ورقة الجرد»): `guardOrgSwitch()` بينادي `wipeLocalTables()` اللي بتمسح **كل**
@@ -55,7 +58,7 @@
     LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_ACTIVITY, LS_SALES, LS_TREASURY,
     LS_SUPPLIERS, LS_SUP_TXS, LS_PURCHASES, LS_ACCOUNTS, LS_JOURNAL,
     LS_USERS, LS_VOUCHERS, LS_SALE_RETURNS, LS_PURCHASE_RETURNS, LS_SETTINGS,
-    LS_EMPLOYEES, LS_ATTENDANCE, LS_ATT_SETTINGS, LS_FIXED_ASSETS
+    LS_EMPLOYEES, LS_ATTENDANCE, LS_ATT_SETTINGS, LS_FIXED_ASSETS, LS_OWNERS
   ];
   // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
@@ -284,6 +287,7 @@
     { id: 14, code: "3", nameAr: "حقوق الملكية", type: "equity", parentId: 0, openingBalance: 0, isActive: true },
     { id: 15, code: "3.1", nameAr: "رأس المال", type: "equity", parentId: 14, openingBalance: 0, isActive: true },
     { id: 16, code: "3.2", nameAr: "الأرباح المحتجزة", type: "equity", parentId: 14, openingBalance: 0, isActive: true },
+    { id: 23, code: "3.3", nameAr: "مسحوبات الشركاء", type: "equity", parentId: 14, openingBalance: 0, isActive: true },
     { id: 17, code: "4", nameAr: "الإيرادات", type: "revenue", parentId: 0, openingBalance: 0, isActive: true },
     { id: 18, code: "4.1", nameAr: "إيرادات المبيعات", type: "revenue", parentId: 17, openingBalance: 0, isActive: true },
     { id: 19, code: "5", nameAr: "المصروفات", type: "expense", parentId: 0, openingBalance: 0, isActive: true },
@@ -1635,7 +1639,7 @@
     // اسم الشركة من الضبط (لكل شركة على حدة) يظهر في كل صفحات الطباعة
     // ملاحظة: صفحتا الفاتورة (بيع/شراء) تملآن ترويستهما بنفسها احترامًا لصناديق «على الفاتورة».
     const org = invOrgName();
-    [["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"], ["bcpOrgName"], ["sckOrgName"]].forEach(([id]) => {
+    [["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"], ["bcpOrgName"], ["sckOrgName"], ["ctpOrgName"]].forEach(([id]) => {
       const x = document.getElementById(id);
       if (x) x.textContent = org;
     });
@@ -2254,6 +2258,7 @@
     if (name === "journal") { renderJournal(); renderLedger(); } // 🆕 بناء 115: + دفتر الحركة
     if (name === "accStatement") renderAccStatementView();      // 🆕 كشف حساب الحسابات (من القيود)
     if (name === "balance") renderBalance();
+    if (name === "chartTree") renderChartTree(); // 🆕 شجرة الحسابات (تبويب مستقل في التقارير والمركز المالي)
     // 🆕 مهمة 98: سجل الأصول الثابتة — الربط مرة واحدة ثم الرسم
     if (name === "fixedAssets") { fixedBindOnce(); renderFixedAssets(); }
     // 🧮 بناء 145: الجرد بالباركود — المخزن + الورقة الحالية + حساب الفروق، وكلها من الجهاز
@@ -9736,7 +9741,10 @@
     const side = mode === "in" ? "revenue" : "expense";
     const leaves = accounts.filter(jrnAccLeaf);
     const typed = leaves.filter((a) => a.type === side);
-    return (typed.length ? typed : leaves)
+    // 🆕 شجرة الحسابات: طرف السند يقبل حساب الشريك كذلك — رأس المال عند القبض، والمسحوبات عند الصرف
+    const equity = leaves.filter((a) => a.type === "equity");
+    const combo = typed.concat(equity);
+    return (combo.length ? combo : leaves)
       .slice()
       .sort((a, b) => String(a.code).localeCompare(String(b.code), "en"));
   }
@@ -10018,55 +10026,210 @@
     });
   }
 
-  /* ---- تبويب «بنود المصروفات والإيرادات» في إعدادات مؤسستك (بناء 115) ---- */
-  function renderCItems() {
-    const box = $("#cGridItems");
-    if (!box) return;
-    const usedCount = {};
-    journalEntries.forEach((j) => {
-      (j.lines || []).forEach((l) => {
-        const k = Number(l.accountId);
-        usedCount[k] = (usedCount[k] || 0) + 1;
-      });
+  /* ================== 🆕 شجرة الحسابات + مسحوبات الشركاء ==================
+     طلب المالك (11/10): «تبويب مستقل في (التقارير والمركز المالي) يضم شجرة الحسابات طبقًا للفروع
+     اللي سجلها، وتُنقل إليه بنود المصروفات والإيرادات، ويتضاف معهم مسحوبات الشركاء — لأنها مش مصروف
+     ولا إيراد، هي خصم من الأرباح، ويتعمل لكل شريك كشف حساب بفترة (تاريخين) وإجمالي حسب الفرز».
+     التنفيذ:
+       • شجرة الحسابات كاملة بالأكواد + **الرصيد المجمّع** لكل حساب (الحساب + فروعه) من `bsLedgerValue`
+         (اللي بيحسب الرصيد الجاري لكل حساب)، مع بحث وإخفاء/إظهار الفرعيات.
+       • بنود المصروفات والإيرادات **انتقلت** من «إعدادات مؤسستك» للتبويب ده (نفس المنطق والمصدر).
+       • أصحاب المنشأة → لكل شريك حسابان تحت حقوق الملكية: «رأس المال - <الاسم>» (٣.١) و
+         «مسحوبات - <الاسم>» (٣.٣)؛ ورأسماله/مسحوباته المسجّلة في الإعدادات تتحوّل أرصدةً افتتاحيةً على حسابيه.
+       • المسحوبات تُسجَّل بسند صرف طرفه حساب الشريك ⇒ الخزينة تنقص وحقوق الملكية تنقص، و**ليست مصروفًا**
+         فلا تدخل معادلة الربح (استُثنيت سندات الشريك في `balanceSheetData`).
+     ⛔ مفيش ترقية سحابية: الحسابات بتُنشأ على الجهاز وبتتزامن عبر `pushTable("accounts")` — نفس نمط
+     بنود ١١٥ — فالعزل بين الشركات سليم والحساب الجديد (٣.٣) بيوصل لكل الشركات من غير SQL. */
+  const OWN_CAP_PREFIX = "رأس المال - ";
+  const OWN_WD_PREFIX = "مسحوبات - ";
+  function cacheOwners(list) { try { localStorage.setItem(LS_OWNERS, JSON.stringify(list || [])); } catch (e) {} }
+  function cachedOwners() { try { return JSON.parse(localStorage.getItem(LS_OWNERS) || "[]") || []; } catch (e) { return []; } }
+  function equityRootAcc() { return accounts.find((a) => a && a.type === "equity" && Number(a.parentId) === 0) || null; }
+  function equityAccountByCode(code, name) {
+    return accounts.find((a) => a && a.type === "equity" && String(a.code) === String(code)) ||
+      accounts.find((a) => a && a.type === "equity" && name && a.nameAr === name && Number(a.parentId) !== 0) || null;
+  }
+  function nextChildCode(parent, fallbackBase) {
+    const base = String((parent && parent.code) || fallbackBase);
+    let n = 1;
+    accounts.forEach((a) => {
+      if (Number(a.parentId) !== Number(parent && parent.id)) return;
+      const c = String(a.code || "");
+      if (c.indexOf(base + ".") !== 0) return;
+      const num = parseInt(c.slice(base.length + 1), 10);
+      if (!isNaN(num) && num >= n) n = num + 1;
     });
-    box.innerHTML = "";
-    const tbl = document.createElement("table");
-    tbl.className = "dgv";
-    tbl.innerHTML = '<thead><tr><th style="width:12%">الكود</th><th style="width:40%">البند</th><th style="width:14%">النوع</th><th style="width:16%">مستخدم في قيود</th><th style="width:18%">حذف</th></tr></thead>';
-    const tb = document.createElement("tbody");
-    const items = accounts.filter((a) => (a.type === "expense" || a.type === "revenue") && Number(a.parentId) !== 0 &&
-      !accounts.some((x) => Number(x.parentId) === Number(a.id)));
-    items.forEach((a) => {
-      const tr = document.createElement("tr");
-      const n = usedCount[Number(a.id)] || 0;
-      tr.innerHTML = '<td>' + esc(a.code) + '</td><td style="text-align:right">' + esc(a.nameAr) + (a.isActive ? '' : ' 🔴') + '</td><td>' + (a.type === "revenue" ? "إيراد" : "مصروف") + '</td><td>' + (n ? n + " حركة" : "—") + '</td>';
-      const td = document.createElement("td");
-      const btn = document.createElement("button");
-      btn.className = "btn small red"; btn.type = "button"; btn.textContent = "🗑️ حذف";
-      btn.addEventListener("click", () => {
-        if (!simpleGate()) return;
-        const uses = journalEntries.reduce((m, j) => m + ((j.lines || []).some((l) => Number(l.accountId) === Number(a.id)) ? 1 : 0), 0);
-        if (uses) { toast("ممنوع حذف بند مستخدم في القيود («" + a.nameAr + "» عليه " + uses + " قيد).", "error"); return; }
-        if (!confirm("حذف البند «" + a.nameAr + "»؟ لن يؤثر على أي قيد محفوظ.")) return;
-        const idx = accounts.findIndex((x) => Number(x.id) === Number(a.id));
-        if (idx >= 0) accounts.splice(idx, 1);
-        saveAccounts();
-        renderCItems();
-        toast("تم حذف البند «" + a.nameAr + "\".", "success");
+    return base + "." + n;
+  }
+  function accountHasActivity(id) {
+    return journalEntries.some((j) => (j.lines || []).some((l) => Number(l.accountId) === Number(id)));
+  }
+  // إنشاء/تحديث حسابات الشركاء من قائمة «أصحاب المنشأة» — غير هدّامة (بتنشئ مرة، وبتحفظ الرصيد الحيّ)
+  function ensurePartnerAccounts(list) {
+    const owners = Array.isArray(list) ? list : cachedOwners();
+    const root = equityRootAcc();
+    if (!root) return;
+    let capital = equityAccountByCode("3.1", "رأس المال");
+    if (!capital) {
+      capital = { id: nextAccountId(), code: nextChildCode(root, "3"), nameAr: "رأس المال", type: "equity", parentId: root.id, openingBalance: 0, isActive: true };
+      accounts.push(capital);
+    }
+    let drawings = equityAccountByCode("3.3", "مسحوبات الشركاء");
+    if (!drawings) {
+      drawings = { id: nextAccountId(), code: nextChildCode(root, "3"), nameAr: "مسحوبات الشركاء", type: "equity", parentId: root.id, openingBalance: 0, isActive: true };
+      accounts.push(drawings);
+    }
+    const keep = {};
+    (owners || []).forEach((o) => {
+      const name = String((o && o.name) || "").trim();
+      if (!name) return;
+      const active = !(o.is_active === false || o.is_active === "false");
+      const capName = OWN_CAP_PREFIX + name, wdName = OWN_WD_PREFIX + name;
+      keep[capName] = 1; keep[wdName] = 1;
+      const cap = ensurePartnerLeaf(capital, capName, -Math.abs(Number(o.capital) || 0));
+      const wd = ensurePartnerLeaf(drawings, wdName, Math.abs(Number(o.withdrawals) || 0));
+      cap.isActive = active; wd.isActive = active;
+    });
+    // شركاء اتشالوا: حساباتهم تتوقف (مش تتشال — الحركة التاريخية تفضل وتظهر في المركز المالي)
+    accounts.forEach((a) => {
+      if (!a || a.type !== "equity") return;
+      if (Number(a.parentId) !== Number(capital.id) && Number(a.parentId) !== Number(drawings.id)) return;
+      const n = String(a.nameAr || "");
+      if ((n.indexOf(OWN_CAP_PREFIX) === 0 || n.indexOf(OWN_WD_PREFIX) === 0) && !keep[n]) a.isActive = false;
+    });
+    saveAccounts();
+  }
+  function ensurePartnerLeaf(parent, name, opening) {
+    let a = accounts.find((x) => x && x.type === "equity" && Number(x.parentId) === Number(parent.id) && x.nameAr === name);
+    if (!a) {
+      a = { id: nextAccountId(), code: nextChildCode(parent, "3"), nameAr: name, type: "equity", parentId: parent.id, openingBalance: 0, isActive: true };
+      accounts.push(a);
+    }
+    // الرصيد الافتتاحي = رأس المال/المسحوبات المسجّلة للشريك، وبيتثبّت مرة واحدة:
+    // لو الحساب عليه حركة فعلية يبقى الرصيد «حيّ» ومينفعش نكتب فوقه (منع فقد أي حركة).
+    if (!accountHasActivity(a.id)) a.openingBalance = Math.round((Number(opening) || 0) * 100) / 100;
+    return a;
+  }
+  function chartTypeLabel(t) {
+    return t === "asset" ? "أصول" : t === "liability" ? "التزامات" : t === "equity" ? "حقوق ملكية" : t === "revenue" ? "إيرادات" : "مصروفات";
+  }
+  // سطور الشجرة: عمق كل حساب + الرصيد المجمّع (الحساب + كل فروعه) بإشارته الطبيعية
+  function chartTreeRows() {
+    const byParent = {};
+    accounts.forEach((a) => { if (a) { const p = Number(a.parentId) || 0; (byParent[p] = byParent[p] || []).push(a); } });
+    const sortFn = (a, b) => String(a.code || "").localeCompare(String(b.code || ""), undefined, { numeric: true });
+    Object.keys(byParent).forEach((k) => byParent[k].sort(sortFn));
+    const sub = {};
+    function calc(a) {
+      let s = bsLedgerValue(a);
+      (byParent[Number(a.id)] || []).forEach((c) => { s += calc(c); });
+      sub[a.id] = Math.round(s * 100) / 100;
+      return s;
+    }
+    const roots = accounts.filter((a) => a && (!Number(a.parentId) || !accounts.some((x) => Number(x.id) === Number(a.parentId)))).sort(sortFn);
+    roots.forEach(calc);
+    const rows = [];
+    function walk(a, depth) {
+      rows.push({ a: a, depth: depth, total: sub[a.id] || 0, leaf: !(byParent[Number(a.id)] || []).length });
+      (byParent[Number(a.id)] || []).forEach((c) => walk(c, depth + 1));
+    }
+    roots.forEach((r) => walk(r, 0));
+    return rows;
+  }
+  function isPartnerAccount(a) {
+    return !!a && a.type === "equity" &&
+      (String(a.nameAr || "").indexOf(OWN_CAP_PREFIX) === 0 || String(a.nameAr || "").indexOf(OWN_WD_PREFIX) === 0);
+  }
+  let chartTreeBound = false;
+  function chartTreeBind() {
+    if (chartTreeBound) return;
+    const tb = $("#dgvChartTree tbody");
+    if (!tb) return;
+    chartTreeBound = true;
+    tb.addEventListener("click", (e) => {
+      const del = e.target.closest ? e.target.closest("[data-cdel]") : null;
+      if (del) { deleteChartItem(Number(del.getAttribute("data-cdel"))); return; }
+      const st = e.target.closest ? e.target.closest("[data-cstmt]") : null;
+      if (st) { openAccountStatement(st.getAttribute("data-cstmt")); return; }
+    });
+  }
+  function deleteChartItem(id) {
+    if (!simpleGate()) return;
+    const a = accounts.find((x) => Number(x.id) === Number(id));
+    if (!a) return;
+    const uses = journalEntries.reduce((m, j) => m + ((j.lines || []).some((l) => Number(l.accountId) === Number(a.id)) ? 1 : 0), 0);
+    if (uses) { toast("ممنوع حذف بند مستخدم في القيود («" + a.nameAr + "» عليه " + uses + " قيد).", "error"); return; }
+    if (!confirm("حذف البند «" + a.nameAr + "»؟ لن يؤثر على أي قيد محفوظ.")) return;
+    const idx = accounts.findIndex((x) => Number(x.id) === Number(a.id));
+    if (idx >= 0) accounts.splice(idx, 1);
+    saveAccounts();
+    renderChartTree();
+    toast("تم حذف البند «" + a.nameAr + "\".", "success");
+  }
+  // كشف حساب أي حساب (بما فيها حساب الشريك) = شاشة «كشف حساب الحسابات» نفسها (من/إلى + إجمالي الفرز)
+  function openAccountStatement(code) {
+    if (typeof acsGate === "function" && !acsGate()) return;
+    acsSelected = String(code);
+    const c = $("#acsCode"); if (c) c.value = "";
+    const n = $("#acsName"); if (n) n.value = "";
+    showView("accStatement");
+  }
+  function renderChartTree() {
+    try { ensurePartnerAccounts(); } catch (e) {}
+    const tb = $("#dgvChartTree tbody");
+    if (!tb) return;
+    chartTreeBind();
+    const rows = chartTreeRows();
+    const q = normalizeAr(String(($("#txtChartTreeSearch") || {}).value || ""));
+    let show = rows;
+    if (q) {
+      const byId = {};
+      accounts.forEach((a) => { if (a) byId[Number(a.id)] = a; });
+      const vis = {};
+      rows.forEach((r) => {
+        const hit = normalizeAr(String(r.a.code || "")).indexOf(q) >= 0 || normalizeAr(String(r.a.nameAr || "")).indexOf(q) >= 0;
+        if (!hit) return;
+        let cur = r.a;
+        while (cur) { vis[Number(cur.id)] = 1; cur = byId[Number(cur.parentId)]; }
       });
-      td.appendChild(btn);
-      tr.appendChild(td);
+      show = rows.filter((r) => vis[Number(r.a.id)]);
+    }
+    tb.innerHTML = "";
+    if (!show.length) { tb.innerHTML = '<tr><td colspan="5">لا توجد حسابات مطابقة.</td></tr>'; return; }
+    show.forEach((r) => {
+      const a = r.a;
+      const v = Number(r.total) || 0;
+      const isItem = (a.type === "expense" || a.type === "revenue") && Number(a.parentId) !== 0 && r.leaf;
+      let action = "";
+      if (r.leaf) action += '<button class="btn small blue" type="button" data-cstmt="' + esc(a.code) + '">🔎 كشف</button>';
+      if (isItem) action += ' <button class="btn small red" type="button" data-cdel="' + a.id + '">🗑️</button>';
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td>' + esc(a.code) + '</td>' +
+        '<td' + (r.depth > 0 ? ' style="padding-right:' + (r.depth * 18) + 'px"' : '') + '>' +
+          (a.isActive === false ? "🔴 " : "") + esc(a.nameAr) + (isPartnerAccount(a) ? " 👤" : "") + '</td>' +
+        '<td>' + chartTypeLabel(a.type) + '</td>' +
+        '<td class="' + (v >= 0 ? "balance-debit" : "balance-credit") + '">' + fmt(v) + '</td>' +
+        '<td>' + (action || "—") + '</td>';
       tb.appendChild(tr);
     });
-    tbl.appendChild(tb);
-    box.appendChild(tbl);
-    if (!items.length) {
-      const note = document.createElement("p");
-      note.className = "stk-hint";
-      note.textContent = "لا توجد بنود بعد — أضف بندًا من الزرار فوق، أو سجّل مصروفًا/إيرادًا باسم جديد والبرنامج يقترح إضافته.";
-      box.appendChild(note);
-    }
   }
+  function printChartTree() {
+    const rows = chartTreeRows();
+    $("#ctpOrgName").textContent = (typeof invOrgName === "function" ? invOrgName() : (settings.orgName || "مؤسستي"));
+    $("#ctpBody").innerHTML = "";
+    const tb = $("#ctpBody");
+    rows.forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = '<td>' + esc(r.a.code) + '</td><td style="padding-right:' + (r.depth * 16) + 'px">' + esc(r.a.nameAr) + '</td>' +
+        '<td>' + chartTypeLabel(r.a.type) + '</td>' +
+        '<td class="' + (r.total >= 0 ? "balance-debit" : "balance-credit") + '">' + fmt(r.total) + '</td>';
+      tb.appendChild(tr);
+    });
+    printSection($("#chartTreePage"));
+  }
+  /* بنود المصروفات والإيرادات انتقلت للتبويب الجديد — الدالة بقت تُعيد رسم الشجرة (نفس المصدر) */
+  function renderCItems() { renderChartTree(); }
 
   function addCItem() {
     if (!simpleGate()) return;
@@ -10497,6 +10660,18 @@
       .map((a) => [a.nameAr + " (" + a.code + ")", bsLedgerValue(a)]);
   }
 
+  // سند طرفه (المقابل) حساب حقوق ملكية = رأس مال/مسحوبات شريك ⇒ يُستثنى من معادلة الربح (ليس مصروفًا/إيرادًا)
+  function voucherIsEquityCounterpart(v) {
+    try {
+      const j = voucherJrnOf(v && v.id);
+      if (!j) return false;
+      return (j.lines || []).some((l) => {
+        const a = accounts.find((x) => Number(x.id) === Number(l.accountId));
+        return !!a && a.type === "equity";
+      });
+    } catch (e) { return false; }
+  }
+
   function balanceSheetData() {
     const cash = bsRound(treasury.filter((t) => !t.type || t.type === "cash").reduce((m, t) => m + (t.balance || 0), 0));
     const bank = bsRound(treasury.filter((t) => t.type === "bank").reduce((m, t) => m + (t.balance || 0), 0));
@@ -10505,9 +10680,15 @@
     const invValue = bsRound(products.reduce((m, pr) => m + (pr.qty || 0) * (pr.weightedAvgCost || 0), 0));
     const suppDebts = bsRound(suppliers.reduce((m, s) => m + Math.max(s.currentBalance || 0, 0), 0));
     const taxLiability = bsRound(sales.reduce((m, s) => m + (s.taxAmount || 0), 0) - purchases.reduce((m, p2) => m + (p2.taxAmount || 0), 0));
-    const capital = bsRound(bsLeaves("equity", ["3.1"], ["3.2"]).reduce((m, r) => m + r[1], 0));
+    // حقوق الملكية: رأس المال (٣.١) والأرباح المحتجزة (٣.٢) ومسحوبات الشركاء (٣.٣ — خصم، طبيعتها مدين)
+    const capital = bsRound(bsLeaves("equity", ["3.1"], ["3.2", "3.3"]).reduce((m, r) => m + r[1], 0));
     const retained = bsRound(bsLeaves("equity", ["3.2"], null).reduce((m, r) => m + r[1], 0));
-    const profits = bsRound(sales.reduce((m, s) => m + (s.grandTotal || 0), 0) - purchases.reduce((m, p2) => m + (p2.grandTotal || 0), 0) - vouchers.filter((v) => v.type === "out").reduce((m, v) => m + v.amount, 0) + vouchers.filter((v) => v.type === "in").reduce((m, v) => m + v.amount, 0));
+    const drawings = bsRound(bsLeaves("equity", ["3.3"], null).reduce((m, r) => m + r[1], 0));
+    // 🆕 استثناء سندات الشريك (رأس المال/المسحوبات) من معادلة الربح — المسحوبات ورأس المال ليسا مصروفًا/إيرادًا
+    // (طلب المالك: «مسحوبات الشركاء خصم من الأرباح مش مصروف»)، فالسند اللي طرفه حساب حقوق ملكية ما يلمسش الربح.
+    const nonEqOut = vouchers.filter((v) => v.type === "out" && !voucherIsEquityCounterpart(v)).reduce((m, v) => m + v.amount, 0);
+    const nonEqIn = vouchers.filter((v) => v.type === "in" && !voucherIsEquityCounterpart(v)).reduce((m, v) => m + v.amount, 0);
+    const profits = bsRound(sales.reduce((m, s) => m + (s.grandTotal || 0), 0) - purchases.reduce((m, p2) => m + (p2.grandTotal || 0), 0) - nonEqOut + nonEqIn);
     // 🆕 مهمة 98: سجل الأصول الثابتة لو فيه بيانات هو المرجع لقسميه؛ ولو فاضي يرجع لحسابات الدليل (سلوك 97)
     const faFix = faBalanceRows("noncurrent");
     const faInt = faBalanceRows("intangible");
@@ -10541,7 +10722,7 @@
       equity: [
         {
           key: "eq", title: "🏧 حقوق الملكية", short: "حقوق الملكية",
-          rows: [["رأس المال", capital], ["الأرباح المحتجزة", retained], ["أرباح الدورة (محققة)", profits]]
+          rows: [["رأس المال", capital], ["الأرباح المحتجزة", retained], ["أرباح الدورة (محققة)", profits], ["مسحوبات الشركاء (خصم)", drawings]]
         }
       ]
     };
@@ -11363,6 +11544,8 @@
       // 🛡 بناء 124: التعديل كان «في الذاكرة بس» لحد ما المستخدم يضغط حفظ — يقفل
       // البرنامج يضيع. دلوقتي بيتخزن على الجهاز فورًا ويترفع للسحابة لو متاحة.
       settAutosave(root.__prefix, root.__type);
+      // 🆕 شجرة الحسابات: تعديل «أصحاب المنشأة» يحدّث حسابات الشركاء (رأس مال/مسحوبات) فورًا
+      if (root.__type === "owner") { try { cacheOwners(list); ensurePartnerAccounts(list); } catch (e) {} }
     };
   }
 
@@ -11418,6 +11601,8 @@
     data[key] = list;
     renderSettGrid(prefix, type);
     settAutosave(prefix, type, { force: true });
+    // 🆕 شجرة الحسابات: حذف شريك يوقف حسابيه (رأس مال/مسحوبات) مع الحفاظ على الحركة التاريخية
+    if (type === "owner") { try { cacheOwners(list); ensurePartnerAccounts(list); } catch (e) {} }
   };
 
   // مُحوّل معرّفات حقول الضبط: شاشة العميل بادئتها «c» (csetOrgName) وشاشة المالك
@@ -11797,6 +11982,8 @@
         csetData = p;
         csetData.__online = true;
         settMarkLoaded("c", csetData);
+        // 🆕 شجرة الحسابات: نكاش قائمة أصحاب المنشأة وننشئ حسابات الشركاء (رأس مال/مسحوبات) من نفس المصدر
+        try { if (Array.isArray(csetData.owners)) cacheOwners(csetData.owners); ensurePartnerAccounts(csetData.owners); } catch (e) {}
         if (csetData && csetData.org) {
           if (csetData.org.tax_enabled !== undefined && csetData.org.tax_enabled !== null) {
             applyTaxSettings(csetData.org.tax_enabled, csetData.org.tax_rate, csetData.org.tax_buy_enabled, csetData.org.tax_rate_buy);
@@ -13666,6 +13853,9 @@
     $("#btnLedgerPrint").addEventListener("click", printLedger);
     $("#btnOpenAccStatement").addEventListener("click", () => openAccStatementFor($("#txtLedgerAcc").value));
     $("#btnCItemAdd").addEventListener("click", addCItem);
+    { const b = $("#btnRefreshChartTree"); if (b) b.addEventListener("click", renderChartTree); }
+    { const b = $("#btnPrintChartTree"); if (b) b.addEventListener("click", printChartTree); }
+    { const b = $("#txtChartTreeSearch"); if (b) b.addEventListener("input", renderChartTree); }
     $("#btnAddJLine").addEventListener("click", () => {
       jrnLines.push({ accountId: "0", accountText: "", debit: "", credit: "" });
       renderJrnLines();
