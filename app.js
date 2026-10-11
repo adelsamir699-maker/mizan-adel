@@ -2575,9 +2575,12 @@
     }
 
     const cust = customers.find((c) => c.id === cid);
-    cust.currentBalance = Math.round((cust.currentBalance - amount) * 100) / 100;
     const trId = parseInt($("#pTreasury").value, 10);
     const tr = treasury.find((x) => x.id === trId);
+    // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
+    ensureJrnStd();
+    if (jrnBlocked("التحصيل", partyJrnPlan("cust", tr, amount))) return;
+    cust.currentBalance = Math.round((cust.currentBalance - amount) * 100) / 100;
     if (tr) {
       tr.balance = Math.round((tr.balance + amount) * 100) / 100;
       saveTreasury();
@@ -6324,6 +6327,19 @@
       status: "posted"
     };
 
+    // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
+    ensureJrnStd();
+    let posTr = null;
+    if (payment !== "آجل") {
+      const _isBank = payment === "تحويل بنكي" || payment.includes("بنك");
+      const _isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
+      const _selId = _isBank ? parseInt($("#cmbPosBank").value, 10) : _isWallet ? parseInt($("#cmbPosWallet").value, 10) : 0;
+      posTr = (_selId && treasury.find((x) => x.id === _selId)) ||
+        treasury.find((x) => x.type === (_isBank ? "bank" : _isWallet ? "wallet" : "cash")) ||
+        treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    }
+    if (jrnBlocked("الفاتورة", invoiceJrnPlan("sale", { grandTotal: t.grand, taxAmount: t.tax, paymentMethod: payment }, posTr))) return;
+
     let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي القبض دخل فيه (للقيد لو كان آجل = null)
 
     if (payment === "آجل") {
@@ -6932,6 +6948,19 @@
       status: "posted"
     };
 
+    // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
+    ensureJrnStd();
+    let ppTr = null;
+    if (payment !== "آجل") {
+      const _isBank = payment === "تحويل بنكي" || payment.includes("بنك");
+      const _isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
+      const _selId = _isBank ? parseInt($("#cmbPPBank").value, 10) : _isWallet ? parseInt($("#cmbPPWallet").value, 10) : 0;
+      ppTr = (_selId && treasury.find((x) => x.id === _selId)) ||
+        treasury.find((x) => x.type === (_isBank ? "bank" : _isWallet ? "wallet" : "cash")) ||
+        treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    }
+    if (jrnBlocked("الفاتورة", invoiceJrnPlan("purchase", { grandTotal: t.grand, taxAmount: t.tax, paymentMethod: payment }, ppTr))) return;
+
     let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي الصرف خرج منه (للقيد لو آجل = null)
 
     if (payment === "آجل") {
@@ -7323,9 +7352,12 @@
       return;
     }
     const supp = suppliers.find((s) => s.id === sid);
-    supp.currentBalance = Math.round((supp.currentBalance - amount) * 100) / 100;
     const trId = parseInt($("#psTreasury").value, 10);
     const tr = treasury.find((x) => x.id === trId);
+    // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
+    ensureJrnStd();
+    if (jrnBlocked("السداد", partyJrnPlan("supp", tr, amount))) return;
+    supp.currentBalance = Math.round((supp.currentBalance - amount) * 100) / 100;
     if (tr) {
       tr.balance = Math.round((tr.balance - amount) * 100) / 100;
       saveTreasury();
@@ -8064,6 +8096,10 @@
     const amt = Math.round(items.reduce((s, x) => s + (Number(x.total) || 0), 0) * 100) / 100;
     if (amt <= 0) { toast("قيمة المرتجع طلعت صفر — راجع أسعار الأصناف.", "warning"); return; }
 
+    // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
+    ensureJrnStd();
+    if (jrnBlocked("المرتجع", returnJrnPlan(isSales ? "sale" : "purchase", { grandTotal: amt, settlement: settle }, inv, tr))) return;
+
     const no = nextReturnNumber(retKind(isSales));
     const id = nextReturnId(isSales);
     const rec = {
@@ -8585,6 +8621,9 @@
     }
     const t = treasury.find((x) => x.id === tid);
     if (!t) { toast("اختار الحساب: خزينة نقدية أو بنك أو محفظة.", "warning"); return; }
+    // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، والحساب المقابل غير القياسي لو ناقص يمنع الحفظ
+    ensureJrnStd();
+    if (jrnBlocked("السند", voucherJrnPlan(voucherMode, accForTreasuryAcc(t), chosenVoucherAcc(), amount))) return;
     // 🆕 بناء 118: سند الصرف كباقي الشاشات — تحذير بالأرقام قبل ما الرصيد يروح بالسالب
     if (voucherMode !== "in") {
       const bal = round2(t.balance);
@@ -9540,6 +9579,51 @@
     if (nameHint) a = accounts.find((x) => x.isActive !== false && String(x.nameAr || "").indexOf(nameHint) >= 0);
     return a || null;
   }
+
+  /* 🆕 بناء 158: حارس «لا ترحيل بلا حساب» (قرار المالك 11/10: «اضبط حارس لا ترحيل بلا حساب»).
+     • الحسابات القياسية (الدليل الأساسي: 1.1.1…1.1.5، 2.1.1…2.1.3، 4.1 وأبوها): لو ناقصة أو
+       موقوفة تتأمّن لحظة الحفظ (تتنشأ/تتفتح) ⇒ الترحيل دايمًا بيلاقي حسابه، والعميل ما يتوقفش.
+     • أي حساب **غير قياسي** مطلوب ومش موجود (زي الحساب المقابل لسند مخصص) ⇒ **منع حفظ المستند**
+       برسالة واضحة — بلا أي تخمين وبلا مستند يتسجّل من غير قيد. */
+  const STD_CHART = (function () {
+    const byId = {};
+    seedAccounts.forEach((s) => { byId[s.id] = s; });
+    const map = {};
+    seedAccounts.forEach((s) => {
+      const p = byId[s.parentId];
+      map[s.code] = { name: s.nameAr, type: s.type, parent: p ? p.code : "" };
+    });
+    return map;
+  })();
+  function ensureJrnAccount(code) {
+    const c = String(code == null ? "" : code);
+    const meta = STD_CHART[c];
+    if (!meta) return null;                       // غير قياسي: ما نخمّنش ولا ننشئ
+    let a = accounts.find((x) => x && String(x.code) === c);
+    if (a) { if (a.isActive === false) a.isActive = true; return a; }
+    a = accByCode(c, meta.name);                  // احتياطي: بالاسم/الكود بلا نقاط (أدلة قديمة)
+    if (a) { if (a.isActive === false) a.isActive = true; return a; }
+    const parent = meta.parent ? ensureJrnAccount(meta.parent) : null;
+    a = { id: nextAccountId(), code: c, nameAr: meta.name, type: meta.type, parentId: parent ? parent.id : 0, openingBalance: 0, isActive: true };
+    accounts.push(a);
+    return a;
+  }
+  function ensureJrnStd() {
+    const before = accounts.length;
+    const was = accounts.filter((x) => x && x.isActive === false && STD_CHART[String(x.code)]).length;
+    ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "2.1.1", "2.1.2", "2.1.3", "4.1"].forEach(ensureJrnAccount);
+    const now = accounts.filter((x) => x && x.isActive === false && STD_CHART[String(x.code)]).length;
+    if (accounts.length !== before || now !== was) { try { saveAccounts(); } catch (e) { } }
+    return true;
+  }
+  // يرجّع true (ويعرض رسالة) لو المستند مينفعش يتحفظ بسبب حساب مطلوب ناقص — وإلا false
+  function jrnBlocked(what, plan) {
+    if (!plan || !plan.error) return false;
+    toast("مش هينفع نسجّل " + what + ": " + invoiceJrnMissText(plan.error) +
+      " — ضيفه من شاشة الحسابات وبعدها سجّله تاني.", "error");
+    return true;
+  }
+
   // أطراف القيد: بيع = مدين (حساب الدفع أو مديونيات العملاء) / دائن (إيراد + ضريبة)
   //               شراء = مدين (مخزون + ضريبة) / دائن (حساب الدفع أو مستحقات الموردين)
   function invoiceJrnPlan(kind, inv, tr) {
@@ -9599,6 +9683,7 @@
     if (err === "2.1.2") return "حساب «ضريبة القيمة المضافة المحصلة» (2.1.2) مش موجود في دليل حساباتك";
     if (err === "2.1.3") return "حساب «ضريبة القيمة المضافة المدفوعة» (2.1.3) مش موجود في دليل حساباتك";
     if (err === "cash") return "حساب النقدية/البنك/المحفظة مش موجود في دليل حساباتك";
+    if (err === "acc") return "الحساب المقابل للسند مش موجود في دليل الحسابات";
     if (err === "amount") return "مبلغ الفاتورة مش صالح للترحيل";
     if (err === "unbalanced") return "الطرفان مش متزنيين";
     return "فيه حساب ناقص في دليل حساباتك";
@@ -9608,6 +9693,7 @@
     if (!inv) return null;
     const done = invoiceJrnOf(kind, inv);
     if (done) return { j: done, already: true };
+    ensureJrnStd();
     const plan = invoiceJrnPlan(kind, inv, tr);
     if (plan.error) {
       toast("الفاتورة اتحفظت تمام. الترحيل التلقائي للقيود ما كملش لأن " +
@@ -9719,6 +9805,7 @@
     if (!(amount > 0)) return null;                      // حركة آجلة/افتتاحية/غير سداد — برّه المقطع
     const done = partyJrnOf(kind, tx.id);
     if (done) return { j: done, already: true };
+    ensureJrnStd();
     const plan = partyJrnPlan(kind, tr, amount);
     if (plan.error) {
       toast("الحركة اتسجّلت تمام. الترحيل التلقائي للقيود ما كملش لأن " +
@@ -9843,6 +9930,7 @@
     if (done) return { j: done, already: true };
     const amount = round2(v.amount);
     if (!(amount > 0)) return null;
+    ensureJrnStd();
     const cashAcc = accForTreasuryAcc(t);
     // طرف واحد بس (حساب الخزينة نفسه) أو مافيش طرف تاني ⇒ بلا قيد: ممنوع رقم متخيّل
     if (!otherAcc || Number(otherAcc.id) === Number(cashAcc && cashAcc.id)) return null;
@@ -9939,6 +10027,7 @@
     if (!cfg || !rec || !rec.id) return null;
     const done = returnJrnOf(kind, rec.id);
     if (done) return { j: done, already: true };
+    ensureJrnStd();
     const plan = returnJrnPlan(kind, rec, inv, tr);
     if (plan.error) {
       toast("المرتجع اتسجّل تمام. الترحيل التلقائي للقيود ما كملش لأن " +
