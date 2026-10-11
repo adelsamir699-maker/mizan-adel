@@ -8770,7 +8770,7 @@
         amtTd(j.credit, jdir) +
         '<td>' + esc(refTxt) + '</td>';
       if (revd) tr.classList.add("jrn-reversed");
-      tr.title = "اضغط ضغطتين على القيد لفتح قائمة (طباعة / حذف بعمل قيد عكسي)";
+      tr.title = "اضغط ضغطتين على القيد لفتح قائمة (طباعة / حذف بعمل قيد عكسي — للقيود اليدوية اللي بلا مستند)";
       tr.addEventListener("dblclick", (ev) => jrnCtxMenu(ev, j));
       tbody.appendChild(tr);
     });
@@ -8821,9 +8821,42 @@
       ]
     });
   }
+  /* 🆕 بناء 157: القيود المربوطة بمستند (فاتورة/سند/تحصيل/سداد/مرتجع/تحويل/جرد) ممنوع
+     تُعكس من شاشة القيود — العكس هنا بيلمس اليومية بس ولا يلمس أثر المستند الحقيقي
+     (المخزون/الخزينة/رصيد العميل أو المورد/سند الخزينة)، فيحصل عدم تطابق: المورد مثلًا
+     يفضل عليه 700,000 في حين الشجرة وكشف الحسابات صفر. الصح: تُحذف من شاشة المستند
+     نفسه، فحذف الفاتورة/السند بيرجع قيده العكسي معه (removeInvoiceJournal/removeVoucherJournal). */
+  const JRN_DOC_REF = {
+    "فاتورة مبيعات": 1, "فاتورة مشتريات": 1,
+    "تحصيل من عميل": 1, "سداد لمورد": 1,
+    "سند قبض": 1, "سند صرف": 1,
+    "مرتجع مبيعات": 1, "مرتجع مشتريات": 1,
+    "تسجيل مصروفات": 1, "تسجيل إيرادات": 1,
+    "تحويل بين الحسابات": 1, "جرد بالباركود": 1,
+    "customer_tx": 1, "supplier_tx": 1
+  };
+  // بيرجّع اسم المستند المربوط بالقيد (أو null لو قيد حر بلا مستند)
+  function jrnLinkedDoc(j) {
+    if (!j || isJrnReversal(j)) return null;
+    const byId = {
+      S: "فاتورة مبيعات", P: "فاتورة مشتريات",
+      CT: "تحصيل من عميل", ST: "سداد لمورد",
+      VC: (j.ref || "سند خزينة"), SR: "مرتجع مبيعات", PR: "مرتجع مشتريات",
+      SE: (j.ref || "تسجيل مصروفات/إيرادات"), TF: "تحويل بين الحسابات", SC: "جرد بالباركود"
+    };
+    const m = String(j.refId || "").match(/^([A-Z]{1,3}):/);
+    if (m && byId[m[1]]) return byId[m[1]];
+    if (j.refType && JRN_DOC_REF[j.refType]) return j.refType;
+    return null;
+  }
   function reverseJournalEntry(j) {
     if (!j) return null;
     if (isJrnReversal(j)) { toast("ده قيد عكسي أصلاً — ميتحذفش تاني.", "warning"); return null; }
+    const linked = jrnLinkedDoc(j);
+    if (linked) {
+      toast("القيد «" + j.number + "» مربوط بمستند («" + linked + "») — ميتعكسش من شاشة القيود. احذفه من شاشة المستند نفسه فترجع أخره بالكامل (المخزون والخزينة ورصيد الطرف).", "warning");
+      return null;
+    }
     if (jrnReversalOf(j)) { toast("القيد «" + j.number + "» اتعمله قيد عكسي بالفعل.", "warning"); return null; }
     const lines = (j.lines || []).map((l) => ({ accountId: Number(l.accountId), debit: round2(l.credit), credit: round2(l.debit) }));
     if (!lines.length) { toast("القيد بلا أسطر — ميتعكسش.", "warning"); return null; }
@@ -8867,7 +8900,12 @@
     };
     addRow("🖨️ طباعة القيد", "", () => printJournalEntry(j));
     if (canDeleteJournal()) {
-      if (jrnReversalOf(j)) addRow("↩️ معكوس بالفعل", "jrn-ctx-off", () => { });
+      const linked = jrnLinkedDoc(j);
+      if (isJrnReversal(j)) addRow("↩️ قيد عكسي", "jrn-ctx-off", () => { });
+      else if (linked) addRow("🔒 مربوط بـ«" + linked + "» — يُحذف من شاشته", "jrn-ctx-off", () => {
+        toast("القيد «" + j.number + "» مربوط بمستند («" + linked + "») — ميتعكسش من هنا. احذفه من شاشة المستند نفسه فترجع أخره بالكامل (المخزون والخزينة ورصيد الطرف).", "warning");
+      });
+      else if (jrnReversalOf(j)) addRow("↩️ معكوس بالفعل", "jrn-ctx-off", () => { });
       else addRow("🗑️ حذف بعمل قيد عكسي", "jrn-ctx-danger", () => {
         if (!confirm("هيتعمل «قيد عكسي» للقيد «" + j.number + "» (مش حذف نهائي) — الأرصدة هترجع زي قبل القيد. متأكد؟")) return;
         reverseJournalEntry(j);
