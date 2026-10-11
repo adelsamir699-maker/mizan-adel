@@ -2322,3 +2322,18 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .jrn-ctx-off { color: var(--text-secondary, #64748b); cursor: default; }
 .jrn-ctx-off:hover { background: transparent; }
 
+/* 🧾 بناء 163 — تبويبة ضريبة المبيعات: صندوق الملخّص + صف الإجمالي الثابت + الحركات */
+.vat-summary { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; margin-top: 10px; }
+.vat-due { flex: 0 0 auto; min-width: 240px; border: 2px solid #999; border-radius: 12px; padding: 10px 16px; background: rgba(148, 163, 184, .08); }
+.vat-due-label { font-size: 13px; color: var(--text-secondary, #475569); margin-bottom: 4px; }
+.vat-due-val { font-size: 22px; font-weight: 800; }
+.vat-cols { display: flex; flex-wrap: wrap; gap: 10px; flex: 1 1 auto; }
+.vat-col { flex: 1 1 160px; border: 1px solid var(--border, #cbd5e1); border-radius: 10px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.vat-col span { font-size: 12px; color: var(--text-secondary, #64748b); }
+.vat-col b { font-size: 17px; }
+.vat-prev { flex: 1 1 100%; font-size: 13px; color: var(--text-secondary, #64748b); padding-top: 2px; }
+.vat-tablewrap { max-height: 62vh; overflow: auto; }
+.vat-tablewrap thead tr.vat-totals-row th { position: sticky; top: 0; z-index: 3; background: #eef2ff; font-weight: 700; }
+.vat-open-row td { background: rgba(250, 204, 21, .14); font-weight: 600; }
+.vat-empty { text-align: center; color: var(--text-secondary, #64748b); }
+

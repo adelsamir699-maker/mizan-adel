@@ -1721,7 +1721,10 @@
     "chat",
     // 🌳 بناء 156: تبويب «شجرة الحسابات» — كان ناقصًا من القائمة فكان الزرار يرمي
     // «قيد التطوير» ولا يفتح الشاشة إطلاقًا (نفس صنف باگ بناء 125). الحارس الثابت بايتش.
-    "chartTree"];
+    // 🌳 بناء 156: تبويب «شجرة الحسابات» — كان ناقصًا من القائمة فكان الزرار يرمي
+    // «قيد التطوير» ولا يفتح الشاشة إطلاقًا (نفس صنف باگ بناء 125). الحارس الثابت بايتش.
+    // 🧾 بناء 163: «ضريبة المبيعات» اتضافت لنفس القائمة (وإلا الزرار يرمي «قيد التطوير»).
+    "chartTree", "salesTax"];
 
   // حساب المستخدم الحالي — المصدر الموثوق هو mizan_access (فيه role + is_superadmin)
   // لأن getProfile() قد يكون null أو ناقصًا لحظة الدخول.
@@ -2312,6 +2315,7 @@
     if (name === "accStatement") renderAccStatementView();      // 🆕 كشف حساب الحسابات (من القيود)
     if (name === "balance") renderBalance();
     if (name === "chartTree") renderChartTree(); // 🆕 شجرة الحسابات (تبويب مستقل في التقارير والمركز المالي)
+    if (name === "salesTax") renderVatTab();     // 🧾 بناء 163: ضريبة المبيعات (القيمة المضافة)
     // 🆕 مهمة 98: سجل الأصول الثابتة — الربط مرة واحدة ثم الرسم
     if (name === "fixedAssets") { fixedBindOnce(); renderFixedAssets(); }
     // 🧮 بناء 145: الجرد بالباركود — المخزن + الورقة الحالية + حساب الفروق، وكلها من الجهاز
@@ -11078,6 +11082,293 @@
     } catch (e) { return false; }
   }
 
+  /* ================== 🧾 بناء 163: ضريبة المبيعات (القيمة المضافة) — مصدر واحد من القيود ==================
+     تبويبة واحدة: ٣ أعمدة (مدفوع المشتريات / محصّل المبيعات / مدفوع للمصلحة) + خانة «المستحق للمصلحة»،
+     ونفس الرقم يُغذّي «المركز المالي». كل الأرقام من القيود على 2.1.2 (المحصّلة) و2.1.3 (المدفوعة)
+     ⇒ المرتجعات بتتخصّ تلقائيًا من القيد العكسي.
+     • الرصيد الافتتاحي = قيد موسوم (refType=VAT_OPEN_TYPE, refId=VATOPEN) طرفه حقوق الملكية
+       (الأرباح المحتجزة 3.2 افتراضيًا — IAS 8: الغالب أن التصحيح على الأرباح المحتجزة).
+       الاتجاه حسب مركز المنشأة: «علَيّ للمصلحة» ⇒ دائن 2.1.2 / مدين 3.2 · «لي عند المصلحة» ⇒ العكس.
+     • السداد = سند صرف (refType=VAT_PAY_TYPE) + قيد (مدين 2.1.2 / دائن الخزينة). */
+  const VAT_OPEN_TYPE = "رصيد افتتاحي - ضريبة القيمة المضافة";
+  const VAT_OPEN_KEY = "VATOPEN";
+  const VAT_PAY_TYPE = "سداد ضريبة القيمة المضافة للمصلحة";
+  function vatOutAcc() { return accByCode("2.1.2", "المحصلة"); }
+  function vatInpAcc() { return accByCode("2.1.3", "المدفوعة"); }
+  function vatEquityAcc() {
+    return accByCode("3.2", "المحتجزة") ||
+      accounts.find((a) => a.type === "equity" && /محتجز/.test(String(a.nameAr || ""))) ||
+      accByCode("3.1", "رأس المال") ||
+      accounts.find((a) => a.type === "equity") || null;
+  }
+  function vatIsOpenJrn(j) { return !!j && (String(j.refType || "") === VAT_OPEN_TYPE || String(j.ref || "") === VAT_OPEN_TYPE); }
+  function vatIsPayJrn(j) { return !!j && (String(j.refType || "") === VAT_PAY_TYPE || String(j.ref || "") === VAT_PAY_TYPE); }
+  function vatOpeningEntry() { return journalEntries.find(vatIsOpenJrn) || null; }
+  function vatDateIn(j, from, to) {
+    const d = String((j && j.date) || "");
+    if (to && d > String(to)) return false;
+    if (from && d < String(from)) return false;
+    return true;
+  }
+  // صافي حركة حساب في نطاق (دائن موجب). opts تستثني الافتتاحي/السداد من الأعمدة.
+  function vatAccNet(accId, from, to, opts) {
+    opts = opts || {};
+    if (!accId) return 0;
+    let s = 0;
+    journalEntries.forEach((j) => {
+      if (!j) return;
+      if (opts.skipOpen && vatIsOpenJrn(j)) return;
+      if (opts.skipPay && vatIsPayJrn(j)) return;
+      if (opts.onlyPay && !vatIsPayJrn(j)) return;
+      if (!vatDateIn(j, from, to)) return;
+      (j.lines || []).forEach((l) => {
+        if (Number(l.accountId) === Number(accId)) s += (Number(l.credit) || 0) - (Number(l.debit) || 0);
+      });
+    });
+    return bsRound(s);
+  }
+  function vatOpeningSigned() {
+    const o = vatOutAcc(), j = vatOpeningEntry();
+    if (!o || !j) return 0;
+    let s = 0;
+    (j.lines || []).forEach((l) => {
+      if (Number(l.accountId) === Number(o.id)) s += (Number(l.credit) || 0) - (Number(l.debit) || 0);
+    });
+    return bsRound(s);
+  }
+  function vatPaidNet(from, to) {
+    return bsRound((vouchers || []).filter((v) => v && String(v.refType || "") === VAT_PAY_TYPE && vatDateIn(v, from, to))
+      .reduce((m, v) => m + (Number(v.amount) || 0), 0));
+  }
+  // مركز ض.ق.م: الأعمدة داخل [from,to]، والمستحق تراكمي حتى to (يشمل الافتتاحي والسداد)
+  function vatPosition(from, to) {
+    const o = vatOutAcc(), i = vatInpAcc();
+    const opening = vatOpeningSigned();
+    const collected = o ? vatAccNet(o.id, from, to, { skipOpen: true, skipPay: true }) : 0;
+    const purchased = i ? bsRound(-vatAccNet(i.id, from, to, { skipOpen: true })) : 0;
+    const paid = vatPaidNet(from, to);
+    const cumCollected = o ? vatAccNet(o.id, "", to, { skipOpen: true, skipPay: true }) : 0;
+    const cumPurchased = i ? bsRound(-vatAccNet(i.id, "", to, { skipOpen: true })) : 0;
+    const cumPaid = vatPaidNet("", to);
+    const dueToDate = bsRound(opening + cumCollected - cumPurchased - cumPaid);
+    return { opening: opening, collected: collected, purchased: purchased, paid: paid, dueToDate: dueToDate };
+  }
+  function vatRows(from, to) {
+    const o = vatOutAcc(), i = vatInpAcc();
+    const rows = [];
+    journalEntries.forEach((j) => {
+      if (!j || vatIsOpenJrn(j)) return;
+      if (!vatDateIn(j, from, to)) return;
+      const pay = vatIsPayJrn(j);
+      let purch = 0, coll = 0, pl = 0;
+      (j.lines || []).forEach((l) => {
+        if (o && Number(l.accountId) === Number(o.id)) {
+          if (pay) pl += (Number(l.debit) || 0);
+          else coll += (Number(l.credit) || 0) - (Number(l.debit) || 0);
+        } else if (i && Number(l.accountId) === Number(i.id)) {
+          purch += (Number(l.debit) || 0) - (Number(l.credit) || 0);
+        }
+      });
+      purch = bsRound(purch); coll = bsRound(coll); pl = bsRound(pl);
+      if (purch || coll || pl) rows.push({ date: j.date || "", desc: j.desc || j.ref || "", purch: purch, coll: coll, paid: pl });
+    });
+    return rows;
+  }
+  let vatBound = false;
+  function vatEl(id) { return document.getElementById(id); }
+  function vatISO(d) { const p = (x) => String(x).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); }
+  function vatPrevDay(iso) { const d = new Date(String(iso) + "T00:00:00"); if (isNaN(d.getTime())) return ""; d.setDate(d.getDate() - 1); return vatISO(d); }
+  function vatSetDefaults() {
+    const to = vatEl("vatTo"); if (to && !to.value) to.value = todayISO();
+    const from = vatEl("vatFrom"); if (from && !from.value) from.value = todayISO().slice(0, 4) + "-01-01";
+  }
+  function vatBind() {
+    if (vatBound) return; vatBound = true;
+    const mode = vatEl("vatMode"); if (mode) mode.addEventListener("change", renderVatTab);
+    ["vatFrom", "vatTo"].forEach((id) => { const el = vatEl(id); if (el) el.addEventListener("change", renderVatTab); });
+    [["btnVatRefresh", renderVatTab], ["btnVatPrint", vatPrint], ["btnVatOpening", openVatOpening], ["btnVatPay", openVatPay]].forEach((m) => {
+      const b = vatEl(m[0]); if (b) b.addEventListener("click", m[1]);
+    });
+    const cs = vatEl("btnCancelVatPay"); if (cs) cs.addEventListener("click", () => hideModal("mVatPay"));
+    const ss = vatEl("btnSaveVatPay"); if (ss) ss.addEventListener("click", vatSavePayment);
+    const co = vatEl("btnCancelVatOpen"); if (co) co.addEventListener("click", () => hideModal("mVatOpen"));
+    const so = vatEl("btnSaveVatOpen"); if (so) so.addEventListener("click", vatSaveOpening);
+  }
+  function renderVatTab() {
+    try {
+      if (!vatEl("viewSalesTax")) return;
+      vatBind();
+      const mode = (vatEl("vatMode") || {}).value || "cum";
+      const fw = vatEl("vatFromWrap"); if (fw) fw.hidden = (mode !== "period");
+      vatSetDefaults();
+      const to = (vatEl("vatTo") || {}).value || todayISO();
+      const from = mode === "period" ? ((vatEl("vatFrom") || {}).value || "") : "";
+      const pos = vatPosition(from, to);
+      const due = pos.dueToDate;
+      let prev = 0;
+      if (mode === "period" && from) { const db = vatPrevDay(from); if (db) prev = vatPosition("", db).dueToDate; }
+      const sum = vatEl("vatSummary");
+      if (sum) {
+        let head, col, val;
+        if (due > 0.009) { head = "⚠️ المستحق لمصلحة الضرائب حتى " + to; col = "#b00020"; val = due; }
+        else if (due < -0.009) { head = "✅ رصيد لنا عند مصلحة الضرائب حتى " + to; col = "#0a7d33"; val = -due; }
+        else { head = "✅ مسدّد بالكامل حتى " + to; col = "#0a7d33"; val = 0; }
+        sum.innerHTML =
+          '<div class="vat-due" style="border-color:' + col + '">' +
+            '<div class="vat-due-label">' + esc(head) + '</div>' +
+            '<div class="vat-due-val" style="color:' + col + '">' + fmt(val) + ' ج.م</div>' +
+          '</div>' +
+          '<div class="vat-cols">' +
+            '<div class="vat-col"><span>مدفوع في المشتريات</span><b>' + fmt(pos.purchased) + '</b></div>' +
+            '<div class="vat-col"><span>محصّل في المبيعات</span><b>' + fmt(pos.collected) + '</b></div>' +
+            '<div class="vat-col"><span>مدفوع للمصلحة</span><b>' + fmt(pos.paid) + '</b></div>' +
+          '</div>' +
+          (mode === "period" && from ? '<div class="vat-prev">رصيد سابق للفترة (قبل ' + esc(from) + ') = ' + fmt(prev) + ' ج.م</div>' : '');
+      }
+      const setTxt = (id, v) => { const el = vatEl(id); if (el) el.textContent = v; };
+      setTxt("vatTotLabel", mode === "period" && from ? (from + " ← " + to) : ("حتى " + to));
+      setTxt("vatTotPurch", fmt(pos.purchased));
+      setTxt("vatTotColl", fmt(pos.collected));
+      setTxt("vatTotPaid", fmt(pos.paid));
+      const tb = vatEl("vatBody");
+      if (tb) {
+        const rows = vatRows(from, to);
+        const opn = vatOpeningEntry();
+        let html = "";
+        if (opn) {
+          const sign = vatOpeningSigned();
+          const clean = String(opn.desc || "").replace(VAT_OPEN_TYPE, "").replace(/^[\s—\-]+/, "");
+          html += '<tr class="vat-open-row"><td>' + esc(String(opn.date || "")) + '</td><td>⚙️ رصيد افتتاحي — ' + esc(clean) + '</td><td colspan="3" style="text-align:center">' +
+            (sign >= 0 ? "مستحق " + fmt(sign) : "رصيد لنا " + fmt(-sign)) + '</td></tr>';
+        }
+        if (!rows.length && !opn) {
+          html += '<tr><td colspan="5" class="vat-empty">لا توجد حركات ضريبة في هذه الفترة</td></tr>';
+        }
+        html += rows.map((r) => '<tr><td>' + esc(String(r.date || "")) + '</td><td>' + esc(String(r.desc || "")) + '</td>' +
+          '<td>' + (r.purch ? fmt(r.purch) : "—") + '</td><td>' + (r.coll ? fmt(r.coll) : "—") + '</td><td>' + (r.paid ? fmt(r.paid) : "—") + '</td></tr>').join("");
+        tb.innerHTML = html;
+      }
+    } catch (e) { /* ما نكسرش الشاشة */ }
+  }
+  function openVatPay() {
+    if (!(treasury || []).length) { toast("مفيش خزينة مسجّلة.", "warning"); return; }
+    const sel = vatEl("vatPayTreasury");
+    if (sel) sel.innerHTML = treasury.map((t) => '<option value="' + t.id + '">' + esc(t.name || "") + '</option>').join("");
+    const d = vatEl("vatPayDate"); if (d) d.value = todayISO();
+    const a = vatEl("vatPayAmount"); if (a) a.value = "";
+    const n = vatEl("vatPayNote"); if (n) n.value = "";
+    showModal("mVatPay");
+  }
+  function vatSavePayment() {
+    const tid = parseInt((vatEl("vatPayTreasury") || {}).value, 10);
+    const t = treasury.find((x) => Number(x.id) === Number(tid));
+    const amount = moneyVal("#vatPayAmount");
+    if (!t) { toast("اختار الخزينة.", "warning"); return; }
+    if (!(amount > 0)) { toast("اكتب مبلغًا أكبر من الصفر.", "warning"); return; }
+    const o = vatOutAcc(), cashAcc = accForTreasuryAcc(t);
+    if (!o) { toast("حساب «ض.ق.م المحصّلة» (2.1.2) مش موجود في دليل حساباتك.", "warning"); return; }
+    if (!cashAcc) { toast("حساب الخزينة مش موجود في الدليل.", "warning"); return; }
+    if (amount > (Number(t.balance) || 0)) {
+      if (!confirm("رصيد «" + t.name + "» " + fmt(t.balance) + " ج.م والمبلغ " + fmt(amount) + " ج.م — يُسجّل بالسالب؟")) return;
+    }
+    const date = (vatEl("vatPayDate") || {}).value || todayISO();
+    const note = ((vatEl("vatPayNote") || {}).value || "").trim();
+    const amt = round2(amount);
+    const vRow = {
+      id: vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+      type: "out", treasuryId: Number(t.id), date: date, amount: amt,
+      desc: VAT_PAY_TYPE + (note ? " — " + note : ""), refType: VAT_PAY_TYPE
+    };
+    vouchers.push(vRow);
+    t.balance = round2((Number(t.balance) || 0) - amt);
+    saveTreasury();
+    saveVouchers();
+    const lines = [{ accountId: Number(o.id), debit: amt, credit: 0 }, { accountId: Number(cashAcc.id), debit: 0, credit: amt }];
+    const j = {
+      id: nextJournalId(), number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      date: date, desc: VAT_PAY_TYPE + " — " + t.name + " — " + fmt(amt) + " ج.م" + (note ? " — " + note : ""),
+      ref: VAT_PAY_TYPE, refType: VAT_PAY_TYPE, refId: "VATPAY:" + vRow.id,
+      debit: amt, credit: amt, lines: lines
+    };
+    settleJrnLines(lines, 1);
+    journalEntries.push(j);
+    persistJournal();
+    saveAccounts();
+    try { renderTreasury(); } catch (e) { }
+    try { renderJournal(); } catch (e) { }
+    addActivity("سداد ض.ق.م", "سداد " + fmt(amt) + " ج.م للمصلحة من " + t.name);
+    hideModal("mVatPay");
+    toast("تم تسجيل الدفعة والقيد.", "success");
+    renderVatTab();
+  }
+  function openVatOpening() {
+    const j = vatOpeningEntry();
+    const side = vatEl("vatOpenSide"), amount = vatEl("vatOpenAmount"), date = vatEl("vatOpenDate");
+    const s = vatOpeningSigned();
+    if (amount) amount.value = j ? String(Math.abs(s)) : "";
+    if (date) date.value = j && j.date ? j.date : todayISO();
+    if (side) side.value = (j && s < 0) ? "credit" : "due";
+    showModal("mVatOpen");
+  }
+  function vatSaveOpening() {
+    const side = (vatEl("vatOpenSide") || {}).value || "due";
+    const amount = moneyVal("#vatOpenAmount");
+    const date = (vatEl("vatOpenDate") || {}).value || todayISO();
+    const o = vatOutAcc(), eq = vatEquityAcc();
+    if (!o) { toast("حساب «ض.ق.م المحصّلة» (2.1.2) مش موجود.", "warning"); return; }
+    if (!eq) { toast("حساب حقوق الملكية (الأرباح المحتجزة/رأس المال) مش موجود.", "warning"); return; }
+    const old = vatOpeningEntry();
+    if (old) { settleJrnLines(old.lines, -1); const k = journalEntries.indexOf(old); if (k >= 0) journalEntries.splice(k, 1); }
+    const amt = round2(amount);
+    if (amt > 0) {
+      const lines = side === "credit"
+        ? [{ accountId: Number(o.id), debit: amt, credit: 0 }, { accountId: Number(eq.id), debit: 0, credit: amt }]
+        : [{ accountId: Number(eq.id), debit: amt, credit: 0 }, { accountId: Number(o.id), debit: 0, credit: amt }];
+      const j = {
+        id: nextJournalId(), number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+        date: date,
+        desc: VAT_OPEN_TYPE + " — " + eq.nameAr + " — " + (side === "credit" ? "رصيد لنا عند المصلحة" : "مستحق للمصلحة"),
+        ref: VAT_OPEN_TYPE, refType: VAT_OPEN_TYPE, refId: VAT_OPEN_KEY,
+        debit: amt, credit: amt, lines: lines
+      };
+      settleJrnLines(lines, 1);
+      journalEntries.push(j);
+    }
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    addActivity("رصيد افتتاحي ض.ق.م", amt > 0 ? ("تسجيل " + fmt(amt) + " ج.م (" + (side === "credit" ? "لنا" : "علينا") + ")") : "تصفير الرصيد الافتتاحي");
+    hideModal("mVatOpen");
+    toast(amt > 0 ? "تم تسجيل الرصيد الافتتاحي." : "تم تصفير الرصيد الافتتاحي.", "success");
+    renderVatTab();
+  }
+  function vatPrint() {
+    const mode = (vatEl("vatMode") || {}).value || "cum";
+    vatSetDefaults();
+    const to = (vatEl("vatTo") || {}).value || todayISO();
+    const from = mode === "period" ? ((vatEl("vatFrom") || {}).value || "") : "";
+    const pos = vatPosition(from, to);
+    const rows = vatRows(from, to);
+    let sec = document.getElementById("vatPrintPage");
+    if (sec) sec.remove();
+    sec = document.createElement("section");
+    sec.id = "vatPrintPage";
+    sec.className = "print-only statement-page";
+    const org = (settings && settings.orgName) || "مؤسستي";
+    let body = "";
+    const opn = vatOpeningEntry();
+    if (opn) { const s = vatOpeningSigned(); body += '<tr><td>' + esc(String(opn.date || "")) + '</td><td>رصيد افتتاحي</td><td colspan="3" style="text-align:center">' + (s >= 0 ? "مستحق " + fmt(s) : "رصيد لنا " + fmt(-s)) + '</td></tr>'; }
+    rows.forEach((r) => { body += '<tr><td>' + esc(String(r.date || "")) + '</td><td>' + esc(String(r.desc || "")) + '</td><td>' + (r.purch ? fmt(r.purch) : "") + '</td><td>' + (r.coll ? fmt(r.coll) : "") + '</td><td>' + (r.paid ? fmt(r.paid) : "") + '</td></tr>'; });
+    sec.innerHTML =
+      '<div style="text-align:center;font-weight:bold;font-size:18px;margin:6px 0">' + esc(org) + '</div>' +
+      '<div style="text-align:center;font-weight:bold;margin-bottom:6px">تقرير ضريبة القيمة المضافة — ' + (mode === "period" && from ? ("فترة " + esc(from) + " حتى " + esc(to)) : ("حتى " + esc(to))) + '</div>' +
+      '<table class="dgv" style="width:100%"><thead><tr><th>التاريخ</th><th>البيان</th><th>مدفوع المشتريات</th><th>محصّل المبيعات</th><th>مدفوع للمصلحة</th></tr></thead><tbody>' + body + '</tbody>' +
+      '<tfoot><tr><th colspan="2">الإجمالي</th><th>' + fmt(pos.purchased) + '</th><th>' + fmt(pos.collected) + '</th><th>' + fmt(pos.paid) + '</th></tr>' +
+      '<tr><th colspan="4">' + (pos.dueToDate >= 0 ? "المستحق لمصلحة الضرائب حتى " + esc(to) : "رصيد لنا عند المصلحة حتى " + esc(to)) + '</th><th>' + fmt(Math.abs(pos.dueToDate)) + '</th></tr></tfoot></table>';
+    document.body.appendChild(sec);
+    printSection(sec);
+  }
+
   function balanceSheetData() {
     const cash = bsRound(treasury.filter((t) => !t.type || t.type === "cash").reduce((m, t) => m + (t.balance || 0), 0));
     const bank = bsRound(treasury.filter((t) => t.type === "bank").reduce((m, t) => m + (t.balance || 0), 0));
@@ -11085,7 +11376,13 @@
     const custDebts = bsRound(customers.reduce((m, c) => m + Math.max(c.currentBalance || 0, 0), 0));
     const invValue = bsRound(products.reduce((m, pr) => m + (pr.qty || 0) * (pr.weightedAvgCost || 0), 0));
     const suppDebts = bsRound(suppliers.reduce((m, s) => m + Math.max(s.currentBalance || 0, 0), 0));
-    const taxLiability = bsRound(sales.reduce((m, s) => m + (s.taxAmount || 0), 0) - purchases.reduce((m, p2) => m + (p2.taxAmount || 0), 0));
+    // 🧾 بناء 163: ض.ق.م من القيود مباشرة (تشمل المرتجعات والمدفوعات والرصيد الافتتاحي) ⇒ نفس رقم التبويبة بالقرش
+    let taxLiability;
+    try {
+      taxLiability = vatPosition("", todayISO()).dueToDate;
+    } catch (e) {
+      taxLiability = bsRound(sales.reduce((m, s) => m + (s.taxAmount || 0), 0) - purchases.reduce((m, p2) => m + (p2.taxAmount || 0), 0));
+    }
     // حقوق الملكية: رأس المال (٣.١) والأرباح المحتجزة (٣.٢) ومسحوبات الشركاء (٣.٣ — خصم، طبيعتها مدين)
     const capital = bsRound(bsLeaves("equity", ["3.1"], ["3.2", "3.3"]).reduce((m, r) => m + r[1], 0));
     const retained = bsRound(bsLeaves("equity", ["3.2"], null).reduce((m, r) => m + r[1], 0));
@@ -11104,7 +11401,8 @@
         {
           key: "cur", title: "💵 أصول متداولة", short: "الأصول المتداولة",
           rows: [["الصناديق النقدية", cash], ["البنوك والحسابات البنكية", bank], ["المحافظ الإلكترونية", wallet],
-            ["المخزون (بالتكلفة المرجحة)", invValue], ["مديونيات العملاء", custDebts]].concat(bsLeaves("asset", ["1.1"], ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]))
+            ["المخزون (بالتكلفة المرجحة)", invValue], ["مديونيات العملاء", custDebts],
+            ["ضريبة القيمة المضافة المستحقة لك عند مصلحة الضرائب", Math.max(-(taxLiability || 0), 0)]].concat(bsLeaves("asset", ["1.1"], ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]))
         },
         {
           key: "fix", title: "🏗️ أصول غير متداولة (أراضٍ ومباني ومعدات وسيارات)" + (faFix.length ? " — من سجل الأصول" : ""), short: "الأصول غير المتداولة",
@@ -11118,7 +11416,7 @@
       liabs: [
         {
           key: "cur", title: "📉 التزامات متداولة", short: "الالتزامات المتداولة",
-          rows: [["مستحقات الموردين", suppDebts], ["ضريبة القيمة المضافة (الصافي)", Math.max(taxLiability, 0)]].concat(bsLeaves("liability", ["2.1"], ["2.1", "2.2", "2.3", "2.4"]))
+          rows: [["مستحقات الموردين", suppDebts], ["ضريبة القيمة المضافة المستحقة عليك (للمصلحة)", Math.max(taxLiability, 0)]].concat(bsLeaves("liability", ["2.1"], ["2.1", "2.2", "2.3", "2.4"]))
         },
         {
           key: "non", title: "🏦 التزامات غير متداولة (قروض طويلة الأجل)", short: "الالتزامات غير المتداولة",
