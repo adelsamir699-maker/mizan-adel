@@ -1441,6 +1441,17 @@
     toastTimer = setTimeout(() => (el.hidden = true), 3500);
   }
 
+  /* 🆕 T3: رسالة وسط الشاشة (تظهر شوية وتختفي لوحدها) — بديل نافذة الطباعة لما الإعداد = «لا». */
+  let flashTimer = null;
+  function flashCenter(msg) {
+    const el = document.getElementById("centerFlash");
+    if (!el) { toast(msg, "success"); return; }
+    el.textContent = msg;
+    el.hidden = false;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { el.hidden = true; }, 2600);
+  }
+
   /* ===== فشل المزامنة السحابية: رسالة ودّية للعميل (من غير مصطلحات تقنية) =====
      cloud.js بيندهّي الدالة دي لو أي جدول ما قدرش يترفع على السحابة.
      القاعدة: واجهة العميل تفضل نظيفة بالعربي — التشخيص التقني يروح للـ console بس. */
@@ -1491,6 +1502,9 @@
   /* ========== «انشر على الفاتورة» — اختيار صاحب الشركة (ترحيل ٣٣) ========== */
   const INV_FIELD_KEYS = ["name", "address", "phone", "tax_number"];
   const INV_FIELD_DEFAULT = { name: true, address: true, phone: true, tax_number: true };
+  // 🆕 T3: اختيار صاحب الشركة «اطبع فاتورة المبيعات أوتوماتيك عند الحفظ؟» يتخزن جوّه
+  // نفس حقل invoice_fields (jsonb محفوظ سحابيًا بلا أي ترقية SQL) — الافتراضي true = سلوك البناء الحالي.
+  const AUTO_PRINT_SALE_DEFAULT = true;
 
   function normalizeInvFields(raw) {
     const src = raw || {};
@@ -1511,6 +1525,23 @@
     if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
     if (!raw || typeof raw !== "object") raw = (settings && settings.invFields) || null;
     return normalizeInvFields(raw && typeof raw === "object" ? raw : null);
+  }
+
+  // 🆕 T3: هل نطبع فاتورة المبيعات أوتوماتيك عند الحفظ؟ (اختيار صاحب الشركة — الافتراضي: نعم)
+  function autoPrintSaleInvoice() {
+    try {
+      const norm = (v) => (v === false || v === "false" || v === 0 || v === "0") ? false
+        : (v === true || v === "true" || v === 1 || v === "1") ? true : undefined;
+      let raw = orgSettValue("invoice_fields", null);
+      if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+      if (raw && typeof raw === "object") {
+        const v = norm(raw.auto_print_sale);
+        if (v !== undefined) return v;
+      }
+      const sv = norm(settings && settings.autoPrintSale);
+      if (sv !== undefined) return sv;
+      return AUTO_PRINT_SALE_DEFAULT;
+    } catch (e) { return AUTO_PRINT_SALE_DEFAULT; }
   }
 
   // اسم المنشأة للمطبوعات (نفس ترتيب printSection القديم)
@@ -1612,6 +1643,7 @@
     attReportPage: "تقرير الحضور والانصراف",
     fixedAssetsPage: "سجل الأصول الثابتة",
     barcodePage: "ملصقات الباركود",
+    barcodeSmallPage: "ملصق باركود",
   };
   const PAPER_TITLE_FALLBACK = "مستند"; // بلا اسم منتج ولا اسم شخص
   let screenDocTitle = "";
@@ -1639,7 +1671,7 @@
     // اسم الشركة من الضبط (لكل شركة على حدة) يظهر في كل صفحات الطباعة
     // ملاحظة: صفحتا الفاتورة (بيع/شراء) تملآن ترويستهما بنفسها احترامًا لصناديق «على الفاتورة».
     const org = invOrgName();
-    [["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"], ["bcpOrgName"], ["sckOrgName"], ["ctpOrgName"]].forEach(([id]) => {
+    [["stmOrgName"], ["skOrgName"], ["blpOrgName"], ["trpOrgName"], ["bcpOrgName"], ["bcpsOrgName"], ["sckOrgName"], ["ctpOrgName"]].forEach(([id]) => {
       const x = document.getElementById(id);
       if (x) x.textContent = org;
     });
@@ -4105,6 +4137,42 @@
     printSection($("#barcodePage"));
   }
 
+  /* 🖨️ T2 (طلب المالك): طباعة ملصق باركود **بحجم صغير** من جوّه نافذة تعديل الصنف —
+     بياخد القيم المكتوبة في النافذة نفسها (قبل الحفظ كمان) وما بيغيّرش أي بيانات. */
+  function printProductBarcodeSmall() {
+    const code = bcDigits(String($("#fPBarcode").value || "").trim()) ||
+      bcDigits(String($("#fPCode").value || "").trim());
+    if (!code) {
+      toast("اكتب رقم باركود الصنف (أو اضغط «🔳 توليد») الأول، وبعدين اطبع.", "warning");
+      $("#fPBarcode").focus();
+      return;
+    }
+    const p = {
+      code: String($("#fPCode").value || "").trim(),
+      nameAr: String($("#fPNameAr").value || "").trim(),
+      unit: $("#fPUnit").value || "",
+      salePrice: moneyVal("#fPSale")
+    };
+    const d = new Date(), z = (x) => String(x).padStart(2, "0");
+    const org = invOrgName();
+    $("#bcpsName").textContent = p.nameAr || p.code || "";
+    $("#bcpsMeta").textContent = "الكود " + (p.code || "—") + " · " + (p.unit || "—") + " · " + fmt(Number(p.salePrice) || 0);
+    $("#bcpsDate").textContent = z(d.getDate()) + "/" + z(d.getMonth() + 1) + "/" + d.getFullYear() + " " + z(d.getHours()) + ":" + z(d.getMinutes());
+    const node = document.createElement("div");
+    node.className = "bc-label bc-label-sm";
+    node.innerHTML =
+      '<div class="bc-org">' + esc(org) + '</div>' +
+      '<div class="bc-name">' + esc(p.nameAr || p.code || "") + '</div>' +
+      '<div class="bc-meta">' + esc(String(p.code || "")) + " · " + esc(String(p.unit || "")) + " · " + esc(fmt(Number(p.salePrice) || 0)) + '</div>' +
+      '<div class="bc-bars">' + barcodeSvg(code, { mw: 0.16, h: 6 }) + '</div>' +
+      '<div class="bc-hrt">' + esc(code) + '</div>';
+    const box = $("#bcpsLabels");
+    box.innerHTML = "";
+    box.appendChild(node);
+    $("#bcpsFoot").innerHTML = "الباركود ده بتاع «" + esc(org) + "» للاستخدام الداخلي، وبيقرأ بأي إسكانر.";
+    printSection($("#barcodeSmallPage"));
+  }
+
   /* ================== شاشة الأصناف والمخزون ================== */
   let editingProductId = null;
 
@@ -5786,7 +5854,7 @@
 
   let posAddSource = "search";
 
-  function posAddItem() {
+  function posAddItem(onDone) {
     let q = $("#txtPosSearch").value.trim();
     let prod = q ? findProductFlexible(q) : null;
     if (!prod) {
@@ -5802,26 +5870,43 @@
       return;
     }
     const wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
-    const availableStock = stockAt(prod, wh);
-    if (!(availableStock > 0)) {
-      posUpdateBadge(prod);
-      toast("المنتج (" + prod.nameAr + ") غير متوفر في مخزن (" + wh + ").", "warning");
-      return;
-    }
     let qty = parseFloat(String($("#numPosQty").value).replace(/,/g, ""));
     if (!(qty > 0)) qty = 1;
-    const alreadyInInvoice = posItems.reduce((s, it) => s + (it.productId === prod.id ? it.qty : 0), 0);
-    if (qty + alreadyInInvoice > availableStock) {
-      toast("الكمية المطلوبة أكبر من المتوفر في مخزن (" + wh + ").\nالمتوفر: " + Number(availableStock - alreadyInInvoice).toLocaleString("en-US") + " " + prod.unit, "warning");
-      return;
-    }
-    let price = moneyVal("#txtPosPrice");
+    const price = moneyVal("#txtPosPrice");
     if (isNaN(price) || price <= 0) {
       toast("اكتب سعر البيع المتفق عليه مع العميل في خانة «سعر البيع».", "warning");
       $("#txtPosPrice").focus();
       return;
     }
+    const availableStock = stockAt(prod, wh);
+    const alreadyInInvoice = posItems.reduce((s, it) => s + (it.productId === prod.id ? it.qty : 0), 0);
+    /* 🔴 طلب المالك (فاتورة المبيعات): الصنف اللي مافيش رصيد منه (أو الكمية أكبر من المتاح)
+       ما ينزلش الجدول — نسأل «هل تريد إضافة رصيد له؟» ولو «نعم» نزوّد المخزن بالكمية المكتوبة
+       (الجرد) بس، والسطر ما ينزلش لوحده (تعديل بناء 160): المالك يرجع يكتب/يمسح الصنف بالكمية. */
+    if (!(availableStock > 0) || (qty + alreadyInInvoice > availableStock)) {
+      posUpdateBadge(prod);
+      posRestockPrompt(prod, qty, wh, availableStock - alreadyInInvoice, function (addedQty) {
+        /* 🔴 تعديل المالك (بناء 160): «نعم» تزوّد الرصيد (الجرد) بس — والسطر ما ينزلش لوحده.
+           المالك بيرجع يكتب/يمسح الصنف في الفاتورة بالكمية الصح بعد ما الرصيد بقى موجود. */
+        posResetEntry();
+        const nm = prod.nameAr || prod.code || "";
+        if (posAddSource === "code") {
+          scanHint("#posScanHint", "ok", "📦 تم إضافة " + fmt(addedQty) + " للرصيد بمخزن " + esc(wh) +
+            " — امسح «" + esc(nm) + "» تاني لإضافته للفاتورة.");
+        } else {
+          flashCenter("تم إضافة " + fmt(addedQty) + " للرصيد — اكتب «" + nm + "» في الفاتورة بالكمية المطلوبة.");
+        }
+        if (onDone) onDone(0);
+      });
+      return;
+    }
+    posCommitLine(prod, qty, price);
+    posResetEntry();
+    if (onDone) onDone(qty);
+  }
 
+  /* إدخال السطر فعليًا (مصدر واحد للإضافة — اليدوي والمسح والـ«بعد إضافة رصيد»). */
+  function posCommitLine(prod, qty, price) {
     const pct = activeDiscountPct(prod);
     const existing = posItems.find((it) => it.productId === prod.id);
     if (existing) {
@@ -5840,6 +5925,10 @@
         total: 0
       });
     }
+  }
+
+  /* تنظيف خانات الإدخال وإعادة الرسم بعد نجاح الإضافة (نفس سلوك بناء 143 حرفيًا). */
+  function posResetEntry() {
     $("#txtPosSearch").value = "";
     $("#txtPosCode").value = "";
     $("#numPosQty").value = "1";
@@ -5855,6 +5944,34 @@
     posRecalc();
     if (posAddSource === "code") $("#txtPosCode").focus();
     else $("#txtPosSearch").focus();
+  }
+
+  /* نافذة «لا يوجد رصيد… هل تريد إضافة رصيد له؟» — تزوّد المخزن بالكمية المكتوبة وتكمّل السطر. */
+  let posRestockCtx = null;
+  function posRestockPrompt(prod, qty, wh, deficit, onConfirm) {
+    posRestockCtx = { prod: prod, qty: qty, wh: wh, onConfirm: onConfirm };
+    const nm = prod.nameAr || prod.code || "";
+    const head = (deficit > 0)
+      ? "المتوفر من الصنف («" + nm + "») في مخزن («" + wh + "») أقل من الكمية المطلوبة. "
+      : "لا يوجد رصيد من الصنف («" + nm + "») في مخزن («" + wh + "»). ";
+    $("#pRestockMsg").textContent = head + "هل تريد إضافة رصيد له؟";
+    $("#pRestockQty").value = String(qty);
+    /* إرشاد المسح لازم يفضل يدلّ على المخزن (سلوك 143) — النافذة بتكمّل عليه. */
+    if (posAddSource === "code" && document.getElementById("posScanHint")) {
+      const haveNow = deficit > 0 ? deficit : 0;
+      scanHint("#posScanHint", "warn", "📦 الصنف («" + nm + "») المتوفر في مخزن («" + wh +
+        "») = " + haveNow + " — تقدر تزوّد الرصيد دلوقتي من النافذة.");
+    }
+    showModal("mPosRestock");
+    const el = $("#pRestockQty");
+    if (el && el.select) el.select();
+  }
+
+  /* «لا» أو Escape أو الضغط بره النافذة ⇒ إلغاء (مفيش إلزام بإضافة رصيد — قرار المالك). */
+  function posRestockCancel() {
+    posRestockCtx = null;
+    hideModal("mPosRestock");
+    scanBeep("no");
   }
 
   /* ══════════════════════════════════════════════════════════════════════════
@@ -5903,8 +6020,6 @@
       return;
     }
     const p = res.prod;
-    const wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
-    const have = Number(stockAt(p, wh)) || 0;
     $("#txtPosSearch").value = "";
     $("#txtPosCode").value = bcDigits(p.barcode) || String(p.code || "");
     posAddSource = "code";
@@ -5914,6 +6029,15 @@
     // صنف تاني على فاتورة العميل. ⇒ المسح بيمسك **سعر الصنف الممسوح** حرفيًا.
     $("#txtPosPrice").value = moneyStr(p.salePrice);
     const price = moneyVal("#txtPosPrice");
+    /* 🏷️ إرشاد المسح: صنف بلا سعر بيع مسجّل ⇒ ما ينزلش السطر، ورسالة تدلّ على الخطوة
+       (بيتساب في المسح لإن الإرشاد على قدر الخانة) — اليدوي عنده رسالة posAddItem. */
+    if (!(price > 0)) {
+      scanBeep("no");
+      posUpdateBadge(null);
+      scanHint("#posScanHint", "warn", "🏷️ الصنف (" + esc(p.nameAr || p.code) +
+        ") ملوش سعر بيع مسجّل — حدّدوله في «دليل الأصناف» وبعدين امسّحوه تاني.");
+      return;
+    }
     const typed = moneyVal("#numPosQty");
     /* 🔧 طلب المالك الحيّ 06/10 ≈22:15 — بحرفه: «لما بعمل مسح للباركود مش بينزلها في
        الفاتورة إلا لما اكتب الكمية وأضغط انتر وانا قلت لك تغيرها».
@@ -5932,38 +6056,27 @@
        ده من مسحة قبلها). المقياس الصح: **كمية الصنف في الفاتورة زادت**. وبعد النجاح
        الخانة ترجع فاضية والنشيط يتشال، فمسحة تانية ما تضيفش بكمية الصنف اللي قبلها. */
     const qtyBefore = invoiceQtyOf(posItems, p);
-    posAddItem();
-    const added = invoiceQtyOf(posItems, p) > qtyBefore;
-    if (added) {
-      $("#numPosQty").value = "";
-      posQtyTyped = false;
-      scanBeep("ok");
-      /* 🔧 طلب المالك الحيّ 06/10 ≈23:45 (بحرفه): «بلاش تكتب دي … والسعر الإجمالي عايزه
-         واضح». ⇒ النص التعليمي («المسحة تنزّل السطر على طول…») اتشال خالص، والرسالة بقت
-         **الرقم نفسه**: سعر الصنف الممسوح + إجمالي الفاتورة بعد السطر ده (من `posRecalc`
-         مصدر الحساب الوحيد، فاللي في الرسالة = اللي في الفوتر حرفيًا). */
-      const tot = posRecalc();
-      scanHint("#posScanHint", "ok", "📷 " + esc(p.nameAr || p.code) + " — " +
-        qty + " × " + fmt(price) + " = <b class='scan-line-total'>" + fmt(Math.round(qty * price * 100) / 100) + " ج.م</b>" +
-        " · 🧾 إجمالي الفاتورة: <b class='scan-line-total'>" + fmt(tot.grand) + " ج.م</b>");
-    } else if (!(have > 0)) {
-      scanBeep("no");
-      scanHint("#posScanHint", "warn", "📦 الصنف (" + esc(p.nameAr || p.code) +
-        ") مافيش منه في مخزن («" + esc(wh) + "») — غيّر المخزن أو زوّد الرصيد من «المخزون».");
-    } else if (!(price > 0)) {
-      scanBeep("no");
-      scanHint("#posScanHint", "warn", "🏷️ الصنف (" + esc(p.nameAr || p.code) +
-        ") ملوش سعر بيع مسجّل — حدّدوله في «دليل الأصناف» وبعدين امسّحوه تاني.");
-    } else {
-      scanBeep("no");
-      scanHint("#posScanHint", "warn", "📦 المتوفر من (" + esc(p.nameAr || p.code) +
-        ") في («" + esc(wh) + "») = " + have + " " + esc(p.unit || "") + " — أقل من الكمية اللي طلبتها.");
-    }
-    /* #217/٢ — **بوابة واحدة بعد قرار التعارف**: سواء السطر نزل أو اترفض، الرسالة اللي
-       فوق فيها الرقم المطلوب (الإجمالي / المتوفر / السعر)، فالشارة ما تضلّش معلّقة تحت
-       الرأس باسم الصنف الممسوح. (المسار اليدوي بيمسّيها جوه `posAddItem` عند النجاح،
-       و`posOnCode`/`posOnSearch` بيهّطوها تاني وقت المطابقة قبل الإضافة.) */
-    posUpdateBadge(null);
+    /* 🔴 طلب المالك: posAddItem بقت تنادِي onDone لما السطر ينزل فعلًا — سواء فورًا أو بعد
+       ما المالك يزوّد الرصيد من النافذة. فالحكم على «نزل؟» بيتم جوه الـcallback مش قبله. */
+    posAddItem(function (addedQty) {
+      const added = invoiceQtyOf(posItems, p) > qtyBefore;
+      if (added) {
+        $("#numPosQty").value = "";
+        posQtyTyped = false;
+        scanBeep("ok");
+        /* 🔧 طلب المالك الحيّ 06/10 ≈23:45 (بحرفه): «بلاش تكتب دي … والسعر الإجمالي عايزه
+           واضح». ⇒ النص التعليمي («المسحة تنزّل السطر على طول…») اتشال خالص، والرسالة بقت
+           **الرقم نفسه**: سعر الصنف الممسوح + إجمالي الفاتورة بعد السطر ده (من `posRecalc`
+           مصدر الحساب الوحيد، فاللي في الرسالة = اللي في الفوتر حرفيًا). */
+        const tot = posRecalc();
+        scanHint("#posScanHint", "ok", "📷 " + esc(p.nameAr || p.code) + " — " +
+          addedQty + " × " + fmt(price) + " = <b class='scan-line-total'>" + fmt(Math.round(addedQty * price * 100) / 100) + " ج.م</b>" +
+          " · 🧾 إجمالي الفاتورة: <b class='scan-line-total'>" + fmt(tot.grand) + " ج.م</b>");
+      }
+      /* #217/٢ — **بوابة واحدة بعد قرار التعارف**: سواء السطر نزل أو اترفض، الشارة ما تضلّش
+         معلّقة تحت الرأس باسم الصنف الممسوح. */
+      posUpdateBadge(null);
+    });
   }
 
   // Enter في خانة الكود: إمّا إنهاء مسح (سريع) ⇒ نختار الصنف، أو إنهاء كتابة ⇒ المسار القديم
@@ -6394,7 +6507,9 @@
 
     toast("تم حفظ وتأكيد فاتورة المبيعات بنجاح برقم (" + invoice.invoiceNumber + ")" +
       (postedJ && postedJ.j ? " وترحيلها للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
-    printInvoice(invoice);
+    /* 🆕 T3: صاحب الشركة يختار — «نعم» نفتح نافذة الطباعة زي الأول، «لا» رسالة وسط الشاشة بس. */
+    if (autoPrintSaleInvoice()) printInvoice(invoice);
+    else flashCenter("🧾 تم حفظ الفاتورة " + invoice.invoiceNumber + " بنجاح");
     fillPosDatalist();
     posNewInvoice();
   }
@@ -11904,6 +12019,9 @@
     const f = normalizeInvFields(org.invoice_fields);
     [["setInvName", "name"], ["setInvPhone", "phone"], ["setInvAddress", "address"], ["setInvVat", "tax_number"]]
       .forEach(([id, k]) => { const el = settFieldEl(prefix, id); if (el) el.checked = !!f[k]; });
+    // 🆕 T3: اختيار «اطبع فاتورة المبيعات أوتوماتيك؟» (القيمة الخام جوه invoice_fields)
+    const apEl = settFieldEl(prefix, "setAutoPrintSale");
+    if (apEl) apEl.value = autoPrintSaleInvoice() ? "1" : "0";
   }
 
   // قراءة حقول بيانات المنشأة / الضريبة إلى كائن org (قبل الحفظ)
@@ -11933,12 +12051,23 @@
     org.paper_size = paper || org.paper_size || "A4";
     put("warranty_terms", "setWarranty");
     const chk = (id) => { const el = settFieldEl(prefix, id); return el ? el.checked === true : true; };
+    // 🆕 T3: نحافظ على اختيار «اطبع أوتوماتيك» لو الشاشة اللي بتحفظ مفيهاش الخانة (مثلاً شاشة المالك)
+    const prevAutoPrint = (org.invoice_fields && typeof org.invoice_fields === "object")
+      ? org.invoice_fields.auto_print_sale : undefined;
     org.invoice_fields = {
       name: chk("setInvName"),
       address: chk("setInvAddress"),
       phone: chk("setInvPhone"),
       tax_number: chk("setInvVat")
     };
+    // 🆕 T3: «اطبع فاتورة المبيعات أوتوماتيك؟» (لو الخانة موجودة نحفظ اختيار صاحب الشركة)
+    const autoSelRaw = v("setAutoPrintSale");
+    if (autoSelRaw !== null) {
+      org.invoice_fields.auto_print_sale = (autoSelRaw === "1");
+      try { settings.autoPrintSale = org.invoice_fields.auto_print_sale; } catch (e) {}
+    } else if (prevAutoPrint !== undefined) {
+      org.invoice_fields.auto_print_sale = prevAutoPrint;
+    }
     p.org = org;
     return org;
   }
@@ -11954,6 +12083,11 @@
     if (org.warranty_terms != null) settings.orgWarranty = org.warranty_terms;
     if (org.paper_size != null) settings.paperSize = org.paper_size;
     if (org.invoice_fields) settings.invFields = normalizeInvFields(org.invoice_fields);
+    // 🆕 T3: مرآة محلية لاختيار «اطبع فاتورة المبيعات أوتوماتيك؟»
+    if (org.invoice_fields && org.invoice_fields.auto_print_sale !== undefined) {
+      const ap = org.invoice_fields.auto_print_sale;
+      settings.autoPrintSale = !(ap === false || ap === "false" || ap === 0 || ap === "0");
+    }
     try { saveSettings(); } catch (e) {}
   }
 
@@ -13600,6 +13734,10 @@
     $("#btnSaveProduct").addEventListener("click", saveProduct);
     $("#btnCancelProduct").addEventListener("click", () => hideModal("mProduct"));
 
+    // 🖨️ T2: طباعة ملصق باركود صغير بالبيانات المكتوبة في نافذة الصنف (قبل الحفظ كمان)
+    const btnPrintProductBarcode = document.getElementById("btnPrintProductBarcode");
+    if (btnPrintProductBarcode) btnPrintProductBarcode.addEventListener("click", printProductBarcodeSmall);
+
     // 🔳 بناء 139: باركود الأصناف — توليد جماعي + توليد/معاينة جوه النافذة + طباعة الملصق
     $("#btnGenBarcodes").addEventListener("click", doGenerateBarcodes);
     $("#btnGenOneBarcode").addEventListener("click", generateBarcodeInDialog);
@@ -13673,6 +13811,32 @@
       if (e.key === "Enter") { e.preventDefault(); posAddVia("search"); }
     });
     $("#btnPosAdd").addEventListener("click", () => { posAddItem(); posQtyTyped = false; scanHint("#posScanHint"); });
+    /* 🔴 طلب المالك (تعديل بناء 160): نافذة «لا يوجد رصيد…» — «نعم» تزوّد المخزن بالكمية
+       المكتوبة (الجرد) بس، والسطر **ما ينزلش** لوحده؛ المالك يرجع يكتب/يمسح الصنف في
+       الفاتورة بالكمية الصح (posRestockCtx.onConfirm بيقفل ويبلّغ بس). */
+    const btnPosRestockNo = document.getElementById("btnPosRestockNo");
+    if (btnPosRestockNo) btnPosRestockNo.addEventListener("click", posRestockCancel);
+    /* إلغاء بكل الطرق (زرار «لا» + Escape + الضغط بره) — مش شرط إضافة رصيد. */
+    const posRestockOverlay = document.getElementById("mPosRestock");
+    if (posRestockOverlay) posRestockOverlay.addEventListener("click", (e) => {
+      if (e.target === posRestockOverlay) posRestockCancel();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && posRestockOverlay && !posRestockOverlay.hidden) posRestockCancel();
+    });
+    const btnPosRestockYes = document.getElementById("btnPosRestockYes");
+    if (btnPosRestockYes) btnPosRestockYes.addEventListener("click", () => {
+      const ctx = posRestockCtx;
+      if (!ctx) { hideModal("mPosRestock"); return; }
+      const addQty = parseFloat(String($("#pRestockQty").value).replace(/,/g, ""));
+      if (!(addQty > 0)) { toast("اكتب كمية صحيحة أكبر من صفر.", "warning"); return; }
+      addStockAt(ctx.prod, ctx.wh, addQty);
+      saveProducts();
+      addActivity("مخزون", "إضافة رصيد عند البيع للصنف: " + (ctx.prod.nameAr || ctx.prod.code) + " (" + ctx.prod.code + ") بمخزن " + ctx.wh + " +" + addQty);
+      hideModal("mPosRestock");
+      posRestockCtx = null;
+      if (ctx.onConfirm) ctx.onConfirm(addQty);
+    });
     $("#btnPosNew").addEventListener("click", posNewInvoiceClean);
     // 📷 زر المسح في رأس الفاتورة (05/10 ≈18:05) = يجهّز الخانة + يفتح الكاميرا (بناء 144)
     $("#btnPosScanArm").addEventListener("click", posScanArm);

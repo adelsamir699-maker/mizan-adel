@@ -601,6 +601,26 @@ body {
 .toast.warning { background: var(--warning); }
 .toast.info { background: var(--accent); }
 
+/* 🆕 T3 — رسالة وسط الشاشة (تظهر شوية وتختفي) بديل نافذة الطباعة لما الإعداد = «لا». */
+.center-flash {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3002;
+  padding: 18px 30px;
+  background: var(--success);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  border-radius: 12px;
+  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.4);
+  max-width: 90vw;
+  text-align: center;
+  animation: centerFlashPop .18s ease-out;
+}
+@keyframes centerFlashPop { from { opacity: 0; transform: translate(-50%, -46%) scale(.94); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+
 /* صفحة الطباعة */
 .print-only { display: none; }
 
@@ -609,7 +629,7 @@ body {
 /* ===== الطباعة ===== */
 @media print {
   body { background: #fff; }
-  .app-header, .sidebar, .app-footer, .modal-overlay, .toast { display: none !important; }
+  .app-header, .sidebar, .app-footer, .modal-overlay, .toast, .center-flash { display: none !important; }
   /* توقيع المبرمج/رقمه/رابط الموقع: على الشاشات بس — ممنوع يظهر في أي طباعة */
   .screen-only { display: none !important; }
   /* 🗑️ عمود «إجراءات» في كشف الحساب: على الشاشة بس — ورق العميل يفضل 5 أعمدة (build 119) */
@@ -2269,6 +2289,14 @@ td.c-tax.tax-hidden {
   #barcodePage.paper-thermal .bc-labels { grid-template-columns: 1fr; }
   #barcodePage.paper-thermal .bc-label { padding: 4px 2px; }
   #barcodePage.paper-thermal .statement-head { margin-bottom: 8px; }
+}
+
+/* 🖨️ T2 — ملصق باركود صغير (من نافذة تعديل الصنف): ملصق واحد مفرد بمقاس مصغّر. */
+@media print {
+  #barcodeSmallPage .bc-labels-sm { grid-template-columns: 1fr; justify-items: start; margin-top: 4px; }
+  #barcodeSmallPage .bc-label-sm { max-width: 62mm; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; }
+  #barcodeSmallPage .statement-head h2 { font-size: 14px; }
+  #barcodeSmallPage .statement-head p { font-size: 10.5px; margin: 3px 0; }
 }
 
 /* 🆕 بناء 154 — القيد المعكوس + قائمة الضغطتين على القيد:
