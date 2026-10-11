@@ -1676,6 +1676,22 @@
       if (x) x.textContent = org;
     });
     applyPrintPaper(el);
+    // 🔳 ملصقات الباركود: المقاس يحدده المستخدم من البرنامج (عرض×طول بالسنتيمتر)، ولو
+    // اختار «حسب الطابعة» نسيبه auto (تحدده الطابعة/Scale). المبدأ: البرنامج أولًا.
+    if (el.id === "barcodePage" || el.id === "barcodeSmallPage") {
+      const s = bcLabelSizeMm();
+      el.style.setProperty("--bc-w", s.w + "mm");
+      el.style.setProperty("--bc-h", s.h + "mm");
+      el.classList.toggle("bc-auto", !!s.auto);
+      const pst = document.getElementById("mizanPrintPageSize");
+      if (pst) pst.textContent = s.auto
+        ? "@page { size: auto; margin: 0; }"
+        : "@page { size: " + s.w + "mm " + s.h + "mm; margin: 0; }";
+    } else {
+      el.classList.remove("bc-auto");
+      el.style.removeProperty("--bc-w");
+      el.style.removeProperty("--bc-h");
+    }
     document.querySelectorAll(".print-only").forEach((s) => s.classList.remove("print-target"));
     el.classList.add("print-target");
     document.body.classList.add("printing");
@@ -3047,6 +3063,33 @@
   const BC_ID_DIGITS = 9;        // 3 + 9 + 1 = 13 خانة
   const BC_LABELS_MAX = 60;      // سقف الملصقات في الطباعة الواحدة
 
+  /* 🔳 مقاس ملصق الباركود (طلب المالك): المستخدم يحدده من البرنامج — عرض×طول بالسنتيمتر.
+     الافتراضي 3.7×2.6 سم (ورقة الملصق). «حسب الطابعة» = نسيبه للطابعة/الScale. */
+  const BC_W_DEFAULT_CM = 3.7;
+  const BC_H_DEFAULT_CM = 2.6;
+  const BC_CM_MIN = 1;           // أقل مقاس منطقي 1 سم
+  const BC_CM_MAX = 30;          // أقصى مقاس منطقي 30 سم
+  function bcNumOf(v, d) {
+    const n = parseFloat(String(v == null ? "" : v).replace(/[^\d.]/g, ""));
+    return (Number.isFinite(n) && n >= BC_CM_MIN && n <= BC_CM_MAX) ? n : d;
+  }
+  function bcLabelSizeCm() {
+    let w = BC_W_DEFAULT_CM, h = BC_H_DEFAULT_CM, auto = false;
+    try {
+      if (settings) {
+        if (settings.bcLabelW != null) w = bcNumOf(settings.bcLabelW, w);
+        if (settings.bcLabelH != null) h = bcNumOf(settings.bcLabelH, h);
+        const a = settings.bcLabelAuto;
+        auto = (a === true || a === "true" || a === 1 || a === "1");
+      }
+    } catch (e) {}
+    return { w: w, h: h, auto: auto };
+  }
+  function bcLabelSizeMm() {
+    const c = bcLabelSizeCm();
+    return { w: Math.round(c.w * 10 * 100) / 100, h: Math.round(c.h * 10 * 100) / 100, auto: c.auto };
+  }
+
   // قيمة الرمز في Set B = رقم الـ ASCII مطروح منه 32
   function bc128Value(ch) {
     const c = ch.charCodeAt(0);
@@ -4067,13 +4110,12 @@
     return z === "thermal" ? { mw: 0.2, h: 8 } : z === "a5" ? { mw: 0.22, h: 9 } : { mw: 0.26, h: 10 };
   }
 
-  function bcLabelNode(p, code, org) {
+  /* طلب المالك: الملصق على ورقة 3.7×2.6 سم — **شرط الباركود والأرقام تحته فقط**،
+     بدون أي كتابة (اسم/كود/سعر/تاريخ). المقاس والحدود مشروطة في styles.css. */
+  function bcLabelNode(code) {
     const d = document.createElement("div");
     d.className = "bc-label";
     d.innerHTML =
-      '<div class="bc-org">' + esc(org) + '</div>' +
-      '<div class="bc-name">' + esc(p.nameAr || p.code || "") + '</div>' +
-      '<div class="bc-meta">' + esc(String(p.code || "")) + " · " + esc(String(p.unit || "")) + " · " + esc(fmt(Number(p.salePrice) || 0)) + '</div>' +
       '<div class="bc-bars">' + barcodeSvg(code, bcLabelScale()) + '</div>' +
       '<div class="bc-hrt">' + esc(code) + '</div>';
     return d;
@@ -4105,6 +4147,12 @@
       ? svg + '<span class="bc-hrt">' + esc(code) + '</span>'
       : '<span class="bc-none">الرقم ده ما بيتحوّرش لباركود — يستخدم أرقام أو حروف إنجليزي بس.</span>';
     $("#bcQty").value = "1";
+    // 🔳 مقاس الملصق المحفوظ من البرنامج (طلب المالك) يتعبّى في الحقول
+    const sz = bcLabelSizeCm();
+    const wEl = $("#bcW"), hEl = $("#bcH"), aEl = $("#bcAuto");
+    if (wEl) wEl.value = String(sz.w);
+    if (hEl) hEl.value = String(sz.h);
+    if (aEl) aEl.checked = !!sz.auto;
     showModal("mBarcodePrint");
     $("#bcQty").select();
   }
@@ -4122,16 +4170,15 @@
     const n = parseInt(bcDigits($("#bcQty").value).replace(/[^0-9]/g, ""), 10);
     if (!Number.isFinite(n) || n < 1) { toast("اكتب عدد الملصقات: 1 أو أكتر.", "warning"); return; }
     if (n > BC_LABELS_MAX) { toast("أقصى عدد في الطباعة الواحدة " + BC_LABELS_MAX + " ملصق — كمّل الباقي في طباعة تانية.", "warning"); return; }
-    const d = new Date(), z = (x) => String(x).padStart(2, "0");
-    $("#bcpItemName").textContent = p.nameAr || p.code || "";
-    $("#bcpMeta").textContent = "الكود " + (p.code || "—") + " · " + (p.unit || "—") + " · " + fmt(Number(p.salePrice) || 0) +
-      " · عدد الملصقات: " + n;
-    $("#bcpDate").textContent = z(d.getDate()) + "/" + z(d.getMonth() + 1) + "/" + d.getFullYear() + " " + z(d.getHours()) + ":" + z(d.getMinutes());
+    // 🔳 مقاس الملصق من البرنامج (طلب المالك): يُقرأ من الحقول، يُحفظ محليًا، ويتطبق فورًا.
+    const wVal = bcNumOf($("#bcW") && $("#bcW").value, BC_W_DEFAULT_CM);
+    const hVal = bcNumOf($("#bcH") && $("#bcH").value, BC_H_DEFAULT_CM);
+    const autoVal = !!($("#bcAuto") && $("#bcAuto").checked);
+    try { settings.bcLabelW = wVal; settings.bcLabelH = hVal; settings.bcLabelAuto = autoVal; saveSettings(); } catch (e) {}
+    // طلب المالك: الصفحة تبقى **شرط + أرقام فقط** على ملصق بالمقاس اللي اختاره — بلا أي كتابة.
     const box = $("#bcpLabels");
     box.innerHTML = "";
-    const org = invOrgName();
-    for (let i = 0; i < n; i++) box.appendChild(bcLabelNode(p, code, org));
-    $("#bcpFoot").innerHTML = "الباركود ده بتاع «" + esc(org) + "» للاستخدام الداخلي، وبيقرأ بأي إسكانر.";
+    for (let i = 0; i < n; i++) box.appendChild(bcLabelNode(code));
     hideModal("mBarcodePrint");
     renderProducts();
     printSection($("#barcodePage"));
@@ -4147,29 +4194,15 @@
       $("#fPBarcode").focus();
       return;
     }
-    const p = {
-      code: String($("#fPCode").value || "").trim(),
-      nameAr: String($("#fPNameAr").value || "").trim(),
-      unit: $("#fPUnit").value || "",
-      salePrice: moneyVal("#fPSale")
-    };
-    const d = new Date(), z = (x) => String(x).padStart(2, "0");
-    const org = invOrgName();
-    $("#bcpsName").textContent = p.nameAr || p.code || "";
-    $("#bcpsMeta").textContent = "الكود " + (p.code || "—") + " · " + (p.unit || "—") + " · " + fmt(Number(p.salePrice) || 0);
-    $("#bcpsDate").textContent = z(d.getDate()) + "/" + z(d.getMonth() + 1) + "/" + d.getFullYear() + " " + z(d.getHours()) + ":" + z(d.getMinutes());
+    // طلب المالك: الملصق **شرط + أرقام فقط** على ورقة 3.7×2.6 سم — بلا أي كتابة أو سعر.
     const node = document.createElement("div");
     node.className = "bc-label bc-label-sm";
     node.innerHTML =
-      '<div class="bc-org">' + esc(org) + '</div>' +
-      '<div class="bc-name">' + esc(p.nameAr || p.code || "") + '</div>' +
-      '<div class="bc-meta">' + esc(String(p.code || "")) + " · " + esc(String(p.unit || "")) + " · " + esc(fmt(Number(p.salePrice) || 0)) + '</div>' +
-      '<div class="bc-bars">' + barcodeSvg(code, { mw: 0.16, h: 6 }) + '</div>' +
+      '<div class="bc-bars">' + barcodeSvg(code, bcLabelScale()) + '</div>' +
       '<div class="bc-hrt">' + esc(code) + '</div>';
     const box = $("#bcpsLabels");
     box.innerHTML = "";
     box.appendChild(node);
-    $("#bcpsFoot").innerHTML = "الباركود ده بتاع «" + esc(org) + "» للاستخدام الداخلي، وبيقرأ بأي إسكانر.";
     printSection($("#barcodeSmallPage"));
   }
 

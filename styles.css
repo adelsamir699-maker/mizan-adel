@@ -2278,26 +2278,28 @@ td.c-tax.tax-hidden {
 .cam-panel .btn:hover { background: rgba(255, 255, 255, .28); }
 @media print { .cam-panel { display: none; } }
 
-/* 🔳 بناء 139 — المقاسات على الورق: A4 ثلاث أعمدة، A5 عمودين، الحراري عمود واحد.
-   ممنوع أي تغيير لقاعدة الـ 5mm اللي جوه @media print الرئيسي (حارس بناء 112). */
+/* 🔳 تعديل المالك — ملصق الباركود على ورقة **3.7×2.6 سم**: شرط الباركود والأرقام تحته
+   فقط، بدون أي كتابة (اسم/كود/سعر/تاريخ). مقاس الصفحة ييجي من **خصائص الطابعة**
+   (`size: auto`) ⇒ تقدر تصغّر/تكبّر من الطابعة أو من خيار Scale في نافذة الطباعة. */
 @media print {
-  #barcodePage .statement-head h2 { font-size: 15px; }
-  #barcodePage .statement-head p { font-size: 11px; margin: 3px 0; }
-  #barcodePage .bc-labels { margin-top: 4px; }
-  #barcodePage .inv-foot-print { font-size: 9.5px; color: var(--text-secondary); margin-top: 8px; text-align: center; }
-  #barcodePage.paper-a5 .bc-labels { grid-template-columns: repeat(2, 1fr); }
-  #barcodePage.paper-thermal .bc-labels { grid-template-columns: 1fr; }
-  #barcodePage.paper-thermal .bc-label { padding: 4px 2px; }
-  #barcodePage.paper-thermal .statement-head { margin-bottom: 8px; }
+  #barcodePage.print-target, #barcodeSmallPage.print-target { padding: 0 !important; }
+  #barcodePage.statement-page, #barcodeSmallPage.statement-page { padding: 0 !important; }
+  #barcodePage .bc-labels, #barcodeSmallPage .bc-labels-sm { display: block; margin: 0; padding: 0; }
+  #barcodePage .bc-label, #barcodeSmallPage .bc-label-sm {
+    width: var(--bc-w, 37mm); height: var(--bc-h, 26mm); max-width: none; box-sizing: border-box;
+    margin: 0 auto; padding: 1mm; border: none; border-radius: 0; background: #fff;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    overflow: hidden; break-inside: avoid; page-break-inside: avoid;
+  }
+  #barcodePage .bc-bars, #barcodeSmallPage .bc-bars { width: 100%; line-height: 0; }
+  #barcodePage .bc-svg, #barcodeSmallPage .bc-svg { display: block; width: 100% !important; height: 15mm; }
+  #barcodePage .bc-hrt, #barcodeSmallPage .bc-hrt { font-size: 12px; font-weight: 700; letter-spacing: 1px; margin-top: 1mm; }
+  /* «حسب الطابعة» (تلقائي): الملصق يملأ عرض الورقة اللي حددتها الطابعة */
+  #barcodePage.bc-auto .bc-label, #barcodeSmallPage.bc-auto .bc-label-sm { width: 100%; height: auto; }
 }
 
-/* 🖨️ T2 — ملصق باركود صغير (من نافذة تعديل الصنف): ملصق واحد مفرد بمقاس مصغّر. */
-@media print {
-  #barcodeSmallPage .bc-labels-sm { grid-template-columns: 1fr; justify-items: start; margin-top: 4px; }
-  #barcodeSmallPage .bc-label-sm { max-width: 62mm; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; }
-  #barcodeSmallPage .statement-head h2 { font-size: 14px; }
-  #barcodeSmallPage .statement-head p { font-size: 10.5px; margin: 3px 0; }
-}
+/* 🔳 نافذة طباعة الباركود — سطر خيار «حسب الطابعة» */
+.bc-auto-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 13px; color: var(--text-secondary); }
 
 /* 🆕 بناء 154 — القيد المعكوس + قائمة الضغطتين على القيد:
    - .jrn-reversed: القيد اللي اتعمله قيد عكسي (شطب + بهتان) في «القيود اليومية».
