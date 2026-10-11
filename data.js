@@ -764,6 +764,13 @@
       return true;
     });
   }
+  // 🆕 (المهمة المزدوجة) تفريغ شركة كمنشأة جديدة — المالك فقط، ببوّابة كلمة سر المالك نفسها
+  function adminResetOrg(orgId, password) {
+    return sb.rpc("mizan_admin_reset_org", { p_org_id: orgId, p_password: password }).then(function (r) {
+      if (r.error) throw r.error;
+      return true;
+    });
+  }
   // استعادة النسخة الشاملة (كل العملاء) — المالك فقط، بدون باسورد
   function adminRestoreAll(payload) {
     return sb.rpc("mizan_admin_restore_all", { p_payload: payload }).then(function (r) {
@@ -972,6 +979,7 @@ function changeMyPassword(oldPass, newPass) {
     adminExportAll: adminExportAll,
     adminExportOne: adminExportOne,
     adminRestoreOne: adminRestoreOne,
+    adminResetOrg: adminResetOrg,
     adminRestoreAll: adminRestoreAll,
     adminBackupFull: adminBackupFull,
     adminRestoreFull: adminRestoreFull,

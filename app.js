@@ -64,6 +64,10 @@
   // بتتدمغ فقط داخل جلسة سحابية بعد الدمج، فأي حالة مجهولة المصدر (وضع تجريبي،
   // لقطة ديسك، أو جهاز كان شغال لحساب تاني) تتمسح قبل ما شركة جديدة تسحب بياناتها.
   const LS_STATE_ORG = "mizan_state_org_v1";
+  // 🔄 بصمة «إبطال الكاش» بعد تفريغ الشركة من لوحة الإدارة (ترقية 29). بتخزّن
+  // "<orgId>|<epoch>" لآخر بصمة شافها الجهاز ده. لو بصمة السحابة أكبر ⇒ الشركة
+  // اتفضّت من عند المالك ⇒ نمسح كاش الجهاز ونسحب الحالة النظيفة (بدون إعادة رفع).
+  const LS_RESET_EPOCH = "mizan_reset_epoch_v1";
 
   // 🛡 حالة وجود مفاتيح localStorage لحظة بداية الإقلاع (قبل loadData).
   // تُستخدم في loadFromLocalDisk للتمييز بين "origin جديد/كاش اتمسح"
@@ -5517,24 +5521,59 @@
   // الأساس = أعلى رقم مستخدم فعليًا في بيانات الشركة الحالية (sales/purchases)،
   // مدموجًا مع عدّاد محفوظ في settings.invSeq (مرآته على السحابة لكل شركة عشان
   // الأجهزة المتعددة). عند الحفظ بنثبّت الرقم ونرفع الحد الأعلى للسحابة.
-  function parseInvNo(r) {
-    if (!r) return 0;
-    const s = String(r.invoiceNumber != null ? r.invoiceNumber : (r.invoiceNo != null ? r.invoiceNo
+  /* 🆕 (المهمة المزدوجة 10/10) ترقيم يومي بنوع:
+       <رقم النوع> + <التاريخ ٨ أرقام> + <الرقم اليومي ٣ أرقام وأكثر>
+        1 = شراء · 2 = بيع · 3 = مرتجع شراء · 4 = مرتجع بيع
+        (شراء/مرتجعه فردية، بيع/مرتجعه زوجية — تمييز بصري فوري).
+       مثال: 220261010001 = فاتورة بيع بتاريخ 2026-10-10 ورقمها اليومي 001.
+       الرقم اليومي يبدأ من 001 كل يوم. الحدّ الأعلى السحابي (`settings.invSeq`) بيخزّن
+       الرقم المركّب = التاريخ×10000 + الرقم اليومي ⇒ تصفير يومي + صفر تصادم بين أجهزة
+       نفس الشركة (نفس الطريقة للاتنين)، بلا أي تغيير Schema. */
+  const INV_KIND_DIGIT = { purchase: "1", sale: "2", purchase_return: "3", sale_return: "4" };
+
+  // رقم المستند (فاتورة/مرتجع) كنصّ مهما كان الشكل القديم أو الجديد
+  function invNoOf(r) {
+    if (!r) return "";
+    return String(r.invoiceNumber != null ? r.invoiceNumber : (r.invoiceNo != null ? r.invoiceNo
       : (r.returnNumber != null ? r.returnNumber : (r.returnNo != null ? r.returnNo : ""))));
-    const m = s.match(/\d+/g);
-    if (!m || !m.length) return 0;
-    // آخر مجموعة أرقام هي رقم الفاتورة (يتجاهل الأرقام داخل أي بادئة تاريخ)
-    return parseInt(m[m.length - 1], 10) || 0;
   }
-  function seqBase(kind) {
+  // بصمة اليوم yyyymmdd من تاريخ ISO (والافتراضي = تاريخ اليوم)
+  function invStampOf(dateISO) {
+    const s = String(dateISO || "").replace(/\D/g, "");
+    return s.length >= 8 ? s.slice(0, 8) : todayISO().replace(/\D/g, "").slice(0, 8);
+  }
+  // مطابقة صارمة للشكل الجديد فقط؛ أي شكل قديم ⇒ null (ما يتلمسش العدّاد اليومي)
+  function invParseNew(s) {
+    const m = String(s == null ? "" : s).trim().match(/^([1-4])(\d{8})(\d{3,})$/);
+    return m ? { digit: m[1], stamp: m[2], seq: parseInt(m[3], 10) || 0 } : null;
+  }
+  // الرقم المركّب المخزّن سحابيًا = التاريخ×10000 + الرقم اليومي (يصفّر يوميًا)
+  function invEncodedOf(s) {
+    const p = invParseNew(s);
+    return p ? (Number(p.stamp) * 10000 + p.seq) : 0;
+  }
+  function invPadSeq(n) { const s = String(n); return s.length >= 3 ? s : ("000" + s).slice(-3); }
+  function invNumberFor(kind, seq, dateISO) {
+    return (INV_KIND_DIGIT[kind] || "2") + invStampOf(dateISO) + invPadSeq(Math.max(1, Number(seq) || 1));
+  }
+  // الرقم اليومي التالي = أعلى (من بيانات الشركة لنفس اليوم + الحدّ الأعلى السحابي لنفس اليوم) + 1
+  function invSeqBase(kind, dateISO) {
     const arr = (kind === "purchase" ? purchases
       : kind === "sale_return" ? saleReturns
       : kind === "purchase_return" ? purchaseReturns
       : sales) || [];
+    const stamp = invStampOf(dateISO);
     let localMax = 0;
-    arr.forEach(function (r) { const n = parseInvNo(r); if (n > localMax) localMax = n; });
-    const stored = Number((settings && settings.invSeq && settings.invSeq[kind])) || 0;
-    return Math.max(localMax, stored);
+    arr.forEach(function (r) {
+      const p = invParseNew(invNoOf(r));
+      if (p && p.stamp === stamp && p.seq > localMax) localMax = p.seq;
+    });
+    const hw = Number((settings && settings.invSeq && settings.invSeq[kind])) || 0;
+    const hwSeq = (Math.floor(hw / 10000) === Number(stamp)) ? (hw % 10000) : 0;
+    return Math.max(localMax, hwSeq);
+  }
+  function invNextNumber(kind, dateISO) {
+    return invNumberFor(kind, invSeqBase(kind, dateISO) + 1, dateISO);
   }
   function commitInvoiceSeq(kind, n) {
     n = Number(n) || 0;
@@ -5562,11 +5601,11 @@
     }).catch(function () { });
   }
   function nextInvoiceNumber() {
-    return String(seqBase("sale") + 1);
+    return invNextNumber("sale", todayISO());
   }
-  // رقم المرتجع: تسلسل مستقل لكل نوع (بيع/شراء) على نفس عدّاد السحابة
+  // رقم المرتجع: نفس محرّك الترقيم اليومي بنوعه المستقل (مرتجع بيع/شراء)
   function nextReturnNumber(kind) {
-    return String(seqBase(kind || "sale_return") + 1);
+    return invNextNumber(kind || "sale_return", todayISO());
   }
 
   function activeDiscountPct(p) {
@@ -6323,7 +6362,7 @@
 
     sales.push(invoice);
     saveSales();
-    commitInvoiceSeq("sale", parseInvNo(invoice));
+    commitInvoiceSeq("sale", invEncodedOf(invoice));
     // 🆕 بناء 134: الفاتورة تترحّل أوتوماتيك للقيود اليومية (قيد متزن، بلا سند — انظر رأس القسم)
     const postedJ = postInvoiceJournal("sale", invoice, paidTreasury);
     addActivity("فاتورة مبيعات", "فاتورة " + invoice.invoiceNumber + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")" +
@@ -6336,9 +6375,21 @@
     posNewInvoice();
   }
 
+  /* 🆕 (المهمة المزدوجة) باركود الفاتورة على الطبعة — نفس رقم الفاتورة بالحرف (CODE-128).
+     يتعبّى وقت الطباعة، ويُمسح لفتح الفاتورة في وضع الإجراءات (طباعة/مرتجع/حذف). */
+  function fillInvBarcode(elId, text) {
+    const el = $("#" + elId);
+    if (!el) return;
+    const s = String(text == null ? "" : text).trim();
+    el.innerHTML = s
+      ? ('<div class="bc-bars">' + barcodeSvg(s, { mw: 0.3, h: 12 }) + '</div>' +
+        '<div class="bc-num">' + esc(s) + '</div>')
+      : "";
+  }
   function printInvoice(inv) {
     $("#invNoPrint").textContent = inv.invoiceNumber;
     $("#invDatePrint").textContent = inv.invoiceDate;
+    fillInvBarcode("invBarcode", inv.invoiceNumber);
     $("#invCustPrint").textContent = inv.customerName;
     $("#invWhPrint").textContent = inv.warehouse;
     $("#invPayPrint").textContent = inv.paymentMethod;
@@ -6480,7 +6531,7 @@
 
   /* ================== فواتير المشتريات (التوريد) ================== */
   function nextPurchaseInvoiceNumber() {
-    return String(seqBase("purchase") + 1);
+    return invNextNumber("purchase", todayISO());
   }
 
   function renderPurchasesLookups() {
@@ -6925,7 +6976,7 @@
 
     purchases.push(invoice);
     savePurchases();
-    commitInvoiceSeq("purchase", parseInvNo(invoice));
+    commitInvoiceSeq("purchase", invEncodedOf(invoice));
     // 🆕 بناء 134: فاتورة المشتريات تترحّل أوتوماتيك للقيود (مخزون + ضريبة مقابل الحساب/المورد)
     const postedJ = postInvoiceJournal("purchase", invoice, paidTreasury);
     addActivity("فاتورة مشتريات", "فاتورة " + invoice.invoiceNumber + " - " + supplier.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")" +
@@ -6941,6 +6992,7 @@
   function printPurchaseInvoice(inv) {
     $("#ppInvNo").textContent = inv.invoiceNumber;
     $("#ppDate").textContent = inv.invoiceDate;
+    fillInvBarcode("ppBarcode", inv.invoiceNumber);
     $("#ppSuppPrint").textContent = inv.supplierName;
     $("#ppWhPrint").textContent = inv.warehouse;
     $("#ppPayPrint").textContent = inv.paymentMethod;
@@ -7310,6 +7362,38 @@
   // صلاحية حذف الفواتير: حساب صاحب الشركة + حساب مالك البرنامج (سوبر أدمن) فقط —
   // الحسابات الفرعية للأعضاء ما بيشفوش الزرار ولا يقدروا يستدعوا الحذف.
   function canDeleteInvoices() { return isCompanyOwnerAcct() || isSuperAcct(); }
+
+  /* 🆕 (المهمة المزدوجة) مسح باركود الفاتورة ⇒ فتحها على إجراءاتها (طباعة/مرتجع/حذف).
+     الباركود المطبوع = رقم الفاتورة بالحرف (نوع+تاريخ+رقم) ⇒ المسح يوصلها بلا بحث. */
+  let invActCtx = null;
+  function openInvByScan(no) {
+    const s = String(no == null ? "" : no).trim();
+    const p = invParseNew(s);
+    if (!p) { toast("الرقم " + s + " مش رقم فاتورة صحيح (المتوقّع: نوع+تاريخ+رقم).", "warning"); return; }
+    const isSale = (p.digit === "2" || p.digit === "4");
+    let inv = null;
+    if (p.digit === "3" || p.digit === "4") {
+      const r = (isSale ? saleReturns : purchaseReturns).find((x) => invNoOf(x) === s);
+      if (r) inv = retInvoiceOf(r, isSale);
+    } else {
+      inv = (isSale ? sales : purchases).find((x) => String(x.invoiceNumber) === s);
+    }
+    if (!inv) { toast("مفيش فاتورة بالرقم " + s + " في " + (isSale ? "المبيعات" : "المشتريات") + ".", "warning"); return; }
+    openInvActions(inv, isSale);
+  }
+  function openInvActions(inv, isSales) {
+    invActCtx = { inv: inv, isSales: isSales };
+    const allRet = invoiceHasReturns(isSales, inv) && invoiceAllReturned(isSales, inv);
+    $("#invActTitle").textContent = isSales ? "🛍️ فاتورة مبيعات" : "📦 فاتورة مشتريات";
+    $("#invActNo").value = String(inv.invoiceNumber || inv.invoiceNo || "-");
+    $("#invActDate").value = String(inv.invoiceDate || inv.date || "-");
+    $("#invActPartyLbl").textContent = isSales ? "العميل:" : "المورد:";
+    $("#invActParty").value = String((isSales ? (inv.customerName || inv.customer) : (inv.supplierName || inv.supplier)) || "-");
+    $("#invActTotal").value = fmt(inv.grandTotal) + " ج.م";
+    $("#btnInvActDel").hidden = !canDeleteInvoices();
+    $("#btnInvActRet").hidden = !(canManageReturns() && !allRet);
+    showModal("mInvActions");
+  }
 
   /* 🆕 سطر ٢ من طلب المالك (09/10): «بالنسبة للاستعلام عن الفواتير خلال فترة محددة من و الى
    * يتكتب بنفس الطريقة السابقة مجموع الفواتير بناءا على الفرز».
@@ -8052,7 +8136,7 @@
     // 3) الحفظ + التسلسل + سجل النشاط
     retList(isSales).push(rec);
     if (isSales) saveSaleReturns(); else savePurchaseReturns();
-    commitInvoiceSeq(retKind(isSales), Number(no) || 0);
+    commitInvoiceSeq(retKind(isSales), invEncodedOf(no));
     addActivity("مرتجع " + retWord(isSales),
       "مرتجع رقم (" + no + ") على فاتورة " + retInvoiceNo(inv) + " - " + retParty(inv, isSales) +
       " - " + items.map((x) => x.nameAr + " ×" + Number(x.qty)).join("، ") +
@@ -13442,6 +13526,49 @@
       printPurchaseInvoice(inv);
     });
 
+    /* 🆕 (المهمة المزدوجة) مربّع مسح باركود الفاتورة + نافذة الإجراءات */
+    ["txtScanInvS", "txtScanInvP"].forEach((id) => {
+      const el = $("#" + id);
+      if (!el) return;
+      el.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const v = el.value.trim();
+        if (!v) return;
+        el.value = "";
+        openInvByScan(v);
+      });
+    });
+    $("#btnInvActPrint").addEventListener("click", () => {
+      if (!invActCtx) return;
+      const c = invActCtx; hideModal("mInvActions");
+      if (c.isSales) printInvoice(c.inv); else printPurchaseInvoice(c.inv);
+    });
+    $("#btnInvActRet").addEventListener("click", () => {
+      if (!invActCtx) return;
+      const c = invActCtx; hideModal("mInvActions");
+      openRetFor(c.isSales, c.inv);
+    });
+    $("#btnInvActDel").addEventListener("click", () => {
+      if (!invActCtx) return;
+      const c = invActCtx; hideModal("mInvActions");
+      deleteInvoiceQuery(c.inv, c.isSales);
+    });
+    $("#btnInvActClose").addEventListener("click", () => hideModal("mInvActions"));
+
+    /* 🆕 (المهمة المزدوجة) لو غيّر المستخدم تاريخ الفاتورة، يتولّد رقم جديد بنفس التاريخ
+       (الرقم بيحمل التاريخ وهو بصمة اليوم) — بشرط إن الرقم الحالي بنفس شكل النوع. */
+    const dtpDateEl = $("#dtpDate");
+    if (dtpDateEl) dtpDateEl.addEventListener("change", () => {
+      const p = invParseNew($("#txtInvoiceNo").value);
+      if (p && p.digit === "2") $("#txtInvoiceNo").value = invNextNumber("sale", $("#dtpDate").value || todayISO());
+    });
+    const dtpPDateEl = $("#dtpPDate");
+    if (dtpPDateEl) dtpPDateEl.addEventListener("change", () => {
+      const p = invParseNew($("#txtPInvNo").value);
+      if (p && p.digit === "1") $("#txtPInvNo").value = invNextNumber("purchase", $("#dtpPDate").value || todayISO());
+    });
+
     /* ---- 🔁 المرتجعات (بناء 108) ---- */
     document.querySelectorAll(".ret-tab-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -14021,6 +14148,37 @@ const pwEye = document.getElementById("btnShowPass");
     return 0;
   }
 
+  // 🔄 ترقية 29: إبطال كاش الشركة بعد «تفريغها كمنشأة جديدة» من لوحة المالك.
+  // البصمة بتوصل مجانًا مع بيانات الصلاحية (access.features.reset_epoch) — مافيش نداء إضافي.
+  function localResetEpoch(org) {
+    try {
+      const s = localStorage.getItem(LS_RESET_EPOCH) || "";
+      const i = s.indexOf("|");
+      if (i < 0 || s.slice(0, i) !== org) return 0;
+      return Number(s.slice(i + 1)) || 0;
+    } catch (e) { return 0; }
+  }
+  function stampResetEpoch(org, ep) {
+    try { localStorage.setItem(LS_RESET_EPOCH, org + "|" + ep); } catch (e) { }
+  }
+  // لو بصمة السحابة أكبر من بصمة الجهاز ⇒ الشركة اتفضّت من عند المالك ⇒ نمسح كاش
+  // الجهاز (بلا أي رفع: wipeLocalTables بتطفّي pushTable) قبل adoptCloud، فالحالة
+  // المحلية تبدأ فاضية والدمج يسحب النظيف بس — مفيش «إعادة رفع» للبيانات الممسوحة.
+  function applyResetEpoch(acc) {
+    const org = DATA && DATA.org && DATA.org() ? DATA.org().id : null;
+    if (!org) return false;
+    const ep = Number((acc && acc.features && acc.features.reset_epoch) || 0) || 0;
+    if (!ep) return false;
+    const stale = ep > localResetEpoch(org);
+    if (stale) {
+      wipeLocalTables();
+      try { chatWipe("org"); } catch (e) { }
+      toast("الشركة اتفضّت من عند المالك — تم مسح كاش الجهاز وسحب الحالة النظيفة ✅", "info");
+    }
+    stampResetEpoch(org, ep);
+    return stale;
+  }
+
   function proceedOnline(stageEl, stageUser, bypassMembers) {
     const stage = (t) => { if (stageEl) setAuthMsg(stageEl, t, ""); };
     // مالك الشركة (غير عادل) حقه يدخل شاشة «حسابات شركتك» قبل البرنامج
@@ -14048,6 +14206,8 @@ const pwEye = document.getElementById("btnShowPass");
     stage("جاري التحميل: فحص الصلاحيات...");
     DATA.requestAccess().then((acc) => {
       if (!accessGranted(acc)) { A.adopting = false; showDeny(acc); return; }
+      // 🔄 ترقية 29: لو الشركة اتفضّت من عند المالك، نمسح كاش الجهاز قبل السحب (منع إعادة رفع قديم)
+      try { applyResetEpoch(acc); } catch (e) { }
       stage("جاري التحميل: سحب بيانات السحابة...");
       return window.CLOUD.loadAll().then(() => {
         const changed = adoptCloud();
@@ -16694,7 +16854,8 @@ const pwEye = document.getElementById("btnShowPass");
         "<td><button class=\"btn small blue\" type=\"button\" onclick=\"event.stopPropagation();window.__admDbl('" + o.org_id + "')\">✏️ بيانات الشركة</button> " +
         (o.protected
           ? '<span class="login-sub" title="شركة رئيسية تخص المالك">🔒 لا تُحذف</span>'
-          : "<button class=\"btn small red\" type=\"button\" onclick=\"event.stopPropagation();window.__admDel('" + o.org_id + "')\">🗑 حذف</button>") +
+          : "<button class=\"btn small red\" type=\"button\" onclick=\"event.stopPropagation();window.__admDel('" + o.org_id + "')\">🗑 حذف</button> " +
+            "<button class=\"btn small orange\" type=\"button\" title=\"تفريغ الشركة كمنشأة جديدة (بتبقى الحسابات فقط)\" onclick=\"event.stopPropagation();window.__admResetOrg('" + o.org_id + "')\">🧹 تفريغ</button>") +
         "</td>" +
         "</tr>";
     });
@@ -16984,6 +17145,66 @@ const pwEye = document.getElementById("btnShowPass");
         }).catch((e) => toast("خطأ في تجهيز النسخة الاحتياطية: " + (e.message || e), "error"));
       });
       dlg.querySelector("#delCancel").addEventListener("click", () => dlg.remove());
+    }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
+  };
+
+  // 🆕 (المهمة المزدوجة) تفريغ شركة كمنشأة جديدة — للمالك فقط:
+  // ببوّابة كلمة سر المالك + تأكيد كتابي باسم الشركة + نسخة احتياطية اختيارية.
+  window.__admResetOrg = function (orgId) {
+    DATA.adminOrgs().then((orgs) => {
+      const o = orgs.find((x) => x.org_id === orgId);
+      const name = (o && o.org_name) || "بدون اسم";
+      const safeName = esc(name);
+      const dlg = document.createElement("div");
+      dlg.className = "modal-overlay";
+      dlg.id = "resetOrgModal";
+      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🧹 تفريغ شركة كمنشأة جديدة: <b>' + safeName + "</b></div>" +
+        '<p class="login-sub" style="margin-bottom:8px;color:#b42318">⚠️ هذا الإجراء <b>لا رجعة فيه</b>: يمسح كل البيانات التشغيلية ' +
+        "(فواتير، مرتجعات، سندات، قيود، عملاء، موردين، أصناف، مخزون، خزائن، موظفين، حضور، أصول، تصنيفات، أصحاب، مستندات)، " +
+        "ويُعيد بذر شجرة الحسابات الافتراضية (٢٢ حسابًا + الصندوق الرئيسي). تُحفظ الحسابات (اليوزرات) وبيانات الشركة ومزاياها.</p>" +
+        '<p class="login-sub" style="margin-bottom:6px">اكتب <b>اسم الشركة</b> للتأكيد:</p>' +
+        '<input id="roConfirm" class="inp" placeholder="' + safeName + '" />' +
+        '<p class="login-sub" style="margin:8px 0 6px">كلمة سر المالك (حسابك):</p>' +
+        '<input id="roPass" class="inp" type="password" placeholder="كلمة مرور المالك" />' +
+        '<div class="feat-btns" style="flex-direction:column;gap:8px;align-items:stretch;margin-top:10px">' +
+        '<button class="btn sky" type="button" id="roBackup">⬇️ نسخة احتياطية للشركة أولًا (مستحسن)</button>' +
+        '<button class="btn red" type="button" id="roOk">🧹 تفريغ الشركة نهائيًا</button>' +
+        '<button class="btn gray" type="button" id="roCancel">إلغاء</button>' +
+        "</div></div>";
+      document.body.appendChild(dlg);
+      dlg.querySelector("#roBackup").addEventListener("click", () => {
+        toast("جارٍ تجهيز النسخة الاحتياطية...", "info");
+        ownerBackupPack(orgId).then((pack) => {
+          if (!pack) throw new Error("لا توجد بيانات قابلة للنسخ");
+          const blob = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
+          const safeName = (name || "شركة").replace(/[\\/:*?"<>|]/g, "_").trim() || "شركة";
+          const fname = "mizan-company-backup-" + safeName + "-" + (todayISO ? todayISO() : new Date().toISOString().slice(0, 10)) + ".json";
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = fname;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+          toast("تم تنزيل النسخة الاحتياطية: " + fname, "ok");
+        }).catch((e) => toast("تعذّر تجهيز النسخة الاحتياطية: " + (e.message || e), "error"));
+      });
+      dlg.querySelector("#roCancel").addEventListener("click", () => dlg.remove());
+      dlg.querySelector("#roOk").addEventListener("click", () => {
+        const typed = (dlg.querySelector("#roConfirm").value || "").trim();
+        const pass = dlg.querySelector("#roPass").value || "";
+        if (typed !== name) { toast("اكتب اسم الشركة بالضبط («" + name + "») للتأكيد", "warning"); return; }
+        if (!pass) { toast("اكتب كلمة سر المالك", "warning"); return; }
+        dlg.querySelector("#roOk").disabled = true;
+        dlg.querySelector("#roOk").textContent = "⏳ جارٍ التفريغ...";
+        DATA.adminResetOrg(orgId, pass).then(() => {
+          dlg.remove();
+          toast("تم تفريغ شركة «" + name + "» كمنشأة جديدة 🧹", "ok");
+          renderAdminOrgs();
+        }).catch((e) => {
+          const b = dlg.querySelector("#roOk");
+          if (b) { b.disabled = false; b.textContent = "🧹 تفريغ الشركة نهائيًا"; }
+          toast("تعذّر التفريغ: " + (e.message || e), "error");
+        });
+      });
     }).catch((e) => toast("خطأ: " + (e.message || e), "error"));
   };
 
