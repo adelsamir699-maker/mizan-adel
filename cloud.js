@@ -264,42 +264,9 @@
           isActive: r.is_active !== false, badge: r.badge || "", notes: r.notes || "" };
       }
     },
-    // 🆕 بناء 115: سجل الحضور — سطر لكل موظف/يوم (الفهرس السحابي uq_attendance_empday يمنع المزدوج)
-    attendance: {
-      local: function () { return W.attendance || []; },
-      toCloud: function (r) {
-        return { id: detUuid("attendance", r.id), org_id: DATA.orgId(), local_id: r.id,
-          employee_id: Number(r.employeeId), att_date: r.date,
-          check_in: r.checkIn || null, check_out: r.checkOut || null,
-          status: r.status || "present",
-          late_min: Math.round(Number(r.lateMin) || 0), early_min: Math.round(Number(r.earlyMin) || 0),
-          work_min: Math.round(Number(r.workMin) || 0), ot_min: Math.round(Number(r.otMin) || 0),
-          auto_timed: r.autoTimed !== false, note: r.note || "", user_name: r.userName || "" };
-      },
-      fromCloud: function (r) {
-        var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("attendance", r.id);
-        return { id: lid, employeeId: Number(r.employee_id), date: String(r.att_date || "").slice(0, 10),
-          checkIn: r.check_in || null, checkOut: r.check_out || null,
-          status: r.status || "present",
-          lateMin: Number(r.late_min || 0), earlyMin: Number(r.early_min || 0),
-          workMin: Number(r.work_min || 0), otMin: Number(r.ot_min || 0),
-          autoTimed: r.auto_timed !== false, note: r.note || "", userName: r.user_name || "" };
-      }
-    },
-    // 🆕 بناء 115: مدة العمل — سطر واحد لكل شركة (تلفّه app.js في مصفوفة عند المراية)
-    att_settings: {
-      local: function () { return W.att_settings || []; },
-      toCloud: function (r) {
-        return { id: detUuid("att_settings", r.id || 1), org_id: DATA.orgId(), local_id: r.id || 1,
-          work_start: r.workStart || "09:00", work_end: r.workEnd || "17:00",
-          grace_min: Math.round(Number(r.graceMin) || 0), lunch_min: Math.round(Number(r.lunchMin) || 0) };
-      },
-      fromCloud: function (r) {
-        var lid = (r.local_id != null) ? Number(r.local_id) : (localIdFromUuid("att_settings", r.id) || 1);
-        return { id: lid, workStart: r.work_start || "09:00", workEnd: r.work_end || "17:00",
-          graceMin: Number(r.grace_min || 0), lunchMin: Number(r.lunch_min || 0) };
-      }
-    },
+    // 🌉 بناء 165: سجل الحضور (attendance) ومدة العمل (att_settings) **خرجا من المزامنة** —
+    // الحضور محلي بالكامل على جهاز العميل (ملف Access عبر الجسر + localStorage + لقطة الديسك).
+    // قرار المالك الحاسم: السحابة لا تُسجَّل عليها بصمات/حركات الموظفين ولا إعدادات حضورهم.
     // 🆕 مهمة 98: الأصول الثابتة — نفس نمط الهوية (detUuid + local_id) من ترحيل ٣٧
     fixed_assets: {
       local: function () { return W.fixed_assets || []; },
@@ -877,7 +844,7 @@
     // بعد loadAll يلاقي العلامة متظبطة فعلًا، فالتبويب يطلع من أول رسم.
     var chatProbe = probeChatTable();
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
-      "employees", "attendance", "att_settings", "fixed_assets"]; // 🆕 مهمة 98
+      "employees", "fixed_assets"]; // 🆕 مهمة 98 · 🌉 بناء 165: attendance/att_settings اتشالوا (محلي فقط)
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
     var eagerFallback = eagerLoad ? null : function (n) {
       return DATA.client().from(n).select("*").order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });

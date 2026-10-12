@@ -39,6 +39,8 @@
   const LS_EMPLOYEES = "mizan_employees_v1";
   const LS_ATTENDANCE = "mizan_attendance_v1";
   const LS_ATT_SETTINGS = "mizan_att_settings_v1";
+  // 🌉 بناء 165: منفذ الجسر المحلي (جهاز العميل) — الحضور محلي بالكامل
+  const LS_BRIDGE_PORT = "mizan_bridge_port_v1";
   // 🆕 مهمة 98: سجل الأصول الثابتة (غير المتداولة / غير الملموسة)
   const LS_FIXED_ASSETS = "mizan_fixed_assets_v1";
   // 🆕 شجرة الحسابات: نسخة محلية من «أصحاب المنشأة» — عشان حسابات الشركاء (رأس المال/المسحوبات)
@@ -1182,12 +1184,14 @@
     pushTable("employees"); syncToLocalDisk();
   }
   function saveAttendance() {
+    // 🌉 بناء 165: الحضور محلي بالكامل — مفيش رفع للسحابة (خصوصية الموظفين)
     localStorage.setItem(LS_ATTENDANCE, JSON.stringify(attendance));
-    pushTable("attendance"); syncToLocalDisk();
+    syncToLocalDisk();
   }
   function saveAttSettings() {
+    // 🌉 بناء 165: مدة العمل محلية كذلك (مفيش مزامنة سحابية)
     localStorage.setItem(LS_ATT_SETTINGS, JSON.stringify(attSettings));
-    pushTable("att_settings"); syncToLocalDisk();
+    syncToLocalDisk();
   }
 
   /* ================== 🆕 مهمة 98: حفظ سجل الأصول الثابتة ================== */
@@ -13540,7 +13544,7 @@
   var DEPLOY_DB_EXCLUDE = {};
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "categories", "customer_txs", "customers",
-    "employees", "attendance", "att_settings", "fixed_assets",
+    "employees", "fixed_assets",
     "journal_entries", "journal_lines", "mizan_created_accounts", "mizan_invoice_seq",
     "mizan_pw_store", "owners", "password_changes", "presence", "products",
     "purchase_items", "purchases", "sale_items", "sales", "supplier_txs", "suppliers",
@@ -13558,7 +13562,7 @@
     "treasury", "units", "vouchers", "warehouses",
     "sale_returns", "sale_return_items", "purchase_returns", "purchase_return_items",
     "mizan_documents", "mizan_retired_codes",
-    "employees", "attendance", "att_settings", "fixed_assets"];
+    "employees", "fixed_assets"];
   // الجداول اللي مالهاش عمود org_id (مقيس على القاعدة الحيّة 02/10) — ما بتتقسّمش على شركة
   var ORG_SCOPED_EXCLUDE = ["organizations", "mizan_pw_store"];
   // نطاق نسخة «شركة واحدة»: كل الجداول ماعدا الحسابات العامة وكلمات المرور
@@ -16819,6 +16823,13 @@ const pwEye = document.getElementById("btnShowPass");
     $("#btnSaveAttSet").addEventListener("click", attSaveSetForm);
     $("#btnAttEditCancel").addEventListener("click", closeAttEdit);
     $("#btnAttEditSave").addEventListener("click", saveAttEdit);
+    // 🌉 بناء 165: أزرار الجسر المحلي
+    var bp = $("#bridgePort");
+    if (bp) bp.value = bridgePort();
+    if ($("#btnBridgeTest")) $("#btnBridgeTest").addEventListener("click", function () { bridgeTest(false).catch(function () { }); });
+    if ($("#btnBridgeImport")) $("#btnBridgeImport").addEventListener("click", bridgeImport);
+    if ($("#btnBridgeExport")) $("#btnBridgeExport").addEventListener("click", bridgeExport);
+    bridgeTest(true).catch(function () { });
   }
 
   function renderAttendanceView() {
@@ -16835,6 +16846,146 @@ const pwEye = document.getElementById("btnShowPass");
     $("#atManOut").disabled = !canEdit;
     attSwitchTab(attTab);
     attRenderToday();
+  }
+
+  /* ================== 🌉 بناء 165: الجسر المحلي — الحضور محلي بالكامل ==================
+     قاعدة المالك الحاسمة: السحابة لا تُسجَّل عليها بصمات/حركات/صور الموظفين ولا إجازاتهم.
+     البيانات بتعيش على جهاز العميل: localStorage + لقطة الديسك + **ملف Access** عبر الجسر
+     المحلي (`mizan-att-bridge`، .NET على 127.0.0.1، بنفس بنية att2000: USERINFO/CHECKINOUT).
+     الجسر **قراءة/سحب من الماكينة فقط**؛ والحفظ في ملف Access على نفس الجهاز. مفيش
+     أي بيانات حيوية بتُرفع. */
+  function bridgePort() {
+    var p = parseInt(localStorage.getItem(LS_BRIDGE_PORT), 10);
+    return (p >= 1024 && p <= 65535) ? p : 8799;
+  }
+  function bridgeBase() { return "http://127.0.0.1:" + bridgePort(); }
+  function bridgeSetState(ok, text) {
+    var dot = $("#bridgeDot"), st = $("#bridgeState");
+    if (dot) dot.style.color = ok ? "#10B981" : "#EF4444";
+    if (st) st.textContent = text || (ok ? "متصل" : "غير متصل");
+  }
+  function bridgeFetch(path, options) {
+    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+    var to = ctrl ? setTimeout(function () { ctrl.abort(); }, 4000) : null;
+    var opt = options || {};
+    if (ctrl) opt.signal = ctrl.signal;
+    return fetch(bridgeBase() + path, opt).then(function (r) {
+      if (to) clearTimeout(to);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }, function (e) { if (to) clearTimeout(to); throw e; });
+  }
+  function bridgeTest(silent) {
+    var portEl = $("#bridgePort");
+    if (portEl && portEl.value) {
+      var v = parseInt(portEl.value, 10);
+      if (v >= 1024 && v <= 65535) localStorage.setItem(LS_BRIDGE_PORT, String(v));
+    }
+    return bridgeFetch("/api/health").then(function (h) {
+      bridgeSetState(true, "متصل");
+      var info = $("#bridgeInfo");
+      if (info) info.textContent = "ملف: " + (h.dataFile || "—") + (h.readOnly ? " · قراءة فقط" : "");
+      if (!silent) toast("الجسر متصل ✔", "success");
+      return h;
+    }).catch(function (e) {
+      bridgeSetState(false, "غير متصل");
+      var info = $("#bridgeInfo");
+      if (info) info.textContent = "شغّل الجسر المحلي على المنفذ " + bridgePort();
+      if (!silent) toast("تعذّر الاتصال بالجسر المحلي (تأكد إنه شغّال على المنفذ " + bridgePort() + ")", "error");
+      throw e;
+    });
+  }
+  function bridgeFindEmp(userId) {
+    var u = String(userId == null ? "" : userId).trim();
+    if (!u) return null;
+    for (var i = 0; i < employees.length; i++) {
+      var e = employees[i];
+      if (String(e.badge || "").trim() === u || String(e.code || "").trim() === u) return e;
+    }
+    return null;
+  }
+  function bridgePad2(n) { return (n < 10 ? "0" : "") + n; }
+  function bridgeDateKey(d) { return d.getFullYear() + "-" + bridgePad2(d.getMonth() + 1) + "-" + bridgePad2(d.getDate()); }
+
+  function bridgeImport() {
+    if (!canManageAttendance()) { toast("صلاحية «الحضور والانصراف» غير مفعّلة لحسابك", "error"); return; }
+    toast("جاري السحب من الجسر…", "info");
+    Promise.all([bridgeFetch("/api/employees"), bridgeFetch("/api/punches")]).then(function (res) {
+      var punches = Array.isArray(res[1]) ? res[1] : [];
+      var groups = {}, unmatched = 0, invalid = 0;
+      punches.forEach(function (p) {
+        var emp = bridgeFindEmp(p.userId);
+        if (!emp) { unmatched++; return; }
+        var d = new Date(p.timestamp);
+        if (isNaN(d.getTime())) { invalid++; return; }
+        var key = emp.id + "|" + bridgeDateKey(d);
+        var g = groups[key] || (groups[key] = { emp: emp, date: bridgeDateKey(d), times: [] });
+        g.times.push(d);
+      });
+      var existing = {};
+      attendance.forEach(function (a) { existing[String(a.employeeId) + "|" + a.date] = true; });
+      var added = 0, skipped = 0;
+      Object.keys(groups).forEach(function (k) {
+        if (existing[k]) { skipped++; return; }
+        var g = groups[k];
+        g.times.sort(function (x, y) { return x - y; });
+        var inD = g.times[0], outD = g.times.length > 1 ? g.times[g.times.length - 1] : null;
+        var row = {
+          id: nextAttLocalId(), employeeId: Number(g.emp.id), date: g.date,
+          checkIn: inD.toISOString(), checkOut: outD ? outD.toISOString() : null,
+          status: "present", lateMin: 0, earlyMin: 0, workMin: 0, otMin: 0,
+          autoTimed: true, note: "من الماكينة", userName: currentAttUser()
+        };
+        applyAttCalc(row);
+        if (row.lateMin > 0) row.status = "late";
+        attendance.push(row);
+        added++;
+      });
+      if (added) {
+        saveAttendance();
+        try { attRenderToday(); attRenderLedger(); } catch (e) { /* الشاشة مش مفتوحة */ }
+      }
+      var msg = "تم السحب: " + added + " سجل جديد";
+      if (skipped) msg += " · " + skipped + " موجود مسبقًا";
+      if (unmatched) msg += " · " + unmatched + " حركة لموظف غير معروف";
+      if (invalid) msg += " · " + invalid + " وقت غير صالح";
+      toast(msg, added ? "success" : "info");
+      addActivity("سحب حضور من الجسر", msg);
+    }).catch(function (e) {
+      toast("تعذّر السحب من الجسر: " + (e.message || e), "error");
+    });
+  }
+
+  function bridgeExport() {
+    if (!canManageAttendance()) { toast("صلاحية «الحضور والانصراف» غير مفعّلة لحسابك", "error"); return; }
+    var payloadEmps = employees.map(function (e) {
+      return {
+        userId: String(e.badge || e.code || e.id), name: e.nameAr || e.code || "",
+        badgeNumber: 0, privilege: 0, password: "", cardNo: "", groupId: 0,
+        enabled: e.isActive !== false
+      };
+    });
+    var payloadPunches = [];
+    attendance.forEach(function (a) {
+      var emp = attEmpById(a.employeeId);
+      if (!emp) return;
+      var uid = String(emp.badge || emp.code || emp.id);
+      if (a.checkIn) payloadPunches.push({ userId: uid, timestamp: a.checkIn, verifyMode: 0, inOutMode: 0, sensorId: "WEB", workCode: 0 });
+      if (a.checkOut) payloadPunches.push({ userId: uid, timestamp: a.checkOut, verifyMode: 0, inOutMode: 1, sensorId: "WEB", workCode: 0 });
+    });
+    var jsonHeaders = { "Content-Type": "application/json" };
+    toast("جاري النسخ الاحتياطي إلى الجسر…", "info");
+    Promise.all([
+      bridgeFetch("/api/employees", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payloadEmps) }),
+      bridgeFetch("/api/punches", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payloadPunches) })
+    ]).then(function (res) {
+      var msg = "تم النسخ للجسر: " + ((res[0] && res[0].count) || payloadEmps.length) + " موظف · " +
+        ((res[1] && res[1].added) || 0) + " حركة جديدة";
+      toast(msg, "success");
+      addActivity("نسخ الحضور للجسر", msg);
+    }).catch(function (e) {
+      toast("تعذّر النسخ للجسر: " + (e.message || e), "error");
+    });
   }
 
   /* ══════════════════════════════════════════════════════════════════════
