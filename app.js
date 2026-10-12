@@ -558,6 +558,8 @@
     if (!keys.length) return;
     if (keys.indexOf("journal") >= 0) { try { renderJournal(); renderLedger(); } catch (e) { } }
     if (keys.indexOf("accStatement") >= 0) { try { renderAccStatementView(); } catch (e) { } }
+    if (keys.indexOf("glLedger") >= 0) { try { renderLedgerView("general"); } catch (e) { } }
+    if (keys.indexOf("subLedger") >= 0) { try { renderLedgerView("sub"); } catch (e) { } }
   }
   window.mizanOnLazyReady = mizanOnLazyReady;
 
@@ -1724,7 +1726,8 @@
     // 🌳 بناء 156: تبويب «شجرة الحسابات» — كان ناقصًا من القائمة فكان الزرار يرمي
     // «قيد التطوير» ولا يفتح الشاشة إطلاقًا (نفس صنف باگ بناء 125). الحارس الثابت بايتش.
     // 🧾 بناء 163: «ضريبة المبيعات» اتضافت لنفس القائمة (وإلا الزرار يرمي «قيد التطوير»).
-    "chartTree", "salesTax"];
+    // 📚 بناء 164: «دفتر الأستاذ العام/المساعد» لنفس القائمة (وإلا الزرار يرمي «قيد التطوير»).
+    "chartTree", "salesTax", "glLedger", "subLedger"];
 
   // حساب المستخدم الحالي — المصدر الموثوق هو mizan_access (فيه role + is_superadmin)
   // لأن getProfile() قد يكون null أو ناقصًا لحظة الدخول.
@@ -1859,7 +1862,7 @@
    * القاعدة هنا: **أي «لأ» صريحة في أي مستوى = مقفول**، وأدرج المالك (عادل) محصّن
    * فوق ده كلها بـ `ownerHasAllAccess()` (قراره في build 119 ما اتغيرش).
    */
-  const VIEW_FEAT_KEY = { returnsReg: "returnsManager", accStatement: "journal", stockCount: "products" };
+  const VIEW_FEAT_KEY = { returnsReg: "returnsManager", accStatement: "journal", glLedger: "journal", subLedger: "journal", stockCount: "products" };
   function featKeyOf(viewName) { return VIEW_FEAT_KEY[viewName] || viewName; }
   function permExplicitlyOff(viewName) {
     var DE = window.DATA || {};
@@ -1948,6 +1951,8 @@
     if (name === "journal") return isSuperAcct() || isCompanyOwnerAcct();
     // 🆕 شاشة «كشف حساب الحسابات» (من القيود اليومية) — نفس بوابة القيود بالظبط
     if (name === "accStatement") return isSuperAcct() || isCompanyOwnerAcct();
+    // 📚 بناء 164: «دفتر الأستاذ العام» و«دفتر الأستاذ المساعد» — نفس بوابة القيود (مصدرهم نفسه)
+    if (name === "glLedger" || name === "subLedger") return isSuperAcct() || isCompanyOwnerAcct();
     // 🛡 بناء 121 (طلب المالك: لوحة الإدارة «متظهرش عند حد تاني ابدا»):
     // لوحة الإدارة = لحساب المالك (سوبر أدمن) **حصريًا** — لا قائمة مزايا الشركة
     // ولا دور «مالك شركة» ولا تفعيل صريح يقدر يفتحها لغيره. (المالك وصلها فوق بـ ownerHasAllAccess)
@@ -2316,6 +2321,8 @@
     if (name === "balance") renderBalance();
     if (name === "chartTree") renderChartTree(); // 🆕 شجرة الحسابات (تبويب مستقل في التقارير والمركز المالي)
     if (name === "salesTax") renderVatTab();     // 🧾 بناء 163: ضريبة المبيعات (القيمة المضافة)
+    if (name === "glLedger") renderLedgerView("general");  // 📚 بناء 164: دفتر الأستاذ العام
+    if (name === "subLedger") renderLedgerView("sub");     // 📒 بناء 164: دفتر الأستاذ المساعد
     // 🆕 مهمة 98: سجل الأصول الثابتة — الربط مرة واحدة ثم الرسم
     if (name === "fixedAssets") { fixedBindOnce(); renderFixedAssets(); }
     // 🧮 بناء 145: الجرد بالباركود — المخزن + الورقة الحالية + حساب الفروق، وكلها من الجهاز
@@ -11811,6 +11818,297 @@
     $("#acsName").value = "";
     showView("accStatement");
     if (!hit && q) toast("لقيت «" + q + "» في حركة القيود السريعة، بس مش في دليل الحسابات — جرّب تبحث بالكود أو الاسم هنا.", "warning");
+  }
+
+  /* ================== 🆕 بناء 164: دفترا الأستاذ (العام / المساعد) ==================
+   * طلب المالك (12/10): بدل «كشف حساب الحسابات» — **دفتر الأستاذ العام** (الحسابات الأساسية =
+   * اللي ليها فروع، برصيدها المجمّع) + **دفتر الأستاذ المساعد** (الحسابات الفرعية الورقية،
+   * وتحت كل حساب مراقبة كل عميل/مورّد في سطر). نفس مصدر «كشف حساب الحسابات» (القيود اليومية)
+   * ونفس بوابته ⇒ مافيش رقمين مختلفين لنفس الحساب.
+   * • الثابت: إجمالي مدين = إجمالي دائن (نفس رقم ميزان المراجعة) في الدفترين ⇒ «متوازن ✓».
+   * • البحث: كود من أوله + اسم في أي موضع بتطبيع عربي (normalizeAr) — بيتحدّث مع الكتابة.
+   * • الفترة (من/إلى) اختيارية: حركة الفترة من القيود، والرصيد يُحسب «حتى» نهاية الفترة. */
+  const LEDGER_KIND = {
+    general: {
+      view: "glLedger", label: "دفتر الأستاذ العام",
+      tbody: "#dgvGl tbody", tfoot: "#dgvGl tfoot", code: "#glCode", name: "#glName",
+      from: "#glFrom", to: "#glTo", info: "#glInfo", all: "#btnGlAll", refresh: "#btnGlRefresh",
+      clear: "#btnGlClear", prn: "#btnGlPrint", print: "#glPrintPage", pBody: "#glpBody",
+      pFoot: "#glpFoot", pPeriod: "#glpPeriod", pName: "#glpOrgName"
+    },
+    sub: { view: "subLedger", label: "دفتر الأستاذ المساعد", tbody: "#dgvSl tbody", tfoot: "#dgvSl tfoot",
+      code: "#slCode", name: "#slName", from: "#slFrom", to: "#slTo", info: "#slInfo", print: "#slPrintPage",
+      pBody: "#slpBody", pFoot: "#slpFoot", pPeriod: "#slpPeriod", pName: "#slpOrgName",
+      all: "#btnSlAll", refresh: "#btnSlRefresh", clear: "#btnSlClear", prn: "#btnSlPrint" }
+  };
+  let ledgerFilter = { general: { from: "", to: "" }, sub: { from: "", to: "" } };
+  let ledgerBound = {};
+
+  function ledgerGate(kind) {
+    const k = LEDGER_KIND[kind];
+    if (canUseView(k.view)) return true;
+    toast(k.label + " متاح لصاحب الشركة والمالك فقط", "error");
+    return false;
+  }
+  const ledgerPeriodOf = (kind) => ledgerFilter[kind] || { from: "", to: "" };
+  const ledgerInRange = (d, p) => (!p.from || d >= p.from) && (!p.to || d <= p.to);
+  const ledgerNatSign = (a) => (a && (a.type === "asset" || a.type === "expense") ? 1 : -1);
+  const ledgerDepth = (a) => { const c = String((a && a.code) || ""); return c ? c.split(".").length - 1 : 0; };
+
+  // حركة كل حساب (بلا فروع) في الفترة: مدين/دائن
+  function ledgerOwnMoves(p) {
+    const m = {};
+    (journalEntries || []).forEach((j) => {
+      if (!ledgerInRange(String(j.date || ""), p)) return;
+      (j.lines || []).forEach((l) => {
+        const id = Number(l.accountId);
+        if (!id) return;
+        const e = m[id] || (m[id] = { debit: 0, credit: 0 });
+        e.debit += Number(l.debit) || 0;
+        e.credit += Number(l.credit) || 0;
+      });
+    });
+    return m;
+  }
+  // صافي (مدين − دائن) لكل حساب في القيود اللي بعد التاريخ ده — عشان رصيد «حتى نهاية الفترة»
+  function ledgerAfterMoves(to) {
+    const m = {};
+    if (!to) return m;
+    (journalEntries || []).forEach((j) => {
+      if (String(j.date || "") <= to) return;
+      (j.lines || []).forEach((l) => {
+        const id = Number(l.accountId);
+        if (!id) return;
+        m[id] = (m[id] || 0) + (Number(l.debit) || 0) - (Number(l.credit) || 0);
+      });
+    });
+    return m;
+  }
+  // الرصيد الجاري بعلامة المدين — نفس رقم «كشف حساب الحسابات» بالحرف (openingBalance)،
+  // «وحتى نهاية الفترة» بخصم حركة القيود اللي بعد التاريخ (نفس ما بيعمله الكشف).
+  function ledgerBalAsOf(a, afterMap) {
+    const cur = Number(a.openingBalance) || 0;
+    const after = (afterMap && afterMap[Number(a.id)]) || 0;
+    return bsRound(cur - after);
+  }
+  const ledgerGroup = (a) => (typeof acsGroupAccounts === "function" ? acsGroupAccounts(a) : [a]);
+  function ledgerRowData(a, ownMap, afterMap, indent) {
+    let debit = 0, credit = 0, bal = 0;
+    ledgerGroup(a).forEach((m) => {
+      const o = ownMap[Number(m.id)];
+      if (o) { debit += o.debit; credit += o.credit; }
+      bal += ledgerBalAsOf(m, afterMap);
+    });
+    return { a: a, debit: bsRound(debit), credit: bsRound(credit), bal: bsRound(bal), indent: indent || 0 };
+  }
+  function ledgerMatch(a, codeQ, nameQ) {
+    if (codeQ && String(a.code || "").indexOf(codeQ) !== 0) return false;
+    if (nameQ && normalizeAr(String(a.nameAr || "")).indexOf(nameQ) < 0) return false;
+    return true;
+  }
+  // حساب المراقبة (بالكود القياسي أو بالاسم — لو الشركة غيّرت الكود)
+  function ledgerControlAcc(kind) {
+    const code = kind === "cust" ? "1.1.5" : "2.1.1";
+    const name = kind === "cust" ? "مديونيات العملاء" : "مستحقات الموردين";
+    return accounts.filter((a) => String(a.code || "") === code || String(a.nameAr || "") === name)[0] || null;
+  }
+  function ledgerPartiesOf(a, p) {
+    if (!a) return [];
+    const cli = ledgerControlAcc("cust"), sup = ledgerControlAcc("sup");
+    if (cli && Number(a.id) === Number(cli.id)) return ledgerPartyList(customers, "cust", p);
+    if (sup && Number(a.id) === Number(sup.id)) return ledgerPartyList(suppliers, "sup", p);
+    return [];
+  }
+  // رصيد الطرف (عميل/مورد) بنفس رقم «كشف حسابه» بالحرف:
+  // بلا فترة = الرصيد الحالي المحفوظ، ومع فترة = رصيد آخر المدة من نفس دالة الكشف (stmPeriodTotals)
+  function ledgerPartyClosing(kind, obj, p) {
+    if (!p.from && !p.to) return bsRound(Number(obj.currentBalance) || 0);
+    const prev = stmFilter;
+    try {
+      stmFilter = { from: p.from, to: p.to };
+      const all = kind === "sup" ? getSupplierStatement(obj) : getStatement(obj);
+      const tot = stmPeriodTotals(all, stmVisibleRows(all));
+      return bsRound(tot.closing);
+    } catch (e) { return bsRound(Number(obj.currentBalance) || 0); }
+    finally { stmFilter = prev; }
+  }
+  function ledgerPartyList(list, kind, p) {
+    return (list || []).filter((x) => x && (x.nameAr || x.name) && !x.protected)
+      .map((x) => ({ id: x.id, name: x.nameAr || x.name || "", code: String(x.code || ""), kind: kind,
+        debit: 0, credit: 0, bal: ledgerPartyClosing(kind, x, p) }))
+      .sort((A, B) => A.code.localeCompare(B.code, undefined, { numeric: true }));
+  }
+  function ledgerPartyMatch(pt, codeQ, nameQ) {
+    if (codeQ && String(pt.code || "").indexOf(codeQ) !== 0 && String(pt.name || "").indexOf(codeQ) < 0) return false;
+    if (nameQ && normalizeAr(String(pt.name || "")).indexOf(nameQ) < 0) return false;
+    return true;
+  }
+  function ledgerPartyRecon(p, afterMap) {
+    const cli = ledgerControlAcc("cust"), sup = ledgerControlAcc("sup");
+    const nat = (a) => a ? bsRound(ledgerBalAsOf(a, p.to ? afterMap : null) * ledgerNatSign(a)) : 0;
+    const partiesSum = (kind, arr) => bsRound((arr || []).reduce((m, x) => m + ledgerPartyClosing(kind, x, p), 0));
+    return { cli: nat(cli), cliParty: partiesSum("cust", customers), sup: nat(sup), supParty: partiesSum("sup", suppliers) };
+  }
+  function ledgerTotals(p) {
+    let d = 0, c = 0;
+    (journalEntries || []).forEach((j) => {
+      if (!ledgerInRange(String(j.date || ""), p)) return;
+      (j.lines || []).forEach((l) => { d += Number(l.debit) || 0; c += Number(l.credit) || 0; });
+    });
+    return { debit: bsRound(d), credit: bsRound(c) };
+  }
+  function ledgerPeriodLabel(kind) {
+    const p = ledgerPeriodOf(kind);
+    if (!p.from && !p.to) return "كامل السجل";
+    return (p.from ? "من " + p.from : "من البداية") + " إلى " + (p.to ? p.to : "آخر حركة");
+  }
+  function ledgerShowWaiting(kind) {
+    const K = LEDGER_KIND[kind];
+    const tbody = $(K.tbody);
+    if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="bal-empty">' + JRN_WAIT_TEXT + '</td></tr>';
+    const tfoot = $(K.tfoot); if (tfoot) tfoot.innerHTML = "";
+    const info = $(K.info); if (info) info.textContent = "⏳ مستني القيود توصل…";
+  }
+  function ledgerRender(kind) {
+    const K = LEDGER_KIND[kind];
+    const tbody = $(K.tbody), tfoot = $(K.tfoot);
+    if (!tbody) return;
+    const p = ledgerPeriodOf(kind);
+    const ownMap = ledgerOwnMoves(p);
+    const afterMap = p.to ? ledgerAfterMoves(p.to) : null;
+    const codeQ = String(($(K.code).value) || "").trim();
+    const nameQ = normalizeAr(String(($(K.name).value) || "")).trim();
+    const rows = [];
+    if (kind === "general") {
+      const bases = accounts.filter((a) => a.isActive !== false && acsChildCount(a) > 0)
+        .sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), undefined, { numeric: true }));
+      bases.forEach((a) => { if (ledgerMatch(a, codeQ, nameQ)) rows.push(ledgerRowData(a, ownMap, afterMap, ledgerDepth(a))); });
+    } else {
+      const leaves = accounts.filter((a) => a.isActive !== false && acsChildCount(a) === 0)
+        .sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), undefined, { numeric: true }));
+      leaves.forEach((a) => {
+        const self = ledgerMatch(a, codeQ, nameQ);
+        const parts = ledgerPartiesOf(a, p).filter((pt) => ledgerPartyMatch(pt, codeQ, nameQ));
+        if (!self && !parts.length) return;
+        if (self) rows.push(ledgerRowData(a, ownMap, afterMap, ledgerDepth(a)));
+        parts.forEach((pt) => rows.push({ a: null, party: pt, debit: 0, credit: 0, bal: pt.bal, indent: ledgerDepth(a) + 1 }));
+      });
+    }
+    tbody.innerHTML = "";
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="bal-empty">لا توجد حسابات مطابقة' +
+        ((codeQ || nameQ) ? " — عدّل الكود أو الاسم" : "") + '.</td></tr>';
+    }
+    rows.forEach((r) => {
+      const tr = document.createElement("tr");
+      if (r.party) {
+        tr.className = "ledger-party";
+        tr.innerHTML =
+          '<td>' + esc(r.party.code) + '</td>' +
+          '<td style="padding-right:' + (r.indent * 18) + 'px">' +
+            '<button class="btn small blue led-drill" type="button" data-ledparty="' + esc(r.party.kind) + ':' + esc(r.party.id) + '" title="كشف حساب الطرف">🔎</button> ' +
+            '👤 ' + esc(r.party.name) + '</td>' +
+          '<td>—</td><td>—</td>' +
+          '<td class="' + (r.bal >= 0 ? "balance-debit" : "balance-credit") + '">' + fmt(r.bal) + '</td>';
+      } else {
+        const a = r.a;
+        tr.innerHTML =
+          '<td>' + esc(a.code) + '</td>' +
+          '<td' + (r.indent ? ' style="padding-right:' + (r.indent * 18) + 'px"' : '') + '>' +
+            (a.isActive === false ? "🔴 " : "") +
+            '<button class="btn small blue led-drill" type="button" data-ledacc="' + esc(a.code) + '" title="كشف حساب الحساب">🔎</button> ' +
+            esc(a.nameAr) + (isPartnerAccount(a) ? " 👤" : "") +
+            (kind === "general" ? ' <span class="ledger-tag">أساسي</span>' : "") + '</td>' +
+          '<td>' + (r.debit ? fmt(r.debit) : "—") + '</td>' +
+          '<td>' + (r.credit ? fmt(r.credit) : "—") + '</td>' +
+          '<td class="' + (r.bal >= 0 ? "balance-debit" : "balance-credit") + '">' + fmt(r.bal) + '</td>';
+      }
+      tbody.appendChild(tr);
+    });
+    const tot = ledgerTotals(p);
+    const balanced = Math.abs(tot.debit - tot.credit) < 0.01;
+    if (tfoot) {
+      tfoot.innerHTML = '<tr class="ledger-total"><td colspan="2">إجمالي الحركة في الفترة (من القيود)</td>' +
+        '<td>' + fmt(tot.debit) + '</td><td>' + fmt(tot.credit) + '</td>' +
+        '<td class="' + (balanced ? "balance-debit" : "balance-credit") + '">' +
+          (balanced ? "متوازن ✓" : fmt(bsRound(tot.debit - tot.credit))) + '</td></tr>';
+    }
+    const info = $(K.info);
+    if (info) {
+      let txt = "<b>" + rows.length + "</b> " + (kind === "general" ? "حساب أساسي" : "سطر") +
+        " | الفترة: <b>" + esc(ledgerPeriodLabel(kind)) + "</b>" +
+        " | إجمالي مدين <b>" + fmt(tot.debit) + "</b> = إجمالي دائن <b>" + fmt(tot.credit) + "</b> ج.م" +
+        (balanced ? ' <span class="ledger-recon ok">متوازن ✓</span>' : "");
+      if (kind === "sub") {
+        const rc = ledgerPartyRecon(p, afterMap);
+        const ok1 = Math.abs(bsRound(rc.cli - rc.cliParty)) < 0.01;
+        const ok2 = Math.abs(bsRound(rc.sup - rc.supParty)) < 0.01;
+        txt += " | عملاء: الأستاذ <b>" + fmt(rc.cli) + "</b> / الحركات <b>" + fmt(rc.cliParty) + "</b>" +
+          ' <span class="ledger-recon ' + (ok1 ? "ok" : "no") + '">' + (ok1 ? "مطابق ✓" : "فرق " + fmt(bsRound(rc.cli - rc.cliParty))) + '</span>';
+        txt += " | موردون: الأستاذ <b>" + fmt(rc.sup) + "</b> / الحركات <b>" + fmt(rc.supParty) + "</b>" +
+          ' <span class="ledger-recon ' + (ok2 ? "ok" : "no") + '">' + (ok2 ? "مطابق ✓" : "فرق " + fmt(bsRound(rc.sup - rc.supParty))) + '</span>';
+      }
+      info.innerHTML = txt;
+    }
+  }
+  function ledgerApplyPeriod(kind) {
+    const K = LEDGER_KIND[kind];
+    const f = $(K.from).value || "", t = $(K.to).value || "";
+    if (f && t && f > t) {
+      toast("تاريخ البداية «" + f + "» بعد تاريخ النهاية «" + t + "» — صحّح الفترة.", "warning");
+      return;
+    }
+    ledgerFilter[kind] = { from: f, to: t };
+    ledgerRender(kind);
+  }
+  function ledgerPrint(kind) {
+    if (!ledgerGate(kind)) return;
+    const K = LEDGER_KIND[kind];
+    $(K.pName).textContent = (typeof invOrgName === "function" ? invOrgName() : (settings.orgName || "مؤسستي"));
+    $(K.pPeriod).textContent = ledgerPeriodLabel(kind);
+    $(K.pBody).innerHTML = $(K.tbody).innerHTML;
+    $(K.pFoot).innerHTML = $(K.tfoot).innerHTML;
+    printSection($(K.print));
+    addActivity("طباعة " + K.label, ledgerPeriodLabel(kind));
+  }
+  function ledgerBindOnce(kind) {
+    if (ledgerBound[kind]) return;
+    ledgerBound[kind] = true;
+    const K = LEDGER_KIND[kind];
+    const rr = () => ledgerRender(kind);
+    $(K.code).addEventListener("input", rr);
+    $(K.name).addEventListener("input", rr);
+    $(K.from).addEventListener("change", () => ledgerApplyPeriod(kind));
+    $(K.to).addEventListener("change", () => ledgerApplyPeriod(kind));
+    $(K.all).addEventListener("click", () => { $(K.from).value = ""; $(K.to).value = ""; ledgerFilter[kind] = { from: "", to: "" }; rr(); });
+    $(K.refresh).addEventListener("click", rr);
+    $(K.clear).addEventListener("click", () => {
+      $(K.code).value = ""; $(K.name).value = ""; $(K.from).value = ""; $(K.to).value = "";
+      ledgerFilter[kind] = { from: "", to: "" }; rr();
+      toast("🧹 اتمسح البحث — اكتب كود أو اسم الحساب من جديد", "success");
+    });
+    $(K.prn).addEventListener("click", () => ledgerPrint(kind));
+    // 🔎 كشف حساب أي سطر (حساب أو عميل/مورد) — يفتح شاشته الأصلية، فتتأكد إن الرقم مطابق بالظبط
+    $(K.tbody).addEventListener("click", (ev) => {
+      const t = ev.target;
+      const acc = t && t.closest ? t.closest("[data-ledacc]") : null;
+      if (acc) { openAccountStatement(acc.getAttribute("data-ledacc")); return; }
+      const pty = t && t.closest ? t.closest("[data-ledparty]") : null;
+      if (pty) {
+        const parts = String(pty.getAttribute("data-ledparty") || "").split(":");
+        const obj = (parts[0] === "sup" ? suppliers : customers).filter((x) => String(x.id) === parts[1])[0];
+        if (obj) { if (parts[0] === "sup") openSupplierStatement(obj); else openStatement(obj); }
+      }
+    });
+  }
+  function renderLedgerView(kind) {
+    if (!ledgerGate(kind)) return;
+    try { ensurePartnerAccounts(); } catch (e) {}
+    ledgerBindOnce(kind);
+    // نفس بوابة كشف الحساب: الكشف بيقرا journalEntries — بلا بوابة بيقول «مفيش» والقيود لسه بتنزل
+    if (jrnStillLoading()) { lazyHold(kind === "general" ? "glLedger" : "subLedger"); ledgerShowWaiting(kind); return; }
+    lazyRelease(kind === "general" ? "glLedger" : "subLedger");
+    ledgerRender(kind);
   }
 
   /* ================== كشوف حسابات الخزائن ================== */

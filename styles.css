@@ -2337,3 +2337,15 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .vat-open-row td { background: rgba(250, 204, 21, .14); font-weight: 600; }
 .vat-empty { text-align: center; color: var(--text-secondary, #64748b); }
 
+/* 📚 بناء 164 — دفترا الأستاذ (العام / المساعد) */
+.ledger-table tbody td { text-align: center; }
+.ledger-table tbody td:nth-child(2) { text-align: right; white-space: normal; }
+.ledger-table tfoot .ledger-total td { background: #eef2ff; font-weight: 800; }
+.ledger-table .ledger-tag { display: inline-block; font-size: 10px; font-weight: 700; color: var(--sel-fg, #1e3a8a); background: #dbeafe; border-radius: 8px; padding: 1px 7px; margin-inline-start: 6px; }
+.ledger-table tr.ledger-party td { background: rgba(148, 163, 184, .10); font-size: 12px; }
+.ledger-table .led-drill { padding: 2px 6px; font-size: 11px; line-height: 1; }
+.ledger-recon { display: inline-block; font-size: 12px; font-weight: 700; border-radius: 8px; padding: 1px 8px; }
+.ledger-recon.ok { color: #166534; background: #dcfce7; }
+.ledger-recon.no { color: #991b1b; background: #fee2e2; }
+
+

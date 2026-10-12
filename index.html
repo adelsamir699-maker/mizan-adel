@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4.1"; // رقم المنتج (داخلي — قرار المالك ما بيتغيرش كل نشر)
-    window.MIZAN_BUILD = 163;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
+    window.MIZAN_BUILD = 164;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
 
     (function () {
       var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
@@ -59,7 +59,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=163" />
+  <link rel="stylesheet" href="styles.css?v=164" />
 </head>
 <body>
 
@@ -120,8 +120,10 @@
       <button class="nav-btn" data-view="treasury">💵  الخزينة والمصروفات</button>
       <button class="nav-btn" data-view="accounts">💰  دليل الحسابات</button>
       <button class="nav-btn" data-view="journal">📝  القيود اليومية</button>
-      <!-- 🆕 طلب المالك: كشف حساب الحسابات (حركة أي حساب من القيود اليومية) بشاشة مستقلة وبحث بالكود والاسم -->
-      <button class="nav-btn" data-view="accStatement">🧾  كشف حساب الحسابات</button>
+      <!-- 🆕 بناء 164 (طلب المالك 12/10): بدل «كشف حساب الحسابات» ⇒ دفتران من نفس المصدر (القيود):
+           العام = الحسابات الأساسية (ذات الفروع)، والمساعد = الحسابات الفرعية (وكل عميل/مورّد/شريك سطر). -->
+      <button class="nav-btn" data-view="glLedger">📚  دفتر الأستاذ العام</button>
+      <button class="nav-btn" data-view="subLedger">📒  دفتر الأستاذ المساعد</button>
       <button class="nav-btn" data-view="treasuryStatements">📑  كشوف حسابات الخزائن</button>
       </div>
     </div>
@@ -963,6 +965,84 @@
           </table>
         </div>
 
+      </section>
+
+      <!-- ===== 🆕 بناء 164: دفتر الأستاذ العام (الحسابات الأساسية = ذات الفروع، برصيد مجمّع) ===== -->
+      <section class="view view-ledger" id="viewGlLedger" data-id="glLedger" hidden>
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnGlRefresh" class="btn gray" type="button">تحديث 🔄</button>
+            <button id="btnGlPrint" class="btn sky" type="button">🖨️ طباعة الدفتر</button>
+            <button id="btnGlClear" class="btn red" type="button">🧹 مسح البحث</button>
+          </div>
+          <h1 class="view-title">📚 دفتر الأستاذ العام (الحسابات الأساسية)</h1>
+        </div>
+        <div class="search-bar">
+          <label class="filter-label" for="glCode">كود الحساب:</label>
+          <input type="text" id="glCode" class="search-input acs-code" autocomplete="off" placeholder="مثال: 1 أو 2.1" />
+          <label class="filter-label" for="glName">اسم الحساب:</label>
+          <input type="text" id="glName" class="search-input" autocomplete="off" placeholder="اكتب أي جزء من الاسم — بيتحدّث مع الكتابة" />
+          <label class="filter-label" for="glFrom">من:</label>
+          <input type="date" id="glFrom" class="search-input" />
+          <label class="filter-label" for="glTo">إلى:</label>
+          <input type="date" id="glTo" class="search-input" />
+          <button id="btnGlAll" class="btn gray" type="button">📅 الفترة كاملة</button>
+        </div>
+        <div id="glInfo" class="stk-summary"></div>
+        <div class="table-wrap">
+          <table id="dgvGl" class="dgv stmt-table ledger-table">
+            <thead>
+              <tr>
+                <th style="width:16%">الكود</th>
+                <th style="width:36%">الحساب الأساسي</th>
+                <th style="width:16%">مدين (ج.م)</th>
+                <th style="width:16%">دائن (ج.م)</th>
+                <th style="width:16%">الرصيد (ج.م)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+            <tfoot></tfoot>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== 🆕 بناء 164: دفتر الأستاذ المساعد (الحسابات الفرعية + كل عميل/مورّد/شريك سطر) ===== -->
+      <section class="view view-ledger" id="viewSubLedger" data-id="subLedger" hidden>
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnSlRefresh" class="btn gray" type="button">تحديث 🔄</button>
+            <button id="btnSlPrint" class="btn sky" type="button">🖨️ طباعة الدفتر</button>
+            <button id="btnSlClear" class="btn red" type="button">🧹 مسح البحث</button>
+          </div>
+          <h1 class="view-title">📒 دفتر الأستاذ المساعد (الحسابات الفرعية)</h1>
+        </div>
+        <div class="search-bar">
+          <label class="filter-label" for="slCode">كود الحساب:</label>
+          <input type="text" id="slCode" class="search-input acs-code" autocomplete="off" placeholder="مثال: 1.1.1 أو 4.1" />
+          <label class="filter-label" for="slName">اسم الحساب:</label>
+          <input type="text" id="slName" class="search-input" autocomplete="off" placeholder="اكتب أي جزء من الاسم — بيتحدّث مع الكتابة" />
+          <label class="filter-label" for="slFrom">من:</label>
+          <input type="date" id="slFrom" class="search-input" />
+          <label class="filter-label" for="slTo">إلى:</label>
+          <input type="date" id="slTo" class="search-input" />
+          <button id="btnSlAll" class="btn gray" type="button">📅 الفترة كاملة</button>
+        </div>
+        <div id="slInfo" class="stk-summary"></div>
+        <div class="table-wrap">
+          <table id="dgvSl" class="dgv stmt-table ledger-table">
+            <thead>
+              <tr>
+                <th style="width:16%">الكود</th>
+                <th style="width:36%">الحساب الفرعي</th>
+                <th style="width:16%">مدين (ج.م)</th>
+                <th style="width:16%">دائن (ج.م)</th>
+                <th style="width:16%">الرصيد (ج.م)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+            <tfoot></tfoot>
+          </table>
+        </div>
       </section>
 
       <!-- ===== شاشة قائمة المركز المالي ===== -->
@@ -2257,6 +2337,33 @@
         </table>
       </section>
 
+      <!-- ====== 🆕 بناء 164: صفحتا دفتر الأستاذ (عام/مساعد) للطباعة ====== -->
+      <section class="print-only statement-page" id="glPrintPage">
+        <div class="statement-head">
+          <div class="inv-brand-name" id="glpOrgName"></div>
+          <h2>📚 دفتر الأستاذ العام (الحسابات الأساسية)</h2>
+          <p>الفترة: <span id="glpPeriod"></span></p>
+        </div>
+        <table class="stmt-table">
+          <thead><tr><th>الكود</th><th>الحساب الأساسي</th><th>مدين (ج.م)</th><th>دائن (ج.م)</th><th>الرصيد (ج.م)</th></tr></thead>
+          <tbody id="glpBody"></tbody>
+        </table>
+        <div class="inv-foot-print" id="glpFoot"></div>
+      </section>
+
+      <section class="print-only statement-page" id="slPrintPage">
+        <div class="statement-head">
+          <div class="inv-brand-name" id="slpOrgName"></div>
+          <h2>📒 دفتر الأستاذ المساعد (الحسابات الفرعية)</h2>
+          <p>الفترة: <span id="slpPeriod"></span></p>
+        </div>
+        <table class="stmt-table">
+          <thead><tr><th>الكود</th><th>الحساب الفرعي</th><th>مدين (ج.م)</th><th>دائن (ج.م)</th><th>الرصيد (ج.م)</th></tr></thead>
+          <tbody id="slpBody"></tbody>
+        </table>
+        <div class="inv-foot-print" id="slpFoot"></div>
+      </section>
+
       <!-- ====== صفحة كشف حساب الخزينة للطباعة ====== -->
       <section class="print-only statement-page" id="treStmtPage">
         <div class="statement-head">
@@ -3391,12 +3498,12 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=163"></script>
-  <script src="supabase.config.js?v=163"></script>
-  <script src="data.js?v=163"></script>
-  <script src="cloud.js?v=163"></script>
-  <script src="install.js?v=163"></script>
-  <script src="app.js?v=163"></script>
+  <script src="lib_supabase.js?v=164"></script>
+  <script src="supabase.config.js?v=164"></script>
+  <script src="data.js?v=164"></script>
+  <script src="cloud.js?v=164"></script>
+  <script src="install.js?v=164"></script>
+  <script src="app.js?v=164"></script>
   <script>
     /* كاشف أخطاء على الشاشة — بقى **للمالك بس** (طلب المالك الحرفي 07/10: رسالة إنجليزية
        حمراء `TypeError …` ظهرت للبائع وهو بيكتب صنف في الفاتورة، وقاعدته السارية
