@@ -19,7 +19,7 @@
 
   // الجداول الصغيرة اللي تُحمَّل مرة واحدة عند الدخول
   var EAGER = ["customers", "suppliers", "products", "treasury", "accounts",
-    "employees", "fixed_assets"]; // 🆕 مهمة 98: الأصول الثابتة · 🌉 بناء 165: attendance/att_settings اتشالوا (محلي فقط)
+    "fixed_assets"]; // 🆕 مهمة 98: الأصول الثابتة · 🌉 165: attendance/att_settings خارج المزامنة · 166: employees اتشال
   // الجداول الكبيرة: تُحمَّل عند الطلب فقط
   var LAZY = ["sales", "sale_items", "purchases", "purchase_items", "supplier_txs",
     "vouchers", "journal_entries", "journal_lines", "audit_logs",

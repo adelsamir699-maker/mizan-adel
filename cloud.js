@@ -247,26 +247,6 @@
           isActive: r.is_active !== false };
       }
     },
-    // 🆕 بناء 115: الموظفون — نفس نمط الهوية (detUuid + local_id) من ترحيل ٣٤/جدول employees في ترحيل ٣٥
-    employees: {
-      local: function () { return W.employees || []; },
-      toCloud: function (r) {
-        return { id: detUuid("employees", r.id), org_id: DATA.orgId(), local_id: r.id,
-          code: r.code || "", name_ar: r.nameAr || "", job_title: r.jobTitle || "",
-          department: r.department || "", phone: r.phone || "", hire_date: r.hireDate || null,
-          is_active: r.isActive !== false, badge: r.badge || "", notes: r.notes || "",
-          deleted: false };
-      },
-      fromCloud: function (r) {
-        var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("employees", r.id);
-        return { id: lid, code: r.code || "", nameAr: r.name_ar || "", jobTitle: r.job_title || "",
-          department: r.department || "", phone: r.phone || "", hireDate: r.hire_date || "",
-          isActive: r.is_active !== false, badge: r.badge || "", notes: r.notes || "" };
-      }
-    },
-    // 🌉 بناء 165: سجل الحضور (attendance) ومدة العمل (att_settings) **خرجا من المزامنة** —
-    // الحضور محلي بالكامل على جهاز العميل (ملف Access عبر الجسر + localStorage + لقطة الديسك).
-    // قرار المالك الحاسم: السحابة لا تُسجَّل عليها بصمات/حركات الموظفين ولا إعدادات حضورهم.
     // 🆕 مهمة 98: الأصول الثابتة — نفس نمط الهوية (detUuid + local_id) من ترحيل ٣٧
     fixed_assets: {
       local: function () { return W.fixed_assets || []; },
@@ -844,7 +824,7 @@
     // بعد loadAll يلاقي العلامة متظبطة فعلًا، فالتبويب يطلع من أول رسم.
     var chatProbe = probeChatTable();
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
-      "employees", "fixed_assets"]; // 🆕 مهمة 98 · 🌉 بناء 165: attendance/att_settings اتشالوا (محلي فقط)
+      "fixed_assets"];
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
     var eagerFallback = eagerLoad ? null : function (n) {
       return DATA.client().from(n).select("*").order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });
@@ -866,10 +846,6 @@
         // نعرض واحد منهم بس (اللي عليه local_id صريح) — ما نرقمش التاني من جديد،
         // لأن الترقيم الجديد كان بيولّد سطرًا ثالثًا في كل جلسة (ده كان بيت التكرار).
         if (n === "treasury") pairs = dedupeTreasury(pairs);
-        // 🆕 بناء 115: الموظفون/الإعدادات — نفس منطق التكرار بالرقم المحلي (سطر واحد لكل رقم)
-        if (n === "employees" || n === "att_settings") pairs = dedupeTreasury(pairs);
-        // 🆕 بناء 115: الحضور — تكرار بالرقم المحلي + دمج سطرين لنفس الموظف في نفس اليوم
-        if (n === "attendance") pairs = dedupeAttendance(pairs);
         assignLocalIds(n, pairs.map(function (p) { return p.loc; }));
         W[n] = pairs.map(function (p) { return p.loc; });
       });
