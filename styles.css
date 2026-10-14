@@ -2348,4 +2348,14 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .ledger-recon.ok { color: #166534; background: #dcfce7; }
 .ledger-recon.no { color: #991b1b; background: #fee2e2; }
 
+/* نافذة تعليمات المسح الضوئي — build 168 */
+#mScanHelpBox .docs-head { flex: 0 0 auto; }
+#mScanHelpBox .docs-folder { margin: 0 0 10px; font-size: 12.5px; color: #0e7a6d; background: #eefaf7; border: 1px dashed #9fd8cf; border-radius: 8px; padding: 7px 11px; overflow-wrap: anywhere; }
+#mScanHelpBox .scan-help-list { margin: 0 0 12px; padding: 0 20px 0 0; display: grid; gap: 7px; font-size: 13px; line-height: 1.7; color: #23303d; }
+#mScanHelpBox .scan-help-list li { text-align: right; }
+#mScanHelpBox .scan-help-noshow { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #7c8794; margin: 0 0 14px; cursor: pointer; }
+#mScanHelpBox .scan-help-noshow input { width: 16px; height: 16px; cursor: pointer; }
+#mScanHelpBox .feat-btns { flex: 0 0 auto; }
+@media (max-width: 560px) { #mScanHelpBox .scan-help-list { font-size: 12px; } }
+
 

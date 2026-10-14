@@ -18475,6 +18475,18 @@ const pwEye = document.getElementById("btnShowPass");
     return m ? String(+m[1]) : (String(code || "0").replace(/[^A-Za-z0-9_-]/g, "") || "0");
   }
   function docPartyTop(type) { return type === "supplier" ? "Suppliers" : "Clients"; }
+  // اسم آمن لمجلد ويندوز: بلا رموز ممنوعة، مضغوط المسافات، بحد أقصى 40 حرفًا (بناء 168)
+  function docSafeName(name) {
+    return String(name || "").replace(/[\\/:*?"<>|\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
+  }
+  // فولدر الجهة على القرص: «الرقم - اسم العميل/المورد» لسهولة الوصول للملف بالاسم (بناء 168)
+  function docPartyFolder(ctx) {
+    const num = docPartyNum(ctx && ctx.code);
+    const nm = docSafeName(ctx && ctx.name);
+    return nm ? (num + " - " + nm) : num;
+  }
+  // تفضيل المستخدم: يمنع ظهور تعليمات المسح أوتوماتيك (يبقى زرار «تعليمات المسح» للإظهار اليدوي)
+  const LS_SCAN_NOHELP = "mizan_scan_nohelp_v1";
   function docsFsSupported() { return typeof window.showDirectoryPicker === "function"; }
   function docExtOf(fileName) {
     const p = String(fileName || "").split(".");
@@ -18615,20 +18627,30 @@ const pwEye = document.getElementById("btnShowPass");
   async function docSaveToParty(file, ctx, typeLabel) {
     if (!docRootH) throw new Error("الفولدر مش مربوط");
     const top = docPartyTop(ctx.type);
-    const num = docPartyNum(ctx.code);
+    const folder = docPartyFolder(ctx);
     let dir;
     try {
       dir = await docRootH.getDirectoryHandle(top, { create: true });
-      dir = await dir.getDirectoryHandle(num, { create: true });
+      dir = await dir.getDirectoryHandle(folder, { create: true });
     } catch (e) { throw new Error("تعذّر تجهيز فولدر الجهة: " + ((e && e.message) || e)); }
-    const seq = (await docSeqIn(dir)) + 1;
+    // ترقيم مستمر: أقصى رقم في الفولدر الجديد + الفولدر القديم «الرقم» لو موجود (منع تكرار 001)
+    let seq = await docSeqIn(dir);
+    const legacy = docPartyNum(ctx.code);
+    if (legacy && legacy !== folder) {
+      try {
+        const topDir = await docRootH.getDirectoryHandle(top, {});
+        const oldDir = await topDir.getDirectoryHandle(legacy, {});
+        seq = Math.max(seq, await docSeqIn(oldDir));
+      } catch (e) {}
+    }
+    seq += 1;
     const name = String(seq).padStart(3, "0") + "." + docExtOf(file.name || ctx.fileName);
     const fh = await dir.getFileHandle(name, { create: true });
     const w = await fh.createWritable();
     await w.write(file);
     await w.close();
     return {
-      rel: top + "\\" + num + "\\" + name, name: name,
+      rel: top + "\\" + folder + "\\" + name, name: name,
       originalName: file.name || name, size: file.size || 0,
       docType: typeLabel || "مستند عام", rootName: docRootH.name || DOC_ROOT_NAME
     };
@@ -18746,6 +18768,27 @@ const pwEye = document.getElementById("btnShowPass");
     docUploadFiles(list);
   }
 
+  // ---- تعليمات المسح الضوئي (بناء 168): نافذة بزر «تم» + خيار «لا تظهر تاني» + زرار دائم ----
+  function scanHelpSuppressed() { try { return localStorage.getItem(LS_SCAN_NOHELP) === "1"; } catch (e) { return false; } }
+  function scanHelpShow() {
+    const cb = $("#scanHelpNoShow");
+    if (cb) cb.checked = scanHelpSuppressed();
+    const el = $("#scanHelpParty");
+    if (el) el.textContent = (docCtx && docCtx.name) ? (docCtx.name + " (" + docCtx.code + ")") : "العميل/المورد";
+    const ok = $("#scanHelpOk"); if (ok) ok.onclick = scanHelpClose;
+    const x = $("#scanHelpClose"); if (x) x.onclick = scanHelpClose;
+    showModal("mScanHelp");
+  }
+  function scanHelpClose() {
+    const cb = $("#scanHelpNoShow");
+    try {
+      if (cb && cb.checked) localStorage.setItem(LS_SCAN_NOHELP, "1");
+      else localStorage.removeItem(LS_SCAN_NOHELP);
+    } catch (e) {}
+    hideModal("mScanHelp");
+  }
+  function scanHelpOpen() { scanHelpShow(); }
+
   function docScan(party, type) {
     if (!canManageDocs()) { toast("لا تملك صلاحية «إدارة مستندات العملاء والموردين»", "error"); return; }
     docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
@@ -18761,11 +18804,15 @@ const pwEye = document.getElementById("btnShowPass");
       if (!st) return;
       docScanWatchStart();
       docsRefreshIfOpen();
-      // (2) نحاول نفتح السكانر عبر مساعد الجهاز المحلي (لو شغّال) — وإلا نفتح Windows Scan كخطة بديلة
+      // (2) نحاول نفتح السكانر عبر مساعد الجهاز المحلي (لو شغّال) — وإلا نفتح Windows Scan ونعرض التعليمات
       docHelperScan().then((res) => {
         if (res && res.ok) { toast("📷 السكانر اتفتح — امسح الصفحة، والبرنامج هيسجّل الملف أوتوماتيك في ثانية", "ok"); return; }
         openWinScan();
-        toast("📷 امسح من برنامج السكانر وخلي مكان الحفظ فولدر Scans جوه " + st.name + " — البرنامج هيسجّل أي ملف ممسوح أوتوماتيك من غير أي دوسة", "ok");
+        if (scanHelpSuppressed()) {
+          toast("📷 البرنامج يراقب فولدر Scans — أي ملف ممسوح هيتربط بجهة " + (docCtx.name || "") + " أوتوماتيك (للتعليمات: 📷 تعليمات المسح)", "ok");
+        } else {
+          scanHelpShow();
+        }
       });
     });
   }
@@ -18800,7 +18847,7 @@ const pwEye = document.getElementById("btnShowPass");
     }).catch((e) => toast("فشل حفظ الملف «" + f.name + "»: " + ((e && e.message) || e) + " — لم يُسجَّل أي شيء", "error"));
     list.reduce((chain, f) => chain.then(() => saveOne(f)), Promise.resolve()).then(() => {
       if (!okCount) return;
-      const folder = lastRel ? ((lastRoot ? lastRoot + "\\" : "") + docPartyTop(docCtx.type) + "\\" + docPartyNum(docCtx.code)) : null;
+      const folder = lastRel ? ((lastRoot ? lastRoot + "\\" : "") + docPartyTop(docCtx.type) + "\\" + docPartyFolder(docCtx)) : null;
       toast("✅ تم حفظ " + okCount + " من " + total + " في فولدر " + (docCtx.type === "supplier" ? "المورد" : "العميل") + " " + docCtx.name + (folder ? " — " + folder : ""), "ok");
       addActivity("مستندات", "حفظ " + okCount + " مستند لـ" + (docCtx.type === "supplier" ? " مورد " : " عميل ") + docCtx.name + " (" + docCtx.code + ")");
       docsRefresh();
@@ -18814,6 +18861,7 @@ const pwEye = document.getElementById("btnShowPass");
     $("#docsClose").onclick = () => { docScanWatchStop(); hideModal("mDocs"); };
     $("#docsRefresh").onclick = () => { docStoreCheck().then(() => docsRefresh()); };
     const lb = $("#docsLink"); if (lb) lb.onclick = docLinkButton;
+    const sh = $("#docsScanHelp"); if (sh) sh.onclick = scanHelpOpen;
     showModal("mDocs");
     docStoreCheck().then(() => { docsRefresh(); if (docStoreSt && docStoreSt.ok) docScanWatchStart(); });
   }
@@ -18853,7 +18901,7 @@ const pwEye = document.getElementById("btnShowPass");
     const body = $("#docsBody");
     body.innerHTML = '<tr><td colspan="6" class="login-sub">جارٍ التحميل...</td></tr>';
     const st = docStoreSt || { needPick: true };
-    const folderRel = docPartyTop(docCtx.type) + "\\" + docPartyNum(docCtx.code);
+    const folderRel = docPartyTop(docCtx.type) + "\\" + docPartyFolder(docCtx);
     $("#docsStatParty").textContent = (docCtx.type === "supplier" ? "🤝 مورد • " : "👤 عميل • ") + docCtx.code;
     const lb = $("#docsLink");
     if (st.ok) {
@@ -19056,6 +19104,12 @@ const pwEye = document.getElementById("btnShowPass");
       remove: (rel) => docRemoveFile(rel),
       scans: () => docScansList(),
       importScan: (name, ctx) => docImportScanFile(name, ctx),
+      partyFolder: (ctx) => docPartyFolder(ctx),
+      safeName: (n) => docSafeName(n),
+      helpSuppressed: () => scanHelpSuppressed(),
+      helpShow: () => scanHelpShow(),
+      helpClose: () => scanHelpClose(),
+      helpOpen: () => scanHelpOpen(),
       scanKey: (f) => docScanKey(f),
       scanWatchStart: () => docScanWatchStart(),
       scanTick: () => docScanTickNow(),
