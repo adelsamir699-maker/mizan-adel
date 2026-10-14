@@ -18660,6 +18660,69 @@ const pwEye = document.getElementById("btnShowPass");
     return r;
   }
 
+  // ---- مراقبة فولدر Scans + استيراد تلقائي (بناء 167) ----
+  // أي ملف جديد بيتحفظ في فولدر Scans وقت ما نافذة المستندات مفتوحة بيتسجّل أوتوماتيك
+  // على جهة العميل/المورد المفتوحة: بلا دوسة، من أي سكانر على أي جهاز، وشغّال أوفلاين.
+  let docScanTimer = null, docScanBusy = false, docScanSeen = new Set();
+  const DOC_SCAN_POLL_MS = 2500;
+  function docScanKey(f) { return String(f.name || "") + "|" + (f.size || 0) + "|" + Math.round(f.mtime || 0); }
+  function docScanWatchStop() { if (docScanTimer) { clearInterval(docScanTimer); docScanTimer = null; } }
+  function docScanWatchStart() {
+    if (!docRootH || !(docStoreSt && docStoreSt.ok)) return;
+    docScanWatchStop();
+    docScanSeen = new Set();
+    // خط الأساس: الملفات الموجودة دلوقتي تُعدّ قديمة (ما تتستوردش) عشان تاريخ الفولدر ما يتكرّرش
+    docScansList().then((sf) => { (sf || []).forEach((f) => docScanSeen.add(docScanKey(f))); });
+    docScanTimer = setInterval(docScanTickNow, DOC_SCAN_POLL_MS);
+  }
+  function docScanTickNow() {
+    const modal = $("#mDocs");
+    if (!modal || modal.hidden || !docCtx || !(docStoreSt && docStoreSt.ok)) { docScanWatchStop(); return; }
+    if (docScanBusy) return;
+    docScanBusy = true;
+    docScansList().then((sf) => {
+      const fresh = (sf || []).filter((f) => !docScanSeen.has(docScanKey(f)));
+      fresh.forEach((f) => docScanSeen.add(docScanKey(f)));
+      if (!fresh.length) { docScanBusy = false; return; }
+      const ctx = { type: docCtx.type, code: docCtx.code, id: docCtx.id, name: docCtx.name };
+      // استيراد بالترتيب (الأقدم أولاً) عشان ترقيم الملفات يطلع صح
+      const ordered = fresh.slice().sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
+      const one = (f) => docImportScanFile(f.name, ctx).then((r) => {
+        if (!r || !r.rel) throw new Error("تعذّر الحفظ");
+        return DATA.docAdd(ctx.type, ctx.id, ctx.code, f.name, (r.name || "").split(".").pop(), r.rel, "مسح ضوئي", r.size || f.size);
+      }).then(() => {
+        toast("📷 استُورد ملف ممسوح أوتوماتيك: " + f.name, "ok");
+        addActivity("مستندات", "استيراد تلقائي لمستند ممسوح " + f.name + " لـ" + ctx.name + " (" + ctx.code + ")");
+        return true;
+      }).catch((e) => { toast("ملف ممسوح «" + f.name + "» ما اتسجّلش: " + ((e && e.message) || e), "error"); return false; });
+      ordered.reduce((chain, f) => chain.then((any) => one(f).then((r) => any || r)), Promise.resolve(false))
+        .then((any) => { docScanBusy = false; if (any) docsRefreshIfOpen(); });
+    }).catch(() => { docScanBusy = false; });
+  }
+  // مساعد الجهاز المحلي (لو شغّال) — بيساعد في فتح السكانر، ولو مش شغّال بنكمّل عادي
+  function docHelperBases() {
+    const bases = [];
+    if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/.test(location.hostname)) bases.push("");
+    bases.push("http://127.0.0.1:3060", "http://127.0.0.1:3001");
+    return bases;
+  }
+  function docHelperScan() {
+    const bases = docHelperBases();
+    const step = (i) => {
+      if (i >= bases.length) return Promise.resolve({ ok: false });
+      return fetch(bases[i] + "/api/health", { method: "GET" })
+        .then((r) => (r && r.ok ? r.json() : null))
+        .catch(() => null)
+        .then((h) => {
+          if (!h || !h.ok) return step(i + 1);
+          return fetch(bases[i] + "/api/doc/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+            .then((r) => (r ? r.json() : { ok: false }))
+            .catch(() => ({ ok: false }));
+        });
+    };
+    return step(0);
+  }
+
   let docCtx = null; // {type, code, id, name} للسياق الحالي (رفع/مسح)
   function docsRefreshIfOpen() { if (docCtx && window.$ && !$("#mDocs").hidden) docsRefresh(); }
 
@@ -18671,6 +18734,7 @@ const pwEye = document.getElementById("btnShowPass");
       addActivity("مستندات", "ربط فولدر المستندات " + st.name);
       renderDocRootBox();
       docsRefreshIfOpen();
+      docScanWatchStart();
       docFlushPending();
     });
   }
@@ -18684,20 +18748,25 @@ const pwEye = document.getElementById("btnShowPass");
 
   function docScan(party, type) {
     if (!canManageDocs()) { toast("لا تملك صلاحية «إدارة مستندات العملاء والموردين»", "error"); return; }
-    // (1) محاولة فتح برنامج المسح الضوئي الرسمي — لازم جوه الدوسة نفسها
-    let launched = false;
-    try {
-      const a = document.createElement("a");
-      a.href = "windowsscan:"; a.rel = "noopener"; a.style.display = "none";
-      document.body.appendChild(a); a.click(); a.remove();
-      launched = true;
-    } catch (e) {}
-    // (2) تجهيز فولدر المستندات واستقبال النتائج
     docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
+    const openWinScan = () => {
+      try {
+        const a = document.createElement("a");
+        a.href = "windowsscan:"; a.rel = "noopener"; a.style.display = "none";
+        document.body.appendChild(a); a.click(); a.remove();
+      } catch (e) {}
+    };
+    // (1) تجهيز فولدر المستندات + تشغيل مراقبة فولدر Scans
     docStoreWant(true).then((st) => {
       if (!st) return;
-      toast("📷 " + (launched ? "برنامج المسح الضوئي مفتوح — " : "") + "خلي مكان الحفظ في برنامج المسح هو فولدر Scans جوه " + st.name + "، وبعدها دوس «📥 استيراد الملفات الممسوحة» من نافذة المستندات", "ok");
+      docScanWatchStart();
       docsRefreshIfOpen();
+      // (2) نحاول نفتح السكانر عبر مساعد الجهاز المحلي (لو شغّال) — وإلا نفتح Windows Scan كخطة بديلة
+      docHelperScan().then((res) => {
+        if (res && res.ok) { toast("📷 السكانر اتفتح — امسح الصفحة، والبرنامج هيسجّل الملف أوتوماتيك في ثانية", "ok"); return; }
+        openWinScan();
+        toast("📷 امسح من برنامج السكانر وخلي مكان الحفظ فولدر Scans جوه " + st.name + " — البرنامج هيسجّل أي ملف ممسوح أوتوماتيك من غير أي دوسة", "ok");
+      });
     });
   }
   function docPick(party, type) {
@@ -18742,11 +18811,11 @@ const pwEye = document.getElementById("btnShowPass");
     docCtx = { type, code: party.code, id: party.id, name: party.nameAr };
     $("#docsTitle").textContent = (type === "supplier" ? "📁 مستندات المورد: " : "📁 مستندات العميل: ") + party.nameAr + " (" + party.code + ")";
     const sInp = $("#docsSearch"); if (sInp) sInp.value = "";
-    $("#docsClose").onclick = () => hideModal("mDocs");
+    $("#docsClose").onclick = () => { docScanWatchStop(); hideModal("mDocs"); };
     $("#docsRefresh").onclick = () => { docStoreCheck().then(() => docsRefresh()); };
     const lb = $("#docsLink"); if (lb) lb.onclick = docLinkButton;
     showModal("mDocs");
-    docStoreCheck().then(() => docsRefresh());
+    docStoreCheck().then(() => { docsRefresh(); if (docStoreSt && docStoreSt.ok) docScanWatchStart(); });
   }
   // أيقونة حسب الامتداد + تنسيق الحجم — لشاشة المستندات الاحترافية (build 106)
   function docsIcon(name) {
@@ -18987,6 +19056,12 @@ const pwEye = document.getElementById("btnShowPass");
       remove: (rel) => docRemoveFile(rel),
       scans: () => docScansList(),
       importScan: (name, ctx) => docImportScanFile(name, ctx),
+      scanKey: (f) => docScanKey(f),
+      scanWatchStart: () => docScanWatchStart(),
+      scanTick: () => docScanTickNow(),
+      scanStop: () => docScanWatchStop(),
+      scanSeenHas: (f) => docScanSeen.has(docScanKey(f)),
+      scanTimerOn: () => !!docScanTimer,
       seqIn: (rel) => docDirOf(docRelParts(rel + "\\x"), false).then((dir) => (dir ? docSeqIn(dir) : -1)),
       state: () => docStoreSt,
       // نقاط دخول الواجهة (للتقييم الشامل في المتصفح)

@@ -195,12 +195,46 @@ function docRoutes(req, res, urlPath) {
   }
 
   if (urlPath === "/api/doc/scan" && req.method === "POST") {
-    // يفتح تطبيق Windows Scan الرسمي + مجلد Scans جاهز لاستقبال الممسوح
+    // (بناء 167) مسح مباشر عبر WIA لو فيه سكانر متعرّف عليه في ويندوز — يفتح واجهة السكانر
+    // ويحفظ الصفحة في فولدر Scans، والبرنامج يستوردها تلقائيًا. ولو مفيش WIA، خطة بديلة = Windows Scan.
     const r0 = resolveDocRoot(true);
-    if (r0.ok) { try { fs.mkdirSync(path.join(r0.root, "Scans"), { recursive: true }); } catch (e) {} }
+    const scansDir = r0.ok ? path.join(r0.root, "Scans") : null;
+    if (scansDir) { try { fs.mkdirSync(scansDir, { recursive: true }); } catch (e) {} }
+    const respond = (payload) => sendJson(res, 200, payload, DOC_CORS);
+    const tryWinScan = (payload) => {
+      execFile("cmd", ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, () => respond(payload));
+    };
+    if (scansDir) {
+      // سكربت WIA: يعدّ أجهزة WIA، فلو مفيش يرجّع needWia؛ وإلا يفتح نافذة المسح ويحفظ الملف
+      const ps = [
+        "$ErrorActionPreference='Stop'",
+        "try {",
+        "$dm = New-Object -ComObject WIA.DeviceManager",
+        "$n = 0; foreach ($d in $dm.DeviceInfos) { if ($d.Type -eq 1) { $n++ } }",
+        "if ($n -eq 0) { Write-Output '{\"ok\":false,\"needWia\":true}'; exit }",
+        "$dlg = New-Object -ComObject WIA.CommonDialog",
+        "$img = $dlg.ShowAcquireImage(1,0,131072,'{00000000-0000-0000-0000-000000000000}',$true,$true,$false)",
+        "if ($img -eq $null) { Write-Output '{\"ok\":false,\"canceled\":true}'; exit }",
+        "$p = Join-Path $env:MIZAN_SCAN_DIR ('scan-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.jpg')",
+        "$img.SaveFile($p)",
+        "Write-Output ('{\"ok\":true,\"file\":\"' + (Split-Path $p -Leaf) + '\"}')",
+        "} catch { Write-Output ('{\"ok\":false,\"error\":\"' + ($_.Exception.Message -replace '\"','') + '\"}') }",
+      ].join("; ");
+      execFile("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+        { env: Object.assign({}, process.env, { MIZAN_SCAN_DIR: scansDir }), windowsHide: true, timeout: 300000 },
+        (err, stdout) => {
+          let out = null;
+          try { out = JSON.parse(String(stdout || "").trim().split(/\r?\n/).pop()); } catch (e) {}
+          if (out && out.ok) return respond({ ok: true, scansDir: scansDir, file: out.file || null, via: "wia" });
+          // مفيش WIA أو اتلغى أو خطأ — خطة بديلة: تطبيق Windows Scan (لو متاح)
+          execFile("cmd", ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, () =>
+            respond({ ok: false, scansDir: scansDir, needWia: !!(out && out.needWia), error: (out && out.error) || null, via: "windowsscan" }));
+        });
+      return true;
+    }
     execFile("cmd", ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, (err) => {
-      if (err) return sendJson(res, 200, { ok: false, error: "تطبيق المسح الضوئي مش متاح على الجهاز — استخدم «حفظ مستند من الجهاز» بعد المسح من برنامج الماسح" }, DOC_CORS);
-      sendJson(res, 200, { ok: true, scansDir: r0.ok ? path.join(r0.root, "Scans") : null }, DOC_CORS);
+      if (err) return respond({ ok: false, error: "تطبيق المسح الضوئي مش متاح على الجهاز — استخدم «حفظ مستند من الجهاز» بعد المسح من برنامج الماسح" });
+      respond({ ok: true, scansDir: null, via: "windowsscan" });
     });
     return true;
   }
