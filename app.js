@@ -10446,6 +10446,103 @@
     });
   }
 
+  /* ================== 🆕 بناء 170 — «التصحيح الذاتي» ==================
+     أي حركة طرف (تحصيل/سداد) أو فاتورة (بيع/شراء) أو مرتجع اتسجّل **قبل ما محرّك القيود
+     يشتغل** فبقى **بلا قيد** (بلاغ المالك 11/10: فرق العملاء 42,501.50) بيتصحّح لوحده عند
+     التحميل، بنفس نمط `reconcileTreasuryWithTxs`: بنلفّ على المستندات، ولو لقينا مستندًا مالوش
+     قيد نعمل له القيد بأطرافه الصحيحة (نفس دوال التخطيط الحيّة: invoiceJrnPlan/partyJrnPlan/returnJrnPlan).
+     ⚠ شروط الأمان: (١) **أونلاين بس** وبعد ما كل البيانات (journal_entries والحركات) تنزل —
+     لقطة ديسك ناقصة ممكن تعمل ازدواج؛ (٢) **idempotent** بمفاتيح الترحيل (S:/P:/CT:/ST:/SR:/PR:)
+     فما تعيدش ترحيل مستند له قيد، وما تكررش على أي جهاز؛ (٣) مستند بلا رقم صالح (مفتاح فاضي)
+     ما يُترحّلش أصلاً (وإلا تتكرر للأبد)؛ (٤) تصحيح **صامت** بلا رسائل — أي مستند حسابه الناقص
+     يُتخطّى بلا إزعاج، والفاتورة نفسها ما تتأثرش. */
+  function jrnHealTreasury(o) {
+    if (!o) return treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    if (o.treasuryId) {
+      const tr = treasury.find((x) => Number(x.id) === Number(o.treasuryId));
+      if (tr) return tr;
+    }
+    const pm = String(o.paymentMethod || "");
+    if (pm.includes("بنكي")) { const b = treasury.find((x) => x.type === "bank"); if (b) return b; }
+    if (pm.includes("محفظة") || pm.includes("محافظ")) { const w = treasury.find((x) => x.type === "wallet"); if (w) return w; }
+    return treasury.find((x) => x.type === "cash") || treasury[0] || null;
+  }
+  function jrnHealEntry(desc, date, ref, refId, plan) {
+    return {
+      id: nextJournalId(),
+      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      date: date || todayISO(),
+      desc: desc,
+      ref: ref, refType: ref, refId: refId,
+      debit: plan.debit, credit: plan.credit, lines: plan.lines
+    };
+  }
+  function reconcileJournalWithDocs() {
+    if (!A.online || A.adopting || A.cleaning) return 0;
+    if (!bigDataLoaded("journal_entries")) return 0;
+    if (!Array.isArray(journalEntries)) return 0;
+    ensureJrnStd();
+    let posted = 0;
+    const healInvoice = (kind, inv) => {
+      const key = invoiceJrnKey(kind, inv);
+      if (!key || invoiceJrnOf(kind, inv)) return;
+      const plan = invoiceJrnPlan(kind, inv, jrnHealTreasury(inv));
+      if (!plan || plan.error) return;
+      const who = kind === "sale" ? (inv.customerName || inv.customer || "-") : (inv.supplierName || inv.supplier || "-");
+      const tax = round2(inv.taxAmount);
+      const entry = jrnHealEntry(invoiceJrnRef(kind) + " رقم " + (inv.invoiceNumber || inv.invoiceNo) + " — " + who +
+        " — " + fmt(round2(inv.grandTotal)) + " ج.م" + (tax > 0 ? " (منها ضريبة " + fmt(tax) + ")" : ""),
+        inv.invoiceDate || inv.date, invoiceJrnRef(kind), key, plan);
+      settleJrnLines(entry.lines, 1);
+      journalEntries.push(entry);
+      posted++;
+    };
+    const healParty = (kind, t, partyIdField, partyList) => {
+      if (!(Number(t.credit) > 0)) return;
+      const d = String(t.desc || "");
+      if (d.includes("افتتاحي") || d.includes("أول المدة") || d.includes("مرتجع")) return;
+      const key = partyJrnKey(kind, t.id);
+      if (!key || partyJrnOf(kind, t.id)) return;
+      const plan = partyJrnPlan(kind, jrnHealTreasury(t), partyTxAmountOf(t));
+      if (!plan || plan.error) return;
+      const party = (partyList || []).find((x) => Number(x.id) === Number(t[partyIdField]));
+      const entry = jrnHealEntry(PARTY_JRN[kind].ref + (party && party.nameAr ? ": " + party.nameAr : "") +
+        " — " + fmt(partyTxAmountOf(t)) + " ج.م", t.date, PARTY_JRN[kind].ref, key, plan);
+      settleJrnLines(entry.lines, 1);
+      journalEntries.push(entry);
+      posted++;
+    };
+    const healReturn = (kind, rec, invArr, linkField) => {
+      const key = returnJrnKey(kind, rec.id);
+      if (!key || returnJrnOf(kind, rec.id)) return;
+      const inv = (invArr || []).find((x) => Number(x.id) === Number(rec[linkField])) || null;
+      const tr = String(rec.settlement || "") === "refund" ? jrnHealTreasury(rec) : null;
+      const plan = returnJrnPlan(kind, rec, inv, tr);
+      if (!plan || plan.error) return;
+      const who = kind === "sale" ? (rec.customerName || rec.customer || "") : (rec.supplierName || rec.supplier || "");
+      const p = plan.part || {};
+      const entry = jrnHealEntry(RETURN_JRN[kind].ref + " رقم (" + (rec.returnNumber || rec.returnNo || "") + ") — " +
+        who + " — " + fmt(round2(p.total)) + " ج.م" + (p.tax > 0 ? " (منها ضريبة " + fmt(p.tax) + ")" : ""),
+        rec.date || rec.returnDate, RETURN_JRN[kind].ref, key, plan);
+      settleJrnLines(entry.lines, 1);
+      journalEntries.push(entry);
+      posted++;
+    };
+    (sales || []).forEach((inv) => healInvoice("sale", inv));
+    (purchases || []).forEach((inv) => healInvoice("purchase", inv));
+    (txs || []).forEach((t) => healParty("cust", t, "customerId", customers));
+    (supplierTxs || []).forEach((t) => healParty("supp", t, "supplierId", suppliers));
+    (saleReturns || []).forEach((r) => healReturn("sale", r, sales, "saleId"));
+    (purchaseReturns || []).forEach((r) => healReturn("purchase", r, purchases, "purchaseId"));
+    if (posted > 0) {
+      persistJournal();
+      saveAccounts();
+      try { renderJournal(); } catch (e) { }
+      try { addActivity("تصحيح ذاتي للقيود", "رجّعنا " + posted + " قيد ناقص لمستندات/حركات قديمة (السداد والآجل ورصيد الطرف)."); } catch (e) { }
+    }
+    return posted;
+  }
+
   /* ================== 🆕 شجرة الحسابات + مسحوبات الشركاء ==================
      طلب المالك (11/10): «تبويب مستقل في (التقارير والمركز المالي) يضم شجرة الحسابات طبقًا للفروع
      اللي سجلها، وتُنقل إليه بنود المصروفات والإيرادات، ويتضاف معهم مسحوبات الشركاء — لأنها مش مصروف
@@ -15513,6 +15610,9 @@ const pwEye = document.getElementById("btnShowPass");
         // 🆕 بناء 149 (سطر ٥): القيود دي نزلت فعلًا ⇒ أي شاشة كانت مستنية «لسه بتنزل»
         // بتترسم من جديد بالبيانات الحقيقية (مافيش «لا توجد قيود بعد» كذّابة).
         try { window.mizanOnLazyReady(); } catch (e) { }
+        // 🆕 بناء 170 — التصحيح الذاتي: بعد ما كل بيانات السحابة نزلت (القيود والحركات)،
+        // نرجّع أي قيد ناقص لمستند/حركة قديمة (بنمط reconcileTreasuryWithTxs، idempotent).
+        try { reconcileJournalWithDocs(); } catch (e) { }
         persistLocalFromCloud();
         // 🔑 ختم ملكية الحالة: اللي في المتصفح ده دلوقتي = بيانات هذه الشركة بالذات
         try { stampStateOrg(DATA.org && DATA.org() ? DATA.org().id : null); } catch (e) { }
@@ -19253,6 +19353,22 @@ const pwEye = document.getElementById("btnShowPass");
       linkBtn: () => docLinkButton(),
       settings: () => renderDocRootBox(),
       viewState: () => ({ url: docViewUrl, modalHidden: document.getElementById("mDocView").hidden, body: document.getElementById("docViewBody").innerHTML.slice(0, 220) })
+    };
+  }
+
+  // خطاف اختبار التصحيح الذاتي (بناء 170) — بيشتغل بس مع ?healtest=1
+  if (location.search.indexOf("healtest=1") >= 0) {
+    window.__mizanHealTest = {
+      reconcile: () => reconcileJournalWithDocs(),
+      entryFor: (key) => journalEntries.filter((j) => String(j.refId || "") === key).map((j) => ({ refId: j.refId, date: j.date, debit: j.debit, credit: j.credit, lines: (j.lines || []).length })),
+      count: () => journalEntries.length,
+      keyInvoice: (kind, inv) => invoiceJrnKey(kind, inv),
+      keyParty: (kind, id) => partyJrnKey(kind, id),
+      keyReturn: (kind, id) => returnJrnKey(kind, id),
+      planInvoice: (kind, inv) => invoiceJrnPlan(kind, inv, jrnHealTreasury(inv)),
+      treasury: (o) => { const t = jrnHealTreasury(o); return t ? { id: t.id, name: t.name, type: t.type } : null; },
+      creditOf: (t) => Number(t.credit) || 0,
+      paidDueKeys: () => ({ S: "S:", P: "P:", CT: "CT:", ST: "ST:", SR: "SR:", PR: "PR:" })
     };
   }
 
