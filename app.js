@@ -5690,9 +5690,8 @@
       || null;
   }
 
-  /* 🆕 مربع العميل/المورد = كتابة حرة + قائمة منسدلة (datalist)، لكن **لازم الطرف يكون موجودًا**
-     (قرار المالك). نحلّ الاسم المكتوب إلى طرف حقيقي بمطابقة عربية متسامحة (همزة/ألف/ياء/تاء مربوطة
-     عبر normalizeAr)، ولو مش مطابق أو ملتبس ⇒ نرفض الحفظ بدل التخمين. */
+  /* 🆕 مربع العميل/المورد = قائمة اختيار (بلا كتابة) — الأسماء مرتّبة أبجديًا (عربي متسامح)
+     لتسهيل الاختيار. الحلّ للطرف بمطابقة عربية متسامحة (همزة/ألف/ياء/تاء مربوطة عبر normalizeAr). */
   function partyMatchName(text, list) {
     const raw = String(text == null ? "" : text).trim();
     if (!raw) return null;
@@ -5710,13 +5709,15 @@
   function posFindSupplier(text) { return partyMatchName(text, suppliers); }
   function posSupId() { const s = posFindSupplier($("#cmbPosSupplier").value); return s ? s.id : NaN; }
   function fillPartyDatalist(sel, list) {
-    const dl = $(sel);
-    if (!dl) return;
-    dl.innerHTML = "";
-    list.forEach((x) => {
+    const el = $(sel);
+    if (!el) return;
+    el.innerHTML = "";
+    const arr = (list || []).slice().sort((a, b) => normalizeAr(a.nameAr || "").localeCompare(normalizeAr(b.nameAr || ""), "ar"));
+    arr.forEach((x) => {
       const o = document.createElement("option");
       o.value = x.nameAr;
-      dl.appendChild(o);
+      o.textContent = x.nameAr;
+      el.appendChild(o);
     });
   }
 
@@ -5724,7 +5725,7 @@
     recalculateCustomerBalances();
     const custInp = $("#cmbPosCustomer");
     const prevName = custInp.value;
-    fillPartyDatalist("#posCustomerList", customers);
+    fillPartyDatalist("#cmbPosCustomer", customers);
     const matched = prevName ? posFindCustomer(prevName) : null;
     if (matched) custInp.value = matched.nameAr;
     else posSelectDefaultCustomer();
@@ -5881,7 +5882,16 @@
     const wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
     let qty = parseFloat(String($("#numPosQty").value).replace(/,/g, ""));
     if (!(qty > 0)) qty = 1;
-    const price = moneyVal("#txtPosPrice");
+    /* 🆕 إصلاح: خانة سعر البيع **مقفولة (readonly)** من بناء 169 ⇒ لو اختيار الصنف من القائمة
+       المنسدلة ما نبّهش حدث `input` (بيحصل في بعض المتصفحات) ماينفعش المالك يكتب السعر بنفسه
+       وبياخد رسالة خطأ. الحل: نآخد سعر الصنف تلقائيًا من بياناته في المخزن قبل الفحص. */
+    let price = moneyVal("#txtPosPrice");
+    if (isNaN(price) || price <= 0) {
+      if (prod.salePrice > 0) {
+        price = Number(prod.salePrice);
+        $("#txtPosPrice").value = moneyStr(price);
+      }
+    }
     if (isNaN(price) || price <= 0) {
       toast("اكتب سعر البيع المتفق عليه مع العميل في خانة «سعر البيع».", "warning");
       $("#txtPosPrice").focus();
@@ -6752,7 +6762,7 @@
   function renderPurchasesLookups() {
     const supInp = $("#cmbPosSupplier");
     const prevName = supInp.value;
-    fillPartyDatalist("#ppSupplierList", suppliers);
+    fillPartyDatalist("#cmbPosSupplier", suppliers);
     const matched = prevName ? posFindSupplier(prevName) : null;
     if (matched) supInp.value = matched.nameAr;
     else ppSelectDefaultSupplier();
@@ -14550,8 +14560,7 @@
     $("#btnCancelQuickCustomer").addEventListener("click", () => hideModal("mQuickCustomer"));
 
     $("#cmbPaymentMethod").addEventListener("change", posPaymentVisibility);
-    // 🆕 مربع العميل كتابة/اختيار: نحدّث الرصيد الملوّن تحت الاسم + الملخّص فورًا
-    $("#cmbPosCustomer").addEventListener("input", () => { posUpdatePartyBalance("sale"); posRecalc(); });
+    // 🆕 مربع العميل = قائمة اختيار: نحدّث الرصيد الملوّن تحت الاسم + الملخّص فورًا
     $("#cmbPosCustomer").addEventListener("change", () => { posUpdatePartyBalance("sale"); posRecalc(); });
     $("#txtPosPaid").addEventListener("input", posRecalc);
     // 📷 بناء 143: كل حرف بيمرّ على scanKey ⇒ السلسلة الزمنية بتتقاس **أثناء** الكتابة،
@@ -14748,8 +14757,7 @@
     $("#btnCancelQuickSupplier").addEventListener("click", () => hideModal("mQuickSupplier"));
 
     $("#cmbPPaymentMethod").addEventListener("change", ppPaymentVisibility);
-    // 🆕 مربع المورد كتابة/اختيار: نحدّث الرصيد الملوّن تحت الاسم + الملخّص فورًا
-    $("#cmbPosSupplier").addEventListener("input", () => { posUpdatePartyBalance("purchase"); ppRecalc(); });
+    // 🆕 مربع المورد = قائمة اختيار: نحدّث الرصيد الملوّن تحت الاسم + الملخّص فورًا
     $("#cmbPosSupplier").addEventListener("change", () => { posUpdatePartyBalance("purchase"); ppRecalc(); });
     $("#txtPPPaid").addEventListener("input", ppRecalc);
     $("#cmbPPWarehouse").addEventListener("change", () => {
