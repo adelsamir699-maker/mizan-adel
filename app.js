@@ -1535,8 +1535,8 @@
   // بلوك الإجماليات (بدل سطر « | » القديم)
   function invTotalsHtml(rows) {
     return rows.map((r) =>
-      '<div class="inv-total-row' + (r.grand ? " grand" : "") + '"><span>' + esc(r.label) +
-      '</span><b>' + r.value + '</b></div>').join("");
+      '<div class="inv-total-row' + (r.grand ? " grand" : "") + (r.sum ? " inv-sum-row" : "") + '"><span>' + esc(r.label) +
+      '</span><b class="' + (r.cls || "") + '">' + r.value + '</b></div>').join("");
   }
 
   function invTotalRows(isSale, inv) {
@@ -1553,6 +1553,18 @@
       rows.push({ label: "الصافي بعد المرتجعات", value: fmt(Math.max(0, (Number(inv.grandTotal) || 0) - rt.value)) + " ج.م", grand: true });
     } else {
       rows.push({ label: "الصافي النهائي", value: fmt(inv.grandTotal) + " ج.م", grand: true });
+    }
+    // 🆕 (طلب المالك) ملخّص الطرف على الطبعة — نفس ترتيب الشاشة، وبنفس الألوان (مديون أحمر/مدفوع أخضر)
+    if (inv.partyPrevBalance != null) {
+      const paid = Number(inv.paidAmount) || 0;
+      const due = Number(inv.dueAmount) || 0;
+      const prev = Number(inv.partyPrevBalance) || 0;
+      const curr = Math.round((prev + due) * 100) / 100;
+      rows.push({ label: "الإجمالي", value: fmt(inv.grandTotal) + " ج.م", sum: true });
+      rows.push({ label: "المدفوع", value: fmt(paid) + " ج.م", sum: true, cls: "amount-pos" });
+      rows.push({ label: "الآجل", value: fmt(due) + " ج.م", sum: true, cls: due > 0 ? "amount-neg" : "" });
+      rows.push({ label: "الرصيد السابق", value: fmt(prev) + " ج.م", sum: true, cls: prev > 0 ? "amount-neg" : prev < 0 ? "amount-pos" : "" });
+      rows.push({ label: "الرصيد الحالي", value: fmt(curr) + " ج.م", sum: true, cls: curr > 0 ? "amount-neg" : curr < 0 ? "amount-pos" : "" });
     }
     return rows;
   }
@@ -5678,22 +5690,44 @@
       || null;
   }
 
+  /* 🆕 مربع العميل/المورد = كتابة حرة + قائمة منسدلة (datalist)، لكن **لازم الطرف يكون موجودًا**
+     (قرار المالك). نحلّ الاسم المكتوب إلى طرف حقيقي بمطابقة عربية متسامحة (همزة/ألف/ياء/تاء مربوطة
+     عبر normalizeAr)، ولو مش مطابق أو ملتبس ⇒ نرفض الحفظ بدل التخمين. */
+  function partyMatchName(text, list) {
+    const raw = String(text == null ? "" : text).trim();
+    if (!raw) return null;
+    const q = normalizeAr(raw);
+    const exact = list.filter((x) => normalizeAr(x.nameAr) === q);
+    if (exact.length === 1) return exact[0];
+    const byCode = list.filter((x) => String(x.code == null ? "" : x.code).trim() === raw);
+    if (byCode.length === 1) return byCode[0];
+    const partial = list.filter((x) => q.length >= 2 && normalizeAr(x.nameAr).indexOf(q) !== -1);
+    if (partial.length === 1) return partial[0];
+    return null;
+  }
+  function posFindCustomer(text) { return partyMatchName(text, customers); }
+  function posCustId() { const c = posFindCustomer($("#cmbPosCustomer").value); return c ? c.id : NaN; }
+  function posFindSupplier(text) { return partyMatchName(text, suppliers); }
+  function posSupId() { const s = posFindSupplier($("#cmbPosSupplier").value); return s ? s.id : NaN; }
+  function fillPartyDatalist(sel, list) {
+    const dl = $(sel);
+    if (!dl) return;
+    dl.innerHTML = "";
+    list.forEach((x) => {
+      const o = document.createElement("option");
+      o.value = x.nameAr;
+      dl.appendChild(o);
+    });
+  }
+
   function renderSalesLookups() {
     recalculateCustomerBalances();
-    const custSel = $("#cmbPosCustomer");
-    const prevCust = custSel.value;
-    custSel.innerHTML = "";
-    customers.forEach((c) => {
-      const opt = document.createElement("option");
-      opt.value = c.id;
-      opt.textContent = c.nameAr;
-      custSel.appendChild(opt);
-    });
-    if (prevCust && custSel.querySelector('option[value="' + prevCust + '"]')) {
-      custSel.value = prevCust;
-    } else {
-      posSelectDefaultCustomer();
-    }
+    const custInp = $("#cmbPosCustomer");
+    const prevName = custInp.value;
+    fillPartyDatalist("#posCustomerList", customers);
+    const matched = prevName ? posFindCustomer(prevName) : null;
+    if (matched) custInp.value = matched.nameAr;
+    else posSelectDefaultCustomer();
 
     const whSel = $("#cmbPosWarehouse");
     const prevWh = whSel.value;
@@ -5707,6 +5741,7 @@
     if (prevWh) whSel.value = prevWh;
 
     fillPosDatalist();
+    posUpdatePartyBalance("sale");
   }
 
   function fillPosDatalist() {
@@ -5725,7 +5760,7 @@
   function posSelectDefaultCustomer() {
     const sel = $("#cmbPosCustomer");
     const def = customers.find((c) => c.code === "1") || customers.find((c) => c.id === 1) || customers.find((c) => c.protected) || customers.find((c) => (c.nameAr || "").includes("كاش") || (c.nameAr || "").includes("نقدي")) || customers[0];
-    if (def) sel.value = String(def.id);
+    if (def) sel.value = def.nameAr;
   }
 
   function posUpdateBadge(p) {
@@ -5766,6 +5801,7 @@
     $("#txtPosCode").value = "";
     $("#numPosQty").value = "1";
     $("#txtPosPrice").value = "";
+    if ($("#txtPosPaid")) $("#txtPosPaid").value = "0";
     posScanStateClear();
     posSelectDefaultCustomer();
     posPaymentVisibility();
@@ -5792,6 +5828,8 @@
     };
     if (isBank) fill("#cmbPosBank", "bank");
     if (isWallet) fill("#cmbPosWallet", "wallet");
+    posPaymentFieldToggle("sale");
+    posRecalc();
   }
 
   function posOnSearch() {
@@ -6296,6 +6334,77 @@
     it.total = Math.round((sub + it.tax) * 100) / 100;
   }
 
+  /* 🆕 (طلب المالك) السداد الجزئي + ملخّص الفاتورة: المدفوع/الآجل/الرصيد السابق/الحالي.
+     • الآجل = الإجمالى − المدفوع، ويُرحَّل لحساب الطرف **الآجل فقط**.
+     • الرصيد السابق من نفس رصيد كشف الطرف (currentBalance)، والحالي = السابق + الآجل.
+     • الألوان: المديون/المستحق أحمر، المدفوع/الرصيد لنا أخضر. */
+  function partyPaidDue(kind, grand) {
+    const methodSel = kind === "sale" ? "#cmbPaymentMethod" : "#cmbPPaymentMethod";
+    const paidInpSel = kind === "sale" ? "#txtPosPaid" : "#txtPPPaid";
+    const ajal = ($(methodSel).value === "آجل");
+    const raw = parseFloat(String($(paidInpSel).value).replace(/,/g, ""));
+    let paid = ajal ? (isFinite(raw) ? raw : 0) : grand;
+    if (!(paid >= 0)) paid = 0;
+    if (paid > grand) paid = grand;
+    paid = Math.round(paid * 100) / 100;
+    const due = Math.round((grand - paid) * 100) / 100;
+    return { ajal: ajal, paid: paid, due: due };
+  }
+
+  function partyBalanceInfo(kind) {
+    if (kind === "sale") {
+      const c = posFindCustomer($("#cmbPosCustomer").value);
+      if (!c || c.protected) return null;
+      return { name: c.nameAr, bal: Number(c.currentBalance) || 0 };
+    }
+    const s = posFindSupplier($("#cmbPosSupplier").value);
+    if (!s || s.protected) return null;
+    return { name: s.nameAr, bal: Number(s.currentBalance) || 0 };
+  }
+
+  function posUpdatePartyBalance(kind) {
+    const el = $(kind === "sale" ? "#posCustBalance" : "#ppSuppBalance");
+    if (!el) return;
+    const info = partyBalanceInfo(kind);
+    if (!info) { el.hidden = true; el.textContent = ""; el.className = "pos-party-balance"; return; }
+    const bal = info.bal;
+    const tag = bal > 0 ? (kind === "sale" ? "مديون بـ" : "مستحق") : (bal < 0 ? "له" : "رصيد");
+    el.hidden = false;
+    el.textContent = "  (" + tag + ": " + fmt(Math.abs(bal)) + " ج.م)";
+    el.className = "pos-party-balance " + (bal > 0 ? "negative" : bal < 0 ? "positive" : "");
+  }
+  function ppUpdatePartyBalance() { posUpdatePartyBalance("purchase"); }
+
+  function setSummaryVal(sel, val, cls) {
+    const el = $(sel);
+    if (!el) return;
+    el.textContent = fmt(val) + " ج.م";
+    el.className = cls || "";
+  }
+
+  function posUpdateSummary(kind, t) {
+    const block = $(kind === "sale" ? "#posSummaryBlock" : "#ppSummaryBlock");
+    if (!block) return;
+    const info = partyBalanceInfo(kind);
+    const show = !!info;
+    block.hidden = !show;
+    if (!show) return;
+    const p = kind === "sale" ? "sPos" : "sPp";
+    const prev = info.bal;
+    const curr = Math.round((prev + t.due) * 100) / 100;
+    setSummaryVal("#" + p + "Grand", t.grand, "");
+    setSummaryVal("#" + p + "Paid", t.paid, "amount-pos");
+    setSummaryVal("#" + p + "Due", t.due, t.due > 0 ? "amount-neg" : "");
+    setSummaryVal("#" + p + "Prev", prev, prev > 0 ? "amount-neg" : prev < 0 ? "amount-pos" : "");
+    setSummaryVal("#" + p + "Curr", curr, curr > 0 ? "amount-neg" : curr < 0 ? "amount-pos" : "");
+  }
+
+  function posPaymentFieldToggle(kind) {
+    const ajal = ($(kind === "sale" ? "#cmbPaymentMethod" : "#cmbPPaymentMethod").value === "آجل");
+    const row = $(kind === "sale" ? "#posPaidRow" : "#ppPaidRow");
+    if (row) row.hidden = !ajal;
+  }
+
   function posRecalc() {
     let sub = 0, tax = 0;
     posItems.forEach((it, i) => {
@@ -6314,7 +6423,11 @@
     $("#lblPosTax").style.display = TAX.enabled ? "" : "none";
     $("#lblPosTax").hidden = !TAX.enabled;
     $("#lblPosTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الصافي: ") + fmt(grand) + " ج.م";
-    return { sub: sub, tax: tax, extra: extra, grand: grand };
+    const pd = partyPaidDue("sale", grand);
+    posPaymentFieldToggle("sale");
+    posUpdatePartyBalance("sale");
+    posUpdateSummary("sale", { grand: grand, paid: pd.paid, due: pd.due });
+    return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due };
   }
 
   function renderPosItems() {
@@ -6346,10 +6459,10 @@
     }
     const methods = ["نقداً", "آجل", "تحويل بنكي", "محافظ إلكترونية"];
     const payment = methods[$("#cmbPaymentMethod").selectedIndex] || "نقداً";
-    const custId = parseInt($("#cmbPosCustomer").value, 10);
+    const custId = posCustId();
     const cust = customers.find((c) => c.id === custId);
     if (!cust) {
-      toast("يرجى اختيار العميل.", "warning");
+      toast("العميل مش موجود في قائمة العملاء — اكتب اسمه أو اختره من القائمة.", "warning");
       return;
     }
     if (payment === "آجل" && cust.protected) {
@@ -6396,6 +6509,9 @@
       tax: t.tax,
       subTotal: t.sub,
       grandTotal: t.grand,
+      paidAmount: t.paid,
+      dueAmount: t.due,
+      partyPrevBalance: cust.protected ? null : (Math.round((Number(cust.currentBalance) || 0) * 100) / 100),
       items: posItems.map((it, idx) => ({
         id: idx + 1,
         productId: it.productId,
@@ -6413,53 +6529,38 @@
 
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
-    let posTr = null;
-    if (payment !== "آجل") {
-      const _isBank = payment === "تحويل بنكي" || payment.includes("بنك");
-      const _isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
-      const _selId = _isBank ? parseInt($("#cmbPosBank").value, 10) : _isWallet ? parseInt($("#cmbPosWallet").value, 10) : 0;
-      posTr = (_selId && treasury.find((x) => x.id === _selId)) ||
-        treasury.find((x) => x.type === (_isBank ? "bank" : _isWallet ? "wallet" : "cash")) ||
-        treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    // 🆕 (طلب المالك) السداد الجزئي: أى جزء «مدفوع» يدخل الخزينة/البنك/المحفظة، والآجل فقط يُضاف لرصيد العميل
+    const _isBank = payment === "تحويل بنكي" || payment.includes("بنك");
+    const _isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
+    const _payType = _isBank ? "bank" : _isWallet ? "wallet" : "cash";
+    const _selId = _isBank ? parseInt($("#cmbPosBank").value, 10) : _isWallet ? parseInt($("#cmbPosWallet").value, 10) : 0;
+    const posTr = (_selId && treasury.find((x) => x.id === _selId))
+      || treasury.find((x) => x.type === _payType)
+      || treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    if (jrnBlocked("الفاتورة", invoiceJrnPlan("sale", { grandTotal: t.grand, taxAmount: t.tax, paymentMethod: payment, paidAmount: t.paid, dueAmount: t.due }, posTr))) return;
+
+    let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي القبض دخل فيه
+
+    if (t.paid > 0 && posTr) {
+      posTr.balance = Math.round(((posTr.balance || 0) + t.paid) * 100) / 100;
+      invoice.treasuryId = posTr.id;
+      paidTreasury = posTr;                 // 🆕 بناء 134: الطرف المقابل في القيد هو نفس الحساب اللي القبض دخل فيه
+      saveTreasury();
+      syncTreasuryItemToSett(posTr);
     }
-    if (jrnBlocked("الفاتورة", invoiceJrnPlan("sale", { grandTotal: t.grand, taxAmount: t.tax, paymentMethod: payment }, posTr))) return;
-
-    let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي القبض دخل فيه (للقيد لو كان آجل = null)
-
-    if (payment === "آجل") {
-      cust.currentBalance = Math.round(((cust.currentBalance || 0) + t.grand) * 100) / 100;
+    if (t.due > 0) {
+      cust.currentBalance = Math.round(((Number(cust.currentBalance) || 0) + t.due) * 100) / 100;
       txs.push({
         id: nextTxId(),
         customerId: cust.id,
         date: invoice.invoiceDate,
         desc: "فاتورة مبيعات آجلة رقم " + invoice.invoiceNumber,
-        debit: t.grand,
+        debit: t.due,
         credit: 0
       });
       recalculateCustomerBalances();
       saveCustomers();
       saveTxs();
-    } else {
-      const isBank = payment === "تحويل بنكي" || payment.includes("بنك");
-      const isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
-      const type = isBank ? "bank" : isWallet ? "wallet" : "cash";
-      let selId = null;
-      if (isBank) {
-        selId = parseInt($("#cmbPosBank").value, 10);
-      } else if (isWallet) {
-        selId = parseInt($("#cmbPosWallet").value, 10);
-      }
-      const tr = (selId && treasury.find((x) => x.id === selId))
-        || treasury.find((x) => x.type === type)
-        || treasury.find((x) => x.type === "cash")
-        || treasury[0];
-      if (tr) {
-        tr.balance = Math.round(((tr.balance || 0) + t.grand) * 100) / 100;
-        invoice.treasuryId = tr.id;
-        paidTreasury = tr;                 // 🆕 بناء 134: الطرف المقابل في القيد هو نفس الحساب اللي القبض دخل فيه
-        saveTreasury();
-        syncTreasuryItemToSett(tr);
-      }
     }
 
     posItems.forEach((it) => {
@@ -6531,7 +6632,9 @@
   function openSalesForCustomer(cust) {
     showView("sales");
     posNewInvoice();
-    $("#cmbPosCustomer").value = String(cust.id);
+    $("#cmbPosCustomer").value = cust.nameAr;
+    posUpdatePartyBalance("sale");
+    posRecalc();
     toast("تم فتح فاتورة مبيعات جديدة باسم العميل (" + cust.nameAr + ").", "info");
   }
 
@@ -6635,7 +6738,9 @@
     addActivity("إضافة عميل", "إضافة عميل سريع من شاشة المبيعات: " + c.nameAr + " (" + c.code + ")");
     hideModal("mQuickCustomer");
     renderSalesLookups();
-    $("#cmbPosCustomer").value = String(c.id);
+    $("#cmbPosCustomer").value = c.nameAr;
+    posUpdatePartyBalance("sale");
+    posRecalc();
     toast("تمت إضافة العميل (" + c.nameAr + ") وتحديده في الفاتورة.", "success");
   }
 
@@ -6645,20 +6750,12 @@
   }
 
   function renderPurchasesLookups() {
-    const supSel = $("#cmbPosSupplier");
-    const prevSup = supSel.value;
-    supSel.innerHTML = "";
-    suppliers.forEach((s) => {
-      const opt = document.createElement("option");
-      opt.value = s.id;
-      opt.textContent = s.nameAr;
-      supSel.appendChild(opt);
-    });
-    if (prevSup && supSel.querySelector('option[value="' + prevSup + '"]')) {
-      supSel.value = prevSup;
-    } else {
-      ppSelectDefaultSupplier();
-    }
+    const supInp = $("#cmbPosSupplier");
+    const prevName = supInp.value;
+    fillPartyDatalist("#ppSupplierList", suppliers);
+    const matched = prevName ? posFindSupplier(prevName) : null;
+    if (matched) supInp.value = matched.nameAr;
+    else ppSelectDefaultSupplier();
 
     const whSel = $("#cmbPPWarehouse");
     const prevWh = whSel.value;
@@ -6672,6 +6769,7 @@
     if (prevWh && whSel.querySelector('option[value="' + prevWh + '"]')) whSel.value = prevWh;
 
     fillPPDatalist();
+    ppUpdatePartyBalance("purchase");
   }
 
   function fillPPDatalist() {
@@ -6690,7 +6788,7 @@
   function ppSelectDefaultSupplier() {
     const sel = $("#cmbPosSupplier");
     const def = suppliers.find((s) => s.code === "1") || suppliers.find((s) => s.id === 1) || suppliers.find((s) => s.protected) || suppliers.find((s) => (s.nameAr || "").includes("كاش") || (s.nameAr || "").includes("نقدي")) || suppliers[0];
-    if (def) sel.value = String(def.id);
+    if (def) sel.value = def.nameAr;
   }
 
   function ppUpdateBadge(p) {
@@ -6724,6 +6822,7 @@
     $("#txtPPCode").value = "";
     $("#numPPQty").value = "1";
     $("#txtPPPrice").value = "";
+    if ($("#txtPPPaid")) $("#txtPPPaid").value = "0";
     ppScanStateClear();
     ppSelectDefaultSupplier();
     ppPaymentVisibility();
@@ -6750,6 +6849,8 @@
     };
     if (isBank) fill("#cmbPPBank", "bank");
     if (isWallet) fill("#cmbPPWallet", "wallet");
+    posPaymentFieldToggle("purchase");
+    ppRecalc();
   }
 
   function ppOnSearch() {
@@ -6949,7 +7050,11 @@
     $("#lblPPTax").style.display = TAX.buyEnabled ? "" : "none";
     $("#lblPPTax").hidden = !TAX.buyEnabled;
     $("#lblPPTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الصافي: ") + fmt(grand) + " ج.م";
-    return { sub: sub, tax: tax, extra: extra, grand: grand };
+    const pd = partyPaidDue("purchase", grand);
+    posPaymentFieldToggle("purchase");
+    ppUpdatePartyBalance("purchase");
+    posUpdateSummary("purchase", { grand: grand, paid: pd.paid, due: pd.due });
+    return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due };
   }
 
   function renderPPItems() {
@@ -6981,10 +7086,10 @@
     }
     const methods = ["نقداً", "آجل", "تحويل بنكي", "محافظ إلكترونية"];
     const payment = methods[$("#cmbPPaymentMethod").selectedIndex] || "نقداً";
-    const supId = parseInt($("#cmbPosSupplier").value, 10);
+    const supId = posSupId();
     const supplier = suppliers.find((s) => s.id === supId);
     if (!supplier) {
-      toast("يرجى اختيار المورد.", "warning");
+      toast("المورد مش موجود في قائمة الموردين — اكتب اسمه أو اختره من القائمة.", "warning");
       return;
     }
     if (payment === "آجل" && supplier.protected) {
@@ -7019,6 +7124,9 @@
       tax: t.tax,
       subTotal: t.sub,
       grandTotal: t.grand,
+      paidAmount: t.paid,
+      dueAmount: t.due,
+      partyPrevBalance: supplier.protected ? null : (Math.round((Number(supplier.currentBalance) || 0) * 100) / 100),
       items: ppItems.map((it, idx) => ({
         id: idx + 1,
         productId: it.productId,
@@ -7036,53 +7144,38 @@
 
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
-    let ppTr = null;
-    if (payment !== "آجل") {
-      const _isBank = payment === "تحويل بنكي" || payment.includes("بنك");
-      const _isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
-      const _selId = _isBank ? parseInt($("#cmbPPBank").value, 10) : _isWallet ? parseInt($("#cmbPPWallet").value, 10) : 0;
-      ppTr = (_selId && treasury.find((x) => x.id === _selId)) ||
-        treasury.find((x) => x.type === (_isBank ? "bank" : _isWallet ? "wallet" : "cash")) ||
-        treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    // 🆕 (طلب المالك) السداد الجزئي: أى جزء «مدفوع» يخرج من الخزينة/البنك/المحفظة، والآجل فقط يُضاف لرصيد المورد
+    const _isBank = payment === "تحويل بنكي" || payment.includes("بنك");
+    const _isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
+    const _payType = _isBank ? "bank" : _isWallet ? "wallet" : "cash";
+    const _selId = _isBank ? parseInt($("#cmbPPBank").value, 10) : _isWallet ? parseInt($("#cmbPPWallet").value, 10) : 0;
+    const ppTr = (_selId && treasury.find((x) => x.id === _selId))
+      || treasury.find((x) => x.type === _payType)
+      || treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    if (jrnBlocked("الفاتورة", invoiceJrnPlan("purchase", { grandTotal: t.grand, taxAmount: t.tax, paymentMethod: payment, paidAmount: t.paid, dueAmount: t.due }, ppTr))) return;
+
+    let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي الصرف خرج منه
+
+    if (t.paid > 0 && ppTr) {
+      ppTr.balance = Math.round(((ppTr.balance || 0) - t.paid) * 100) / 100;
+      invoice.treasuryId = ppTr.id;
+      paidTreasury = ppTr;                 // 🆕 بناء 134: الطرف المقابل في القيد = نفس حساب الصرف
+      saveTreasury();
+      syncTreasuryItemToSett(ppTr);
     }
-    if (jrnBlocked("الفاتورة", invoiceJrnPlan("purchase", { grandTotal: t.grand, taxAmount: t.tax, paymentMethod: payment }, ppTr))) return;
-
-    let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي الصرف خرج منه (للقيد لو آجل = null)
-
-    if (payment === "آجل") {
-      supplier.currentBalance = Math.round(((supplier.currentBalance || 0) + t.grand) * 100) / 100;
+    if (t.due > 0) {
+      supplier.currentBalance = Math.round(((Number(supplier.currentBalance) || 0) + t.due) * 100) / 100;
       supplierTxs.push({
         id: supplierTxs.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1,
         supplierId: supplier.id,
         date: invoice.invoiceDate,
         desc: "فاتورة مشتريات آجلة رقم " + invoice.invoiceNumber,
-        debit: t.grand,
+        debit: t.due,
         credit: 0
       });
       recalculateSupplierBalances();
       saveSuppliers();
       saveSupplierTxs();
-    } else {
-      const isBank = payment === "تحويل بنكي" || payment.includes("بنك");
-      const isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
-      const type = isBank ? "bank" : isWallet ? "wallet" : "cash";
-      let selId = null;
-      if (isBank) {
-        selId = parseInt($("#cmbPPBank").value, 10);
-      } else if (isWallet) {
-        selId = parseInt($("#cmbPPWallet").value, 10);
-      }
-      const tr = (selId && treasury.find((x) => x.id === selId))
-        || treasury.find((x) => x.type === type)
-        || treasury.find((x) => x.type === "cash")
-        || treasury[0];
-      if (tr) {
-        tr.balance = Math.round(((tr.balance || 0) - t.grand) * 100) / 100;
-        invoice.treasuryId = tr.id;
-        paidTreasury = tr;                 // 🆕 بناء 134: الطرف المقابل في القيد = نفس حساب الصرف
-        saveTreasury();
-        syncTreasuryItemToSett(tr);
-      }
     }
 
     ppItems.forEach((it) => {
@@ -7178,7 +7271,9 @@
     addActivity("إضافة مورد", "إضافة مورد سريع من شاشة المشتريات: " + s.nameAr + " (" + s.code + ")");
     hideModal("mQuickSupplier");
     renderPurchasesLookups();
-    $("#cmbPosSupplier").value = String(s.id);
+    $("#cmbPosSupplier").value = s.nameAr;
+    ppUpdatePartyBalance("purchase");
+    ppRecalc();
     toast("تمت إضافة المورد (" + s.nameAr + ") وتحديده في الفاتورة.", "success");
   }
 
@@ -9810,13 +9905,25 @@
     if (!(total > 0)) return { error: "amount" };
     if (net < 0) return { error: "amount" };
     const ajal = String(inv.paymentMethod || "") === "آجل";
+    // 🆕 (طلب المالك) السداد الجزئي: أى «مدفوع» نقدًا الآن، والباقي (الآجل) على حساب الطرف
+    let paid = (inv.paidAmount != null) ? round2(inv.paidAmount) : (ajal ? 0 : total);
+    if (!(paid >= 0)) paid = 0;
+    if (paid > total) paid = total;
+    const due = round2(total - paid);
     const lines = [];
     if (kind === "sale") {
-      const due = ajal ? accByCode("1.1.5", "مديونيات العملاء") : accForTreasuryAcc(tr);
       const rev = accByCode("4.1", "إيرادات المبيعات");
-      if (!due) return { error: ajal ? "1.1.5" : "cash" };
       if (!rev) return { error: "4.1" };
-      lines.push({ accountId: Number(due.id), debit: total, credit: 0 });
+      if (due > 0) {
+        const debt = accByCode("1.1.5", "مديونيات العملاء");
+        if (!debt) return { error: "1.1.5" };
+        lines.push({ accountId: Number(debt.id), debit: due, credit: 0 });
+      }
+      if (paid > 0) {
+        const cash = accForTreasuryAcc(tr);
+        if (!cash) return { error: "cash" };
+        lines.push({ accountId: Number(cash.id), debit: paid, credit: 0 });
+      }
       lines.push({ accountId: Number(rev.id), debit: 0, credit: net });
       if (tax > 0) {
         const tx = accByCode("2.1.2", "المحصلة");
@@ -9825,16 +9932,23 @@
       }
     } else {
       const stock = accByCode("1.1.4", "المخزون");
-      const pay = ajal ? accByCode("2.1.1", "مستحقات الموردين") : accForTreasuryAcc(tr);
       if (!stock) return { error: "1.1.4" };
-      if (!pay) return { error: ajal ? "2.1.1" : "cash" };
       lines.push({ accountId: Number(stock.id), debit: net, credit: 0 });
       if (tax > 0) {
         const tx = accByCode("2.1.3", "المدفوعة");
         if (!tx) return { error: "2.1.3" };
         lines.push({ accountId: Number(tx.id), debit: tax, credit: 0 });
       }
-      lines.push({ accountId: Number(pay.id), debit: 0, credit: total });
+      if (due > 0) {
+        const debt = accByCode("2.1.1", "مستحقات الموردين");
+        if (!debt) return { error: "2.1.1" };
+        lines.push({ accountId: Number(debt.id), debit: 0, credit: due });
+      }
+      if (paid > 0) {
+        const cash = accForTreasuryAcc(tr);
+        if (!cash) return { error: "cash" };
+        lines.push({ accountId: Number(cash.id), debit: 0, credit: paid });
+      }
     }
     const d = round2(lines.reduce((m, l) => m + (Number(l.debit) || 0), 0));
     const c = round2(lines.reduce((m, l) => m + (Number(l.credit) || 0), 0));
@@ -14339,6 +14453,10 @@
     $("#btnCancelQuickCustomer").addEventListener("click", () => hideModal("mQuickCustomer"));
 
     $("#cmbPaymentMethod").addEventListener("change", posPaymentVisibility);
+    // 🆕 مربع العميل كتابة/اختيار: نحدّث الرصيد الملوّن تحت الاسم + الملخّص فورًا
+    $("#cmbPosCustomer").addEventListener("input", () => { posUpdatePartyBalance("sale"); posRecalc(); });
+    $("#cmbPosCustomer").addEventListener("change", () => { posUpdatePartyBalance("sale"); posRecalc(); });
+    $("#txtPosPaid").addEventListener("input", posRecalc);
     // 📷 بناء 143: كل حرف بيمرّ على scanKey ⇒ السلسلة الزمنية بتتقاس **أثناء** الكتابة،
     // وبعدها Enter بيقرا النتيجة بس (من غير دي، الإسكانر كان بيتعامل معاملة الصابع).
     // + الإكمال اليدوي (طلب 05/10 ≈18:20: «كل ما اكتب رقم من الباركود يبحث في المخزون
@@ -14533,6 +14651,10 @@
     $("#btnCancelQuickSupplier").addEventListener("click", () => hideModal("mQuickSupplier"));
 
     $("#cmbPPaymentMethod").addEventListener("change", ppPaymentVisibility);
+    // 🆕 مربع المورد كتابة/اختيار: نحدّث الرصيد الملوّن تحت الاسم + الملخّص فورًا
+    $("#cmbPosSupplier").addEventListener("input", () => { posUpdatePartyBalance("purchase"); ppRecalc(); });
+    $("#cmbPosSupplier").addEventListener("change", () => { posUpdatePartyBalance("purchase"); ppRecalc(); });
+    $("#txtPPPaid").addEventListener("input", ppRecalc);
     $("#cmbPPWarehouse").addEventListener("change", () => {
       const firstProd = products.find((p) => p.id === (ppItems[0] && ppItems[0].productId));
       ppUpdateBadge(firstProd || null);

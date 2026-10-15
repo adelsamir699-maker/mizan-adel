@@ -2359,3 +2359,24 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 @media (max-width: 560px) { #mScanHelpBox .scan-help-list { font-size: 12px; } }
 
 
+
+/* بناء 169: الفاتورة (سداد جزئي + ملخّص الطرف) */
+.pos-party-balance { font-size: 12px; font-weight: 700; margin-inline-start: 6px; color: #334155; }
+.pos-party-balance.positive { color: #065f46; }
+.pos-party-balance.negative { color: #b91c1c; }
+.pos-paid-row { display:flex; align-items:center; gap:6px; margin-top:4px; }
+.pos-paid-label { font-size:12px; color:#475569; }
+#txtPosPaid, #txtPPPaid { width:90px; padding:4px 6px; font-size:13px; text-align:center; font-weight:700; }
+.pos-summary-block { display:flex; gap:28px; justify-content:flex-start; flex-wrap:wrap; border-top:1px dashed var(--border); padding-top:6px; }
+.pos-sum-col { display:flex; flex-direction:column; gap:4px; }
+.pos-sum-line { display:flex; gap:10px; font-size:13px; color:#1e293b; }
+.pos-sum-line b { font-weight:700; }
+.pos-sum-line-big { font-weight:800; font-size:14px; }
+.pos-sum-line-big b { font-size:15px; }
+.ft-total-big { font-size:19px !important; font-weight:800 !important; }
+.amount-neg { color:#b91c1c; }
+.amount-pos { color:#065f46; }
+.inv-sum-row { font-size: 13px; font-weight: bold; }
+.inv-sum-row b.amount-neg { color:#b91c1c; }
+.inv-sum-row b.amount-pos { color:#065f46; }
+
