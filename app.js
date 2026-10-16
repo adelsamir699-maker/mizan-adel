@@ -12809,7 +12809,7 @@
       if (!q) return true;
       return normalizeAr(a.ts).includes(q) || normalizeAr(a.user).includes(q) ||
              normalizeAr(a.action).includes(q) || normalizeAr(a.desc).includes(q) ||
-             (isSuper && normalizeAr(a.orgName || "").includes(q));
+             normalizeAr(a.orgName || "").includes(q);
     });
     tbody.innerHTML = "";
     list.forEach((a) => {
