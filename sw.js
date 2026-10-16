@@ -9,7 +9,7 @@
  */
 "use strict";
 
-const SW_VERSION = 174;
+const SW_VERSION = 175;
 
 self.addEventListener("install", (event) => {
   // من غير انتظار: فعّل النسخة الجديدة فورًا
@@ -35,3 +35,4 @@ self.addEventListener("fetch", (event) => {
   // ومن غير ما يغيّر سلوك التحميل/الكاش الحالي للتطبيق.
   event.respondWith(fetch(event.request));
 });
+
