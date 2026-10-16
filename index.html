@@ -1423,10 +1423,15 @@
         <div class="search-bar">
           <label class="filter-label" for="txtAuditSearch">🔍 بحث في العمليات:</label>
           <input type="text" id="txtAuditSearch" class="search-input" autocomplete="new-search" />
+          <label class="filter-label" for="txtAuditOrgSearch" id="lblAuditOrgSearch" hidden>🏢 بحث باسم الشركة:</label>
+          <input type="text" id="txtAuditOrgSearch" class="search-input" autocomplete="new-search" hidden />
+          <label class="filter-label" for="txtAuditUserSearch">👤 بحث باسم الحساب:</label>
+          <input type="text" id="txtAuditUserSearch" class="search-input" autocomplete="new-search" />
           <label class="filter-label" for="selAuditOrg" id="lblAuditOrg" hidden>🏢 الشركة:</label>
           <select id="selAuditOrg" class="search-input" autocomplete="off" hidden></select>
           <label class="filter-label" for="selAuditUser">👤 الحساب:</label>
           <select id="selAuditUser" class="search-input" autocomplete="off"></select>
+          <button id="btnAuditClear" class="btn" type="button">تفريغ الفلاتر</button>
         </div>
 
         <div class="table-wrap">

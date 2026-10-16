@@ -12795,8 +12795,13 @@
     const isSuper = auditIsSuper();
     const thOrg = $("#thAuditOrg");
     if (thOrg) thOrg.hidden = !isSuper;
+    const lblOrgSearch = $("#lblAuditOrgSearch"), inpOrgSearch = $("#txtAuditOrgSearch");
+    if (lblOrgSearch) lblOrgSearch.hidden = !isSuper;
+    if (inpOrgSearch) inpOrgSearch.hidden = !isSuper;
     const colCount = isSuper ? 5 : 4;
-    const q = normalizeAr(($("#txtAuditSearch") || {}).value || "");
+    const qOps = normalizeAr(($("#txtAuditSearch") || {}).value || "");
+    const qOrg = normalizeAr(($("#txtAuditOrgSearch") || {}).value || "");
+    const qUser = normalizeAr(($("#txtAuditUserSearch") || {}).value || "");
     const selOrg = (isSuper && $("#selAuditOrg")) ? $("#selAuditOrg").value : "";
     const base = (auditCloudRows && auditCloudRows.length)
       ? auditCloudRows
@@ -12806,10 +12811,10 @@
     const selUser = $("#selAuditUser") ? $("#selAuditUser").value : "";
     const list = byOrg.filter((a) => {
       if (selUser && a.user !== selUser) return false;
-      if (!q) return true;
-      return normalizeAr(a.ts).includes(q) || normalizeAr(a.user).includes(q) ||
-             normalizeAr(a.action).includes(q) || normalizeAr(a.desc).includes(q) ||
-             normalizeAr(a.orgName || "").includes(q);
+      if (qOrg && !normalizeAr(a.orgName || "").includes(qOrg)) return false;
+      if (qUser && !normalizeAr(a.user || "").includes(qUser)) return false;
+      if (!qOps) return true;
+      return normalizeAr(a.ts).includes(qOps) || normalizeAr(a.action).includes(qOps) || normalizeAr(a.desc).includes(qOps);
     });
     tbody.innerHTML = "";
     list.forEach((a) => {
@@ -12830,8 +12835,18 @@
     if (!auditSelBound) {
       auditSelBound = true;
       const so = $("#selAuditOrg"), su = $("#selAuditUser");
+      const to = $("#txtAuditOrgSearch"), tu = $("#txtAuditUserSearch"), ts = $("#txtAuditSearch");
       if (so) so.addEventListener("change", () => { auditDraw(); });
       if (su) su.addEventListener("change", () => { auditDraw(); });
+      if (to) { to.addEventListener("input", auditDraw); to.addEventListener("change", auditDraw); }
+      if (tu) { tu.addEventListener("input", auditDraw); tu.addEventListener("change", auditDraw); }
+      if (ts) { ts.addEventListener("input", auditDraw); ts.addEventListener("change", auditDraw); }
+      const clr = $("#btnAuditClear");
+      if (clr) clr.addEventListener("click", () => {
+        if (so) so.value = ""; if (su) su.value = "";
+        if (to) to.value = ""; if (tu) tu.value = ""; if (ts) ts.value = "";
+        auditDraw();
+      });
     }
     auditFillOrgFilter();
     auditDraw();
