@@ -2815,21 +2815,39 @@
         <input type="text" id="retParty" readonly />
         <label for="retDate">تاريخ المرتجع:</label>
         <input type="date" id="retDate" />
-        <label for="retSettle">تسوية المرتجع:</label>
-        <select id="retSettle">
-          <option value="balance">خصم من الرصيد</option>
-          <option value="refund">رد قيمة المرتجع (خزينة / بنك / محفظة)</option>
-        </select>
-        <label for="retMethod" id="lblRetMethod">طريقة الرد:</label>
-        <select id="retMethod">
-          <option>نقداً 💵</option>
-          <option>تحويل بنكي 🏛️</option>
-          <option>محفظة إلكترونية 📱</option>
-        </select>
-        <label for="retTreasury" id="lblRetTreasury">الخزينة / الحساب:</label>
-        <select id="retTreasury"></select>
         <label for="retNotes">ملاحظات:</label>
         <input type="text" id="retNotes" autocomplete="off" placeholder="سبب المرتجع (اختياري)" />
+      </div>
+      <!-- 🆕 بناء 172: تسوية المرتجع — المستخدم يكتب مبلغ الخزينة، والباقي يتسوّى أوتوماتيك على حساب الطرف -->
+      <div class="ret-settle" id="retSettleBox">
+        <div class="ret-settle-head">
+          <span class="ret-settle-title">تسوية المرتجع</span>
+          <span class="ret-settle-total">قيمة المرتجع: <b id="retTotalInBox">0.00</b> ج.م</span>
+        </div>
+        <div class="ret-settle-presets">
+          <button type="button" class="ret-preset" data-retmode="paid">حسب المدفوع فعلًا</button>
+          <button type="button" class="ret-preset" data-retmode="cash">كله كاش (خزينة)</button>
+          <button type="button" class="ret-preset" data-retmode="balance">كله على الحساب</button>
+        </div>
+        <div class="ret-settle-cols">
+          <div class="ret-settle-form">
+            <label for="retCashAmount">المبلغ من الخزينة / البنك / المحفظة <span id="retCashDir"></span>:</label>
+            <input type="number" id="retCashAmount" min="0" step="any" value="0" autocomplete="off" />
+            <label for="retMethod" id="lblRetMethod">طريقة الرد:</label>
+            <select id="retMethod">
+              <option>نقداً 💵</option>
+              <option>تحويل بنكي 🏛️</option>
+              <option>محفظة إلكترونية 📱</option>
+            </select>
+            <label for="retTreasury" id="lblRetTreasury">الخزينة / الحساب:</label>
+            <select id="retTreasury"></select>
+          </div>
+          <div class="ret-settle-side" id="retPartySide">
+            <div class="ret-side-row"><span>الباقي على حساب <b class="ret-party-lbl">العميل</b>:</span><b id="retBalanceAmount">0.00</b><span class="ret-side-cur">ج.م</span></div>
+            <div class="ret-side-row"><span>رصيد <b class="ret-party-lbl">العميل</b> الحالي:</span><b id="retPartyBalNow">0.00</b><span class="ret-side-cur">ج.م</span></div>
+            <div class="ret-side-row ret-side-after"><span>الرصيد بعد المرتجع:</span><b id="retPartyBalAfter">0.00</b><span class="ret-side-cur">ج.م</span></div>
+          </div>
+        </div>
       </div>
       <div class="panel-title">اكتب الكمية المرتجعة قدام الصنف المطلوب بس — باقي بيانات الفاتورة مستدعاة تلقائيًا</div>
       <div class="ret-hint" id="retSettleHint"></div>

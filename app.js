@@ -2656,14 +2656,15 @@
 
   /* ================== كشف الحساب ================== */
   function getStatement(cust) {
-    // 🔁 بناء 108: مرتجعات «رد قيمة المرتجع» ملهاش حركة على الحساب — سطر توضيحي ما يغيّرش الرصيد
+    // 🔁 بناء 108/172: مرتجعات الرد النقدي (أو الجزء الكاش من المرتجع المختلط) — سطر توضيحي ما يغيّرش الرصيد
     const memoRows = saleReturns
-      .filter((r) => r.settlement === "refund" && Number(r.customerId) === Number(cust.id))
+      .filter((r) => retCashOf(r) > 0.0001 && Number(r.customerId) === Number(cust.id))
       .map((r) => {
         const tr = treasury.find((x) => Number(x.id) === Number(r.treasuryId));
+        const cash = retCashOf(r);
         return {
           date: retDateOf(r),
-          desc: "↩️ مرتجع مبيعات رقم " + retNo(r) + " — رد" + (tr ? " من " + tr.name : "") + " بقيمة " + fmt(r.grandTotal) + " ج.م",
+          desc: "↩️ مرتجع مبيعات رقم " + retNo(r) + " — رد" + (tr ? " من " + tr.name : "") + " بقيمة " + fmt(cash) + " ج.م",
           debit: 0, credit: 0
         };
       });
@@ -7435,12 +7436,12 @@
   }
 
   function getSupplierStatement(sup) {
-    // 🔁 بناء 108: سطر توضيحي لمرتجعات المشتريات اللي اتسلّمت فلوسها (رد من الخزينة)
+    // 🔁 بناء 108/172: سطر توضيحي لمرتجعات المشتريات اللي اتسلّمت فلوسها (الجزء الكاش)
     const memoRows = purchaseReturns
-      .filter((r) => r.settlement === "refund" && Number(r.supplierId) === Number(sup.id))
+      .filter((r) => retCashOf(r) > 0.0001 && Number(r.supplierId) === Number(sup.id))
       .map((r) => ({
         date: retDateOf(r),
-        desc: "↩️ مرتجع مشتريات رقم " + retNo(r) + " — استلام نقدية بقيمة " + fmt(r.grandTotal) + " ج.م",
+        desc: "↩️ مرتجع مشتريات رقم " + retNo(r) + " — استلام نقدية بقيمة " + fmt(retCashOf(r)) + " ج.م",
         debit: 0, credit: 0
       }));
     const rows = supplierTxs
@@ -7894,11 +7895,25 @@
     const share = (invGross > 0 && extra > 0) ? (base * extra) / invGross : 0;
     return Math.max(0, Math.round((base - share) * 100) / 100);
   }
+  // 🆕 بناء 172: حصة الخزينة وحصة حساب الطرف لأي مرتجع (توافق خلفي مع refund/balance)
+  function retCashOf(r) {
+    if (!r) return 0;
+    return (r.cashAmount != null) ? (Number(r.cashAmount) || 0) : (r.settlement === "refund" ? (Number(r.grandTotal) || 0) : 0);
+  }
+  function retBalOf(r) {
+    if (!r) return 0;
+    return (r.balanceAmount != null) ? (Number(r.balanceAmount) || 0) : (r.settlement === "refund" ? 0 : (Number(r.grandTotal) || 0));
+  }
   function retSettleText(r) {
-    if (r && r.settlement === "refund") {
-      const tr = treasury.find((x) => Number(x.id) === Number(r.treasuryId));
-      return tr ? "رد من " + tr.name : "رد قيمة المرتجع";
-    }
+    if (!r) return "-";
+    const cash = retCashOf(r);
+    const bal = retBalOf(r);
+    const hasCash = cash > 0.0001;
+    const hasBal = bal > 0.0001;
+    const tr = treasury.find((x) => Number(x.id) === Number(r.treasuryId));
+    const cashTxt = "رد " + fmt(cash) + " " + (tr ? "من " + tr.name : "(خزينة)");
+    if (hasCash && hasBal) return cashTxt + " + خصم " + fmt(bal) + " من الرصيد";
+    if (hasCash) return cashTxt;
     return "خصم من الرصيد";
   }
   // إجمالي مرتجعات الفاتورة (عدد المستندات + قيمة + كمية) — للملاحظة أسفل الأصلية
@@ -8039,7 +8054,15 @@
     if (!lines.length) { toast("الفاتورة دي مسجّل عليها مرتجع كامل.", "warning"); return; }
     if (!lines.some((l) => l.remaining > 0)) { toast("أصناف الفاتورة دي اترجّعت كلها قبل كده.", "warning"); return; }
     const isAjali = String(inv.paymentMethod || "").includes("آجل");
-    retDraft = { isSales: !!isSales, inv: inv, isAjali: isAjali, lines: lines };
+    const invTotal = Math.max(0, Number(inv.grandTotal != null ? inv.grandTotal : (inv.total != null ? inv.total : 0)) || 0);
+    // 🆕 بناء 172: نسبة المدفوع فعليًا في الفاتورة (الافتراضي «حسب المدفوع فعلًا»)
+    const paidAmt = (inv.paidAmount != null) ? Math.max(0, Number(inv.paidAmount) || 0) : (isAjali ? 0 : invTotal);
+    retDraft = {
+      isSales: !!isSales, inv: inv, isAjali: isAjali, lines: lines,
+      total: 0, invTotal: invTotal,
+      paidRatio: invTotal > 0 ? Math.min(1, Math.max(0, paidAmt / invTotal)) : (isAjali ? 0 : 1),
+      cashMode: "paid"
+    };
 
     hideModal("mRetPick");
     $("#retTitle").textContent = isSales ? "🔁 مرتجع على فاتورة مبيعات" : "🔁 مرتجع على فاتورة مشتريات";
@@ -8049,16 +8072,13 @@
     $("#retParty").value = retParty(inv, isSales) + " (" + (inv.paymentMethod || "-") + ")";
     $("#retDate").value = todayISO();
     $("#retNotes").value = "";
-    const optRefund = $("#retSettle").querySelector('option[value="refund"]');
-    if (optRefund) optRefund.disabled = isAjali;
-    $("#retSettle").value = isAjali ? "balance" : "refund";
     const pm = String(inv.paymentMethod || "");
     $("#retMethod").value = (pm.includes("بنك") || pm.includes("تحويل"))
       ? "تحويل بنكي 🏛️"
       : (pm.includes("محفظ") ? "محفظة إلكترونية 📱" : "نقداً 💵");
-    applyRetSettleUI();
     renderRetItems();
     recalcRetTotal();
+    retUpdateSettleUI();
     showModal("mRetAdd");
   }
 
@@ -8116,23 +8136,72 @@
     if (m) m.value = typ === "bank" ? "تحويل بنكي 🏛️" : typ === "wallet" ? "محفظة إلكترونية 📱" : "نقداً 💵";
   }
 
-  function applyRetSettleUI() {
-    const refund = $("#retSettle").value === "refund";
-    const show = refund && !(retDraft && retDraft.isAjali);
-    $("#lblRetMethod").hidden = !show;
-    $("#retMethod").hidden = !show;
-    $("#lblRetTreasury").hidden = !show;
-    $("#retTreasury").hidden = !show;
+  // 🆕 بناء 172: محرّك تسوية المرتجع — مبلغ خزينة جزئي + الباقي أوتوماتيك على حساب الطرف
+  function retPartyRecord() {
+    if (!retDraft) return null;
+    const inv = retDraft.inv;
+    const partyId = Number(retDraft.isSales ? inv.customerId : inv.supplierId);
+    const list = retDraft.isSales ? customers : suppliers;
+    return (list || []).find((x) => Number(x.id) === partyId) || null;
+  }
+  function retClampCash(v) {
+    const total = round2((retDraft && retDraft.total) || 0);
+    return Math.max(0, Math.min(round2(Number(v) || 0), total));
+  }
+  // حصة الخزينة (الكاش) حسب الوضع المختار أو الكتابة اليدوية
+  function retCashPart() {
+    if (!retDraft) return 0;
+    const total = round2(retDraft.total || 0);
+    if (retDraft.cashMode === "balance") return 0;
+    if (retDraft.cashMode === "cash") return total;
+    if (retDraft.cashMode === "paid") return round2(total * (Number(retDraft.paidRatio) || 0));
+    const inp = $("#retCashAmount");
+    return retClampCash(inp ? inp.value : 0);
+  }
+  function retBalancePart() {
+    const total = round2((retDraft && retDraft.total) || 0);
+    return round2(total - retCashPart());
+  }
+  function paintRetModes() {
+    document.querySelectorAll("#mRetAddBox .ret-preset").forEach((b) => {
+      b.classList.toggle("active", !!(retDraft && retDraft.cashMode === b.dataset.retmode));
+    });
+  }
+  function retUpdateSettleUI() {
+    if (!retDraft) return;
+    const total = round2(retDraft.total || 0);
+    const isSales = retDraft.isSales;
+    const partyLbl = isSales ? "العميل" : "المورد";
+    const cash = retCashPart();
+    const bal = round2(total - cash);
+    const inp = $("#retCashAmount");
+    if (inp && retDraft.cashMode !== "manual") inp.value = cash ? String(cash) : "0";
+    const tIn = $("#retTotalInBox"); if (tIn) tIn.textContent = fmt(total);
+    const balEl = $("#retBalanceAmount"); if (balEl) balEl.textContent = fmt(bal);
+    document.querySelectorAll("#mRetAddBox .ret-party-lbl").forEach((e) => { e.textContent = partyLbl; });
+    const dir = $("#retCashDir"); if (dir) dir.textContent = isSales ? "(يُخصم)" : "(يُضاف)";
+    // رصيد الطرف الحالي وبعد التسوية (الكاش مش بيأثر على الرصيد — الباقي بس هو اللي بيتسوّى)
+    const p = retPartyRecord();
+    const now = p ? (Number(p.currentBalance) || 0) : 0;
+    const after = round2(now - bal);
+    const nowEl = $("#retPartyBalNow"); if (nowEl) nowEl.textContent = fmt(now);
+    const afEl = $("#retPartyBalAfter"); if (afEl) afEl.textContent = fmt(after);
+    // إظهار حقول الخزينة لما فيه مبلغ كاش
+    const showCash = cash > 0.0001;
+    ["#lblRetMethod", "#retMethod", "#lblRetTreasury", "#retTreasury"].forEach((s) => {
+      const el = $(s); if (el) el.hidden = !showCash;
+    });
+    if (showCash) fillRetTreasury();
+    // الشرح (لهجة عادية)
     const hint = $("#retSettleHint");
     if (hint) {
-      const partyLbl = (retDraft && retDraft.isSales) ? "العميل" : (retDraft ? "المورد" : "الطرف");
-      hint.textContent = show
-        ? "المبلغ هينزل فعليًا من الحساب اللي هتختاره (خزينة أو بنك أو محفظة)."
-        : (retDraft && retDraft.isAjali
-          ? "الفاتورة آجلة — قيمة المرتجع بتتخصم من رصيد " + partyLbl + "."
-          : "قيمة المرتجع بتتخصم من رصيد " + partyLbl + " وتظهر في كشف حسابه.");
+      const parts = [];
+      if (cash > 0.0001) parts.push(fmt(cash) + " ج.م " + (isSales ? "هتخرج من" : "هتدخل في") + " الحساب اللي هتختاره");
+      if (bal > 0.0001) parts.push(fmt(bal) + " ج.م هتتسوّى على حساب " + partyLbl);
+      if (!parts.length) hint.textContent = "اكتب الكمية المرتجعة الأول عشان نحسب قيمة التسوية.";
+      else hint.textContent = parts.join("  •  ") + ".";
     }
-    if (show) fillRetTreasury();
+    paintRetModes();
   }
 
   function renderRetItems() {
@@ -8223,7 +8292,9 @@
     }
     const t = $("#retTotal");
     if (t) t.textContent = "قيمة المرتجع: " + fmt(total) + " ج.م";
+    if (retDraft) retDraft.total = Math.round(total * 100) / 100;
     paintRetOver();
+    retUpdateSettleUI();
   }
 
   /* ---- تسجيل المرتجع + القيود العكسية ---- */
@@ -8248,22 +8319,15 @@
     const wh = inv.warehouse || inv.store || WAREHOUSES[0];
     const date = ($("#retDate").value || todayISO());
     const notes = ($("#retNotes").value || "").trim();
-    let settle = $("#retSettle").value === "refund" ? "refund" : "balance";
-    if (retDraft.isAjali) settle = "balance";
 
     // ---- تحققات قبل أي تنفيذ (من غير لمس البيانات) ----
     const partyId = Number(isSales ? inv.customerId : inv.supplierId);
     const party = isSales
       ? customers.find((c) => Number(c.id) === partyId)
       : suppliers.find((s) => Number(s.id) === partyId);
-    if (settle === "balance" && !party) {
-      toast("ما لقيناش حساب " + (isSales ? "العميل" : "المورد") + " المرتبط بالفاتورة — اختار «رد قيمة المرتجع» أو سجّل الحساب الأول.", "warning");
+    if (!party) {
+      toast("ما لقيناش حساب " + (isSales ? "العميل" : "المورد") + " المرتبط بالفاتورة — سجّل الحساب الأول.", "warning");
       return;
-    }
-    let tr = null;
-    if (settle === "refund") {
-      tr = treasury.find((x) => Number(x.id) === Number($("#retTreasury").value));
-      if (!tr) { toast("اختار الخزينة أو الحساب اللي هيتم الرد منه.", "warning"); return; }
     }
     if (!isSales) {
       const negs = chosen.filter((l) => {
@@ -8289,9 +8353,20 @@
     const amt = Math.round(items.reduce((s, x) => s + (Number(x.total) || 0), 0) * 100) / 100;
     if (amt <= 0) { toast("قيمة المرتجع طلعت صفر — راجع أسعار الأصناف.", "warning"); return; }
 
+    // 🆕 بناء 172: تقسيم التسوية — جزء من الخزينة/البنك/المحفظة + الباقي على حساب الطرف
+    if (retDraft) retDraft.total = amt;
+    const cashAmt = Math.max(0, Math.min(round2(retCashPart()), amt));
+    const balAmt = round2(amt - cashAmt);
+    let tr = null;
+    if (cashAmt > 0.0001) {
+      tr = treasury.find((x) => Number(x.id) === Number($("#retTreasury").value)) || null;
+      if (!tr) { toast("اختار الخزينة أو الحساب اللي هيتم التسوية منه.", "warning"); return; }
+    }
+    const settle = (cashAmt > 0.0001 && balAmt > 0.0001) ? "mixed" : (cashAmt > 0.0001 ? "refund" : "balance");
+
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
-    if (jrnBlocked("المرتجع", returnJrnPlan(isSales ? "sale" : "purchase", { grandTotal: amt, settlement: settle }, inv, tr))) return;
+    if (jrnBlocked("المرتجع", returnJrnPlan(isSales ? "sale" : "purchase", { grandTotal: amt, cashAmount: cashAmt, balanceAmount: balAmt }, inv, tr))) return;
 
     const no = nextReturnNumber(retKind(isSales));
     const id = nextReturnId(isSales);
@@ -8302,8 +8377,10 @@
       returnDate: date,
       date: date,
       settlement: settle,
-      paymentMethod: settle === "refund" ? ($("#retMethod").value || "نقداً 💵") : "خصم من الرصيد",
-      treasuryId: settle === "refund" ? tr.id : null,
+      cashAmount: cashAmt,
+      balanceAmount: balAmt,
+      paymentMethod: cashAmt > 0.0001 ? ($("#retMethod").value || "نقداً 💵") : "خصم من الرصيد",
+      treasuryId: tr ? tr.id : null,
       warehouse: wh,
       store: wh,
       notes: notes,
@@ -8332,14 +8409,14 @@
     });
     saveProducts();
 
-    // 2) التسوية: رد نقدية = حركة خزينة (سند)، خصم من الرصيد = حركة على الحساب
-    if (settle === "refund") {
+    // 2) التسوية: جزء كاش = حركة خزينة (سند)، وجزء الرصيد = حركة على حساب الطرف (بناء 172)
+    if (cashAmt > 0.0001) {
       const v = {
         id: vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
         type: isSales ? "out" : "in",
         treasuryId: tr.id,
         date: date,
-        amount: amt,
+        amount: cashAmt,
         desc: (isSales ? "رد قيمة مرتجع مبيعات رقم " : "استلام قيمة مرتجع مشتريات رقم ") + no,
         refType: isSales ? "sale_return" : "purchase_return",
         refId: id
@@ -8348,17 +8425,18 @@
       saveVouchers();
       recalculateTreasuryBalances();
       rec.voucherId = v.id;
-    } else {
+    }
+    if (balAmt > 0.0001) {
       const desc = "مرتجع " + retWord(isSales) + " رقم " + no + " — خصم من الرصيد";
       let tx;
       if (isSales) {
-        tx = { id: nextTxId(), customerId: partyId, date: date, desc: desc, debit: 0, credit: amt };
+        tx = { id: nextTxId(), customerId: partyId, date: date, desc: desc, debit: 0, credit: balAmt };
         txs.push(tx);
         recalculateCustomerBalances();
         saveCustomers();
         saveTxs();
       } else {
-        tx = { id: supplierTxs.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1, supplierId: partyId, date: date, desc: desc, debit: 0, credit: amt };
+        tx = { id: supplierTxs.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1, supplierId: partyId, date: date, desc: desc, debit: 0, credit: balAmt };
         supplierTxs.push(tx);
         recalculateSupplierBalances();
         saveSuppliers();
@@ -8388,7 +8466,10 @@
     renderTreMoves();
     renderTable();
     renderSuppliers();
-    toast("تم تسجيل المرتجع رقم (" + no + ") وتحديث المخزون" + (settle === "refund" ? " وحساب الرد (" + tr.name + ")" : " والرصيد") + " — الفاتورة الأصلية فضلت موجودة.", "success");
+    const settleMsg = (cashAmt > 0.0001 && balAmt > 0.0001)
+      ? " ونزل " + fmt(cashAmt) + " من " + tr.name + " والباقي على الحساب"
+      : (cashAmt > 0.0001 ? " وحساب الرد (" + tr.name + ")" : " والرصيد");
+    toast("تم تسجيل المرتجع رقم (" + no + ") وتحديث المخزون" + settleMsg + " — الفاتورة الأصلية فضلت موجودة.", "success");
   }
 
   /* ---- حذف المرتجع: تراجع كل القيود العكسية ---- */
@@ -8424,8 +8505,10 @@
       if (p) addStockAt(p, wh, isSales ? -(Number(it.qty) || 0) : (Number(it.qty) || 0));
     });
     saveProducts();
-    // 2) عكس التسوية
-    if (r.settlement === "refund") {
+    // 2) عكس التسوية (بناء 172: ممكن تكون مختلطة كاش + رصيد)
+    const hasCash = retCashOf(r) > 0.0001;
+    const hasBalance = retBalOf(r) > 0.0001;
+    if (hasCash) {
       const vIdx = vouchers.findIndex((v) =>
         (String(v.refType || "") === (isSales ? "sale_return" : "purchase_return") && Number(v.refId) === Number(r.id)) ||
         (String(v.desc || "").includes("رجع مبيعات رقم " + no) || String(v.desc || "").includes("رجع مشتريات رقم " + no)));
@@ -8435,20 +8518,23 @@
       recalculateTreasuryBalances();
       renderTreasury();
       renderTreMoves();
-    } else if (isSales) {
-      let i = txs.findIndex((t) => Number(t.id) === Number(r.txId));
-      if (i === -1) i = txs.findIndex((t) => Number(t.customerId) === Number(r.customerId) && String(t.desc || "").includes("مرتجع مبيعات رقم " + no));
-      if (i !== -1) txs.splice(i, 1);
-      recalculateCustomerBalances();
-      saveCustomers();
-      saveTxs();
-    } else {
-      let i = supplierTxs.findIndex((t) => Number(t.id) === Number(r.txId));
-      if (i === -1) i = supplierTxs.findIndex((t) => Number(t.supplierId) === Number(r.supplierId) && String(t.desc || "").includes("مرتجع مشتريات رقم " + no));
-      if (i !== -1) supplierTxs.splice(i, 1);
-      recalculateSupplierBalances();
-      saveSuppliers();
-      saveSupplierTxs();
+    }
+    if (hasBalance) {
+      if (isSales) {
+        let i = txs.findIndex((t) => Number(t.id) === Number(r.txId));
+        if (i === -1) i = txs.findIndex((t) => Number(t.customerId) === Number(r.customerId) && String(t.desc || "").includes("مرتجع مبيعات رقم " + no));
+        if (i !== -1) txs.splice(i, 1);
+        recalculateCustomerBalances();
+        saveCustomers();
+        saveTxs();
+      } else {
+        let i = supplierTxs.findIndex((t) => Number(t.id) === Number(r.txId));
+        if (i === -1) i = supplierTxs.findIndex((t) => Number(t.supplierId) === Number(r.supplierId) && String(t.desc || "").includes("مرتجع مشتريات رقم " + no));
+        if (i !== -1) supplierTxs.splice(i, 1);
+        recalculateSupplierBalances();
+        saveSuppliers();
+        saveSupplierTxs();
+      }
     }
     // 🆕 بناء 149 (سطر ٣): حذف المرتجع بيرجع قيده هو كمان (تراجع كامل — نفس عرف الفاتورة)
     const retJrnRemoved = removeReturnJournal(isSales ? "sale" : "purchase", r.id);
@@ -10302,27 +10388,43 @@
     const cfg = RETURN_JRN[kind];
     const part = splitReturnNetTax(rec, inv);
     if (!(part.total > 0)) return { error: "amount" };
-    const refund = String((rec && rec.settlement) || "") === "refund";
-    const partyAcc = refund ? accForTreasuryAcc(tr) : accByCode(cfg.dueCode, cfg.dueName);
-    if (!partyAcc) return { error: refund ? "cash" : cfg.dueCode };
+    const total = part.total;
+    // 🆕 بناء 172: حصة الخزينة (كاش) وحصة حساب الطرف — توافق خلفي مع settlement refund/balance
+    let cashPart;
+    if (rec && rec.cashAmount != null) {
+      cashPart = Math.max(0, Math.min(round2(rec.cashAmount), total));
+    } else {
+      cashPart = (String((rec && rec.settlement) || "") === "refund") ? total : 0;
+    }
+    cashPart = round2(cashPart);
+    const balancePart = round2(total - cashPart);
+    if (!(cashPart > 0) && !(balancePart > 0)) return { error: "amount" };
     const lineAcc = accByCode(cfg.lineCode, cfg.lineName);
     if (!lineAcc) return { error: cfg.lineCode };
+    const cashAcc = cashPart > 0 ? accForTreasuryAcc(tr) : null;
+    if (cashPart > 0 && !cashAcc) return { error: "cash" };
+    const dueAcc = balancePart > 0 ? accByCode(cfg.dueCode, cfg.dueName) : null;
+    if (balancePart > 0 && !dueAcc) return { error: cfg.dueCode };
     const taxAcc = part.tax > 0 ? (kind === "sale" ? accByCode("2.1.2", "المحصلة") : accByCode("2.1.3", "المدفوعة")) : null;
     if (part.tax > 0 && !taxAcc) return { error: kind === "sale" ? "2.1.2" : "2.1.3" };
     const lines = [];
     if (kind === "sale") {
+      // بيع: مردود المبيعات (صافي) + الضريبة مدينين، ودائن: حصة حساب العميل + حصة الخزينة
       lines.push({ accountId: Number(lineAcc.id), debit: part.net, credit: 0 });
       if (part.tax > 0) lines.push({ accountId: Number(taxAcc.id), debit: part.tax, credit: 0 });
-      lines.push({ accountId: Number(partyAcc.id), debit: 0, credit: part.total });
+      if (balancePart > 0) lines.push({ accountId: Number(dueAcc.id), debit: 0, credit: balancePart });
+      if (cashPart > 0) lines.push({ accountId: Number(cashAcc.id), debit: 0, credit: cashPart });
     } else {
-      lines.push({ accountId: Number(partyAcc.id), debit: part.total, credit: 0 });
+      // شراء: مدين: حصة الخزينة + حصة حساب المورد، ودائن: المخزون (صافي) + الضريبة
+      if (cashPart > 0) lines.push({ accountId: Number(cashAcc.id), debit: cashPart, credit: 0 });
+      if (balancePart > 0) lines.push({ accountId: Number(dueAcc.id), debit: balancePart, credit: 0 });
       lines.push({ accountId: Number(lineAcc.id), debit: 0, credit: part.net });
       if (part.tax > 0) lines.push({ accountId: Number(taxAcc.id), debit: 0, credit: part.tax });
     }
     const d = round2(lines.reduce((m, l) => m + (Number(l.debit) || 0), 0));
     const c = round2(lines.reduce((m, l) => m + (Number(l.credit) || 0), 0));
     if (Math.abs(d - c) > 0.01) return { error: "unbalanced" };
-    return { lines: lines, debit: d, credit: c, part: part, partyAcc: partyAcc, lineAcc: lineAcc, taxAcc: taxAcc };
+    return { lines: lines, debit: d, credit: c, part: part, cashPart: cashPart, balancePart: balancePart, cashAcc: cashAcc, dueAcc: dueAcc, lineAcc: lineAcc, taxAcc: taxAcc };
   }
   function postReturnJournal(kind, rec, inv, tr) {
     const cfg = RETURN_JRN[kind];
@@ -10528,7 +10630,7 @@
       const key = returnJrnKey(kind, rec.id);
       if (!key || returnJrnOf(kind, rec.id)) return;
       const inv = (invArr || []).find((x) => Number(x.id) === Number(rec[linkField])) || null;
-      const tr = String(rec.settlement || "") === "refund" ? jrnHealTreasury(rec) : null;
+      const tr = (retCashOf(rec) > 0.0001) ? jrnHealTreasury(rec) : null;
       const plan = returnJrnPlan(kind, rec, inv, tr);
       if (!plan || plan.error) return;
       const who = kind === "sale" ? (rec.customerName || rec.customer || "") : (rec.supplierName || rec.supplier || "");
@@ -14996,7 +15098,21 @@
       const inv = retDocs(retPickIsSales).find((x) => Number(x.id) === iid);
       if (inv) openRetFor(retPickIsSales, inv);
     });
-    $("#retSettle").addEventListener("change", applyRetSettleUI);
+    // 🆕 بناء 172: أزرار بدائل التسوية + كتابة مبلغ الخزينة يدويًا
+    document.querySelectorAll("#mRetAddBox .ret-preset").forEach((b) => {
+      b.addEventListener("click", () => {
+        if (!retDraft) return;
+        retDraft.cashMode = b.dataset.retmode === "manual" ? "manual" : (b.dataset.retmode || "manual");
+        retUpdateSettleUI();
+      });
+    });
+    if ($("#retCashAmount")) {
+      $("#retCashAmount").addEventListener("input", () => {
+        if (!retDraft) return;
+        retDraft.cashMode = "manual";
+        retUpdateSettleUI();
+      });
+    }
     $("#retMethod").addEventListener("change", fillRetTreasury);
     $("#retTreasury").addEventListener("change", syncRetMethodFromTreasury); // 🆕 اختيار الحساب يضبط الطريقة
     $("#dgvRetItems").addEventListener("input", (e) => {

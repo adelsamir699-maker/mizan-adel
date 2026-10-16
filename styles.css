@@ -1733,6 +1733,64 @@ td.c-tax.tax-hidden {
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 #mRetAddBox input[readonly] { background: #F8FAFC; color: var(--text-secondary); font-weight: 700; }
 #mRetPickBox .dgv td { white-space: nowrap; }
+
+/* ===== بناء 172: صندوق تسوية المرتجع (مبلغ خزينة + باقي على حساب الطرف) ===== */
+#mRetAddBox .ret-settle {
+  border: 1.5px solid var(--border);
+  border-radius: 11px;
+  background: #F8FAFC;
+  padding: 10px 12px;
+  margin: 4px 0 10px;
+}
+#mRetAddBox .ret-settle-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+#mRetAddBox .ret-settle-title { font-weight: 800; color: var(--primary-dark); font-size: 13.5px; }
+#mRetAddBox .ret-settle-total { font-size: 12.6px; color: var(--text-secondary); font-weight: 700; }
+#mRetAddBox .ret-settle-total b { color: var(--primary-dark); font-size: 13.5px; }
+#mRetAddBox .ret-settle-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+#mRetAddBox .ret-preset {
+  padding: 5px 11px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12.2px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#mRetAddBox .ret-preset:hover { border-color: var(--sidebar-active); color: var(--primary-dark); }
+#mRetAddBox .ret-preset.active { border-color: var(--accent); background: #EAF7F0; color: var(--primary-dark); }
+#mRetAddBox .ret-settle-cols { display: flex; gap: 14px; align-items: stretch; }
+#mRetAddBox .ret-settle-form { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: 1fr 220px; gap: 8px 10px; align-items: center; }
+#mRetAddBox .ret-settle-form label { font-size: 12.6px; color: var(--text-secondary); }
+#mRetAddBox .ret-settle-side {
+  flex: 0 0 265px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: center;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 11px;
+}
+#mRetAddBox .ret-side-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.4px; color: var(--text-secondary); }
+#mRetAddBox .ret-side-row b { color: var(--primary-dark); font-size: 13px; }
+#mRetAddBox .ret-side-cur { font-size: 11px; color: var(--text-muted); }
+#mRetAddBox .ret-side-after { border-top: 1px dashed var(--border); padding-top: 6px; }
+#mRetAddBox .ret-side-after b { color: var(--accent-dark, #0F766E); }
+#mRetAddBox #retCashAmount { direction: ltr; text-align: center; font-weight: 800; }
+@media (max-width: 760px) {
+  #mRetAddBox .ret-settle-cols { flex-direction: column; }
+  #mRetAddBox .ret-settle-side { flex-basis: auto; }
+  #mRetAddBox .ret-settle-form { grid-template-columns: 1fr; }
+}
 @media (max-width: 760px) {
   #mRetAddBox .ret-qty-inp { width: 68px; }
   .ret-tag { font-size: 9.8px; padding: 1px 5px; }
