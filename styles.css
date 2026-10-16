@@ -433,6 +433,9 @@ body {
 .modal.m640 { width: 680px; }
 
 .modal-tall { max-height: 90vh; display: flex; flex-direction: column; }
+/* بناء 172: أي جدول داخل نافذة طويلة لازم يقدر يصغر ويتمرّر (flex item بلا min-height:0
+   بيتمدد بحجم محتواه فيطلع بره الشاشة — سبب «الجدول طويل والبحث مش ظاهر» في نافذة اختيار الفاتورة). */
+.modal-tall .table-wrap { min-height: 0; }
 
 @keyframes pop {
   from { transform: scale(0.96); opacity: 0; }
