@@ -7307,6 +7307,10 @@
     let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي الصرف خرج منه
 
     if (t.paid > 0 && ppTr) {
+      // 🆕 بناء 174: تحذير نقص الرصيد قبل الصرف (نفس باقي الشاشات — بلا قصّ صامت)
+      if (round2(ppTr.balance) < round2(t.paid)) {
+        if (!confirm(shortfallText(ppTr, t.paid) + "\n\nهل تريد تسجيل فاتورة المشتريات من «" + ppTr.name + "» رغم ذلك؟")) return;
+      }
       ppTr.balance = Math.round(((ppTr.balance || 0) - t.paid) * 100) / 100;
       invoice.treasuryId = ppTr.id;
       paidTreasury = ppTr;                 // 🆕 بناء 134: الطرف المقابل في القيد = نفس حساب الصرف
@@ -7688,6 +7692,10 @@
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
     if (jrnBlocked("السداد", partyJrnPlan("supp", tr, amount))) return;
+    // 🆕 بناء 174: تحذير نقص الرصيد قبل الصرف (نفس باقي الشاشات — بلا قصّ صامت)
+    if (tr && round2(tr.balance) < round2(amount)) {
+      if (!confirm(shortfallText(tr, amount) + "\n\nهل تريد تسجيل سداد المورد من «" + tr.name + "» رغم ذلك؟")) return;
+    }
     supp.currentBalance = Math.round((supp.currentBalance - amount) * 100) / 100;
     if (tr) {
       tr.balance = Math.round((tr.balance - amount) * 100) / 100;
@@ -8498,6 +8506,10 @@
     if (cashAmt > 0.0001) {
       tr = treasury.find((x) => Number(x.id) === Number($("#retTreasury").value)) || null;
       if (!tr) { toast("اختار الخزينة أو الحساب اللي هيتم التسوية منه.", "warning"); return; }
+      // 🆕 بناء 174: رد قيمة مرتجع البيع = صرف من الخزينة — تحذير نقص الرصيد قبل التنفيذ
+      if (isSales && round2(tr.balance) < round2(cashAmt)) {
+        if (!confirm(shortfallText(tr, cashAmt) + "\n\nهل تريد رد قيمة المرتجع من «" + tr.name + "» رغم ذلك؟")) return;
+      }
     }
     const settle = (cashAmt > 0.0001 && balAmt > 0.0001) ? "mixed" : (cashAmt > 0.0001 ? "refund" : "balance");
 
@@ -12733,51 +12745,128 @@
   }
 
   /* ================== سجل العمليات ================== */
-  // 🆕 بناء 154: السجل «مشترك» — يقرأ من جدول `audit_logs` السحابي (كل الشركة،
-  // كل الأجهزة، مين عمل إيه بحسابه)، ويرجع للسجل المحلي لو السحابة مش متاحة.
+  // 🆕 بناء 154: السجل «مشترك» — يقرأ من جدول `audit_logs` السحابي، ويرجع للسجل
+  // المحلي لو السحابة مش متاحة.
+  // 🆕 بناء 174: التقييد بالشركة — غير السوبرأدمن يشوف سجل شركته **بس** (فلترة org_id
+  // صريحة). السوبرأدمن (مالك المنصة) يشوف **كل الشركات** في شاشة التدقيق **موضَّح مع كل
+  // سطر اسم الشركة** + فلتر «الشركة»؛ وفيه فلتر «الحساب» للجميع (ولغير السوبرأدمن يبقى
+  // حسابات شركته هو بس لأن صفوفه محصورة أصلًا). الودجت (الداشبورد) يفضل بشركة الحساب دايمًا.
   let auditCloudRows = null;
-  function renderAudit() {
+  let auditOrgMap = null;   // org_id → اسم الشركة (للسوبرأدمن)
+  let auditOrgs = null;     // قائمة الشركات {org_id, org_name} (للسوبرأدمن)
+  let auditSelBound = false;
+
+  function auditIsSuper() { return (typeof isSuperAcct === "function") && isSuperAcct(); }
+
+  function auditFillOrgFilter() {
+    const sel = $("#selAuditOrg");
+    const lbl = $("#lblAuditOrg");
+    if (!sel) return;
+    const isSuper = auditIsSuper();
+    if (lbl) lbl.hidden = !isSuper;
+    sel.hidden = !isSuper;
+    if (!isSuper) { sel.value = ""; return; }
+    const cur = sel.value;
+    const opts = ['<option value="">كل الشركات</option>'];
+    (auditOrgs || []).forEach((o) => {
+      if (!o || !o.org_id) return;
+      opts.push('<option value="' + esc(o.org_id) + '">' + esc(o.org_name || o.name || o.org_id) + '</option>');
+    });
+    sel.innerHTML = opts.join("");
+    sel.value = (cur && (auditOrgs || []).some((o) => o && o.org_id === cur)) ? cur : "";
+  }
+
+  function auditFillUserFilter(rows) {
+    const sel = $("#selAuditUser");
+    if (!sel) return;
+    const cur = sel.value;
+    const users = [];
+    (rows || []).forEach((r) => { const u = r && r.user; if (u && u !== "—" && users.indexOf(u) < 0) users.push(u); });
+    users.sort((a, b) => String(a).localeCompare(String(b), "ar"));
+    const opts = ['<option value="">كل الحسابات</option>'];
+    users.forEach((u) => opts.push('<option value="' + esc(u) + '">' + esc(u) + '</option>'));
+    sel.innerHTML = opts.join("");
+    sel.value = users.indexOf(cur) >= 0 ? cur : "";
+  }
+
+  function auditDraw() {
     const tbody = $("#dgvAudit tbody");
-    const q = normalizeAr($("#txtAuditSearch").value);
-    const draw = (rows) => {
-      const list = rows.filter((a) => {
-        if (!q) return true;
-        return normalizeAr(a.ts).includes(q) || normalizeAr(a.user).includes(q) || normalizeAr(a.action).includes(q) || normalizeAr(a.desc).includes(q);
-      });
-      tbody.innerHTML = "";
-      list.forEach((a) => {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          '<td>' + esc(a.ts) + '</td>' +
-          '<td>' + esc(a.user) + '</td>' +
-          '<td>' + esc(a.action) + '</td>' +
-          '<td style="text-align:right">' + esc(a.desc) + '</td>';
-        tbody.appendChild(tr);
-      });
-      if (!list.length) tbody.innerHTML = '<tr><td colspan="4">لا توجد عمليات.</td></tr>';
-    };
-    const localRows = activity.map((a) => ({ ts: a.ts, user: a.user, action: a.action, desc: a.desc }));
-    draw((auditCloudRows && auditCloudRows.length) ? auditCloudRows : localRows);
+    if (!tbody) return;
+    const isSuper = auditIsSuper();
+    const thOrg = $("#thAuditOrg");
+    if (thOrg) thOrg.hidden = !isSuper;
+    const colCount = isSuper ? 5 : 4;
+    const q = normalizeAr(($("#txtAuditSearch") || {}).value || "");
+    const selOrg = (isSuper && $("#selAuditOrg")) ? $("#selAuditOrg").value : "";
+    const base = (auditCloudRows && auditCloudRows.length)
+      ? auditCloudRows
+      : activity.map((a) => ({ ts: a.ts, user: a.user, action: a.action, desc: a.desc, org: "", orgName: "" }));
+    const byOrg = selOrg ? base.filter((r) => String(r.org) === String(selOrg)) : base;
+    auditFillUserFilter(byOrg);
+    const selUser = $("#selAuditUser") ? $("#selAuditUser").value : "";
+    const list = byOrg.filter((a) => {
+      if (selUser && a.user !== selUser) return false;
+      if (!q) return true;
+      return normalizeAr(a.ts).includes(q) || normalizeAr(a.user).includes(q) ||
+             normalizeAr(a.action).includes(q) || normalizeAr(a.desc).includes(q) ||
+             (isSuper && normalizeAr(a.orgName || "").includes(q));
+    });
+    tbody.innerHTML = "";
+    list.forEach((a) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        (isSuper ? '<td>' + esc(a.orgName || "—") + '</td>' : '') +
+        '<td>' + esc(a.ts) + '</td>' +
+        '<td>' + esc(a.user) + '</td>' +
+        '<td>' + esc(a.action) + '</td>' +
+        '<td style="text-align:right">' + esc(a.desc) + '</td>';
+      tbody.appendChild(tr);
+    });
+    if (!list.length) tbody.innerHTML = '<tr><td colspan="' + colCount + '">لا توجد عمليات.</td></tr>';
+  }
+
+  function renderAudit() {
+    // ربط قوائم الفلترة مرة واحدة
+    if (!auditSelBound) {
+      auditSelBound = true;
+      const so = $("#selAuditOrg"), su = $("#selAuditUser");
+      if (so) so.addEventListener("change", () => { auditDraw(); });
+      if (su) su.addEventListener("change", () => { auditDraw(); });
+    }
+    auditFillOrgFilter();
+    auditDraw();
     // نحدّث من السحابة بعدين (بلا حجب الشاشة) — ولو الشاشة اتقفلت قبل ما توصل، نلغي الرسم
     try {
+      const isSuper = auditIsSuper();
       if (window.DATA && DATA.listActivity) {
-        DATA.listActivity(500).then((rows) => {
+        // أسماء الشركات للسوبرأدمن (مرة واحدة، من قائمة المالك) قبل ما نرسم السطور
+        const namesP = (isSuper && !auditOrgMap && DATA.adminOrgs)
+          ? DATA.adminOrgs().then((orgs) => {
+              auditOrgs = orgs || [];
+              const m = {};
+              auditOrgs.forEach((o) => { if (o && o.org_id) m[o.org_id] = o.org_name || o.name || ""; });
+              auditOrgMap = m;
+            }).catch(() => { auditOrgMap = {}; })
+          : Promise.resolve();
+        namesP.then(() => DATA.listActivity(500, isSuper)).then((rows) => {
           if (!rows || !rows.length) return;
           auditCloudRows = rows.map((r) => ({
             ts: String(r.ts || "").replace("T", " ").slice(0, 19),
             user: r.user_name || "—",
             action: r.action || "",
-            desc: r.detail || ""
+            desc: r.detail || "",
+            org: r.org_id || "",
+            orgName: isSuper ? ((auditOrgMap && auditOrgMap[r.org_id]) || (r.org_id ? String(r.org_id).slice(0, 8) : "—")) : ""
           }));
           const v = $("#viewAudit");
-          if (v && !v.hidden) draw(auditCloudRows);
+          if (v && !v.hidden) { auditFillOrgFilter(); auditDraw(); }
         }).catch(() => { });
       }
     } catch (e) { }
   }
 
   function exportAudit() {
-    const rows = [["الوقت", "المستخدم", "العملية", "البيان"]];
+    const rows = [auditIsSuper() ? ["الشركة", "الوقت", "المستخدم", "العملية", "البيان"] : ["الوقت", "المستخدم", "العملية", "البيان"]];
     // بناء 138: نفس العطب في زرار تصدير «سجل العمليات» — `$` بترجّع عنصر واحد فـ forEach بيموت.
     document.querySelectorAll("#dgvAudit tbody tr").forEach((tr) => rows.push(Array.from(tr.cells || []).map((c) => c.textContent)));
     downloadCSV("audit-log.csv", rows);

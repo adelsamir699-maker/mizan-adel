@@ -892,12 +892,16 @@ function changeMyPassword(oldPass, newPass) {
         .catch(function () { return false; });
     } catch (e) { return Promise.resolve(false); }
   }
-  function listActivity(limit) {
+  // allOrgs=true ⇒ كل الشركات (للسوبرأدمن في شاشة التدقيق فقط، وباسم الشركة مع كل سطر).
+  // الافتراضي = شركة الحساب النشطة بفلترة `org_id` صريحة (حاجز إضافي فوق RLS) ⇒
+  // باقي الشركات كل واحدة تشوف سجل شركتها بس (مفيش خلط).
+  function listActivity(limit, allOrgs) {
     if (!isOnline()) return Promise.resolve([]);
-    return sb.from("audit_logs").select("ts, user_name, action, detail")
+    var qy = sb.from("audit_logs").select("org_id, ts, user_name, action, detail")
       .order("ts", { ascending: false })
-      .limit(limit || 500)
-      .then(function (r) { if (r.error) throw r.error; return r.data || []; });
+      .limit(limit || 500);
+    if (!allOrgs) { var oid = orgId(); if (oid) qy = qy.eq("org_id", oid); }
+    return qy.then(function (r) { if (r.error) throw r.error; return r.data || []; });
   }
   // ---- المالك: تبويبات إعدادات أي شركة ----
   function adminSettLoad(orgId) {
