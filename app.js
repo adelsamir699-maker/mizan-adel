@@ -486,15 +486,31 @@
 
   
   function ensureCashEntities() {
+    // 🔒 بناء (إصلاح «المسح بعد كتابة العميل أو المورد»): البوابة القديمة كانت
+    // «أي سطر id === 1 أو protected === true أو اسمه فيه نقدي» ⇒ أي عميل جديد بيتعمل
+    // على شركة فاضية كان بياخد id = 1 (رقمها من nextCustomerId)، فالسطر ده بيتعرّف عليه
+    // على إنه الكيان النقدي: اسمه بيتبدل، الكود بيبقى "1"، بيتحمي، وبيختفي من
+    // قائمة العملاء (فلتر renderTable). البوابة الجديدة ما بتمسكش سطر مستخدم:
+    // لازم يكون محمي صراحة، أو كوده "1"/"CASH"، أو رقمه 1 واسمه نقدي بالظبط
+    // (وهكذا سطر نازل من السحابة بيفضّل متعرَّف عليه لأن protected ما بيتخزنش).
+    const freeId = (rows) => {
+      const used = {};
+      rows.forEach((r) => { used[Number(r.id)] = 1; });
+      if (!used[1]) return 1;
+      let m = 1;
+      rows.forEach((r) => { if (Number(r.id) > m) m = Number(r.id); });
+      return m + 1;   // تاريخيًا سطر مستخدم قديم ممكن ياخد id = 1 ⇒ ما نتكرارش معاه
+    };
     if (Array.isArray(customers) && customers.length) {
-      let cashCust = customers.find((c) => c.id === 1 || c.code === "1" || c.code === "CASH" || c.protected === true || (c.nameAr && c.nameAr.includes("العميل النقدي")));
+      let cashCust = customers.find((c) => c.protected === true || String(c.code || "").trim() === "1" || c.code === "CASH" ||
+        (Number(c.id) === 1 && String(c.nameAr || "").includes("العميل النقدي")));
       if (cashCust) {
         cashCust.code = "1";
         cashCust.protected = true;
         if (!cashCust.nameAr || !cashCust.nameAr.includes("نقدي")) cashCust.nameAr = "العميل النقدي (كاش)";
       } else {
         customers.unshift({
-          id: 1,
+          id: freeId(customers),
           code: "1",
           nameAr: "العميل النقدي (كاش)",
           phone: "",
@@ -509,14 +525,15 @@
       }
     }
     if (Array.isArray(suppliers) && suppliers.length) {
-      let cashSupp = suppliers.find((s) => s.id === 1 || s.code === "1" || s.code === "SUPP-001" || s.protected === true || (s.nameAr && s.nameAr.includes("المورد النقدي")));
+      let cashSupp = suppliers.find((s) => s.protected === true || String(s.code || "").trim() === "1" ||
+        ((s.code === "SUPP-001" || Number(s.id) === 1) && String(s.nameAr || "").includes("المورد النقدي")));
       if (cashSupp) {
         cashSupp.code = "1";
         cashSupp.protected = true;
         if (!cashSupp.nameAr || !cashSupp.nameAr.includes("نقدي")) cashSupp.nameAr = "المورد النقدي (كاش)";
       } else {
         suppliers.unshift({
-          id: 1,
+          id: freeId(suppliers),
           code: "1",
           nameAr: "المورد النقدي (كاش)",
           phone: "",
@@ -1448,7 +1465,11 @@
   }
 
   function nextCustomerId() {
-    return customers.reduce((m, c) => Math.max(m, c.id), 0) + 1;
+    // 🔒 إصلاح «المسح بعد الكتابة»: رقم 1 محجوز لكيان «العميل النقدي» النظامي
+    // (seedCustomers + ensureCashEntities). قبل كده على شركة فاضية أول عميل بيدخل
+    // كان بياخد id = 1 ⇒ ensureCashEntities كان بيلقيه وبيبدّل اسمه لكاش وبيحميه،
+    // فالفاتورة تختفي من القائمة من غير ما حد يممسها.
+    return Math.max(1, customers.reduce((m, c) => Math.max(m, Number(c.id) || 0), 0)) + 1;
   }
 
   function nextTxId() {
@@ -1467,7 +1488,8 @@
   }
 
   function nextSupplierId() {
-    return suppliers.reduce((m, s) => Math.max(m, s.id), 0) + 1;
+    // 🔒 نفس حجز رقم 1 لكيان «المورد النقدي» النظامي (شوف nextCustomerId)
+    return Math.max(1, suppliers.reduce((m, s) => Math.max(m, Number(s.id) || 0), 0)) + 1;
   }
 
   function nextSupplierCode() {
@@ -3108,7 +3130,7 @@
      🔳 الباركود — بناء 139 (CODE 128 · Set B · دولجين في المتصفح)
      ══════════════════════════════════════════════════════════════════════
      أمر المالك الحرفي (04/10): «توليد الباركود للأصناف (إضافة + الموجودين)
-     + زرار طباعة الباركود قدام كل صنف بالمخزون».
+     + زرار طباعة الباركود قدام ��ل صنف بالمخزون».
      ليه من غير مكتبة: الحزمة المنشورة على GitHub Pages بتضل ملفات العشرة
      بتوعها بالظبط (مافيش dependency خارجي ولا CDN)، وجدول CODE-128 قياسي
      ومغلق: 107 رمز فقط ⇒ يبقى سطرًا في الكود بدل مكتبة.
@@ -7731,7 +7753,7 @@
     postPartyTxJournal("supp", txRow, tr, supp ? supp.nameAr : "");
     hideModal("mPaySuppDebt");
     addActivity("سداد مورد", "سداد مستحقات " + supp.nameAr + " بمبلغ " + fmt(amount) + " ج.م" + (tr ? " من " + tr.name : ""));
-    toast("تم تسجيل السداد بنجاح وتحديث رصيد الحساب.", "success");
+    toast("تم تسجيل السداد بنجاح وتحدي�� رصيد الحساب.", "success");
     renderSuppliers();
     if (typeof renderTreasury === "function") renderTreasury();
     if (typeof renderTreMoves === "function") renderTreMoves();
@@ -11429,7 +11451,7 @@
    */
   const BS_OPERATIONAL = ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "2.1.1", "2.1.2", "2.1.3"];
   // 🆕 بناء 149 (سطر ٤): الاستبعاد يبقى **بالدور** مش بالنص الحرفي — أدلة 6 شركات بلا نقاط خالص
-  // (111 صناديق / 115 مديونيات العملاء / 132 مستحقات الموردين / 133 ضريبة…) كانت بتتحسب
+  // (111 صناديق / 115 مديونيات العملاء / 132 مستحقات الموردين / 133 ��ريبة…) كانت بتتحسب
   // **مرتين** في المركز المالي: مرة من الحركة (خزائن/عملاء/موردين/أصناف) ومرة من الدليل،
   // وده بالظبط «رصيد الحساب في كشف حساب الحسابات ≠ رصيده في قائمة المركز المالي».
   const BS_OP_ROLES = [
@@ -15697,7 +15719,7 @@
     });
     // 🛡 بناء 141: مافيش تبويبات «شركة جديدة / لدي رمز دعوة» — الشاشة واحدة ووظيفتها
     // إدخال رمز الدعوة بس (قرار المالك «علشان محدش يعمل حسابات تجريبية»).
-    // أي كود قديم كان بيبدّل بينهم اتشال من الملف، فمافيش مسار يورّي خانة اسم شركة.
+    // أي كود قديم كان بيبدّل بينهم اتشال من ال��لف، فمافيش مسار يورّي خانة اسم شركة.
 
 const pwEye = document.getElementById("btnShowPass");
     if (pwEye) {
