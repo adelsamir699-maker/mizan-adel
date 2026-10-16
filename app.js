@@ -444,6 +444,16 @@
   let txs = [];
   let products = [];
   let activity = [];
+  // 🆕 بناء 173: حالة ودجت «آخر العمليات» في الداشبورد — مصدره السجل السحابي
+  // المشترك (`audit_logs`) مع رجوع للسجل المحلي (`activity`). السبب: السجل
+  // المحلي بيُمسح ضمن عزل الشركات عند كل دخول (wipeLocalTables) وما بترجّعهوش
+  // السحابة ⇒ الودجت كان يفضل فاضي بعد إعادة فتح البرنامج.
+  let dashActRows = null;              // آخر نسخة سحابية جاهزة للرسم
+  let dashActAt = 0;                   // وقت آخر سحب/محاولة (لتنظيم النداءات)
+  let dashActBusy = false;             // منع تعليق نداءين متوازيين
+  const DASH_ACT_TTL_MS = 60000;       // ما نسحبش أكتر من مرة كل دقيقة
+  const DASH_ACT_MAX = 12;             // الودجت يعرض ١٢ سطر (زي الأصل)
+  const DASH_ACT_FETCH = 30;           // بنسحب ٣٠ وبنعرض ١٢
   let sales = [];
   let treasury = [];
   let suppliers = [];
@@ -987,6 +997,82 @@
     }
   }
 
+  /* ========== 🆕 بناء 173 (بند 1): بوابة توفير بيانات Supabase ==========
+   * الشاشة/التبويب **مخفي** ⇦ نوقف كل مؤقت و▶tراك شبكة ⇒ صفر نداء وقت المخفي،
+   * ونداء catch-up واحد وقت الرجوع. الهدف: ميزانية Supabase المجانية (٥GB egress).
+   *
+   * اللي بيوقف (كله شبكة): مراقبة الخطة ٣٠ث · نبض الحضور ١٥ث · لوحة الإدارة ٥ث ·
+   * متابعة الدردشة ١٢ث · عدّاد الواردة ٣٠ث · الاشتراك اللحظي (realtime).
+   *
+   * اللي بيكمل (صفر شبكة): الساعة ١ث · مراقب فولدر المسح الضوئي ٢.٥ث —
+   * مافيش سبب نجمّدهم؛ مش بياخدوا أي بايت سحابي.
+   *
+   * ملاحظة متعددة التبويبات: كل تبويب عنده رؤية المستند فردية ⇒ التبويب
+   * الظاهر بس هو اللي بيسحب — وده اللي كنا محتاجينه من غير BroadcastChannel.
+   *
+   * المشتريات المرجّحة على الدفع/الحفظ ما بتتأثرش: البوابة بتوقف مؤقتات
+   * بس، ولا تلغي ولا وعد بأي Promise قيد التنفيذ. */
+  let dataGatePaused = false;
+  let dataGateWas = { plan: false, pres: false, presView: false, chat: false, badge: false, rt: false };
+  function dataGateAlive(o, k) { try { return !!(o && typeof o === "object" && o[k]); } catch (e) { return false; } }
+  function dataGatePause() {
+    if (dataGatePaused) return;
+    dataGatePaused = true;
+    try { dataGateWas.plan = (planWatchTimer !== null); stopPlanWatch(); } catch (e) { }
+    try { dataGateWas.pres = (presenceTimer !== null); stopPresence(); } catch (e) { }
+    try { dataGateWas.presView = (presenceViewTimer !== null); stopPresenceView(); } catch (e) { }
+    try { dataGateWas.badge = (CHAT_badgeTimer !== null); chatStopBadgeTicker(); } catch (e) { }
+    try { dataGateWas.chat = dataGateAlive(CHAT, "timer"); chatStopPoll(); } catch (e) { }
+    try { dataGateWas.rt = dataGateAlive(CHAT_RT, "status") && CHAT_RT.status !== "off"; chatRtStop(); } catch (e) { }
+  }
+  function dataGateResume() {
+    if (!dataGatePaused) return;
+    dataGatePaused = false;
+    // نداء الرجوع الواحد: كل مؤقت بيترجع بـcatch-up فوري جوه الدالة نفسها
+    try { if (dataGateWas.plan) startPlanWatch(); else checkPlanNow(); } catch (e) { }
+    try { if (dataGateWas.pres) startPresence(); } catch (e) { }
+    try { if (dataGateWas.presView) startPresenceView(); } catch (e) { }
+    try { if (dataGateWas.badge) chatStartBadgeTicker(); } catch (e) { }
+    try { if (dataGateWas.chat) chatStartPoll(); } catch (e) { }
+    try { if (dataGateWas.rt) chatRtStart(); } catch (e) { }
+    try {
+      const av = document.getElementById("viewAdmin");
+      if (av && !av.hidden) refreshAdminLive();
+    } catch (e) { }
+    try { renderDashboard(); } catch (e) { }
+  }
+  function dataGateSync() {
+    if (document.hidden) dataGatePause(); else dataGateResume();
+  }
+  try {
+    document.addEventListener("visibilitychange", dataGateSync);
+    document.addEventListener("freeze", dataGatePause);
+    document.addEventListener("resume", dataGateResume);
+    window.addEventListener("pagehide", dataGatePause);
+    window.addEventListener("online", dataGateSync);
+  } catch (e) { }
+  // خطاف الاختبار (bk173): ?dgtest=1 بس — البوابة نفسها شغالة بلا اعتماد عليه
+  try {
+    if (/(^|[?&])dgtest=1(&|$)/.test(String(location.search || ""))) {
+      window.__mizanDataGate = {
+        pause: dataGatePause,
+        resume: dataGateResume,
+        hidden: function () { return dataGatePaused; },
+        snapshot: function () {
+          return {
+            plan: planWatchTimer !== null,
+            pres: presenceTimer !== null,
+            presView: presenceViewTimer !== null,
+            chat: dataGateAlive(CHAT, "timer"),
+            badge: CHAT_badgeTimer !== null,
+            rt: dataGateAlive(CHAT_RT, "status") && CHAT_RT.status !== "off"
+          };
+        }
+      };
+    }
+  } catch (e) { }
+  /* ================== نهاية بوابة توفير البيانات ================== */
+
   function normalizeProduct(p) {
     const g = Object.assign({
       barcode: "",
@@ -1218,6 +1304,16 @@
     });
     if (activity.length > 500) activity.length = 500;
     saveActivity();
+    // 🆕 بناء 173: خلّي ودجت الداشبورد يعرض الإجراء الجديد فورًا (لو ظاهر)
+    try {
+      if (dashActRows) {
+        dashActRows.unshift({ ts: ts, user: user, action: action, desc: desc });
+        if (dashActRows.length > DASH_ACT_FETCH) dashActRows.length = DASH_ACT_FETCH;
+        const v = $("#viewDashboard");
+        if (v && !v.hidden) paintDashActivity(dashActRows);
+      }
+      dashActAt = 0; // اسمح بإعادة سحب أحدث نسخة في الرسمة الجاية
+    } catch (e) { }
     try {
       if (window.DATA && DATA.logActivity) DATA.logActivity(action, desc);
     } catch (e) { /* السجل المحلي كفاية لو السحابة مش متاحة */ }
@@ -2354,9 +2450,23 @@
       tLow.appendChild(tr);
     });
 
+    renderDashActivity();
+  }
+
+  // 🆕 بناء 173: ودجت «آخر العمليات المنفذة في النظام (سجل التدقيق)».
+  // المصدر الأساسي = السجل السحابي المشترك (`audit_logs` عبر DATA.listActivity،
+  // نفس مصدر شاشة «سجل العمليات») مع رجوع للسجل المحلي (`activity`) لو أوفلاين.
+  // السبب: السجل المحلي بيُمسح ضمن عزل الشركات عند كل دخول (wipeLocalTables)
+  // وما بترجّعهوش السحابة ⇒ الودجت كان يفضل فاضي بعد إعادة فتح البرنامج.
+  // نداء السحابة محدود (كاش DASH_ACT_TTL_MS + سحب DASH_ACT_FETCH سطر) لتقليل الاستهلاك.
+  function dashActLocal() {
+    return activity.slice(0, DASH_ACT_MAX).map((a) => ({ ts: a.ts, user: a.user, action: a.action, desc: a.desc }));
+  }
+  function paintDashActivity(rows) {
     const tAct = $("#dgvActivity tbody");
+    if (!tAct) return;
     tAct.innerHTML = "";
-    activity.slice(0, 12).forEach((a) => {
+    (rows || []).slice(0, DASH_ACT_MAX).forEach((a) => {
       const tr = document.createElement("tr");
       tr.innerHTML =
         '<td>' + esc(a.ts) + '</td>' +
@@ -2365,6 +2475,33 @@
         '<td style="text-align:right">' + esc(a.desc) + '</td>';
       tAct.appendChild(tr);
     });
+  }
+  function renderDashActivity() {
+    // ارسم فورًا: السحابي لو موجود، وإلا المحلي
+    paintDashActivity(dashActRows && dashActRows.length ? dashActRows : dashActLocal());
+    if (dashActBusy) return;
+    if (document.hidden) return; // 🆕 بوابة توفير البيانات: ما نسحبش سحابي والتطبيق مخفي
+    const now = Date.now();
+    if (dashActAt && (now - dashActAt) < DASH_ACT_TTL_MS) return; // كاش ساري
+    if (!(window.DATA && typeof DATA.listActivity === "function")) return;
+    dashActBusy = true;
+    Promise.resolve()
+      .then(() => DATA.listActivity(DASH_ACT_FETCH))
+      .then((rows) => {
+        dashActAt = Date.now();
+        if (rows && rows.length) {
+          dashActRows = rows.map((r) => ({
+            ts: String(r.ts || "").replace("T", " ").slice(0, 19),
+            user: r.user_name || "—",
+            action: r.action || "",
+            desc: r.detail || ""
+          }));
+          const v = $("#viewDashboard");
+          if (v && !v.hidden) paintDashActivity(dashActRows);
+        }
+      })
+      .catch(() => { dashActAt = Date.now(); })
+      .then(() => { dashActBusy = false; });
   }
 
   /* ================== الجدول ================== */
