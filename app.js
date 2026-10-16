@@ -6432,7 +6432,8 @@
     $("#lblPosTax").textContent = TAX.enabled ? ("ضريبة القيمة المضافة (" + pct + "%): " + fmt(tax) + " ج.م") : "";
     $("#lblPosTax").style.display = TAX.enabled ? "" : "none";
     $("#lblPosTax").hidden = !TAX.enabled;
-    $("#lblPosTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الصافي: ") + fmt(grand) + " ج.م";
+    $("#lblPosTotalLabel").textContent = TAX.enabled ? "الصافي النهائي" : "الصافي";
+    $("#lblPosTotal").textContent = fmt(grand);
     const pd = partyPaidDue("sale", grand);
     posPaymentFieldToggle("sale");
     posUpdatePartyBalance("sale");
@@ -7059,7 +7060,8 @@
     $("#lblPPTax").textContent = TAX.buyEnabled ? ("ضريبة القيمة المضافة (" + pct + "%): " + fmt(tax) + " ج.م") : "";
     $("#lblPPTax").style.display = TAX.buyEnabled ? "" : "none";
     $("#lblPPTax").hidden = !TAX.buyEnabled;
-    $("#lblPPTotal").textContent = (TAX.enabled ? "الصافي النهائي: " : "الصافي: ") + fmt(grand) + " ج.م";
+    $("#lblPPTotalLabel").textContent = TAX.enabled ? "الصافي النهائي" : "الصافي";
+    $("#lblPPTotal").textContent = fmt(grand);
     const pd = partyPaidDue("purchase", grand);
     posPaymentFieldToggle("purchase");
     ppUpdatePartyBalance("purchase");
