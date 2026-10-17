@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4.1"; // رقم المنتج (داخلي — قرار المالك ما بيتغيرش كل نشر)
-    window.MIZAN_BUILD = 177;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
+    window.MIZAN_BUILD = 178;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
 
     (function () {
       var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
@@ -59,7 +59,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=177" />
+  <link rel="stylesheet" href="styles.css?v=178" />
 </head>
 <body>
 
@@ -98,6 +98,8 @@
       <button class="nav-btn" data-view="purchases">📦  فواتير المشتريات</button>
       <button class="nav-btn" data-view="returns">🔍  استعلام عن الفواتير</button>
       <button class="nav-btn" data-view="returnsReg" hidden>🔁  المرتجعات</button>
+      <!-- 🚚 بناء 178: شاشة مستقلة لسيارات مناديب المبيعات (فتح رحلة/تحميل، بيع من السيارة، تصفية آخر اليوم). -->
+      <button class="nav-btn" data-view="vanSales" hidden>🚚  سيارات مندوبين المبيعات</button>
       </div>
     </div>
 
@@ -1288,6 +1290,48 @@
         </div>
       </section>
 
+      <!-- 🚚 بناء 178: سيارات مندوبين المبيعات (رحلة سيارة: تحميل → بيع → تصفية آخر اليوم) -->
+      <section class="view" id="viewVanSales" data-id="vanSales" hidden>
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnVanNew" class="btn green" type="button">➕ فتح رحلة سيارة (تحميل)</button>
+            <button id="btnVanRefresh" class="btn gray" type="button">تحديث 🔄</button>
+          </div>
+          <h1 class="view-title">🚚 سيارات مندوبين المبيعات</h1>
+        </div>
+        <div id="vanRepBanner" class="van-banner" hidden></div>
+        <div class="sett-box">
+          <div class="sett-toolbar">
+            <span class="filter-label">الحالة:</span>
+            <select id="vanTripFilter">
+              <option value="open">مفتوحة</option>
+              <option value="settled">مقفولة</option>
+              <option value="all">الكل</option>
+            </select>
+            <span class="filter-label" style="margin-inline-start:auto">السيارة:</span>
+            <select id="vanCarFilter"><option value="">كل السيارات</option></select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="dgv" id="dgvVanTrips">
+            <thead>
+              <tr>
+                <th style="width:6%">#</th>
+                <th style="width:16%">السيارة</th>
+                <th style="width:16%">المندوب</th>
+                <th style="width:11%">التاريخ</th>
+                <th style="width:11%">حمولة</th>
+                <th style="width:11%">مبيع</th>
+                <th style="width:11%">نقد متوقّع</th>
+                <th style="width:10%">الحالة</th>
+                <th style="width:8%">إجراءات</th>
+              </tr>
+            </thead>
+            <tbody id="vanTripBody"></tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- ===== 🆕 شاشة سجل الأصول الثابتة (مهمة 98) =====
            طلب المالك: «تسجيل أرصدة الأصول الثابتة (غير المتداولة)». لكل أصل: اسم + تصنيف + فئة +
            تاريخ شراء + تكلفة + إهلاك تراكمي، والصافي محسوب دائمًا (تكلفة − إهلاك) وما يتخزنّش.
@@ -1828,6 +1872,7 @@
           <button class="tab-btn" data-tab="cwal">📱 المحافظ الإلكترونية</button>
           <button class="tab-btn" data-tab="cbnk">🏦 حسابات البنوك</button>
           <button class="tab-btn" data-tab="cown">👥 أصحاب المنشأة</button>
+          <button class="tab-btn" data-tab="ccar">🚚 سيارات مناديب البيع</button>
         </div>
 
         <div class="sett-pane" data-pane="corg">
@@ -1977,6 +2022,21 @@
               <button class="btn orange" type="button" data-csave="owner">💾 حفظ الأصحاب</button>
             </div>
             <div class="tbl-wrap" id="cGridOwner"></div>
+          </div>
+        </div>
+
+        <div class="sett-pane" data-pane="ccar" hidden data-feat="carTab" data-feat-label="الميزة غير مفعلة في اشتراكك — تواصل مع المالك لتفعيل تبويب سيارات مناديب البيع">
+          <div class="sett-box">
+            <div class="panel-title">🚚 سيارات مناديب البيع</div>
+            <div class="invf-hint">اكتب هنا أرقام/أسماء السيارات اللي عندك. كل سيارة بتبقى <b>مخزن متحرك</b> خاص بسيارات المناديب: بتُحمّل أصناف من المخزن أول اليوم، المندوب يبيع منها من حسابه، وآخر اليوم الباقي يرجع للمخزن والنقدية تتورّد للخزينة.</div>
+            <div class="sett-toolbar">
+              <button class="btn green" type="button" data-cadd="car">➕ إضافة سيارة</button>
+              <button class="btn blue" type="button" data-cedit="car">✏️ تعديل</button>
+              <button class="btn red" type="button" data-cdel="car">🗑️ حذف</button>
+              <button class="btn gray" type="button" data-cref="car">🔄 تحديث</button>
+              <button class="btn orange" type="button" data-csave="car">💾 حفظ السيارات</button>
+            </div>
+            <div class="tbl-wrap" id="cGridCar"></div>
           </div>
         </div>
 
@@ -2619,6 +2679,151 @@
       <div class="modal-actions">
         <button id="btnCancelShiftSettle" class="btn gray" type="button">إلغاء</button>
         <button id="btnSaveShiftSettle" class="btn teal" type="button">💾 تسليم</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🚚 بناء 178: فتح رحلة سيارة (تحميل أصناف من المخزن للسيارة) -->
+  <div class="modal-overlay" id="mVanLoad" hidden>
+    <div class="modal m720" id="mVanLoadBox">
+      <h3>🚚 فتح رحلة سيارة (تحميل من المخزن)</h3>
+      <div class="sett-box">
+        <div class="van-grid3">
+          <div>
+            <label class="filter-label" for="vanLoadCar">السيارة</label>
+            <select id="vanLoadCar"></select>
+          </div>
+          <div>
+            <label class="filter-label" for="vanLoadRep">مندوب البيع</label>
+            <select id="vanLoadRep"></select>
+          </div>
+          <div>
+            <label class="filter-label" for="vanLoadDate">تاريخ الرحلة</label>
+            <input type="date" id="vanLoadDate" />
+          </div>
+        </div>
+        <label class="filter-label" for="vanLoadWh">المصدر (المخزن اللي بتُحمّل منه)</label>
+        <select id="vanLoadWh"></select>
+        <label class="filter-label" for="vanLoadSearch">بحث عن صنف (كود/اسم)</label>
+        <input type="text" id="vanLoadSearch" autocomplete="off" placeholder="اكتب كود أو اسم الصنف..." />
+      </div>
+      <div class="van-list-wrap">
+        <table class="dgv" id="vanLoadTable">
+          <thead><tr>
+            <th style="width:12%">الكود</th><th style="width:38%">الصنف</th>
+            <th style="width:14%">متاح بالمخزن</th><th style="width:14%">بالمخزن؟</th><th style="width:22%">الكمية للسيارة</th>
+          </tr></thead>
+          <tbody id="vanLoadBody"></tbody>
+        </table>
+      </div>
+      <p class="login-sub">الكميات اللي تكتبها بتخرج من رصيد المخزن وتدخل رصيد سيارة المندوب. سيب الخانة فاضية للصنف اللي مش محمّل.</p>
+      <div class="modal-actions">
+        <button id="btnVanLoadCancel" class="btn gray" type="button">إلغاء</button>
+        <button id="btnVanLoadSave" class="btn green" type="button">💾 فتح الرحلة وتحميل الأصناف</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🚚 بناء 178: شاشة بيع المندوب من السيارة (مخزون السيارة + الفلوس على ذمة المندوب) -->
+  <div class="modal-overlay" id="mVanSale" hidden data-tid="">
+    <div class="modal m900" id="mVanSaleBox">
+      <h3 id="vanSaleTitle">🧾 بيع من السيارة</h3>
+      <div id="vanSaleInfo" class="van-info"></div>
+      <div class="van-grid3">
+        <div>
+          <label class="filter-label" for="vanSaleCustomer">العميل</label>
+          <select id="vanSaleCustomer"></select>
+        </div>
+        <div>
+          <label class="filter-label" for="vanSalePay">طريقة الدفع</label>
+          <select id="vanSalePay">
+            <option value="نقدي">نقدي (على ذمة المندوب)</option>
+            <option value="آجل">آجل (على حساب العميل)</option>
+          </select>
+        </div>
+        <div>
+          <label class="filter-label" for="vanSaleSearch">بحث عن صنف بالسيارة</label>
+          <input type="text" id="vanSaleSearch" autocomplete="off" placeholder="كود/اسم..." />
+        </div>
+      </div>
+      <div class="van-sale-cols">
+        <div class="van-col-prods">
+          <div class="van-col-h">أصناف السيارة (اضغط لإضافتها)</div>
+          <div class="van-prods" id="vanSaleProds"></div>
+        </div>
+        <div class="van-col-cart">
+          <div class="van-col-h">الفاتورة</div>
+          <div class="van-cart-wrap">
+            <table class="dgv" id="vanSaleCartTable">
+              <thead><tr><th>الصنف</th><th style="width:16%">كمية</th><th style="width:20%">سعر</th><th style="width:18%">إجمالي</th><th style="width:8%"></th></tr></thead>
+              <tbody id="vanSaleCart"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="van-totals"><span>الإجمالي:</span> <b id="vanSaleTotal">0.00 ج.م</b></div>
+      <div class="modal-actions">
+        <button id="btnVanSaleCancel" class="btn gray" type="button">إلغاء</button>
+        <button id="btnVanSaleSave" class="btn green" type="button">💾 حفظ البيع</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🚚 بناء 178: تصفية حساب السيارة آخر اليوم (إرجاع الباقي للمخزن + توريد النقد للخزينة) -->
+  <div class="modal-overlay" id="mVanSettle" hidden data-tid="">
+    <div class="modal m640" id="mVanSettleBox">
+      <h3>💰 تصفية حساب السيارة (آخر اليوم)</h3>
+      <div id="vanSettleInfo" class="van-info"></div>
+      <div class="sett-box">
+        <label class="filter-label" for="vanSettleWh">المخزن اللي يرجع له الباقي</label>
+        <select id="vanSettleWh"></select>
+        <label class="filter-label" for="vanSettleTreasury">الخزينة اللي تُورَّد لها النقدية</label>
+        <select id="vanSettleTreasury"></select>
+        <label class="filter-label" for="vanSettleCounted">النقدية المعدودة فعليًا مع المندوب (ج.م)</label>
+        <input type="text" id="vanSettleCounted" inputmode="decimal" autocomplete="off" placeholder="0.00" />
+        <label class="filter-label" for="vanSettleNotes">ملاحظات (اختياري)</label>
+        <input type="text" id="vanSettleNotes" autocomplete="off" placeholder="أي ملاحظة على التصفية..." />
+      </div>
+      <div id="vanSettleSummary" class="van-info"></div>
+      <p class="login-sub">الباقي في السيارة بيرجع للمخزن، والنقدية المورَّدة تنتقل من ذمة المندوب لحساب الخزينة (بلا قصّ: الفرق يظهر عليك). مصروفات السيارة (بنزين/صيانة/زيت/كاوتش) بتُخصم من نقد عهدة المندوب.</p>
+      <div class="modal-actions">
+        <button id="btnVanSettleExp" class="btn blue" type="button">💸 مصروفات السيارة</button>
+        <button id="btnVanSettleCancel" class="btn gray" type="button">إلغاء</button>
+        <button id="btnVanSettleSave" class="btn teal" type="button">💾 تصفية الرحلة</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🚚 بناء 178: مصروفات السيارة (يدفعها المندوب من نقدية عهدته وتُخصم منه عند التصفية) -->
+  <div class="modal-overlay" id="mVanExpense" hidden data-tid="">
+    <div class="modal m560" id="mVanExpenseBox">
+      <h3>💸 مصروفات السيارة</h3>
+      <p class="login-sub">أي مصروف المندوب يدفعه في الطريق (بنزين/صيانة/زيت/كاوتش/أي حاجة) يتسجّل هنا. بيُخصم من نقدية العهدة اللي هو سيدفعها آخر اليوم، وبيترحّل مصروفًا للشركة.</p>
+      <div id="vanExpInfo" class="van-info"></div>
+      <div class="sett-box">
+        <label class="filter-label" for="vanExpCat">نوع المصروف</label>
+        <select id="vanExpCat"></select>
+        <label class="filter-label" for="vanExpAmount">المبلغ (ج.م)</label>
+        <input type="text" id="vanExpAmount" inputmode="decimal" autocomplete="off" placeholder="0.00" />
+        <label class="filter-label" for="vanExpNote">بيان المصروف (اختياري)</label>
+        <input type="text" id="vanExpNote" autocomplete="off" placeholder="مثال: بنزين محطة ... / تغيير زيت ..." />
+      </div>
+      <div id="vanExpList" class="van-exp-list"></div>
+      <div class="modal-actions">
+        <button id="btnVanExpClose" class="btn gray" type="button">إغلاق</button>
+        <button id="btnVanExpAdd" class="btn green" type="button">➕ أضف المصروف</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🚚 بناء 178: تقرير آخر اليوم لرحلة سيارة -->
+  <div class="modal-overlay" id="mVanReport" hidden data-tid="">
+    <div class="modal m720" id="mVanReportBox">
+      <h3>📄 تقرير رحلة سيارة</h3>
+      <div id="vanReportBody" class="van-report"></div>
+      <div class="modal-actions">
+        <button id="btnVanReportPrint" class="btn sky" type="button">🖨️ طباعة</button>
+        <button id="btnVanReportClose" class="btn gray" type="button">إغلاق</button>
       </div>
     </div>
   </div>
@@ -3422,12 +3627,12 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=177"></script>
-  <script src="supabase.config.js?v=177"></script>
-  <script src="data.js?v=177"></script>
-  <script src="cloud.js?v=177"></script>
-  <script src="install.js?v=177"></script>
-  <script src="app.js?v=177"></script>
+  <script src="lib_supabase.js?v=178"></script>
+  <script src="supabase.config.js?v=178"></script>
+  <script src="data.js?v=178"></script>
+  <script src="cloud.js?v=178"></script>
+  <script src="install.js?v=178"></script>
+  <script src="app.js?v=178"></script>
   <script>
     /* كاشف أخطاء على الشاشة — بقى **للمالك بس** (طلب المالك الحرفي 07/10: رسالة إنجليزية
        حمراء `TypeError …` ظهرت للبائع وهو بيكتب صنف في الفاتورة، وقاعدته السارية

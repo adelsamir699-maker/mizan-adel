@@ -2507,3 +2507,32 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 #mShiftCloseBox #shiftCounted { width:100%; padding:8px; font-size:16px; font-weight:800; text-align:center; }
 @media (max-width: 640px) { .shift-denoms { grid-template-columns:1fr; } .modal.m640 { max-width:96vw; } }
 
+/* ============ 🚚 بناء 178 — سيارات مندوبين المبيعات ============ */
+.modal.m720 { width: 780px; }
+.modal.m900 { width: 960px; }
+.van-banner { display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:#e0f2fe; border:1.5px solid #0284c7; color:#075985; border-radius:10px; padding:10px 14px; margin:8px 0; font-size:14px; }
+.van-info { display:flex; flex-direction:column; gap:5px; background:#f8fafc; border:1px solid var(--border); border-radius:10px; padding:9px 12px; margin:8px 0; font-size:13px; color:#334155; }
+.van-grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin:6px 0; }
+.van-grid3 > div { min-width:0; }
+.van-list-wrap { max-height:44vh; overflow:auto; border:1px solid var(--border); border-radius:10px; margin:8px 0; }
+.van-sale-cols { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:8px 0; }
+.van-col-prods, .van-col-cart { display:flex; flex-direction:column; min-width:0; }
+.van-col-h { font-weight:800; font-size:13px; color:#0f172a; margin:2px 0 6px; }
+.van-prods { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px; max-height:40vh; overflow:auto; padding:2px; }
+.van-prod { display:flex; flex-direction:column; align-items:flex-start; gap:2px; text-align:right; background:#f0fdf4; border:1px solid #86efac; border-radius:9px; padding:8px 10px; cursor:pointer; }
+.van-prod:hover { background:#dcfce7; }
+.van-prod .vp-name { font-weight:800; font-size:13px; color:#14532d; }
+.van-prod .vp-meta { font-size:11px; color:#3f6212; }
+.van-cart-wrap { max-height:40vh; overflow:auto; border:1px solid var(--border); border-radius:10px; }
+.van-totals { display:flex; align-items:center; justify-content:flex-end; gap:10px; font-size:17px; font-weight:800; color:#0f172a; border-top:2px dashed var(--border); padding-top:8px; margin:6px 0; }
+.van-report .van-rep-head h3 { margin:0 0 4px; }
+.van-rep-head p { margin:0; font-size:13px; color:#334155; }
+.van-rep-sum { background:#f8fafc; border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin:8px 0; display:flex; flex-direction:column; gap:5px; }
+.van-rep-custs { background:#f1f5f9; border:1px solid var(--border); border-radius:10px; padding:9px 12px; margin:8px 0; font-size:13px; color:#334155; }
+.van-exp-list { display:flex; flex-direction:column; gap:6px; margin:8px 0; max-height:34vh; overflow:auto; }
+.van-exp-row { display:flex; align-items:center; justify-content:space-between; gap:10px; background:#fff7ed; border:1px solid #fdba74; border-radius:9px; padding:7px 10px; font-size:13px; }
+.van-exp-block { background:#fff7ed; border:1px solid var(--border); border-radius:10px; padding:9px 12px; margin:8px 0; display:flex; flex-direction:column; gap:5px; font-size:13px; }
+@media (max-width: 860px) { .van-grid3, .van-sale-cols { grid-template-columns:1fr; } }
+@media (max-width: 640px) { .modal.m720, .modal.m900 { max-width:96vw; } }
+
+

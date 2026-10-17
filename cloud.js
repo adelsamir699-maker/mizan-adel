@@ -175,6 +175,21 @@
       .catch(function (e) { if (isMissingTableError(e)) CS_TABLE_MISSING = true; return false; });
   }
 
+  // 🚚 بناء 178: رحلات سيارات المناديب — نفس منطق ورديات الكاشير: الجدول بيتعمل بترحيل ٥٥،
+  // ولحد ما يتنفّذ (بأمر المالك) الرحلات بتتسجّل محليًا + على الديسك وما نحاولش رفعها
+  // (مافيش جدول) عشان كل تحميل/بيع/تصفية ما يطلعلوش تحذير «المزامنة وقفت» بلا سبب.
+  var CT_TABLE_MISSING = false;
+  function probeCarTripsTable() {
+    if (!DATA.client()) return Promise.resolve(false);
+    return Promise.resolve()
+      .then(function () { return DATA.client().from("car_trips").select("id").limit(1); })
+      .then(function (r) {
+        if (r && r.error) { if (isMissingTableError(r.error)) CT_TABLE_MISSING = true; return false; }
+        CT_TABLE_MISSING = false; return true;
+      })
+      .catch(function (e) { if (isMissingTableError(e)) CT_TABLE_MISSING = true; return false; });
+  }
+
   // خريطة تحويل (محلي → سماوي / سماوي → محلي)
   var META = {
     customers: {
@@ -322,6 +337,43 @@
           mainTreasuryId: (r.main_treasury_id != null ? Number(r.main_treasury_id) : null),
           settledAmount: (r.settled_amount != null ? Number(r.settled_amount) : null),
           breakdown: r.breakdown || null };
+      }
+    },
+    // 🚚 بناء 178: رحلات سيارات المناديب (ترحيل ٥٥). كل رحلة = تحميل سيارة يوم + بيع + مصروفات + تصفية.
+    car_trips: {
+      local: function () { return W.car_trips || []; },
+      toCloud: function (r) {
+        return { id: detUuid("car_trips", r.id), org_id: DATA.orgId(), local_id: r.id,
+          car_name: r.carName || "", rep_name: r.repName || "", rep_user: r.repUser || "",
+          rep_full: r.repFull || "",
+          trip_date: r.date || "", status: r.status || "open",
+          loaded: r.loaded || [], expenses: r.expenses || [],
+          load_warehouse: r.loadWarehouse || "",
+          opened_at: r.openedAt || "", opened_by: r.openedBy || "",
+          settled_at: r.settledAt || null, settled_by: r.settledBy || null,
+          counted_cash: (r.countedCash != null ? Number(r.countedCash) : null),
+          expected_cash: (r.expectedCash != null ? Number(r.expectedCash) : null),
+          difference: (r.difference != null ? Number(r.difference) : null),
+          treasury_id: (r.treasuryId != null ? Number(r.treasuryId) : null),
+          settle_warehouse: r.settleWarehouse || "",
+          notes: r.notes || "", deleted: false };
+      },
+      fromCloud: function (r) {
+        var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("car_trips", r.id);
+        return { id: lid,
+          carName: r.car_name || "", repName: r.rep_name || "", repUser: r.rep_user || "",
+          repFull: r.rep_full || "",
+          date: r.trip_date || "", status: r.status || "open",
+          loaded: r.loaded || [], expenses: r.expenses || [],
+          loadWarehouse: r.load_warehouse || "",
+          openedAt: r.opened_at || "", openedBy: r.opened_by || "",
+          settledAt: r.settled_at || null, settledBy: r.settled_by || null,
+          countedCash: (r.counted_cash != null ? Number(r.counted_cash) : null),
+          expectedCash: (r.expected_cash != null ? Number(r.expected_cash) : null),
+          difference: (r.difference != null ? Number(r.difference) : null),
+          treasuryId: (r.treasury_id != null ? Number(r.treasury_id) : null),
+          settleWarehouse: r.settle_warehouse || "",
+          notes: r.notes || "" };
       }
     },
     accounts: {
@@ -736,6 +788,7 @@
     // غير كده (نت مثلاً) المحاولة بتفضل عادية — صمت فشل المزامنة ممنوع (درس build 108).
     if (name === "fixed_assets" && FA_TABLE_MISSING) return Promise.resolve();
     if (name === "cashier_shifts" && CS_TABLE_MISSING) return Promise.resolve();
+    if (name === "car_trips" && CT_TABLE_MISSING) return Promise.resolve();
     var local = meta.local() || [];
     var client = DATA.client();
     return client.from(name).select("id, local_id").then(function (res) {
@@ -876,6 +929,7 @@
     probeProductUnit(); // 🆕 نعرف هل عمود unit موجود على السحابة قبل أول رفع أصناف
     probeFixedAssetsTable(); // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
     probeCashierShiftsTable(); // 🧾 بناء 176: هل جدول cashier_shifts اتعمل (ترحيل ٥٤) ولا لسه
+    probeCarTripsTable(); // 🚚 بناء 178: هل جدول car_trips اتعمل (ترحيل ٥٥) ولا لسه
     // 🆕 بناء 125 (بند 16): هل جدول messages اتعمل (ترقية ٤٥) ولا لسه على القرص بس.
     // الفحص ده بيحدد وحده ظهور تبويب «الدردشة» — فالترحيل لما يتنفّذ بأمر المالك
     // التبويب يطلع لوحده من نفس اللحظة، وبلا أي تغيير كود. (الجدول **ممنوع** يدخل
@@ -884,7 +938,7 @@
     // بعد loadAll يلاقي العلامة متظبطة فعلًا، فالتبويب يطلع من أول رسم.
     var chatProbe = probeChatTable();
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
-      "fixed_assets", "cashier_shifts"];
+      "fixed_assets", "cashier_shifts", "car_trips"];
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
     var eagerFallback = eagerLoad ? null : function (n) {
       return DATA.client().from(n).select("*").order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });

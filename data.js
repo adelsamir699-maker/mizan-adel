@@ -19,7 +19,7 @@
 
   // الجداول الصغيرة اللي تُحمَّل مرة واحدة عند الدخول
   var EAGER = ["customers", "suppliers", "products", "treasury", "accounts",
-    "fixed_assets", "cashier_shifts"]; // 🆕 مهمة 98: الأصول الثابتة · 🧾 بناء 176: ورديات الكاشير · 🌉 165: attendance/att_settings خارج المزامنة · 166: employees اتشال
+    "fixed_assets", "cashier_shifts", "car_trips"]; // 🆕 مهمة 98: الأصول الثابتة · 🧾 بناء 176: ورديات الكاشير · 🚚 بناء 178: رحلات سيارات المناديب · 🌉 165: attendance/att_settings خارج المزامنة · 166: employees اتشال
   // الجداول الكبيرة: تُحمَّل عند الطلب فقط
   var LAZY = ["sales", "sale_items", "purchases", "purchase_items", "supplier_txs",
     "vouchers", "journal_entries", "journal_lines", "audit_logs",
@@ -28,7 +28,8 @@
   // (ترحيل ٣٧ ما اتنفّذش بعد). لو تنزيلها فشل لازم يفضل جدول محلي فاضي،
   // وما يخلّيش Promise.all كله يقع — عشان كده تحميل كل بيانات العميل ما يفشلش.
   // 🧾 بناء 176: cashier_shifts اختياري كذلك (ترحيل ٥٤ لسه ما اتنفّذش).
-  var OPTIONAL_EAGER = ["fixed_assets", "cashier_shifts"];
+  // 🚚 بناء 178: car_trips اختياري كذلك (ترحيل ٥٥ لسه ما اتنفّذش).
+  var OPTIONAL_EAGER = ["fixed_assets", "cashier_shifts", "car_trips"];
   function isOptionalEager(t) { return OPTIONAL_EAGER.indexOf(t) >= 0; }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -853,8 +854,15 @@ function changeMyPassword(oldPass, newPass) {
     return Array.isArray(v) ? v : null;
   }
   function saveClientSett(payload) {
+    // 🚚 بناء 178: سجل سيارات مناديب البيع محفوظ كعمود organizations.cars (jsonb) —
+    // بيسافر جوه p_org (نفس نمط invoice_fields) عشان ما نغيّرش توقيع الدالة ولا الجداول.
+    var orgArg = (payload && payload.org) ? Object.assign({}, payload.org) : null;
+    if (payload && Array.isArray(payload.cars)) {
+      orgArg = orgArg || {};
+      orgArg.cars = payload.cars;
+    }
     return sb.rpc("mizan_client_sett_save", {
-      p_org: (payload && payload.org) || null,
+      p_org: orgArg || null,
       p_categories: settListArg(payload, "categories"),
       p_units: settListArg(payload, "units"),
       p_warehouses: settListArg(payload, "warehouses"),
