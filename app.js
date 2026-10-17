@@ -321,7 +321,9 @@
     // 🆕 بناء 176: إعدادات ورديات الكاشير (قرار المالك 16/10)
     shiftBlindCount: true,   // العدّ الأعمى — الكاشير ما يشوفش المتوقّع
     shiftCountDenoms: false,  // عدّ بالفئات (20/50/100) بدل الإجمالي
-    shiftSettlePerm: "manager" // مين يضغط زرار التسوية: "manager" (المدير فقط) أو "cashier" (يحدده المالك)
+    shiftSettlePerm: "manager", // مين يضغط زرار التسوية: "manager" (المدير فقط) أو "cashier" (يحدده المالك)
+    // 🆕 بناء 180: صاحب الشركة يختار — هل يُسمح بتعديل سعر البيع وقت فاتورة البيع؟ (الافتراضي: مقفول)
+    priceEdit: false
   };
 
   /* ================== 🛡 بناء 119: شركة جديدة = بيور ================== */
@@ -1679,6 +1681,46 @@
     } catch (e) { return AUTO_PRINT_SALE_DEFAULT; }
   }
 
+  /* ========== 🆕 بناء 180: «تعديل سعر الصنف وقت فاتورة البيع» ==========
+     اختيار صاحب الشركة في «إعدادات مؤسستك»، بيتخزّن خامًًا جوّه نفس الحقل jsonb
+     organizations.invoice_fields (مفتاح price_edit) — بلا أي ترقية SQL. والاختيار
+     بيتطبّق على كل حسابات الشركة بما فيهم صاحبها (قرار المالك 17/10: «مش عايز
+     الاختيار يقفل على العمال بالشركة والكاشير»). النطاق: فاتورة البيع (POS) فقط.
+     القاعدة المحاسبية: السعر المعدل يمشي على سطر الفاتورة هو بس — سعر الصنف في
+     دليل الأصناف ما بيتغيّرش أبدًا (مقيس: مواضع كتابة salePrice هي إضافة/تعديل الصنف فقط). */
+  const PRICE_EDIT_DEFAULT = false;
+
+  // هل يُسمح لمن يحرّر فاتورة البيع أن يكتب سعرًا غير سعر الدليل؟
+  function priceEditAllowed() {
+    try {
+      const norm = (v) => (v === false || v === "false" || v === 0 || v === "0") ? false
+        : (v === true || v === "true" || v === 1 || v === "1") ? true : undefined;
+      let raw = orgSettValue("invoice_fields", null);
+      if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+      if (raw && typeof raw === "object") {
+        const v = norm(raw.price_edit);
+        if (v !== undefined) return v;
+      }
+      const sv = norm(settings && settings.priceEdit);
+      if (sv !== undefined) return sv;
+      return PRICE_EDIT_DEFAULT;
+    } catch (e) { return PRICE_EDIT_DEFAULT; }
+  }
+
+  // 🔒 مصدر قرار سعر سطر فاتورة البيع — الاختيار مقفول ⇒ سعر الدليل غصب عنه
+  function posLinePriceFor(prod, typedPrice) {
+    const catalog = Number(prod && prod.salePrice) || 0;
+    if (!priceEditAllowed()) return catalog;
+    const t = Number(typedPrice) || 0;
+    return t > 0 ? t : catalog;
+  }
+
+  // فتح/قفل خانة «سعر البيع» على الشاشة (المنع الحقيقي في posLinePriceFor، مش الـ readonly وحده)
+  function applyPriceEditUI() {
+    const el = $("#txtPosPrice");
+    if (el) el.readOnly = !priceEditAllowed();
+  }
+
   // اسم المنشأة للمطبوعات (نفس ترتيب printSection القديم)
   function invOrgName() {
     const settOrg = (csetData && csetData.org) || (ssetData && ssetData.org);
@@ -2429,6 +2471,7 @@
     if (name === "products") renderProducts();
     if (name === "sales") {
       updatePosTaxUI();
+      applyPriceEditUI();   // 🆕 بناء 180: فتح/قفل خانة «سعر البيع» حسب اختيار صاحب الشركة
       if (!posInitialized) {
         posInitialized = true;
         posNewInvoice();
@@ -6143,18 +6186,21 @@
     /* 🆕 إصلاح: خانة سعر البيع **مقفولة (readonly)** من بناء 169 ⇒ لو اختيار الصنف من القائمة
        المنسدلة ما نبّهش حدث `input` (بيحصل في بعض المتصفحات) ماينفعش المالك يكتب السعر بنفسه
        وبياخد رسالة خطأ. الحل: نآخد سعر الصنف تلقائيًا من بياناته في المخزن قبل الفحص. */
-    let price = moneyVal("#txtPosPrice");
-    if (isNaN(price) || price <= 0) {
-      if (prod.salePrice > 0) {
-        price = Number(prod.salePrice);
-        $("#txtPosPrice").value = moneyStr(price);
+    /* 🆕 بناء 180: القرار ده بقى في مصدر واحد `posLinePriceFor` — لو صاحب الشركة اختارت
+       «ممنوع» ترجع سعر الدليل **غصب** عن أي مكتوب في الخانة (فالـ readonly وحده مش الحماية). */
+    const typedPrice = moneyVal("#txtPosPrice");
+    const price = posLinePriceFor(prod, typedPrice);
+    if (!(price > 0)) {
+      if (priceEditAllowed()) {
+        toast("اكتب سعر البيع المتفق عليه مع العميل في خانة «سعر البيع».", "warning");
+        $("#txtPosPrice").focus();
+      } else {
+        toast("الصنف («" + (prod.nameAr || prod.code || "") + "») ملوش سعر بيع مسجّل في دليل الأصناف،\n" +
+          "وصاحب الشركة اختار إن السعر ما يتكتبش في الفاتورة. حدّد سعر الصنف من شاشة «المخزون» أول.", "warning");
       }
-    }
-    if (isNaN(price) || price <= 0) {
-      toast("اكتب سعر البيع المتفق عليه مع العميل في خانة «سعر البيع».", "warning");
-      $("#txtPosPrice").focus();
       return;
     }
+    if (!(typedPrice > 0)) $("#txtPosPrice").value = moneyStr(price);
     const availableStock = stockAt(prod, wh);
     const alreadyInInvoice = posItems.reduce((s, it) => s + (it.productId === prod.id ? it.qty : 0), 0);
     /* 🔴 طلب المالك (فاتورة المبيعات): الصنف اللي مافيش رصيد منه (أو الكمية أكبر من المتاح)
@@ -14762,6 +14808,9 @@
     // 🆕 T3: اختيار «اطبع فاتورة المبيعات أوتوماتيك؟» (القيمة الخام جوه invoice_fields)
     const apEl = settFieldEl(prefix, "setAutoPrintSale");
     if (apEl) apEl.value = autoPrintSaleInvoice() ? "1" : "0";
+    // 🆕 بناء 180: «تعديل سعر الصنف وقت فاتورة البيع؟» (القيمة الخام جوه invoice_fields كمان)
+    const peEl = settFieldEl(prefix, "setPriceEdit");
+    if (peEl) peEl.value = priceEditAllowed() ? "1" : "0";
   }
 
   // قراءة حقول بيانات المنشأة / الضريبة إلى كائن org (قبل الحفظ)
@@ -14794,6 +14843,9 @@
     // 🆕 T3: نحافظ على اختيار «اطبع أوتوماتيك» لو الشاشة اللي بتحفظ مفيهاش الخانة (مثلاً شاشة المالك)
     const prevAutoPrint = (org.invoice_fields && typeof org.invoice_fields === "object")
       ? org.invoice_fields.auto_print_sale : undefined;
+    // 🆕 بناء 180: نفس الحماية لاختيار «تعديل سعر الصنف وقت فاتورة البيع»
+    const prevPriceEdit = (org.invoice_fields && typeof org.invoice_fields === "object")
+      ? org.invoice_fields.price_edit : undefined;
     org.invoice_fields = {
       name: chk("setInvName"),
       address: chk("setInvAddress"),
@@ -14807,6 +14859,14 @@
       try { settings.autoPrintSale = org.invoice_fields.auto_print_sale; } catch (e) {}
     } else if (prevAutoPrint !== undefined) {
       org.invoice_fields.auto_print_sale = prevAutoPrint;
+    }
+    // 🆕 بناء 180: «تعديل سعر الصنف وقت فاتورة البيع؟» (يبقى خام: normalizeInvFields ما بيعرفوش)
+    const peSelRaw = v("setPriceEdit");
+    if (peSelRaw !== null) {
+      org.invoice_fields.price_edit = (peSelRaw === "1");
+      try { settings.priceEdit = org.invoice_fields.price_edit; } catch (e) {}
+    } else if (prevPriceEdit !== undefined) {
+      org.invoice_fields.price_edit = prevPriceEdit;
     }
     p.org = org;
     return org;
@@ -14828,7 +14888,13 @@
       const ap = org.invoice_fields.auto_print_sale;
       settings.autoPrintSale = !(ap === false || ap === "false" || ap === 0 || ap === "0");
     }
+    // 🆕 بناء 180: مرآة محلية لاختيار «تعديل سعر الصنف وقت فاتورة البيع؟»
+    if (org.invoice_fields && org.invoice_fields.price_edit !== undefined) {
+      const pe = org.invoice_fields.price_edit;
+      settings.priceEdit = (pe === true || pe === "true" || pe === 1 || pe === "1");
+    }
     try { saveSettings(); } catch (e) {}
+    try { applyPriceEditUI(); } catch (e) {}   // 🆕 بناء 180: الخانة تتقفل/تتفتح فور ما الاختيار يوصل الجهاز
   }
 
   /* ============ 🛡 بناء 124: قوائم الضبط ما تضيعش وما تُمسحش (بلاغ «وحدات القياس بتتمسح») ============
