@@ -8959,13 +8959,27 @@
     return "عجز/زيادة - " + tn + " - " + cn;
   }
 
-  function ensureShiftOverShortAccount(treasuryName, cashierName) {
-    const nm = shiftOverShortAccountName(treasuryName, cashierName);
+  function ensureShiftOverShortAccount(treasuryName, cashierName, side) {
+    // side: 'short' | 'over' (العجز مصروف / الزيادة إيراد أو يتحمل في حساب مستقل؟)
+    const tn = String(treasuryName || "صندوق").replace(/^\s+|\s+$/g, "");
+    const cn = String(cashierName || "كاشير").replace(/^\s+|\s+$/g, "");
+    const kind = side === 'over' ? 'زيادة' : 'عجز';
+    const nm = kind + " - " + tn + " - " + cn;
     let a = accounts.find(x => x.isActive !== false && String(x.nameAr) === nm);
     if (a) return a;
-    const parent = ensureJrnAccount("5.1") || accounts.find(x => x.code === "5.1" && x.isActive !== false) || accounts.find(x => x.code === "5.1");
+    // اعمل حساب فرعي تحت 5.1 للمصروفات (عجز) أو تحت 4.1 للإيرادات (زيادة) حسب الحاجة
+    const parentCode = side === 'over' ? "4.1" : "5.1";
+    const parent = ensureJrnAccount(parentCode) || accounts.find(x => x.code === parentCode && x.isActive !== false) || accounts.find(x => x.code === parentCode);
     if (parent && parent.isActive === false) parent.isActive = true;
-    a = { id: nextAccountId(), code: "", nameAr: nm, type: "expense", parentId: parent ? parent.id : (accounts.find(x => x.code === "5") ? accounts.find(x => x.code === "5").id : 0), openingBalance: 0, isActive: true };
+    // توليد كود فرعي بسيط
+    const sibs = accounts.filter(x => x.parentId === (parent ? parent.id : 0) && x.code && x.code.indexOf(parentCode + ".") === 0);
+    let seq = 1;
+    for (let i = 1; i < 1000; i++) {
+      const cand = parentCode + "." + String(i).padStart(2, "0");
+      if (!accounts.find(x => String(x.code) === cand)) { seq = i; break; }
+    }
+    const cand = parentCode + "." + String(seq).padStart(2, "0");
+    a = { id: nextAccountId(), code: cand, nameAr: nm, type: parent ? parent.type : (side === 'over' ? "revenue" : "expense"), parentId: parent ? parent.id : 0, openingBalance: 0, isActive: true };
     accounts.push(a);
     saveAccounts();
     return a;
