@@ -6709,21 +6709,22 @@
       grandTotal: t.grand,
       paidAmount: t.paid,
       dueAmount: t.due,
-      partyPrevBalance: cust.protected ? null : (Math.round((Number(cust.currentBalance) || 0) * 100) / 100),
-      items: posItems.map((it, idx) => ({
-        id: idx + 1,
-        productId: it.productId,
-        code: it.code,
-        nameAr: it.nameAr,
-        unit: lineUnit(it),          // 🆕 الوحدة بتتحل من الصنف لو السطر فاضي — بتُخزن على الفاتورة نفسها
-        qty: it.qty,
-        price: it.price,
-        discount: it.discount,
-        tax: it.tax,
-        total: it.total
-      })),
-      status: "posted"
+      partyPrevBalance: cust.protected ? null : (Math.round((Number(cust.currentBalance) || 0) * 100) / 100)
     };
+    // construct items and status after stamp
+    invoice.items = posItems.map((it, idx) => ({
+      id: idx + 1,
+      productId: it.productId,
+      code: it.code,
+      nameAr: it.nameAr,
+      unit: lineUnit(it),
+      qty: it.qty,
+      price: it.price,
+      discount: it.discount,
+      tax: it.tax,
+      total: it.total
+    }));
+    invoice.status = "posted";
 
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
