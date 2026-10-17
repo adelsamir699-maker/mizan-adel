@@ -904,6 +904,8 @@
     DB.journalEntries = journalEntries;
     // 🆕 مهمة 98: الأصول الثابتة
     DB.fixed_assets = fixedAssets;
+    // 🧾 بناء 176: ورديات الكاشير — النسخ السحابي بيقرأها من MIZAN_STATE.cashier_shifts
+    DB.cashier_shifts = shifts;
   }
 
   function pushTable(name) {
@@ -2045,16 +2047,13 @@
     }
     // 🆕 بناء 115: القيود اليومية (اليدوي المحاسبي + التسجيل المبسط) — لصاحب الشركة والمالك فقط
     if (name === "journal") return isSuperAcct() || isCompanyOwnerAcct();
-    // 🧾 بناء 176: «ورديات الكاشير» — الشاشة لسه **قيد الإنشاء** (البنية والمحرّك
-    // بس، بدون واجهة عدّ/تقفيل/تسوية). ممنوعة على الجميع (بما فيهم المالك) لحد
-    // ما تكتمل، تفاديًا لعرض شاشة ناقصة. **لما تخلص الشاشة: اشيل السطر ده وارجّع
-    // البوابة المعتادة** (تحت، معلّقة في التعليق).
-    if (name === "cashierShifts") return false;
-    // if (name === "cashierShifts") {
-    //   if (isSuperAcct() || isCompanyOwnerAcct()) return true;
-    //   if (!DE.featureFlag) return false;
-    //   return DE.featureFlag("cashierShifts") === true;
-    // }
+    // 🧾 بناء 176: «ورديات الكاشير» — المالك وصاحب الشركة دائمًا، والعضو عند التفعيل الصريح
+    // (نفس نمط «الأصول الثابتة»). الشاشة اكتملت (فتح/عدّ/إغلاق/تسليم/تقرير).
+    if (name === "cashierShifts") {
+      if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+      if (!DE.featureFlag) return false;
+      return DE.featureFlag("cashierShifts") === true;
+    }
     // 🆕 شاشة «كشف حساب الحسابات» (من القيود اليومية) — نفس بوابة القيود بالظبط
     if (name === "accStatement") return isSuperAcct() || isCompanyOwnerAcct();
     // 📚 بناء 164: «دفتر الأستاذ العام» و«دفتر الأستاذ المساعد» — نفس بوابة القيود (مصدرهم نفسه)
@@ -2413,6 +2412,8 @@
     if (name === "subLedger") renderLedgerView("sub");     // 📒 بناء 164: دفتر الأستاذ المساعد
     // 🆕 مهمة 98: سجل الأصول الثابتة — الربط مرة واحدة ثم الرسم
     if (name === "fixedAssets") { fixedBindOnce(); renderFixedAssets(); }
+    // 🧾 بناء 176: ورديات الكاشير — الربط مرة واحدة ثم الرسم
+    if (name === "cashierShifts") { shiftBindOnce(); renderShifts(); }
     // 🧮 بناء 145: الجرد بالباركود — المخزن + الورقة الحالية + حساب الفروق، وكلها من الجهاز
     if (name === "stockCount") scOpenView();
     if (name === "treasuryStatements") { recalculateTreasuryBalances(); renderTreStmt(); }
@@ -6658,6 +6659,18 @@
       toast("يرجى إضافة أصناف إلى الفاتورة أولاً.", "warning");
       return;
     }
+    // 🧾 بناء 176: «بره الشيفت ممنوع البيع لغير المالك» — العضو لازم يكون فاتح وردية
+    // (على صندوقه). المالك/صاحب الشركة معفيان. لو الشاشة مفعّلة على الحساب بس فيه وردية
+    // مفتوحة على كاشير تاني — نمنع برضه (كل واحد بيبيع من صندوقه).
+    if (!(isSuperAcct() || isCompanyOwnerAcct())) {
+      const _cs176 = currentAcct();
+      const _ck176 = _cs176 && (_cs176.user_id || _cs176.id || _cs176.username) ? (_cs176.user_id || _cs176.id || _cs176.username) : activityUser();
+      const _hasMine = (shifts || []).some((s) => s.status === "open" && String(s.cashierKey || "") === String(_ck176));
+      if (!_hasMine) {
+        toast("قبل أي بيع لازم تفتح وردية على صندوقك من شاشة «ورديات الكاشير».", "warning");
+        return;
+      }
+    }
     const methods = ["نقداً", "آجل", "تحويل بنكي", "محافظ إلكترونية"];
     const payment = methods[$("#cmbPaymentMethod").selectedIndex] || "نقداً";
     const custId = posCustId();
@@ -6737,9 +6750,16 @@
     const _isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
     const _payType = _isBank ? "bank" : _isWallet ? "wallet" : "cash";
     const _selId = _isBank ? parseInt($("#cmbPosBank").value, 10) : _isWallet ? parseInt($("#cmbPosWallet").value, 10) : 0;
-    const posTr = (_selId && treasury.find((x) => x.id === _selId))
+    let posTr = (_selId && treasury.find((x) => x.id === _selId))
       || treasury.find((x) => x.type === _payType)
       || treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    // 🧾 بناء 176: وردية الكاشير — البيع النقدي يدخل صندوق الكاشير (الوردية المفتوحة)،
+    // وباقي الوسائل (بنك/محفظة) تدخل حساباتها المرجعية زي ما هي.
+    const _ash176 = activeShift();
+    if (_ash176 && _payType === "cash") {
+      const _box176 = treasury.find((x) => Number(x.id) === Number(_ash176.treasuryId));
+      if (_box176) posTr = _box176;
+    }
     if (jrnBlocked("الفاتورة", invoiceJrnPlan("sale", { grandTotal: t.grand, taxAmount: t.tax, paymentMethod: payment, paidAmount: t.paid, dueAmount: t.due }, posTr))) return;
 
     let paidTreasury = null;               // 🆕 بناء 134: الحساب اللي القبض دخل فيه
@@ -8604,6 +8624,8 @@
       rec.supplierName = retParty(inv, false);
       rec.supplier = retParty(inv, false);
     }
+    // 🧾 بناء 176: وسم المرتجع بوردية الكاشير المفتوحة (يظهر في تقرير الوردية Z)
+    try { stampShiftOn(rec); } catch (e) {}
 
     // 1) المخزون عكسي: مرتجع البيع بيرجّع الكمية للمخزن، ومرتجع المشتريات بينقصها
     items.forEach((it) => {
@@ -9038,9 +9060,434 @@
       breakdown: { cash: 0, bank: 0, wallet: 0, credit: 0 }
     };
     shifts.push(s);
+    // 🧾 بناء 176: الرقاقة الافتتاحية تتحفظ كسند قبض على صندوق الوردية ⇒ رصيد الصندوق
+    // بيبدأ من الرقاقة + مبيعات النقد للوردية (نفس مسار recalculateTreasuryBalances).
+    if (s.openingFloat > 0) {
+      const baseId = (vouchers || []).reduce((m, x) => Math.max(m, Number(x.id) || 0), 0);
+      vouchers.push({ id: baseId + 1, type: "in", treasuryId: tr.id, date: shiftNowISO().slice(0, 10), amount: round2(s.openingFloat), desc: "رقاقة افتتاحية — وردية #" + s.id + " — " + s.cashierName, refType: "وردية فتح — #" + s.id });
+      try { saveVouchers(); } catch (e) {}
+      try { recalculateTreasuryBalances(); } catch (e) {}
+    }
     try { saveShifts(); } catch (e) {}
     try { addActivity("فتح وردية", "وردية #" + s.id + " - كاشير " + s.cashierName + " - صندوق " + s.treasuryName + " + رقاقة " + fmt(s.openingFloat) + " ج.م"); } catch (e) {}
     return { ok: true, shift: s };
+  }
+
+  /* ================== 🧾 بناء 176 — محرّك ورديات الكاشير ==================
+     بعد ما البنية اتعملت (openShiftFor/stampShiftOn/ensureShiftOverShortAccount)، ده المحرّك:
+       • تقرير الوردية: كل وسيلة دفع سطر مستقل (نقداً/تحويل بنكي/محافظ/آجل) + المرتجعات + المصروفات.
+       • الإغلاق: عدّ أعمى (اختياري) → المتوقّع → الفرق → قيد على حساب «عجز/زيادة» المستقل لكل صندوق.
+       • التسوية: تحويل رصيد الصندوق للخزينة الرئيسية (بصلاحية «مدير»).
+     قرارات المالك: لكل كاشير صندوقه · الإغلاق بأمر · التسوية للمدير · العدّ أعمى (اختياري) ·
+     عدّ الفئات أو الإجمالي (اختياري) · حساب عجز/زيادة مستقل لكل صندوق · مفيش تسليم بين كاشيرين. */
+  function shiftSettleAllowed() {
+    if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+    return String((settings && settings.shiftSettlePerm) || "manager") === "cashier";
+  }
+  function shiftStatusLabel(st) {
+    return st === "settled" ? "مسوّاة ✅" : st === "closed" ? "مقفولة 🔒" : "مفتوحة 🟢";
+  }
+  function shiftPayBucket(pm) {
+    const p = String(pm || "");
+    if (p.indexOf("آجل") >= 0 || p === "credit") return "credit";
+    if (p.indexOf("بنك") >= 0 || p === "bank") return "bank";
+    if (p.indexOf("محافظ") >= 0 || p.indexOf("محفظ") >= 0 || p === "wallet") return "wallet";
+    return "cash";
+  }
+  function shiftBucketRows(bd) {
+    return [
+      { k: "cash", label: "نقداً (كاش)", v: bd.cash },
+      { k: "bank", label: "تحويل بنكي", v: bd.bank },
+      { k: "wallet", label: "محافظ إلكترونية", v: bd.wallet },
+      { k: "credit", label: "آجل (على الحساب)", v: bd.credit }
+    ];
+  }
+
+  // ملخّص الوردية من المستندات الموسومة بـshiftId (المصدر: فواتير المبيعات، معروض فقط).
+  function computeShiftBreakdown(shift) {
+    const out = { cash: 0, bank: 0, wallet: 0, credit: 0, total: 0, invoices: 0, returnsCash: 0, returnsTotal: 0, expenses: 0 };
+    if (!shift) { out.expectedCash = 0; return out; }
+    const sid = Number(shift.id);
+    (sales || []).forEach((inv) => {
+      if (Number(inv.shiftId) !== sid) return;
+      const amt = round2(inv.grandTotal);
+      out[shiftPayBucket(inv.paymentMethod)] = round2(out[shiftPayBucket(inv.paymentMethod)] + amt);
+      out.total = round2(out.total + amt);
+      out.invoices++;
+    });
+    (saleReturns || []).forEach((r) => {
+      if (Number(r.shiftId) !== sid) return;
+      const tot = round2(r.total);
+      out.returnsTotal = round2(out.returnsTotal + tot);
+      let cp = 0;
+      try { cp = (typeof retCashOf === "function") ? round2(retCashOf(r)) : (r.settlement === "refund" ? tot : 0); } catch (e) { cp = 0; }
+      out.returnsCash = round2(out.returnsCash + cp);
+    });
+    const trId = Number(shift.treasuryId);
+    const fromD = shift.openedAt ? String(shift.openedAt).slice(0, 10) : "";
+    const toD = (shift.closedAt ? String(shift.closedAt) : shiftNowISO()).slice(0, 10);
+    (vouchers || []).forEach((v) => {
+      if (Number(v.treasuryId) !== trId) return;
+      const rt = String(v.refType || "");
+      if (rt.indexOf("وردية") === 0) return;   // سندات الوردية نفسها (رقاقة/تسوية) مش «مصروفات»
+      if (v.type === "out" || v.kind === "out") {
+        const d = String(v.date || "").slice(0, 10);
+        if (fromD && d && d < fromD) return;
+        if (toD && d && d > toD) return;
+        out.expenses = round2(out.expenses + round2(v.amount));
+      }
+    });
+    return out;
+  }
+
+  // المتوقّع في الصندوق = رصيد صندوق الوردية (يشمل الرقاقة + مبيعات النقد − سندات الصرف).
+  function shiftExpectedCash(shift) {
+    try { recalculateTreasuryBalances(); } catch (e) { }
+    const tr = treasury.find((x) => Number(x.id) === Number(shift && shift.treasuryId));
+    return tr ? round2(tr.balance) : round2(Number(shift && shift.openingFloat) || 0);
+  }
+
+  // إغلاق الوردية: عدّ (أعمى أو ظاهر) → المتوقّع → الفرق → قيد «عجز/زيادة».
+  function closeShiftEngine(shift, countedCash, denoms, notes) {
+    if (!shift) return { ok: false, msg: "الوردية مش موجودة." };
+    if (shift.status !== "open") return { ok: false, msg: "الوردية دي مش مفتوحة." };
+    const box = treasury.find((x) => Number(x.id) === Number(shift.treasuryId));
+    if (!box) return { ok: false, msg: "صندوق الوردية مش موجود في الخزينة." };
+    ensureJrnStd();
+    const expected = shiftExpectedCash(shift);
+    const counted = round2(countedCash);
+    const diff = round2(counted - expected);
+    const date = shiftNowISO().slice(0, 10);
+    const bd = computeShiftBreakdown(shift);
+    let jNumber = "";
+    if (Math.abs(diff) > 0.0001) {
+      const isOver = diff > 0;
+      const amt = Math.abs(diff);
+      const osc = ensureShiftOverShortAccount(box.name, shift.cashierName, isOver ? "over" : "short");
+      const cashAcc = accForTreasuryAcc(box);
+      // (١) سند على الصندوق يعادله للعدّ الفعلي (مصدر رصيد الخزينة)
+      const baseId = (vouchers || []).reduce((m, x) => Math.max(m, Number(x.id) || 0), 0);
+      vouchers.push({
+        id: baseId + 1, type: isOver ? "in" : "out", treasuryId: box.id, date: date, amount: amt,
+        desc: (isOver ? "زيادة" : "عجز") + " وردية #" + shift.id + " — " + shift.cashierName,
+        refType: "وردية تسوية — #" + shift.id
+      });
+      saveVouchers();
+      // (٢) القيد المحاسبي: العجز مصروف / الزيادة إيراد — على حساب مستقل لكل صندوق
+      if (osc && cashAcc) {
+        const lines = isOver
+          ? [{ accountId: cashAcc.id, debit: amt, credit: 0 }, { accountId: osc.id, debit: 0, credit: amt }]
+          : [{ accountId: osc.id, debit: amt, credit: 0 }, { accountId: cashAcc.id, debit: 0, credit: amt }];
+        const j = {
+          id: nextJournalId(), number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+          date: date,
+          desc: "تسوية " + (isOver ? "زيادة" : "عجز") + " وردية #" + shift.id + " — " + shift.cashierName + " — " + fmt(amt) + " ج.م",
+          ref: "تسوية وردية", refType: "تسوية وردية", refId: "SH:" + shift.id,
+          debit: amt, credit: amt, lines: lines
+        };
+        settleJrnLines(lines, 1);
+        journalEntries.push(j);
+        persistJournal();
+        saveAccounts();
+        jNumber = j.number;
+      }
+      try { recalculateTreasuryBalances(); } catch (e) { }
+    }
+    shift.status = "closed";
+    shift.closedAt = shiftNowISO();
+    shift.closedBy = activityUser();
+    shift.expectedCash = expected;
+    shift.countedCash = counted;
+    shift.difference = diff;
+    shift.denoms = denoms || null;
+    shift.breakdown = { cash: bd.cash, bank: bd.bank, wallet: bd.wallet, credit: bd.credit };
+    if (notes) shift.notes = String(notes);
+    saveShifts();
+    try { renderTreasury(); renderTreMoves(); renderJournal(); renderShifts(); } catch (e) { }
+    addActivity("إغلاق وردية", "وردية #" + shift.id + " — متوقّع " + fmt(expected) + " · معدود " + fmt(counted) + " · فرق " + fmt(diff) + " ج.م" + (jNumber ? " (" + jNumber + ")" : ""));
+    return { ok: true, shift: shift, expected: expected, counted: counted, difference: diff };
+  }
+
+  // التسوية: تحويل رصيد الصندوق (بعد الإغلاق) للخزينة الرئيسية.
+  function settleShiftEngine(shift, mainTreasuryId) {
+    if (!shift) return { ok: false, msg: "الوردية مش موجودة." };
+    if (shift.status !== "closed") return { ok: false, msg: "لازم تقفل الوردية الأول، وبعدها تسلّم." };
+    const box = treasury.find((x) => Number(x.id) === Number(shift.treasuryId));
+    const main = treasury.find((x) => Number(x.id) === Number(mainTreasuryId));
+    if (!box) return { ok: false, msg: "صندوق الوردية مش موجود." };
+    if (!main) return { ok: false, msg: "اختار الخزينة الرئيسية." };
+    if (Number(box.id) === Number(main.id)) return { ok: false, msg: "صندوق الوردية هو نفسه الخزينة الرئيسية." };
+    recalculateTreasuryBalances();
+    const amt = round2(box.balance);
+    if (!(amt > 0)) return { ok: false, msg: "رصيد الصندوق " + fmt(amt) + " ج.م — مافيش حاجة تتسلّم." };
+    const date = shiftNowISO().slice(0, 10);
+    const tag = "تسليم وردية #" + shift.id + " — " + shift.cashierName;
+    const baseId = (vouchers || []).reduce((m, x) => Math.max(m, Number(x.id) || 0), 0);
+    vouchers.push({ id: baseId + 1, type: "out", treasuryId: box.id, date: date, amount: amt, desc: tag + " (من " + box.name + ")", refType: "وردية تسليم — #" + shift.id });
+    vouchers.push({ id: baseId + 2, type: "in", treasuryId: main.id, date: date, amount: amt, desc: tag + " (إلى " + main.name + ")", refType: "وردية تسليم — #" + shift.id });
+    saveVouchers();
+    recalculateTreasuryBalances();
+    // قيد فقط لو الحسابان مختلفان (كل الصناديق النقدية على 1.1.1 ⇒ تحويل داخلي بلا أثر محاسبي)
+    const aFrom = accForTreasuryAcc(box), aTo = accForTreasuryAcc(main);
+    if (aFrom && aTo && Number(aFrom.id) !== Number(aTo.id)) {
+      const lines = [{ accountId: aTo.id, debit: amt, credit: 0 }, { accountId: aFrom.id, debit: 0, credit: amt }];
+      const j = {
+        id: nextJournalId(), number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+        date: date, desc: tag + " — " + fmt(amt) + " ج.م", ref: "تسليم وردية", refType: "تسليم وردية", refId: "SHX:" + shift.id,
+        debit: amt, credit: amt, lines: lines
+      };
+      settleJrnLines(lines, 1);
+      journalEntries.push(j);
+      persistJournal();
+      saveAccounts();
+    }
+    shift.status = "settled";
+    shift.settledAt = shiftNowISO();
+    shift.settledBy = activityUser();
+    shift.mainTreasuryId = main.id;
+    shift.settledAmount = amt;
+    saveShifts();
+    try { renderTreasury(); renderTreMoves(); renderShifts(); } catch (e) { }
+    addActivity("تسليم وردية", "وردية #" + shift.id + " — تسليم " + fmt(amt) + " ج.م من " + box.name + " إلى " + main.name);
+    return { ok: true, amount: amt, main: main };
+  }
+
+  /* --------- نوافذ الوردية --------- */
+  function openShiftDialog() {
+    if (activeShift()) { toast("فيه وردية مفتوحة بالفعل على حسابك.", "warning"); return; }
+    const sel = document.getElementById("shiftOpenTreasury");
+    if (sel) {
+      sel.innerHTML = "";
+      treasury.filter((t) => t.type === "cash").forEach((t) => {
+        const o = document.createElement("option"); o.value = t.id; o.textContent = t.name + " — رصيد " + fmt(t.balance || 0) + " ج.م"; sel.appendChild(o);
+      });
+      if (!sel.options.length) { toast("لازم تعمل صندوق نقدي أولًا (الخزينة).", "warning"); return; }
+    }
+    const f = document.getElementById("shiftOpenFloat"); if (f) f.value = "0";
+    showModal("mShiftOpen");
+  }
+
+  function saveOpenShift() {
+    const sel = document.getElementById("shiftOpenTreasury");
+    const float = moneyVal("#shiftOpenFloat");
+    const tid = sel ? parseInt(sel.value, 10) : 0;
+    if (!tid) { toast("اختار الصندوق (الخزينة النقدية).", "warning"); return; }
+    const res = openShiftFor(tid, float);
+    if (!res.ok) { toast(res.msg || "تعذّر فتح الوردية.", "warning"); return; }
+    hideModal("mShiftOpen");
+    toast("تم فتح وردية #" + res.shift.id + " على «" + res.shift.treasuryName + "».", "success");
+    renderShifts();
+  }
+
+  function openCloseShiftDialog(shiftId) {
+    const shift = shifts.find((x) => Number(x.id) === Number(shiftId));
+    if (!shift) { toast("الوردية مش موجودة.", "warning"); return; }
+    const blind = !!((settings && settings.shiftBlindCount));
+    const denoms = !!((settings && settings.shiftCountDenoms));
+    const expected = shiftExpectedCash(shift);
+    const bd = computeShiftBreakdown(shift);
+    const info = document.getElementById("shiftCloseInfo");
+    if (info) {
+      let h = '<div class="shift-kv"><span>الكاشير</span><b>' + esc(shift.cashierName) + '</b></div>' +
+        '<div class="shift-kv"><span>الصندوق</span><b>' + esc(shift.treasuryName) + '</b></div>' +
+        '<div class="shift-kv"><span>رقاقة افتتاحية</span><b>' + fmt(shift.openingFloat || 0) + ' ج.م</b></div>';
+      shiftBucketRows(bd).forEach((r) => { h += '<div class="shift-kv"><span>' + r.label + '</span><b>' + fmt(r.v) + ' ج.م</b></div>'; });
+      h += '<div class="shift-kv"><span>إجمالي الوردية</span><b>' + fmt(bd.total) + ' ج.م</b></div>';
+      if (!blind) h += '<div class="shift-kv strong"><span>المتوقّع في الصندوق</span><b>' + fmt(expected) + ' ج.م</b></div>';
+      else h += '<div class="shift-kv"><span>المتوقّع في الصندوق</span><b>مخفي (عدّ أعمى)</b></div>';
+      info.innerHTML = h;
+    }
+    const counted = document.getElementById("shiftCounted");
+    const denomBox = document.getElementById("shiftDenoms");
+    if (counted) counted.value = "";
+    const chk = document.getElementById("shiftCountDenoms");
+    if (chk) chk.checked = denoms;
+    if (denomBox) {
+      denomBox.hidden = !denoms;
+      denomBox.innerHTML = "";
+      if (denoms) {
+        [200, 100, 50, 20, 10, 5, 1].forEach((v) => {
+          denomBox.innerHTML += '<label class="shift-denom"><span>' + v + ' ج.م</span><input type="number" min="0" step="1" data-denom="' + v + '" value="" placeholder="0" /></label>';
+        });
+      }
+    }
+    const cntWrap = document.getElementById("shiftCountWrap");
+    if (cntWrap) cntWrap.hidden = denoms;
+    const notes = document.getElementById("shiftCloseNotes"); if (notes) notes.value = "";
+    document.getElementById("mShiftClose").dataset.sid = String(shift.id);
+    showModal("mShiftClose");
+  }
+
+  function shiftDenomsSum() {
+    let sum = 0;
+    document.querySelectorAll('#shiftDenoms input[data-denom]').forEach((inp) => {
+      const v = parseFloat(inp.dataset.denom) || 0;
+      const n = parseFloat(inp.value) || 0;
+      sum += v * n;
+    });
+    return round2(sum);
+  }
+
+  function saveCloseShift() {
+    const sid = Number(document.getElementById("mShiftClose").dataset.sid);
+    const shift = shifts.find((x) => Number(x.id) === sid);
+    if (!shift) { toast("الوردية مش موجودة.", "warning"); return; }
+    const denoms = !!document.getElementById("shiftCountDenoms") && document.getElementById("shiftCountDenoms").checked;
+    let counted;
+    let denomObj = null;
+    if (denoms) {
+      counted = shiftDenomsSum();
+      denomObj = {};
+      document.querySelectorAll('#shiftDenoms input[data-denom]').forEach((inp) => { denomObj[inp.dataset.denom] = parseFloat(inp.value) || 0; });
+    } else {
+      counted = moneyVal("#shiftCounted");
+    }
+    const notes = (document.getElementById("shiftCloseNotes") || {}).value || "";
+    const res = closeShiftEngine(shift, counted, denomObj, notes);
+    if (!res.ok) { toast(res.msg || "تعذّر إغلاق الوردية.", "warning"); return; }
+    hideModal("mShiftClose");
+    const d = res.difference;
+    const msg = d === 0 ? "العدّ مطابق تمامًا ✅" : (d > 0 ? "زيادة " + fmt(d) + " ج.م" : "عجز " + fmt(-d) + " ج.م");
+    toast("تم إغلاق وردية #" + shift.id + " — " + msg, d === 0 ? "success" : "warning");
+    renderShifts();
+  }
+
+  function openSettleShiftDialog(shiftId) {
+    if (!shiftSettleAllowed()) { toast("التسليم محتاج صلاحية مدير.", "error"); return; }
+    const shift = shifts.find((x) => Number(x.id) === Number(shiftId));
+    if (!shift) { toast("الوردية مش موجودة.", "warning"); return; }
+    const box = treasury.find((x) => Number(x.id) === Number(shift.treasuryId));
+    const sel = document.getElementById("shiftSettleTreasury");
+    if (sel) {
+      sel.innerHTML = "";
+      treasury.filter((t) => Number(t.id) !== Number(shift.treasuryId)).forEach((t) => {
+        const o = document.createElement("option"); o.value = t.id; o.textContent = t.name + " — رصيد " + fmt(t.balance || 0) + " ج.م"; sel.appendChild(o);
+      });
+      const main = getMainTreasury();
+      if (main && Number(main.id) !== Number(shift.treasuryId)) sel.value = main.id;
+    }
+    const amtEl = document.getElementById("shiftSettleAmount");
+    if (amtEl) amtEl.textContent = box ? (fmt(box.balance) + " ج.م") : "0.00";
+    const hint = document.getElementById("shiftSettleHint");
+    if (hint) hint.textContent = "هيتحوّل رصيد صندوق «" + (box ? box.name : "") + "» للخزينة المختارة — سندين (صرف/قبض) بنفس المبلغ.";
+    document.getElementById("mShiftSettle").dataset.sid = String(shift.id);
+    showModal("mShiftSettle");
+  }
+
+  function saveSettleShift() {
+    if (!shiftSettleAllowed()) { toast("التسليم محتاج صلاحية مدير.", "error"); return; }
+    const sid = Number(document.getElementById("mShiftSettle").dataset.sid);
+    const shift = shifts.find((x) => Number(x.id) === Number(sid));
+    const sel = document.getElementById("shiftSettleTreasury");
+    const tid = sel ? parseInt(sel.value, 10) : 0;
+    if (!shift) { toast("الوردية مش موجودة.", "warning"); return; }
+    if (!tid) { toast("اختار الخزينة الرئيسية.", "warning"); return; }
+    const res = settleShiftEngine(shift, tid);
+    if (!res.ok) { toast(res.msg || "تعذّر التسليم.", "warning"); return; }
+    hideModal("mShiftSettle");
+    toast("تم تسليم " + fmt(res.amount) + " ج.م إلى «" + res.main.name + "».", "success");
+    renderShifts();
+  }
+
+  /* --------- شاشة الورديات --------- */
+  let shiftBoundOnce = false;
+  function shiftBindOnce() {
+    if (shiftBoundOnce) return;
+    shiftBoundOnce = true;
+    const add = (id, ev, fn) => { const el = document.getElementById(id); if (el) el.addEventListener(ev, fn); };
+    add("btnShiftOpen", "click", openShiftDialog);
+    add("btnShiftRefresh", "click", () => { recalculateTreasuryBalances(); renderShifts(); toast("تم التحديث.", "info"); });
+    add("shiftFilter", "change", renderShifts);
+    add("btnSaveShiftOpen", "click", saveOpenShift);
+    add("btnCancelShiftOpen", "click", () => hideModal("mShiftOpen"));
+    add("btnSaveShiftClose", "click", saveCloseShift);
+    add("btnCancelShiftClose", "click", () => hideModal("mShiftClose"));
+    add("btnSaveShiftSettle", "click", saveSettleShift);
+    add("btnCancelShiftSettle", "click", () => hideModal("mShiftSettle"));
+    const cd = document.getElementById("shiftCountDenoms");
+    if (cd) cd.addEventListener("change", () => {
+      const denomBox = document.getElementById("shiftDenoms"); if (denomBox) denomBox.hidden = !cd.checked;
+      const w = document.getElementById("shiftCountWrap"); if (w) w.hidden = cd.checked;
+    });
+    const body = document.getElementById("shiftBody");
+    if (body) body.addEventListener("click", (ev) => {
+      const b = ev.target.closest("[data-sact]");
+      if (!b) return;
+      const sid = b.dataset.sid, act = b.dataset.sact;
+      if (act === "close") openCloseShiftDialog(sid);
+      else if (act === "settle") openSettleShiftDialog(sid);
+      else if (act === "z") shiftPrint(sid);
+    });
+  }
+
+  function renderShifts() {
+    shiftBindOnce();
+    const tb = document.getElementById("shiftBody");
+    if (!tb) return;
+    const filt = (document.getElementById("shiftFilter") || {}).value || "all";
+    let list = shifts.slice().sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+    if (!(isSuperAcct() || isCompanyOwnerAcct())) {
+      const ca = currentAcct();
+      const cid = ca && (ca.user_id || ca.id || ca.username) ? (ca.user_id || ca.id || ca.username) : activityUser();
+      list = list.filter((s) => String(s.cashierKey || "") === String(cid) || String(s.cashierName || "") === String(activityUser()));
+    }
+    if (filt !== "all") list = list.filter((s) => s.status === filt);
+    tb.innerHTML = "";
+    if (!list.length) {
+      tb.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:18px">لا توجد ورديات</td></tr>';
+      return;
+    }
+    list.forEach((s) => {
+      const acts = [];
+      if (s.status === "open") acts.push('<button class="btn small green" data-sact="close" data-sid="' + s.id + '">إغلاق 🔒</button>');
+      if (s.status === "closed" && shiftSettleAllowed()) acts.push('<button class="btn small teal" data-sact="settle" data-sid="' + s.id + '">تسليم 💰</button>');
+      acts.push('<button class="btn small gray" data-sact="z" data-sid="' + s.id + '">تقرير 🖨️</button>');
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td>' + s.id + '</td>' +
+        '<td>' + esc(s.cashierName || "") + '</td>' +
+        '<td>' + esc(s.treasuryName || "") + '</td>' +
+        '<td>' + esc(String(s.openedAt || "").replace("T", " ").slice(0, 16)) + '</td>' +
+        '<td>' + fmt(s.openingFloat || 0) + '</td>' +
+        '<td>' + shiftStatusLabel(s.status) + '</td>' +
+        '<td class="cell-actions">' + acts.join(" ") + '</td>';
+      tb.appendChild(tr);
+    });
+  }
+
+  // تقرير وردية (Z) — يطبع ملخّص وسائل الدفع + العدّ + الفرق (ترويسة الشركة).
+  function shiftPrint(shiftId) {
+    const s = shifts.find((x) => Number(x.id) === Number(shiftId));
+    if (!s) { toast("الوردية مش موجودة.", "warning"); return; }
+    const bd = computeShiftBreakdown(s);
+    let sec = document.getElementById("shiftPrintPage");
+    if (sec) sec.remove();
+    sec = document.createElement("section");
+    sec.id = "shiftPrintPage";
+    sec.className = "print-only statement-page";
+    const orgName = (function () { try { return DATA && DATA.org && DATA.org() ? (DATA.org().name || "") : ""; } catch (e) { return ""; } })();
+    let rows = shiftBucketRows(bd).map((r) => '<tr><td style="text-align:right">' + esc(r.label) + '</td><td>' + fmt(r.v) + '</td></tr>').join("");
+    rows += '<tr class="tot"><td style="text-align:right"><b>إجمالي الوردية</b></td><td><b>' + fmt(bd.total) + '</b></td></tr>';
+    if (bd.returnsTotal) rows += '<tr><td style="text-align:right">مرتجعات (إجمالي)</td><td>' + fmt(bd.returnsTotal) + '</td></tr>';
+    if (bd.expenses) rows += '<tr><td style="text-align:right">مصروفات من الصندوق</td><td>' + fmt(bd.expenses) + '</td></tr>';
+    sec.innerHTML =
+      '<div class="print-head"><h2>' + esc(orgName || "تقرير وردية") + '</h2><h3>تقرير وردية كاشير (Z) — #' + s.id + '</h3></div>' +
+      '<div class="print-meta">' +
+      '<div>الكاشير: ' + esc(s.cashierName || "") + '</div>' +
+      '<div>الصندوق: ' + esc(s.treasuryName || "") + '</div>' +
+      '<div>من: ' + esc(String(s.openedAt || "").replace("T", " ").slice(0, 16)) + '</div>' +
+      '<div>إلى: ' + esc(s.closedAt ? String(s.closedAt).replace("T", " ").slice(0, 16) : "— (مفتوحة)") + '</div>' +
+      '</div>' +
+      '<table class="stmt-table print-table"><thead><tr><th>البيان</th><th>المبلغ (ج.م)</th></tr></thead><tbody>' + rows +
+      '<tr><td style="text-align:right">رقاقة افتتاحية</td><td>' + fmt(s.openingFloat || 0) + '</td></tr>' +
+      (s.countedCash != null ? '<tr><td style="text-align:right">المعدود (فعلي)</td><td>' + fmt(s.countedCash) + '</td></tr>' : '') +
+      (s.expectedCash != null ? '<tr><td style="text-align:right">المتوقّع</td><td>' + fmt(s.expectedCash) + '</td></tr>' : '') +
+      (s.difference != null ? '<tr class="tot"><td style="text-align:right"><b>' + (s.difference === 0 ? "مطابق" : (s.difference > 0 ? "زيادة" : "عجز")) + '</b></td><td><b>' + fmt(Math.abs(s.difference)) + '</b></td></tr>' : '') +
+      (s.settledAmount != null ? '<tr><td style="text-align:right">تم التسليم</td><td>' + fmt(s.settledAmount) + '</td></tr>' : '') +
+      '</tbody></table>' +
+      '<div class="print-foot">عدد الفواتير: ' + bd.invoices + ' — طُبع في ' + esc(shiftNowISO().replace("T", " ")) + '</div>';
+    document.body.appendChild(sec);
+    printSection(sec);
   }
 
   // 🛡 بناء 119: جزّة «إعدادات مؤسستك» (بنوك/محافظ) مع نفس رقم الخزينة.
@@ -14183,7 +14630,11 @@
     // ترقية ٥٣ (إلغاء منظومة الحضور): إعادة تعريف دوال النسخ الأربعة + mizan_admin_reset_org بلا
     // employees/attendance/att_settings ثم DROP الجداول الثلاثة نهائيًا — كُتب بلا تنفيذ بعد.
     // يُنفَّذ على السحابة بأمر المالك الصريح، وبعدها يدخل نسخة النشر (سيرفر جديد = نفس القاعدة).
-    "db/supabase-upgrade-53-remove-attendance.sql"];
+    "db/supabase-upgrade-53-remove-attendance.sql",
+    // 🧾 ترقية ٥٤ (ورديات الكاشير): جدول cashier_shifts + RLS عزل الشركة. كُتب بلا تنفيذ بعد،
+    // وقبل تنفيذه المزامنة بتسجّل الورديات محليًا فقط (علامة CS_TABLE_MISSING في cloud.js).
+    // جزء من نسخة النشر حتى ياخد سيرفر جديد نفس مخطط القاعدة الحيّة بعد التنفيذ.
+    "db/supabase-upgrade-54-cashier-shifts.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
   // فاضية دلوقتي بالقياس: كل ملف في db/ اتنفّذ على السحابة ⇒ ينشر معه. أي استبعاد جديد لازم يكون
   // سببه المكتوب **حقيقي** (مش «خايف أنشره») — حارس check_backup_coverage_124.js بيسأل db/ مباشرة.
@@ -14191,7 +14642,7 @@
   // وبره الاستبعاد زي أخواتها (٤٣→٤٩)، والقاعدة نفسها: أي ملف جديد لسه ما اتنفّذتش يتحط هنا بسبب.
   var DEPLOY_DB_EXCLUDE = {};
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
-    "accounts", "audit_logs", "categories", "customer_txs", "customers",
+    "accounts", "audit_logs", "categories", "cashier_shifts", "customer_txs", "customers",
     "fixed_assets",
     "journal_entries", "journal_lines", "mizan_created_accounts", "mizan_invoice_seq",
     "mizan_pw_store", "owners", "password_changes", "presence", "products",
@@ -16558,6 +17009,8 @@ const pwEye = document.getElementById("btnShowPass");
     // 🆕 مهمة 98: الأصول الثابتة — دمج بنفس الهوية (local_id)
     step("fixed_assets", S.fixed_assets, fixedAssets, function (v) { fixedAssets = v; });
     step("vouchers", S.vouchers, vouchers, function (v) { vouchers = v; });
+    // 🧾 بناء 176: ورديات الكاشير — دمج بنفس الهوية (local_id) مثل باقي الجداول
+    step("cashier_shifts", S.cashier_shifts, shifts, function (v) { shifts = v; });
     step("journal_entries", S.journalEntries, journalEntries, function (v) { journalEntries = v; });
     linkInvoiceParties();
     recalculateCustomerBalances();
@@ -16582,6 +17035,7 @@ const pwEye = document.getElementById("btnShowPass");
     localStorage.setItem(LS_SALE_RETURNS, JSON.stringify(saleReturns));
     localStorage.setItem(LS_PURCHASE_RETURNS, JSON.stringify(purchaseReturns));
     localStorage.setItem(LS_FIXED_ASSETS, JSON.stringify(fixedAssets));
+    localStorage.setItem(LS_SHIFTS, JSON.stringify(shifts));
   }
 
   /* ================== شاشة "غير متاح" (وقت/قفل/حجب) ================== */

@@ -159,6 +159,22 @@
       .catch(function (e) { if (isMissingTableError(e)) FA_TABLE_MISSING = true; return false; });
   }
 
+  // 🧾 بناء 176: ورديات الكاشير — نفس منطق «الأصول الثابتة»: الجدول بيتعمل بترحيل ٥٤،
+  // ولحد ما يتنفّذ (بأمر المالك) الوردية بتتسجّل محليًا + على الديسك وما نحاولش رفعها
+  // (مافيش جدول) عشان كل حفظ وردية ما يطلعلوش تحذير «المزامنة وقفت» بلا سبب.
+  // أول ما الترحيل يتنفّذ الفحص بيرجّع الجدول موجود فالعلامة بتتمحي والرفع يكمّل.
+  var CS_TABLE_MISSING = false;
+  function probeCashierShiftsTable() {
+    if (!DATA.client()) return Promise.resolve(false);
+    return Promise.resolve()
+      .then(function () { return DATA.client().from("cashier_shifts").select("id").limit(1); })
+      .then(function (r) {
+        if (r && r.error) { if (isMissingTableError(r.error)) CS_TABLE_MISSING = true; return false; }
+        CS_TABLE_MISSING = false; return true;
+      })
+      .catch(function (e) { if (isMissingTableError(e)) CS_TABLE_MISSING = true; return false; });
+  }
+
   // خريطة تحويل (محلي → سماوي / سماوي → محلي)
   var META = {
     customers: {
@@ -264,6 +280,48 @@
           category: r.category || "أخرى", purchaseDate: String(r.purchase_date || "").slice(0, 10),
           cost: Number(r.cost || 0), accumDep: Number(r.accum_dep || 0),
           notes: r.notes || "", isActive: r.is_active !== false };
+      }
+    },
+    // 🧾 بناء 176: ورديات الكاشير — نفس نمط الهوية (detUuid + local_id) من ترحيل ٥٤.
+    // كل وردية = جلسة استعمال صندوق (خزينة) برقاقة افتتاحية تُقفل بأمر ثم تُسوّى.
+    cashier_shifts: {
+      local: function () { return W.cashier_shifts || []; },
+      toCloud: function (r) {
+        return { id: detUuid("cashier_shifts", r.id), org_id: DATA.orgId(), local_id: r.id,
+          cashier_id: String(r.cashierId || ""), cashier_name: r.cashierName || "",
+          cashier_key: r.cashierKey || "",
+          treasury_id: (r.treasuryId != null ? Number(r.treasuryId) : null),
+          treasury_name: r.treasuryName || "",
+          opened_at: r.openedAt || "", opening_float: Number(r.openingFloat || 0),
+          status: r.status || "open",
+          closed_at: r.closedAt || null, closed_by: r.closedBy || null,
+          expected_cash: (r.expectedCash != null ? Number(r.expectedCash) : null),
+          counted_cash: (r.countedCash != null ? Number(r.countedCash) : null),
+          difference: (r.difference != null ? Number(r.difference) : null),
+          denoms: r.denoms || null, notes: r.notes || "",
+          settled_at: r.settledAt || null, settled_by: r.settledBy || null,
+          main_treasury_id: (r.mainTreasuryId != null ? Number(r.mainTreasuryId) : null),
+          settled_amount: (r.settledAmount != null ? Number(r.settledAmount) : null),
+          breakdown: r.breakdown || null, deleted: false };
+      },
+      fromCloud: function (r) {
+        var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("cashier_shifts", r.id);
+        return { id: lid,
+          cashierId: r.cashier_id || "", cashierName: r.cashier_name || "",
+          cashierKey: r.cashier_key || "",
+          treasuryId: (r.treasury_id != null ? Number(r.treasury_id) : null),
+          treasuryName: r.treasury_name || "",
+          openedAt: r.opened_at || "", openingFloat: Number(r.opening_float || 0),
+          status: r.status || "open",
+          closedAt: r.closed_at || null, closedBy: r.closed_by || null,
+          expectedCash: (r.expected_cash != null ? Number(r.expected_cash) : null),
+          countedCash: (r.counted_cash != null ? Number(r.counted_cash) : null),
+          difference: (r.difference != null ? Number(r.difference) : null),
+          denoms: r.denoms || null, notes: r.notes || "",
+          settledAt: r.settled_at || null, settledBy: r.settled_by || null,
+          mainTreasuryId: (r.main_treasury_id != null ? Number(r.main_treasury_id) : null),
+          settledAmount: (r.settled_amount != null ? Number(r.settled_amount) : null),
+          breakdown: r.breakdown || null };
       }
     },
     accounts: {
@@ -677,6 +735,7 @@
     // السجل بيتحفظ محليًا + على الديسك زي ما هو، والعلامة بتتمحي أول ما الجدول يظهر.
     // غير كده (نت مثلاً) المحاولة بتفضل عادية — صمت فشل المزامنة ممنوع (درس build 108).
     if (name === "fixed_assets" && FA_TABLE_MISSING) return Promise.resolve();
+    if (name === "cashier_shifts" && CS_TABLE_MISSING) return Promise.resolve();
     var local = meta.local() || [];
     var client = DATA.client();
     return client.from(name).select("id, local_id").then(function (res) {
@@ -816,6 +875,7 @@
     W.loadedTables = {};
     probeProductUnit(); // 🆕 نعرف هل عمود unit موجود على السحابة قبل أول رفع أصناف
     probeFixedAssetsTable(); // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
+    probeCashierShiftsTable(); // 🧾 بناء 176: هل جدول cashier_shifts اتعمل (ترحيل ٥٤) ولا لسه
     // 🆕 بناء 125 (بند 16): هل جدول messages اتعمل (ترقية ٤٥) ولا لسه على القرص بس.
     // الفحص ده بيحدد وحده ظهور تبويب «الدردشة» — فالترحيل لما يتنفّذ بأمر المالك
     // التبويب يطلع لوحده من نفس اللحظة، وبلا أي تغيير كود. (الجدول **ممنوع** يدخل
@@ -824,7 +884,7 @@
     // بعد loadAll يلاقي العلامة متظبطة فعلًا، فالتبويب يطلع من أول رسم.
     var chatProbe = probeChatTable();
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
-      "fixed_assets"];
+      "fixed_assets", "cashier_shifts"];
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
     var eagerFallback = eagerLoad ? null : function (n) {
       return DATA.client().from(n).select("*").order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });

@@ -2487,3 +2487,23 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .inv-sum-row b.amount-neg { color:#b91c1c; }
 .inv-sum-row b.amount-pos { color:#065f46; }
 
+/* 🧾 بناء 176: ورديات الكاشير */
+.shift-info { display:flex; flex-direction:column; gap:6px; background:#f8fafc; border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin:8px 0; }
+.shift-kv { display:flex; justify-content:space-between; align-items:center; gap:12px; font-size:13px; color:#334155; }
+.shift-kv b { font-weight:800; color:#0f172a; }
+.shift-kv.strong { border-top:1px dashed var(--border); padding-top:6px; font-size:15px; }
+.shift-kv.strong b { font-size:17px; color:#0b5cad; }
+.shift-denoms { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin:8px 0; }
+.shift-denom { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:13px; background:#fff; border:1px solid var(--border); border-radius:8px; padding:6px 10px; }
+.shift-denom input { width:80px; padding:4px 6px; font-size:13px; text-align:center; }
+#shiftPrintPage.statement-page { padding: 8mm; }
+#shiftPrintPage .print-head h2 { margin:0; font-size:20px; }
+#shiftPrintPage .print-head h3 { margin:2px 0 10px; font-size:15px; color:#334155; }
+#shiftPrintPage .print-meta { display:flex; flex-wrap:wrap; gap:6px 24px; font-size:13px; margin-bottom:10px; }
+#shiftPrintPage .print-table { width:100%; border-collapse:collapse; }
+#shiftPrintPage .print-table th, #shiftPrintPage .print-table td { border:1px solid #94a3b8; padding:6px 8px; }
+#shiftPrintPage tr.tot td { background:#f1f5f9; }
+#shiftPrintPage .print-foot { margin-top:10px; font-size:12px; color:#475569; }
+#mShiftCloseBox #shiftCounted { width:100%; padding:8px; font-size:16px; font-weight:800; text-align:center; }
+@media (max-width: 640px) { .shift-denoms { grid-template-columns:1fr; } .modal.m640 { max-width:96vw; } }
+
