@@ -510,7 +510,7 @@
       rows.forEach((r) => { if (Number(r.id) > m) m = Number(r.id); });
       return m + 1;   // تاريخيًا سطر مستخدم قديم ممكن ياخد id = 1 ⇒ ما نتكرارش معاه
     };
-    if (Array.isArray(customers) && customers.length) {
+    if (Array.isArray(customers)) {
       let cashCust = customers.find((c) => c.protected === true || String(c.code || "").trim() === "1" || c.code === "CASH" ||
         (Number(c.id) === 1 && String(c.nameAr || "").includes("العميل النقدي")));
       if (cashCust) {
@@ -533,7 +533,7 @@
         });
       }
     }
-    if (Array.isArray(suppliers) && suppliers.length) {
+    if (Array.isArray(suppliers)) {
       let cashSupp = suppliers.find((s) => s.protected === true || String(s.code || "").trim() === "1" ||
         ((s.code === "SUPP-001" || Number(s.id) === 1) && String(s.nameAr || "").includes("المورد النقدي")));
       if (cashSupp) {
@@ -2045,13 +2045,16 @@
     }
     // 🆕 بناء 115: القيود اليومية (اليدوي المحاسبي + التسجيل المبسط) — لصاحب الشركة والمالك فقط
     if (name === "journal") return isSuperAcct() || isCompanyOwnerAcct();
-    // 🧾 بناء 176: «ورديات الكاشير» — المالك وصاحب الشركة دائمًا، والعضو عند التفعيل الصريح
-    // (نمط المرتجعات/الأصول الثابتة). الكاشير يفتحها لفتح/عدّ/تقفيل ورديته.
-    if (name === "cashierShifts") {
-      if (isSuperAcct() || isCompanyOwnerAcct()) return true;
-      if (!DE.featureFlag) return false;
-      return DE.featureFlag("cashierShifts") === true;
-    }
+    // 🧾 بناء 176: «ورديات الكاشير» — الشاشة لسه **قيد الإنشاء** (البنية والمحرّك
+    // بس، بدون واجهة عدّ/تقفيل/تسوية). ممنوعة على الجميع (بما فيهم المالك) لحد
+    // ما تكتمل، تفاديًا لعرض شاشة ناقصة. **لما تخلص الشاشة: اشيل السطر ده وارجّع
+    // البوابة المعتادة** (تحت، معلّقة في التعليق).
+    if (name === "cashierShifts") return false;
+    // if (name === "cashierShifts") {
+    //   if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+    //   if (!DE.featureFlag) return false;
+    //   return DE.featureFlag("cashierShifts") === true;
+    // }
     // 🆕 شاشة «كشف حساب الحسابات» (من القيود اليومية) — نفس بوابة القيود بالظبط
     if (name === "accStatement") return isSuperAcct() || isCompanyOwnerAcct();
     // 📚 بناء 164: «دفتر الأستاذ العام» و«دفتر الأستاذ المساعد» — نفس بوابة القيود (مصدرهم نفسه)
@@ -2561,7 +2564,7 @@
     const q = normalizeAr($("#txtCustomerSearch").value);
 
     customers
-      .filter((c) => !c.protected && c.code !== "1" && c.id !== 1 && !(c.nameAr && c.nameAr.includes("العميل النقدي")))
+      .filter((c) => !c.protected && c.code !== "1" && !(c.nameAr && c.nameAr.includes("العميل النقدي")))
       .filter((c) => {
         if (!q) return true;
         return (
@@ -2692,7 +2695,7 @@
     const sel = $("#pCust");
     sel.innerHTML = "";
     customers
-      .filter((c) => !c.protected && c.code !== "1" && c.id !== 1 && !(c.nameAr && c.nameAr.includes("العميل النقدي")))
+      .filter((c) => !c.protected && c.code !== "1" && !(c.nameAr && c.nameAr.includes("العميل النقدي")))
       .forEach((c) => {
         const opt = document.createElement("option");
         opt.value = c.id;
@@ -2829,7 +2832,7 @@
     const bal = $("#actBalance");
     bal.textContent = "الرصيد الحالي (المديونية): " + fmt(cust.currentBalance) + " ج.م";
     bal.className = "act-bal " + (cust.currentBalance > 0 ? "balance-debit" : "balance-credit");
-    const isCash = cust.protected || cust.code === "1" || cust.id === 1;
+    const isCash = cust.protected === true || cust.code === "1" || cust.code === "CASH";
     const btnDel = $("#actDelete");
     if (btnDel) {
       btnDel.disabled = isCash;
@@ -5947,7 +5950,7 @@
 
   function posSelectDefaultCustomer() {
     const sel = $("#cmbPosCustomer");
-    const def = customers.find((c) => c.code === "1") || customers.find((c) => c.id === 1) || customers.find((c) => c.protected) || customers.find((c) => (c.nameAr || "").includes("كاش") || (c.nameAr || "").includes("نقدي")) || customers[0];
+    const def = customers.find((c) => c.code === "1") || customers.find((c) => c.protected === true) || customers.find((c) => (c.nameAr || "").includes("كاش") || (c.nameAr || "").includes("نقدي")) || customers[0];
     if (def) sel.value = def.nameAr;
   }
 
@@ -6987,7 +6990,7 @@
 
   function ppSelectDefaultSupplier() {
     const sel = $("#cmbPosSupplier");
-    const def = suppliers.find((s) => s.code === "1") || suppliers.find((s) => s.id === 1) || suppliers.find((s) => s.protected) || suppliers.find((s) => (s.nameAr || "").includes("كاش") || (s.nameAr || "").includes("نقدي")) || suppliers[0];
+    const def = suppliers.find((s) => s.code === "1") || suppliers.find((s) => s.protected === true) || suppliers.find((s) => (s.nameAr || "").includes("كاش") || (s.nameAr || "").includes("نقدي")) || suppliers[0];
     if (def) sel.value = def.nameAr;
   }
 
@@ -7534,7 +7537,7 @@
     tbody.innerHTML = "";
     const q = normalizeAr($("#txtSupplierSearch").value);
     suppliers
-      .filter((s) => !s.protected && s.code !== "1" && s.id !== 1 && !(s.nameAr && s.nameAr.includes("المورد النقدي")))
+      .filter((s) => !s.protected && s.code !== "1" && !(s.nameAr && s.nameAr.includes("المورد النقدي")))
       .filter((s) => {
         if (!q) return true;
         return (
@@ -7661,7 +7664,7 @@
     const bal = $("#sactBalance");
     bal.textContent = "الرصيد الحالي (المستحق): " + fmt(s.currentBalance) + " ج.م";
     bal.className = "act-bal " + (s.currentBalance > 0 ? "balance-debit" : "balance-credit");
-    const isCash = s.protected || s.code === "1" || s.id === 1;
+    const isCash = s.protected === true || s.code === "1" || s.code === "CASH";
     const btnDel = $("#sactDelete");
     if (btnDel) {
       btnDel.disabled = isCash;
@@ -7698,7 +7701,7 @@
     const sel = $("#psSupplier");
     sel.innerHTML = "";
     suppliers
-      .filter((s) => !s.protected && s.code !== "1" && s.id !== 1 && !(s.nameAr && s.nameAr.includes("المورد النقدي")))
+      .filter((s) => !s.protected && s.code !== "1" && !(s.nameAr && s.nameAr.includes("المورد النقدي")))
       .forEach((s) => {
         const opt = document.createElement("option");
         opt.value = s.id;
@@ -14950,7 +14953,7 @@
     });
     $("#actDelete").addEventListener("click", () => {
       const cust = actionsCust;
-      if (cust.protected || cust.code === "1" || cust.code === "CASH" || cust.id === 1 || (cust.nameAr && cust.nameAr.includes("العميل النقدي"))) {
+      if (cust.protected === true || cust.code === "1" || cust.code === "CASH" || (cust.nameAr && cust.nameAr.includes("العميل النقدي"))) {
         toast("لا يمكن حذف العميل النقدي (كاش) - محمي بالنظام.", "warning");
         return;
       }
@@ -15347,7 +15350,7 @@
     });
     $("#sactDelete").addEventListener("click", () => {
       const s = actionsSupp;
-      if (s.protected || s.code === "1" || s.code === "SUPP-001" || s.id === 1 || (s.nameAr && s.nameAr.includes("المورد النقدي"))) {
+      if (s.protected === true || s.code === "1" || s.code === "SUPP-001" || (s.nameAr && s.nameAr.includes("المورد النقدي"))) {
         toast("لا يمكن حذف المورد النقدي (كاش) - محمي بالنظام.", "warning");
         return;
       }
