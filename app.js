@@ -6711,6 +6711,7 @@
       dueAmount: t.due,
       partyPrevBalance: cust.protected ? null : (Math.round((Number(cust.currentBalance) || 0) * 100) / 100)
     };
+    try { stampShiftOn(invoice); } catch (e) {}
     // construct items and status after stamp
     invoice.items = posItems.map((it, idx) => ({
       id: idx + 1,
