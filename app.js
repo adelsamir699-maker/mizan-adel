@@ -9003,6 +9003,43 @@
     $("#tName").focus();
   }
 
+  function getMainTreasury() {
+    return treasury.find(x => x.type === "cash") || treasury[0] || null;
+  }
+
+  function openShiftFor(treasuryId, float) {
+    const ca = currentAcct();
+    const cid = ca && (ca.user_id || ca.id || ca.username) ? (ca.user_id || ca.id || ca.username) : activityUser();
+    const cname = ca && (ca.full_name || ca.name) ? (ca.full_name || ca.name) : activityUser();
+    const tr = treasury.find(x => x.id === Number(treasuryId));
+    if (!tr) return { ok: false, msg: "يجب اختيار صندوق (خزينة نقدية)" };
+    const s = {
+      id: nextShiftId(),
+      cashierId: cid,
+      cashierName: cname,
+      cashierKey: String(cid || cname || ""),
+      treasuryId: tr.id,
+      treasuryName: tr.name,
+      openedAt: shiftNowISO(),
+      openingFloat: Number(float) || 0,
+      status: "open",
+      closedAt: null,
+      expectedCash: null,
+      countedCash: null,
+      difference: null,
+      denoms: null,
+      notes: "",
+      settledAt: null,
+      settledBy: null,
+      mainTreasuryId: null,
+      breakdown: { cash: 0, bank: 0, wallet: 0, credit: 0 }
+    };
+    shifts.push(s);
+    try { saveShifts(); } catch (e) {}
+    try { addActivity("فتح وردية", "وردية #" + s.id + " - كاشير " + s.cashierName + " - صندوق " + s.treasuryName + " + رقاقة " + fmt(s.openingFloat) + " ج.م"); } catch (e) {}
+    return { ok: true, shift: s };
+  }
+
   // 🛡 بناء 119: جزّة «إعدادات مؤسستك» (بنوك/محافظ) مع نفس رقم الخزينة.
   // الضبط هو المصدر اللي بيبني منه جدول الخزينة (syncTreasuryFromSett)، فلو ضلّ
   // فيه رقم قديم كان بيرجع يكتبه فوق الرصيد اللي المستخدم عدّله.
