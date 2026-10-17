@@ -40,6 +40,8 @@
   // 🆕 شجرة الحسابات: نسخة محلية من «أصحاب المنشأة» — عشان حسابات الشركاء (رأس المال/المسحوبات)
   // تتولّد وتتزامن من غير ما نحتاج نفتح شاشة الإعدادات. بتُمسح مع تبديل الشركة (تصفير العزل).
   const LS_OWNERS = "mizan_owners_v1";
+  // 🆕 بناء 176: ورديات الكاشير — جلسة استعمال صندوق لحد ما الكاشير يقفلها بأمر.
+  const LS_SHIFTS = "mizan_shifts_v1";
   /* 🧮 بناء 145 → 146: ورق «الجرد بالباركود» على جهاز العميل بس (مافيش جدول سحابي ومافيش ترقية).
      ⚠️ المفتاح **بره** `LS_ALL_KEYS` عندنا عمدًا، والسبب مقاس حيًّا (طلب المالك 06/10 ≈23:50:
      «مش بيحفظ ورقة الجرد»): `guardOrgSwitch()` بينادي `wipeLocalTables()` اللي بتمسح **كل**
@@ -54,7 +56,7 @@
     LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_ACTIVITY, LS_SALES, LS_TREASURY,
     LS_SUPPLIERS, LS_SUP_TXS, LS_PURCHASES, LS_ACCOUNTS, LS_JOURNAL,
     LS_USERS, LS_VOUCHERS, LS_SALE_RETURNS, LS_PURCHASE_RETURNS, LS_SETTINGS,
-    LS_FIXED_ASSETS, LS_OWNERS
+    LS_FIXED_ASSETS, LS_OWNERS, LS_SHIFTS
   ];
   // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
@@ -311,7 +313,11 @@
     taxRateBuy: TAX.rateBuy,
     plan: "فردي (مستخدم واحد)",
     planEnd: "",
-    planStatus: "تجربة 🧪"
+    planStatus: "تجربة 🧪",
+    // 🆕 بناء 176: إعدادات ورديات الكاشير (قرار المالك 16/10)
+    shiftBlindCount: true,   // العدّ الأعمى — الكاشير ما يشوفش المتوقّع
+    shiftCountDenoms: false,  // عدّ بالفئات (20/50/100) بدل الإجمالي
+    shiftSettlePerm: "manager" // مين يضغط زرار التسوية: "manager" (المدير فقط) أو "cashier" (يحدده المالك)
   };
 
   /* ================== 🛡 بناء 119: شركة جديدة = بيور ================== */
@@ -473,6 +479,9 @@
   let scSheets = [];
   let scSheetCur = null;
   let settings = {};
+  // 🆕 بناء 176: ورديات الكاشير — كل وردية = جلسة استعمال صندوق (خزينة) برقاقة افتتاحية
+  // تُقفل بأمر فقط (مش بالوقت) وتُسوّى بعدين بتحويل الصندوق على الخزينة الرئيسية.
+  let shifts = [];
   let editingId = null;
 
   /* ================== أدوات ================== */
@@ -1172,6 +1181,8 @@
       scSheets = scSheetsRead();
       scSheetCur = null;
       settings = Object.assign({}, defaultSettings, JSON.parse(localStorage.getItem(LS_SETTINGS)) || {});
+      // 🆕 بناء 176: تحميل ورديات الكاشير
+      shifts = JSON.parse(localStorage.getItem(LS_SHIFTS)) || [];
       TAX.enabled = settings.taxEnabled == null ? TAX.enabled : Boolean(settings.taxEnabled);
       if (settings.taxRate != null) {
         const r = parseFloat(settings.taxRate) || 0;
@@ -1201,6 +1212,7 @@
       fixedAssets = [];
       scSheets = []; scSheetCur = null; scLoadedKey = null;   // المتصفح رفض القراءة ⇒ أساس الذاكرة راح
       settings = Object.assign({}, defaultSettings);
+      shifts = [];
     }
     // 🛡 بناء 122: ذيل «أثبّت الفاضي على القرص» ما يقعّش الإقلاع. في متصفح بيرفض
     // لمس localStorage (وضع خاص قديم / iframe محجوب الكوكيز) كان بيطير Exception من
@@ -1223,6 +1235,7 @@
       if (!localStorage.getItem(LS_SALE_RETURNS)) saveSaleReturns();
       if (!localStorage.getItem(LS_PURCHASE_RETURNS)) savePurchaseReturns();
       if (!localStorage.getItem(LS_FIXED_ASSETS)) saveFixedAssets();
+      if (!localStorage.getItem(LS_SHIFTS)) saveShifts();
       if (!localStorage.getItem(LS_SETTINGS)) saveSettings();
     } catch (e) {
       console.warn("mizan: المتصفح رفض تثبيت الحالة على القرص — البرنامج شغال في الذاكرة", e && e.message);
@@ -1299,6 +1312,12 @@
 
   function saveSettings() {
     localStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
+  }
+
+  // 🆕 بناء 176: حفظ ورديات الكاشير — محلي أولًا ثم رفع سحابي ثم لقطة الديسك
+  function saveShifts() {
+    localStorage.setItem(LS_SHIFTS, JSON.stringify(shifts));
+    pushTable("cashier_shifts"); syncToLocalDisk();
   }
 
   function saveActivity() {
@@ -1809,7 +1828,8 @@
     // «قيد التطوير» ولا يفتح الشاشة إطلاقًا (نفس صنف باگ بناء 125). الحارس الثابت بايتش.
     // 🧾 بناء 163: «ضريبة المبيعات» اتضافت لنفس القائمة (وإلا الزرار يرمي «قيد التطوير»).
     // 📚 بناء 164: «دفتر الأستاذ العام/المساعد» لنفس القائمة (وإلا الزرار يرمي «قيد التطوير»).
-    "chartTree", "salesTax", "glLedger", "subLedger"];
+    // 🧾 بناء 176: «ورديات الكاشير» — لنفس القائمة (وإلا الزرار يرمي «قيد التطوير»).
+    "chartTree", "salesTax", "glLedger", "subLedger", "cashierShifts"];
 
   // حساب المستخدم الحالي — المصدر الموثوق هو mizan_access (فيه role + is_superadmin)
   // لأن getProfile() قد يكون null أو ناقصًا لحظة الدخول.
@@ -2025,6 +2045,13 @@
     }
     // 🆕 بناء 115: القيود اليومية (اليدوي المحاسبي + التسجيل المبسط) — لصاحب الشركة والمالك فقط
     if (name === "journal") return isSuperAcct() || isCompanyOwnerAcct();
+    // 🧾 بناء 176: «ورديات الكاشير» — المالك وصاحب الشركة دائمًا، والعضو عند التفعيل الصريح
+    // (نمط المرتجعات/الأصول الثابتة). الكاشير يفتحها لفتح/عدّ/تقفيل ورديته.
+    if (name === "cashierShifts") {
+      if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+      if (!DE.featureFlag) return false;
+      return DE.featureFlag("cashierShifts") === true;
+    }
     // 🆕 شاشة «كشف حساب الحسابات» (من القيود اليومية) — نفس بوابة القيود بالظبط
     if (name === "accStatement") return isSuperAcct() || isCompanyOwnerAcct();
     // 📚 بناء 164: «دفتر الأستاذ العام» و«دفتر الأستاذ المساعد» — نفس بوابة القيود (مصدرهم نفسه)
@@ -3130,7 +3157,7 @@
      🔳 الباركود — بناء 139 (CODE 128 · Set B · دولجين في المتصفح)
      ══════════════════════════════════════════════════════════════════════
      أمر المالك الحرفي (04/10): «توليد الباركود للأصناف (إضافة + الموجودين)
-     + زرار طباعة الباركود قدام ��ل صنف بالمخزون».
+     + زرار طباعة الباركود قدام كل صنف بالمخزون».
      ليه من غير مكتبة: الحزمة المنشورة على GitHub Pages بتضل ملفات العشرة
      بتوعها بالظبط (مافيش dependency خارجي ولا CDN)، وجدول CODE-128 قياسي
      ومغلق: 107 رمز فقط ⇒ يبقى سطرًا في الكود بدل مكتبة.
@@ -7753,7 +7780,7 @@
     postPartyTxJournal("supp", txRow, tr, supp ? supp.nameAr : "");
     hideModal("mPaySuppDebt");
     addActivity("سداد مورد", "سداد مستحقات " + supp.nameAr + " بمبلغ " + fmt(amount) + " ج.م" + (tr ? " من " + tr.name : ""));
-    toast("تم تسجيل السداد بنجاح وتحدي�� رصيد الحساب.", "success");
+    toast("تم تسجيل السداد بنجاح وتحديث رصيد الحساب.", "success");
     renderSuppliers();
     if (typeof renderTreasury === "function") renderTreasury();
     if (typeof renderTreMoves === "function") renderTreMoves();
@@ -8897,6 +8924,56 @@
     });
     Object.keys(map).forEach((k) => { map[k].in = Math.round(map[k].in * 100) / 100; map[k].out = Math.round(map[k].out * 100) / 100; });
     return map;
+  }
+
+  /* ================== 🧾 ورديات الكاشير (بناء 176) ==================
+     - الكاشير يفتح وردية على صندوق (treasury type=cash) برقاقة افتتاحية
+     - الوردية تقفل بأمر فقط (مش بالوقت) — يتم الترحيل عند الإغلاق (فرق العدّ الأعمى)
+     - التسوية = تحويل رصيد الصندوق على الخزينة الرئيسية (بصلاحية مدير)
+     - الحسابات: حساب عجز/زيادة يُنشأ تلقائياً لكل صندوق (باسم الكاشير)
+  */
+
+  function shiftNowISO() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+
+  function currentShift() {
+    const ca = currentAcct();
+    const cid = ca && (ca.user_id || ca.id || ca.username || ca.full_name) ? (ca.user_id || ca.id || ca.username || ca.full_name) : activityUser();
+    const cname = ca && (ca.full_name || ca.name) ? (ca.full_name || ca.name) : activityUser();
+    const uidKey = String(cid || cname || "");
+    return shifts.find(s => s.status === "open" && (s.cashierKey === uidKey || s.cashierId === cid || s.cashierName === cname)) || null;
+  }
+
+  function activeShift() { return currentShift(); }
+
+  function nextShiftId() {
+    return (shifts.reduce((m, x) => Math.max(m, x.id || 0), 0)) + 1;
+  }
+
+  function shiftOverShortAccountName(treasuryName, cashierName) {
+    const tn = String(treasuryName || "صندوق").replace(/^\s+|\s+$/g, "");
+    const cn = String(cashierName || "كاشير").replace(/^\s+|\s+$/g, "");
+    return "عجز/زيادة - " + tn + " - " + cn;
+  }
+
+  function ensureShiftOverShortAccount(treasuryName, cashierName) {
+    const nm = shiftOverShortAccountName(treasuryName, cashierName);
+    let a = accounts.find(x => x.isActive !== false && String(x.nameAr) === nm);
+    if (a) return a;
+    const parent = ensureJrnAccount("5.1") || accounts.find(x => x.code === "5.1" && x.isActive !== false) || accounts.find(x => x.code === "5.1");
+    if (parent && parent.isActive === false) parent.isActive = true;
+    a = { id: nextAccountId(), code: "", nameAr: nm, type: "expense", parentId: parent ? parent.id : (accounts.find(x => x.code === "5") ? accounts.find(x => x.code === "5").id : 0), openingBalance: 0, isActive: true };
+    accounts.push(a);
+    saveAccounts();
+    return a;
+  }
+
+  function stampShiftOn(obj) {
+    const s = activeShift();
+    if (s && obj && typeof obj === "object" && obj.shiftId == null) obj.shiftId = s.id;
   }
 
   function openTreasuryDialog(t) {
@@ -11451,7 +11528,7 @@
    */
   const BS_OPERATIONAL = ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "2.1.1", "2.1.2", "2.1.3"];
   // 🆕 بناء 149 (سطر ٤): الاستبعاد يبقى **بالدور** مش بالنص الحرفي — أدلة 6 شركات بلا نقاط خالص
-  // (111 صناديق / 115 مديونيات العملاء / 132 مستحقات الموردين / 133 ��ريبة…) كانت بتتحسب
+  // (111 صناديق / 115 مديونيات العملاء / 132 مستحقات الموردين / 133 ضريبة…) كانت بتتحسب
   // **مرتين** في المركز المالي: مرة من الحركة (خزائن/عملاء/موردين/أصناف) ومرة من الدليل،
   // وده بالظبط «رصيد الحساب في كشف حساب الحسابات ≠ رصيده في قائمة المركز المالي».
   const BS_OP_ROLES = [
@@ -15719,7 +15796,7 @@
     });
     // 🛡 بناء 141: مافيش تبويبات «شركة جديدة / لدي رمز دعوة» — الشاشة واحدة ووظيفتها
     // إدخال رمز الدعوة بس (قرار المالك «علشان محدش يعمل حسابات تجريبية»).
-    // أي كود قديم كان بيبدّل بينهم اتشال من ال��لف، فمافيش مسار يورّي خانة اسم شركة.
+    // أي كود قديم كان بيبدّل بينهم اتشال من الملف، فمافيش مسار يورّي خانة اسم شركة.
 
 const pwEye = document.getElementById("btnShowPass");
     if (pwEye) {
@@ -17397,12 +17474,13 @@ const pwEye = document.getElementById("btnShowPass");
         ["catTab", "تبويب التصنيفات"], ["unitTab", "تبويب وحدات القياس"], ["whTab", "تبويب المستودعات"],
         ["walletTab", "تبويب المحافظ الإلكترونية"], ["bankTab", "تبويب حسابات البنوك"], ["ownerTab", "تبويب أصحاب المنشأة"],
         ["docManager", "📁 إدارة مستندات العملاء والموردين"],
-        ["returnsManager", "🔁 إدارة المرتجعات"],
-        ["fixedAssets", "🏭 الأصول الثابتة"]
-        ];
+    ["returnsManager", "🔁 إدارة المرتجعات"],
+    ["fixedAssets", "🏭 الأصول الثابتة"],
+    ["cashierShifts", "🧾 ورديات الكاشير"]
+    ];
 
   // صلاحيات opt-in: owner/سوبر أدمن عندهما دائمًا، والعضو ما عندهاش إلا لو فُعّلت صريحًا
-  const OPT_IN_FEATS = ["clientSettings", "docManager", "returnsManager", "fixedAssets"];
+  const OPT_IN_FEATS = ["clientSettings", "docManager", "returnsManager", "fixedAssets", "cashierShifts"];
 
   /* 🆕 بناء 131 — كاش مزايا الشركات (قراءة واحدة من `organizations.features`).
    * قبل البناء ده كانت نافذة «⚙️ المزايا» بتفتح وكل الصناديق معلّمة (ما بتقرأش
