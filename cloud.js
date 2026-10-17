@@ -136,6 +136,40 @@
     }).catch(function () { HAS_PRODUCT_UNIT = false; return false; });
   }
 
+  /* 🆕 بناء 179: الخانتين «آخر سعر شراء» و«متوسط سعر الشراء» (طلب المالك 17/10 عن أعمدة
+     الإكسيل الثلاثة). العمودين `last_purchase_price` / `avg_purchase_price` اتعملوا على
+     السحابة، والفحص ده بيأكد وجودهم قبل أول رفع عشان أي سيرفر/قاعدة مالهاش العمودين
+     ما يرفضش طلب مزامنة الأصناف كله (42703) — نفس درس unit في بناء 117.
+     ⚠️ الحماية التانية (والأهم لـ«بيانات رافّت ما تتمسحش»): الخانة **مترفعش خالص** لو
+     قيمتها المحلية صفر. الجهاز اللي لسه على نسخة قديمة (178) مالوش الخانتين دول في
+     مودهله المحلية ⇒ لو بعثنا `0` كان ممكن يكتب صفر فوق سعر حقيقي منزّل من الإكسيل.
+     بمنع رفع الصفر، أي جهاز قديم بيبقى غير قادر يمسح السعر — وأقصى ما يعمله ما يغيّرش حاجة. */
+  var HAS_PRODUCT_PRICES = false;
+  // مثل `localUnitOf` فوق: لو السحابة مالهاش العمودين، السعر اللي في الذاكرة المحلية
+  // (المحسوب من فاتورة شراء على الجهاز ده) ما يضيعش من أول تنزيل.
+  function localPriceOf(localId, field) {
+    var list = (typeof W !== "undefined" && W.products) || [];
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].id) === String(localId)) return Number(list[i][field]) || 0;
+    }
+    return 0;
+  }
+  function probeProductPrices() {
+    return Promise.resolve().then(function () {
+      return DATA.client().from("products").select("last_purchase_price, avg_purchase_price").limit(1);
+    }).then(function (r) {
+      HAS_PRODUCT_PRICES = !(r && r.error);
+      return HAS_PRODUCT_PRICES;
+    }).catch(function () { HAS_PRODUCT_PRICES = false; return false; });
+  }
+  // القيمة اللي ليها وجود فعلًا في الموديل المحلي (ولو الحقل الجديد ناقص = صفر/مش معروف).
+  function priceForCloud(a, b) {
+    var n = Number(a);
+    if (n > 0) return n;
+    n = Number(b);
+    return n > 0 ? n : 0;
+  }
+
   // 🆕 مهمة 98: جدول «الأصول الثابتة» على السحابة بيتعمل بترحيل ٣٧، والمالك هو اللي بيأمر بتنفيذه.
   // لحد ما يتنفّذ بنسجل الأصل محليًا وعلى الديسك زي ما هو عادي، بس ما نحاولش الرفع (مافيش جدول
   // يرفعوله) — عشان كل حفظ ما يطلعلوش تحذير «المزامنة وقفت» وهو مالوش سبب.
@@ -235,6 +269,14 @@
         // بس بعد ما نتأكد إن العمود موجود فعلًا، لأن رفع عمود غير معروف بيرفض طلب
         // المزامنة كله (42703) ويوقف رفع الأصناف. الفحص بيجري مرة واحدة جوه loadAll.
         if (HAS_PRODUCT_UNIT) row.unit = r.unit || "";
+        // 🆕 بناء 179: العمودين الجدد بترفع **بس** لو موجودين على السحابة **وبس** لو ليها
+        // قيمة فعلية — صفر مش بيرفع خالص (جهاز على نسخة قديمة مايمسحش سعرًا منزّلًا من الإكسيل).
+        if (HAS_PRODUCT_PRICES) {
+          var lp = priceForCloud(r.lastPurchasePrice, r.purchasePrice);
+          var ap = priceForCloud(r.avgPurchasePrice, priceForCloud(r.weightedAvgCost, lp));
+          if (lp > 0) row.last_purchase_price = lp;
+          if (ap > 0) row.avg_purchase_price = ap;
+        }
         return row;
       },
       fromCloud: function (r) {
@@ -250,7 +292,14 @@
           // (كانت بتتكتب "" ثابت → كل صنف بيفقد وحدته بعد أي تحميل من السحابة والفاتورة تطلع فاضية)
           unit: String(r.unit || localUnitOf(r.local_id) || ""),
           defaultWarehouse: "المخزن الرئيسي", purchasePrice: Number(r.purchase_price || 0),
-          weightedAvgCost: Number(r.purchase_price || 0), salePrice: Number(r.sale_price || 0),
+          // 🆕 بناء 179: الخانتين بترجعوا من العمودين الجدد، ولو السحابة مالهاش العمودين
+          // (سيرفر قديم / ترحيل ما اتنفّذش) بترجع لسعر الشراء القديم ⇒ مافيش صنف يطلع فاضي.
+          // ⚠️ كان `weightedAvgCost: Number(r.purchase_price||0)` دايمًا — ده اللي كان بيمنع
+          // المتوسط الحقيقي (المتوسط اللي من الإكسيل / المحسوب من الفواتير) إنه يوصل للشاشة.
+          lastPurchasePrice: priceForCloud(priceForCloud(r.last_purchase_price, r.purchase_price), localPriceOf(r.local_id, "lastPurchasePrice")),
+          avgPurchasePrice: priceForCloud(priceForCloud(r.avg_purchase_price, r.purchase_price), localPriceOf(r.local_id, "avgPurchasePrice")),
+          weightedAvgCost: priceForCloud(priceForCloud(r.avg_purchase_price, r.purchase_price), localPriceOf(r.local_id, "weightedAvgCost")),
+          salePrice: Number(r.sale_price || 0),
           discountPercent: 0, discountStart: "", discountEnd: "",
           stock: stock, qty: Number(r.stock_qty || 0), reorder: Number(r.min_stock || 0),
           isActive: r.is_active !== false };
@@ -927,6 +976,7 @@
     // (فاتورة مشتريات آجلة تختفي من مستحقات الموردين في المركز المالي) — فبتتمنع.
     W.loadedTables = {};
     probeProductUnit(); // 🆕 نعرف هل عمود unit موجود على السحابة قبل أول رفع أصناف
+    probeProductPrices(); // 🆕 بناء 179: هل عمودان «آخر سعر شراء/المتوسط» موجودين قبل أول رفع أصناف
     probeFixedAssetsTable(); // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
     probeCashierShiftsTable(); // 🧾 بناء 176: هل جدول cashier_shifts اتعمل (ترحيل ٥٤) ولا لسه
     probeCarTripsTable(); // 🚚 بناء 178: هل جدول car_trips اتعمل (ترحيل ٥٥) ولا لسه

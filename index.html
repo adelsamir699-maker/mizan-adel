@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4.1"; // رقم المنتج (داخلي — قرار المالك ما بيتغيرش كل نشر)
-    window.MIZAN_BUILD = 178;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
+    window.MIZAN_BUILD = 179;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
 
     (function () {
       var m = performance && performance.getEntriesByType && performance.getEntriesByType("navigation");
@@ -59,7 +59,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=178" />
+  <link rel="stylesheet" href="styles.css?v=179" />
 </head>
 <body>
 
@@ -368,7 +368,7 @@
             <button id="btnPQuickAddProduct" class="btn teal" type="button">➕ إضافة صنف جديد للمخزن</button>
             <button id="btnPQuickAddSupp" class="btn orange" type="button">➕ إضافة مورد جديد</button>
           </div>
-          <h1 class="view-title">📦 شاشة فواتير المشتريات والتوريد (مع حساب متوسط التكلفة المرجح)<span class="screen-only"> - By Adel Samir - واتس: 01002655282</span></h1>
+          <h1 class="view-title">📦 شاشة فواتير المشتريات والتوريد (مع حساب متوسط سعر الشراء)<span class="screen-only"> - By Adel Samir - واتس: 01002655282</span></h1>
         </div>
 
         <div class="pos-fields">
@@ -539,8 +539,8 @@
                 <th style="width:9%">التصنيف</th>
                 <th style="width:7%">الوحدة</th>
                 <th style="width:8%">الرصيد الحالي</th>
-                <th style="width:10%">سعر الشراء / التكلفة</th>
-                <th style="width:10%">متوسط التكلفة</th>
+                <th style="width:10%">آخر سعر شراء</th>
+                <th style="width:10%">متوسط سعر الشراء</th>
                 <th style="width:9%">سعر البيع</th>
                 <th style="width:8%">الخصم</th>
                 <th style="width:7%">الحالة</th>
@@ -2527,8 +2527,10 @@
         <select id="fPUnit"></select>
         <label for="fPWarehouse">المستودع الافتراضي للصنف:</label>
         <select id="fPWarehouse"></select>
-        <label for="fPPurchase">سعر الشراء / التكلفة (ج.م):</label>
+        <label for="fPPurchase">آخر سعر شراء (ج.م):</label>
         <input type="text" id="fPPurchase" value="0.00" autocomplete="off" />
+        <label for="fPAvgPurchase">متوسط سعر الشراء (محسوب تلقائيًا):</label>
+        <input type="text" id="fPAvgPurchase" value="0.00" readonly tabindex="-1" />
         <label for="fPSale">سعر البيع الافتراضي (ج.م):</label>
         <input type="text" id="fPSale" value="0.00" autocomplete="off" />
         <label for="fPStock">الرصيد الافتتاحي (الكمية):</label>
@@ -2862,7 +2864,7 @@
         <select id="qUnit"></select>
         <label for="qQty">الرصيد الافتتاحي في المخزن:</label>
         <input type="text" id="qQty" value="10" autocomplete="off" />
-        <label for="qCost">سعر الشراء / التكلفة (ج.م):</label>
+        <label for="qCost">آخر سعر شراء (ج.م):</label>
         <input type="text" id="qCost" value="100" autocomplete="off" />
         <label for="qSale">سعر البيع (ج.م): *</label>
         <input type="text" id="qSale" value="150" autocomplete="off" />
@@ -3627,12 +3629,12 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=178"></script>
-  <script src="supabase.config.js?v=178"></script>
-  <script src="data.js?v=178"></script>
-  <script src="cloud.js?v=178"></script>
-  <script src="install.js?v=178"></script>
-  <script src="app.js?v=178"></script>
+  <script src="lib_supabase.js?v=179"></script>
+  <script src="supabase.config.js?v=179"></script>
+  <script src="data.js?v=179"></script>
+  <script src="cloud.js?v=179"></script>
+  <script src="install.js?v=179"></script>
+  <script src="app.js?v=179"></script>
   <script>
     /* كاشف أخطاء على الشاشة — بقى **للمالك بس** (طلب المالك الحرفي 07/10: رسالة إنجليزية
        حمراء `TypeError …` ظهرت للبائع وهو بيكتب صنف في الفاتورة، وقاعدته السارية

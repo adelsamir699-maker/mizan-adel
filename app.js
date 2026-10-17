@@ -1119,6 +1119,8 @@
       defaultWarehouse: "المخزن الرئيسي",
       purchasePrice: 0,
       weightedAvgCost: 0,
+      lastPurchasePrice: 0,
+      avgPurchasePrice: 0,
       salePrice: 0,
       discountPercent: 0,
       discountStart: "",
@@ -1422,6 +1424,28 @@
   // نص مبلغ نضيف للحانات اللي المستخدم بيكتب فيها (بلا فواصل — عشان fmt+parseFloat كانا باگ)
   function moneyStr(n) {
     return String(Math.round((Number(n) || 0) * 100) / 100);
+  }
+
+  /* ================== 🆕 بناء 179: الخانتين «آخر سعر شراء» و«متوسط سعر الشراء» ==================
+   * طلب المالك (17/10): «نفس الـ3 أعمدة أسعار اللي في الإكسيل... آخر سعر شراء هياخد من آخر
+   * فاتورة شراء خاصة بالمنتج ده أوتوماتيك، ومتوسط سعر الشراء ده اللي هيحسب المتوسط، وسعر
+   * البيع المستخدم بيحدده». ⇒ الجدول بقى ٣ أعمدة: آخر سعر شراء / متوسط سعر الشراء / سعر البيع.
+   *
+   * القاعدة: **ممنوع أي خانة تضيع**. الصنف القديم (أو صنف نزل من سحابة ما عندهاش العمودين)
+   * مالوش `lastPurchasePrice`/`avgPurchasePrice` ⇒ الدالتين بترجعوا القيمة الموجودة فعلًا
+   * (`purchasePrice` = سعر الشراء اللي كان كاتبه، `weightedAvgCost` = المتوسط المحسوب) بدل صفر.
+   * فـ build 178 → 179 بلا أي ترحيل: كل صنف بيبان له رقمه اللي كان ظاهر قبل كده. */
+  function lastPriceOf(p) {
+    if (!p) return 0;
+    const last = Number(p.lastPurchasePrice);
+    if (last > 0) return last;
+    return Number(p.purchasePrice) || 0;
+  }
+  function avgPriceOf(p) {
+    if (!p) return 0;
+    const avg = Number(p.avgPurchasePrice);
+    if (avg > 0) return avg;
+    return Number(p.weightedAvgCost) || Number(p.purchasePrice) || 0;
   }
 
   /* ================== 🆕 بناء 123: قاعدة «الإيراد أخضر والمصروف أحمر» ==================
@@ -2472,7 +2496,7 @@
   function profitMarginOf(items) {
     return (items || []).reduce((mm, it) => {
       const pr = products.find((x) => Number(x.id) === Number(it.productId));
-      const cost = pr ? (Number(pr.purchasePrice) || Number(pr.weightedAvgCost) || 0) : 0;
+      const cost = pr ? avgPriceOf(pr) : 0;   // 🆕 179: الهامش على **متوسط سعر الشراء** (قرار المالك)
       return mm + (Number(it.qty) || 0) * ((Number(it.price) || 0) - cost);
     }, 0);
   }
@@ -4600,8 +4624,8 @@
         normalizeAr(p.category).includes(q) ||
         normalizeAr(p.unit).includes(q) ||
         normalizeAr(p.defaultWarehouse).includes(q) ||
-        Number(p.purchasePrice || 0).toString().includes(q) ||
-        Number(p.weightedAvgCost || 0).toString().includes(q) ||
+        Number(lastPriceOf(p)).toString().includes(q) ||
+        Number(avgPriceOf(p)).toString().includes(q) ||
         Number(p.salePrice || 0).toString().includes(q) ||
         (p.isActive ? "نشط" : "معطل").includes(q)
       );
@@ -4626,8 +4650,8 @@
         '<td>' + esc(p.category) + '</td>' +
         '<td>' + esc(p.unit) + '</td>' +
         '<td>' + esc(Number(p.qty).toLocaleString("en-US")) + '</td>' +
-        '<td>' + fmt(p.purchasePrice) + '</td>' +
-        '<td>' + fmt(p.weightedAvgCost) + '</td>' +
+        '<td>' + fmt(lastPriceOf(p)) + '</td>' +
+        '<td>' + fmt(avgPriceOf(p)) + '</td>' +
         '<td>' + fmt(p.salePrice) + '</td>' +
         '<td>' + discBadge + '</td>' +
         '<td>' + stBadge + '</td>' +
@@ -4681,7 +4705,8 @@
       $("#fPBarcode").value = product.barcode || "";
       $("#fPNameAr").value = product.nameAr;
       $("#fPNameEn").value = product.nameEn || "";
-      $("#fPPurchase").value = moneyStr(product.purchasePrice);
+      $("#fPPurchase").value = moneyStr(lastPriceOf(product));
+      $("#fPAvgPurchase").value = moneyStr(avgPriceOf(product));
       $("#fPSale").value = moneyStr(product.salePrice);
       $("#fPStock").value = Number(product.qty).toLocaleString("en-US");
       $("#fPStock").disabled = true;
@@ -4698,6 +4723,7 @@
       $("#fPNameAr").value = "";
       $("#fPNameEn").value = "";
       $("#fPPurchase").value = "0";
+      $("#fPAvgPurchase").value = "0";   // 🆕 179: المتوسط للمسموح بقراه بس — بيتحسب من الفواتير
       $("#fPSale").value = "0";
       $("#fPStock").value = "0";
       $("#fPStock").disabled = false;
@@ -4772,6 +4798,8 @@
         unit: unit,
         defaultWarehouse: $("#fPWarehouse").value || WAREHOUSES[0],
         purchasePrice: purchase,
+        lastPurchasePrice: purchase,
+        avgPurchasePrice: purchase,
         weightedAvgCost: purchase,
         salePrice: sale,
         discountPercent: discount,
@@ -4797,6 +4825,7 @@
       pr.unit = unit;
       pr.defaultWarehouse = $("#fPWarehouse").value || pr.defaultWarehouse;
       pr.purchasePrice = purchase;
+      pr.lastPurchasePrice = purchase;   // 🆕 179: المتوسط (weightedAvgCost) مش بيتلمس — ده محسوب من الفواتير
       pr.salePrice = sale;
       pr.discountPercent = discount;
       pr.discountStart = dStart;
@@ -4875,7 +4904,7 @@
       const pr = products.find((p) => p.id === it.id);
       if (pr) {
         setStockAt(pr, wh, it.qty);
-        pr.weightedAvgCost = pr.weightedAvgCost || pr.purchasePrice;
+        pr.weightedAvgCost = avgPriceOf(pr);
       }
     });
     saveProducts();
@@ -5062,7 +5091,7 @@
   function scSys(p, wh) { return Number(stockAt(p, wh)) || 0; }
   function scSysOf(p) { return scSys(p, scWh()); }
   function scNum(n) { return Number(n || 0).toLocaleString("en-US"); }
-  function scCostOf(p) { return round2(Number(p.weightedAvgCost) || Number(p.purchasePrice) || 0); }
+  function scCostOf(p) { return round2(avgPriceOf(p)); }
 
   // «عدد كل مسحة»: فاضي = ١ (مسحة صنف واحد)، رقم موجب = كما هو، حاجة تانية = مرفوض
   // ⚠️ هنا الخانة اسمها «عدد كل مسحة» وقيمتها قرار البائع نفسه ⇒ المسحة بتنفّذ اللي
@@ -5684,7 +5713,7 @@
       const p = products.find((x) => Number(x.id) === Number(r.id));
       if (!p) return;
       setStockAt(p, sh.wh, r.set);
-      if (!(Number(p.weightedAvgCost) > 0)) p.weightedAvgCost = Number(p.purchasePrice) || 0;
+      if (!(Number(p.weightedAvgCost) > 0)) p.weightedAvgCost = avgPriceOf(p);
     });
     saveProducts();
     try { renderProducts(); } catch (e) { }
@@ -6934,6 +6963,8 @@
       unit: $("#qUnit").value,
       defaultWarehouse: $("#cmbPosWarehouse").value || WAREHOUSES[0],
       purchasePrice: purchase,
+      lastPurchasePrice: purchase,
+      avgPurchasePrice: purchase,
       weightedAvgCost: purchase,
       salePrice: sale,
       discountPercent: disc,
@@ -7062,7 +7093,7 @@
     hint.textContent =
       "🏷️ " + p.nameAr +
       " | 📦 الرصيد في " + wh + ": " + Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit +
-      " | 💰 سعر الشراء: " + fmt(p.purchasePrice) + " ج.م";
+      " | 💰 آخر سعر شراء: " + fmt(lastPriceOf(p)) + " · المتوسط: " + fmt(avgPriceOf(p)) + " ج.م";
   }
 
   /* نفس مصدر التصفير الوحيد في فاتورة الشراء (انظر `posScanStateClear` فوق). */
@@ -7157,7 +7188,7 @@
     if (!(qty > 0)) qty = 1;
     let price = parseFloat(String($("#txtPPPrice").value).replace(/,/g, ""));
     if (!(price > 0)) {
-      price = Number(prod.purchasePrice) || 0;
+      price = lastPriceOf(prod) || 0;
     }
     if (!(price > 0)) {
       toast("اكتب سعر الشراء في خانة (سعر الشراء) قبل إضافة الصنف.", "warning");
@@ -7217,7 +7248,7 @@
     // `readonly` ⇒ اللي فيها من الدليل، فالبيع بيمسك سعر الصنف الممسوح دايمًا. أما
     // «سعر الشراء» **مفتوحة للمالك بإيده** و`ppOnCode` ما تلمسهاش خالص ⇒ أي رقم فيها
     // قرار منه ⇒ المسح يحترمه، وملء الدليل بس لما تكون فاضية (`ppAddItem` كمان بيقبلها).
-    if (!(moneyVal("#txtPPPrice") > 0)) $("#txtPPPrice").value = moneyStr(p.purchasePrice);
+    if (!(moneyVal("#txtPPPrice") > 0)) $("#txtPPPrice").value = moneyStr(lastPriceOf(p));
     const price = moneyVal("#txtPPPrice");
     const typed = moneyVal("#numPPQty");
     /* 🔧 نفس طلب المالك الحيّ (06/10 ≈22:15) ونفس القرار بالحرف في الشراء:
@@ -7448,11 +7479,13 @@
       const p = products.find((x) => Number(x.id) === Number(it.productId));
       if (!p) return;
       const oldQty = Number(p.qty) || 0;
-      const oldCost = Number(p.weightedAvgCost) || 0;
+      const oldCost = avgPriceOf(p);
       const newQty = oldQty + it.qty;
       p.weightedAvgCost = Math.round(((oldCost * oldQty) + (it.price * it.qty)) / newQty * 100) / 100;
+      p.avgPurchasePrice = p.weightedAvgCost;   // 🆕 179: الحقل المعلَن = نفس المحسوب (ممنوع اتنين رقمين)
       addStockAt(p, warehouse, it.qty);
       p.purchasePrice = it.price;
+      p.lastPurchasePrice = it.price;           // 🆕 179: «آخر سعر شراء» بيتاخد من آخر فاتورة شراء أوتوماتيك
     });
     saveProducts();
 
@@ -13362,7 +13395,7 @@
     const bank = bsRound(treasury.filter((t) => t.type === "bank").reduce((m, t) => m + (t.balance || 0), 0));
     const wallet = bsRound(treasury.filter((t) => t.type === "wallet").reduce((m, t) => m + (t.balance || 0), 0));
     const custDebts = bsRound(customers.reduce((m, c) => m + Math.max(c.currentBalance || 0, 0), 0));
-    const invValue = bsRound(products.reduce((m, pr) => m + (pr.qty || 0) * (pr.weightedAvgCost || 0), 0));
+    const invValue = bsRound(products.reduce((m, pr) => m + (pr.qty || 0) * avgPriceOf(pr), 0));
     const suppDebts = bsRound(suppliers.reduce((m, s) => m + Math.max(s.currentBalance || 0, 0), 0));
     // 🧾 بناء 163: ض.ق.م من القيود مباشرة (تشمل المرتجعات والمدفوعات والرصيد الافتتاحي) ⇒ نفس رقم التبويبة بالقرش
     let taxLiability;
