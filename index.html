@@ -1250,6 +1250,44 @@
         <p class="stk-hint">💡 الأرقام كلها من القيود على حسابي «ض.ق.م المحصّلة» و«ض.ق.م المدفوعة» ⇒ المرتجعات بتتخصّ أوتوماتيك، ونفس الرقم يظهر في «المركز المالي». صف الإجمالي ثابت فوق وأنت بتنزل في الحركات.</p>
       </section>
 
+      <!-- ورديات الكاشير -->
+      <section class="view" id="viewCashierShifts" data-id="cashierShifts" hidden>
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnShiftOpen" class="btn green" type="button">فتح وردية جديدة</button>
+            <button id="btnShiftRefresh" class="btn gray" type="button">تحديث 🔄</button>
+          </div>
+          <h1 class="view-title">🧾 ورديات الكاشير</h1>
+        </div>
+        <div class="sett-box">
+          <div class="sett-toolbar">
+            <span class="filter-label">الحالة:</span>
+            <select id="shiftFilter">
+              <option value="all">الكل</option>
+              <option value="open">مفتوحة</option>
+              <option value="closed">مقفولة</option>
+              <option value="settled">مسوّاة</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="dgv" id="dgvShifts">
+            <thead>
+              <tr>
+                <th style="width:8%">#</th>
+                <th style="width:18%">الكاشير</th>
+                <th style="width:18%">الصندوق</th>
+                <th style="width:12%">وقت الفتح</th>
+                <th style="width:10%">رقاقة افتتاحية</th>
+                <th style="width:10%">الحالة</th>
+                <th style="width:24%">إجراءات</th>
+              </tr>
+            </thead>
+            <tbody id="shiftBody"></tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- ===== 🆕 شاشة سجل الأصول الثابتة (مهمة 98) =====
            طلب المالك: «تسجيل أرصدة الأصول الثابتة (غير المتداولة)». لكل أصل: اسم + تصنيف + فئة +
            تاريخ شراء + تكلفة + إهلاك تراكمي، والصافي محسوب دائمًا (تكلفة − إهلاك) وما يتخزنّش.
