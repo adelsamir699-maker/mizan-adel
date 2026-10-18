@@ -854,17 +854,19 @@
   //  ٢) الحذف بيتم بس للسطور اللي الجهاز ده شافها في آخر تنزيل، وبكمية محدودة.
   function syncOne(name) {
     var meta = META[name];
-    if (!meta || !DATA.isOnline() || !DATA.client()) return Promise.resolve();
+    if (!meta || !DATA.isOnline() || !DATA.client()) return Promise.resolve(null);
     // 🆕 مهمة 98: الجدول لسه ما اتعملش على السحابة (ترحيل ٣٧ بأمر المالك) ⇒ الرفع مالوش مكان.
     // السجل بيتحفظ محليًا + على الديسك زي ما هو، والعلامة بتتمحي أول ما الجدول يظهر.
     // غير كده (نت مثلاً) المحاولة بتفضل عادية — صمت فشل المزامنة ممنوع (درس build 108).
-    if (name === "fixed_assets" && FA_TABLE_MISSING) return Promise.resolve();
-    if (name === "cashier_shifts" && CS_TABLE_MISSING) return Promise.resolve();
-    if (name === "car_trips" && CT_TABLE_MISSING) return Promise.resolve();
+    if (name === "fixed_assets" && FA_TABLE_MISSING) return Promise.resolve(null);
+    if (name === "cashier_shifts" && CS_TABLE_MISSING) return Promise.resolve(null);
+    if (name === "car_trips" && CT_TABLE_MISSING) return Promise.resolve(null);
+    var failed = false;
+    function fail(what, err) { failed = true; syncFailed(what, err); }
     var local = meta.local() || [];
     var client = DATA.client();
     return client.from(name).select("id, local_id").then(function (res) {
-      if (res.error) { syncFailed(name, res.error); return; }
+      if (res.error) { fail(name, res.error); return false; }
       var have = res.data || [];
       var cloudId = {};                                  // local_id -> uuid الموجود على السحابة
       have.forEach(function (r) { if (r && r.local_id != null) cloudId[Number(r.local_id)] = r.id; });
@@ -889,7 +891,7 @@
       var chain = Promise.resolve();
       if (drop.length) {
         chain = client.from(name).delete().in("local_id", drop).then(function (d) {
-          if (d && d.error) syncFailed(name, d.error);
+          if (d && d.error) fail(name, d.error);
         });
       }
       if (rows.length) {
@@ -917,7 +919,9 @@
         rememberIds(name, rows);
         rows.forEach(function (r) { if (cloudId[Number(r.local_id)] == null) cloudId[Number(r.local_id)] = r.id; });
         return syncItems(name, meta, cloudId);
-      }).catch(function (e) { syncFailed(name, e); });
+      }).then(function (itemsSynced) {
+        return !failed && itemsSynced !== false;
+      }).catch(function (e) { fail(name, e); return false; });
     });
   }
 
@@ -925,10 +929,12 @@
   // هوية السطر = (رقم أبيه السحابي + ترتيبه جوه أبوه). مافيش رقم مركّب مشترك بين فاتورتين.
   function syncItems(name, meta, cloudId) {
     var itemsTable = meta.itemsTable;
-    if (!itemsTable) return Promise.resolve();
+    if (!itemsTable) return Promise.resolve(true);
     var client = DATA.client();
     var parentField = meta.itemsParentField || PARENT_OF[itemsTable];
-    if (!parentField) return Promise.resolve();
+    if (!parentField) return Promise.resolve(true);
+    var failed = false;
+    function fail(what, err) { failed = true; syncFailed(what, err); }
     var ids = cloudId || {};
     var items = [];
     (meta.local() || []).forEach(function (p) {
@@ -946,7 +952,7 @@
       });
     });
     return client.from(itemsTable).select("id, local_id, " + parentField).then(function (res) {
-      if (res.error) { syncFailed(itemsTable, res.error); return; }
+      if (res.error) { fail(itemsTable, res.error); return false; }
       var have = res.data || [];
       // لو السطر ده موجود على السحابة في نفس الأب وبنفس ترتيبه → نستخدم رقمه القديم
       var byPos = {}, claimed = {};
@@ -968,7 +974,7 @@
       var chain = Promise.resolve();
       if (drop.length) {
         chain = client.from(itemsTable).delete().in("id", drop).then(function (d) {
-          if (d && d.error) syncFailed(itemsTable, d.error);
+          if (d && d.error) fail(itemsTable, d.error);
         });
       }
       if (items.length) {
@@ -979,16 +985,15 @@
           });
         });
       }
-      return chain.then(function () { rememberIds(itemsTable, items); })
-        .catch(function (e) { syncFailed(itemsTable, e); });
+      return chain.then(function () { rememberIds(itemsTable, items); return !failed; })
+        .catch(function (e) { fail(itemsTable, e); return false; });
     });
 
   }
 
   function push(name) {
     var t = syncOne(name);
-    t.catch(function (e) { syncFailed(name, e); });
-    return t;
+    return t.catch(function (e) { syncFailed(name, e); return false; });
   }
 
   // تحميل كل الجداول إلى الحالة المحلية

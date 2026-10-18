@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "description": "Local tooling dependency for the Mizan browser Excel importer",
+  "scripts": {
+    "test:excel-import": "node tools/check_excel_import.js"
+  },
+  "dependencies": {
+    "exceljs": "4.4.0"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
+  }
+}

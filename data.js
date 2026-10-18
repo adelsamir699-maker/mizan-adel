@@ -766,6 +766,19 @@
       return true;
     });
   }
+  // استيراد صفوف Excel لجدول رئيسي في شركة يختارها مالك البرنامج.
+  // الـ RPC يفرض صلاحية is_superadmin ونطاق الشركة من جهة قاعدة البيانات.
+  function adminImportExcel(orgId, table, mode, rows) {
+    return sb.rpc("mizan_admin_import_excel", {
+      p_org_id: orgId,
+      p_table: table,
+      p_mode: mode,
+      p_rows: rows
+    }).then(function (r) {
+      if (r.error) throw r.error;
+      return r.data || null;
+    });
+  }
   // 🆕 (المهمة المزدوجة) تفريغ شركة كمنشأة جديدة — المالك فقط، ببوّابة كلمة سر المالك نفسها
   function adminResetOrg(orgId, password) {
     return sb.rpc("mizan_admin_reset_org", { p_org_id: orgId, p_password: password }).then(function (r) {
@@ -992,6 +1005,7 @@ function changeMyPassword(oldPass, newPass) {
     adminExportAll: adminExportAll,
     adminExportOne: adminExportOne,
     adminRestoreOne: adminRestoreOne,
+    adminImportExcel: adminImportExcel,
     adminResetOrg: adminResetOrg,
     adminRestoreAll: adminRestoreAll,
     adminBackupFull: adminBackupFull,

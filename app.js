@@ -609,6 +609,11 @@
   }
   window.mizanOnLazyReady = mizanOnLazyReady;
 
+  function isPartyOpeningTx(tx) {
+    const desc = String((tx && tx.desc) || "");
+    return desc.includes("افتتاحي") || desc.includes("أول المدة");
+  }
+
   function recalculateCustomerBalances() {
     ensureCashEntities();
     if (!customers || !txs) return false;
@@ -616,7 +621,7 @@
     customers.forEach((c) => {
       const custTxs = txs.filter((t) => Number(t.customerId) === Number(c.id));
       let bal = 0;
-      const hasOpeningTx = custTxs.some((t) => (t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة"));
+      const hasOpeningTx = custTxs.some(isPartyOpeningTx);
       if (!hasOpeningTx && Number(c.openingBalance || 0) > 0) {
         bal += Number(c.openingBalance || 0);
       }
@@ -634,7 +639,7 @@
     suppliers.forEach((s) => {
       const sTxs = supplierTxs.filter((t) => Number(t.supplierId) === Number(s.id));
       let bal = 0;
-      const hasOpeningTx = sTxs.some((t) => (t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة"));
+      const hasOpeningTx = sTxs.some(isPartyOpeningTx);
       if (!hasOpeningTx && Number(s.openingBalance || 0) > 0) {
         bal += Number(s.openingBalance || 0);
       }
@@ -643,6 +648,42 @@
       });
       s.currentBalance = Math.round(bal * 100) / 100;
     });
+    return true;
+  }
+
+  function applyPartyOpeningBalance(kind, party, opening) {
+    const isCustomer = kind === "customer";
+    const table = isCustomer ? "customer_txs" : "supplier_txs";
+    if (!bigDataLoaded(table)) {
+      toast("حركات الحساب لسه بتنزل — استنى لحظة وجرّب حفظ الرصيد الافتتاحي تاني.", "warning");
+      return false;
+    }
+    const rows = isCustomer ? txs : supplierTxs;
+    const idField = isCustomer ? "customerId" : "supplierId";
+    const openingRows = rows.filter((row) =>
+      Number(row[idField]) === Number(party.id) && isPartyOpeningTx(row)
+    );
+    const amount = round2(opening);
+    party.openingBalance = amount;
+    if (openingRows.length) {
+      const first = openingRows[0];
+      const otherNet = openingRows.slice(1).reduce(
+        (sum, row) => sum + (Number(row.debit) || 0) - (Number(row.credit) || 0), 0
+      );
+      const firstNet = round2(amount - otherNet);
+      first.debit = Math.max(firstNet, 0);
+      first.credit = Math.max(-firstNet, 0);
+    } else if (amount !== 0) {
+      const row = {
+        id: isCustomer ? nextTxId() : supplierTxs.reduce((max, tx) => Math.max(max, Number(tx.id) || 0), 0) + 1,
+        [idField]: party.id,
+        date: todayISO(),
+        desc: isCustomer ? "رصيد افتتاحي (أول المدة)" : "رصيد افتتاحي (مستحق للمورد)",
+        debit: Math.max(amount, 0),
+        credit: Math.max(-amount, 0)
+      };
+      rows.push(row);
+    }
     return true;
   }
 
@@ -782,7 +823,7 @@
       tr.balance = Math.round(bal * 100) / 100;
       syncTreasuryItemToSett(tr);
     });
-    saveTreasury();
+    return saveTreasury();
   }
 
   let diskSyncTimer = null;
@@ -931,10 +972,12 @@
 
   function pushTable(name) {
     // الحفظ محلي أولًا دائمًا؛ الرفع للسحابة بيتم بس لو متصل (من غير طابور أوفلاين).
-    if (!A.online || A.adopting || A.cleaning) return;
-    if (!window.CLOUD) return;
+    if (!A.online || A.adopting || A.cleaning || !window.CLOUD) return null;
     mirror();
-    window.CLOUD.push(name).catch((e) => console.warn("push", name, e.message));
+    return window.CLOUD.push(name).then((ok) => ok === true).catch((e) => {
+      console.warn("push", name, e && e.message ? e.message : e);
+      return false;
+    });
   }
 
   function setDbStatus(txt) {
@@ -1176,7 +1219,7 @@
     p.qty = Math.round(total * 100) / 100;
   }
 
-  /* 🆕 بناء 193 (قاعدة المالك 18/10): الكتابة بقت بالمخزن المحدد بالظبط.
+  /* 🆕 بناء 196 (قاعدة المالك 18/10): الكتابة بقت بالمخزن المحدد بالظبط.
      `stockAt` (قراءة) يفضل راجع للإجمالي لو اسم المخزن مش في الخريطة — ده قرار «السقف» (ممنوع
      رفض بيع وفي مخزون) ومش هيتغيّر. بس `addStockAt` (كتابة) ما ينفعش يستخدم نفس الاحتياطي:
      مقياس قبل التعديل — صنف {الرئيسي:10} وفاتورة على مخزن «فرعي» مش في الخريطة:
@@ -1295,7 +1338,7 @@
 
   function saveTreasury() {
     localStorage.setItem(LS_TREASURY, JSON.stringify(treasury));
-    pushTable("treasury"); syncToLocalDisk();
+    const sync = pushTable("treasury"); syncToLocalDisk(); return sync;
   }
 
 
@@ -1334,7 +1377,7 @@
 
   function saveAccounts() {
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
-    pushTable("accounts"); syncToLocalDisk();
+    const sync = pushTable("accounts"); syncToLocalDisk(); return sync;
   }
 
   function persistJournal() {
@@ -1342,7 +1385,7 @@
     journalEntries.forEach((j) => { const n = Number(j && j.id) || 0; if (n > JRN_ID_FLOOR) JRN_ID_FLOOR = n; });
     idFloorsSave();
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
-    pushTable("journal_entries"); syncToLocalDisk();
+    const sync = pushTable("journal_entries"); syncToLocalDisk(); return sync;
   }
 
   function saveUsers() {
@@ -1354,7 +1397,7 @@
     vouchers.forEach((v) => { const n = Number(v && v.id) || 0; if (n > VOU_ID_FLOOR) VOU_ID_FLOOR = n; });
     idFloorsSave();
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
-    pushTable("vouchers"); syncToLocalDisk();
+    const sync = pushTable("vouchers"); syncToLocalDisk(); return sync;
   }
 
   function saveSettings() {
@@ -2209,7 +2252,7 @@
   // adminAccounts / adminPwBox — **مش** في القائمة دي عمدًا: الإخفاء بتاعها مشروّع لحد ما
   // المالك يضغط زرارها، فالحارس ما يعاندش فتح/قفل اللوحات.
   const ADMIN_PANEL_NODES = ["btnAdminRefresh", "btnAdminAddOrg", "btnAdminSubs",
-    "btnAdminAccounts", "btnAdminPw", "btnAdminLog", "adminStats", "adminAlerts", "adminList"];
+    "btnAdminAccounts", "btnAdminPw", "btnAdminLog", "btnAdminExcel", "adminStats", "adminAlerts", "adminList"];
   // 🛡 بناء 121: آخر شاشة مفتوحة فعلًا — الحارس بيفهم منها إن «لوحة الإدارة»
   // مفروض ظاهرة دلوقتي (لأنها بتتخفي مشروّع لما أي شاشة تانية تتفتح).
   let ownerCurrentView = "";
@@ -2794,7 +2837,7 @@
       $("#fAddress").value = customer.address || "";
       $("#fNotes").value = customer.notes || "";
       $("#fBalance").value = moneyStr(customer.openingBalance);
-      $("#fBalance").disabled = true;
+      $("#fBalance").disabled = false;
     } else {
       $("#addEditTitle").textContent = "إضافة عميل جديد";
       $("#btnSaveCustomer").textContent = "💾 إضافة العميل";
@@ -2846,12 +2889,18 @@
       toast("تمت إضافة العميل بنجاح.", "success");
     } else {
       const cust = customers.find((c) => c.id === editingId);
+      const openingChanged = round2(bal) !== round2(cust.openingBalance || 0);
+      if (openingChanged && !applyPartyOpeningBalance("customer", cust, bal)) return;
       cust.nameAr = name;
       cust.phone = $("#fPhone").value.trim();
       cust.secondaryPhone = $("#fSecPhone").value.trim();
       cust.walletPhone = $("#fWallet").value.trim();
       cust.address = $("#fAddress").value.trim();
       cust.notes = $("#fNotes").value.trim();
+      if (openingChanged) {
+        recalculateCustomerBalances();
+        saveTxs();
+      }
       saveCustomers();
       toast("تم حفظ التعديلات بنجاح.", "success");
     }
@@ -3029,11 +3078,11 @@
           debit: 0, credit: 0
         };
       });
-    const rows = txs
-      .filter((t) => Number(t.customerId) === Number(cust.id))
-      .concat(memoRows)
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-    let run = 0;
+    const partyTxs = txs
+      .filter((t) => Number(t.customerId) === Number(cust.id));
+    const hasOpeningTx = partyTxs.some(isPartyOpeningTx);
+    const rows = partyTxs.concat(memoRows).sort((a, b) => new Date(a.date) - new Date(b.date));
+    let run = hasOpeningTx ? 0 : (Number(cust.openingBalance) || 0);
     return rows.map((t) => {
       run = Math.round((run + t.debit - t.credit) * 100) / 100;
       return {
@@ -7665,7 +7714,7 @@
       saveSupplierTxs();
     }
 
-    // 🆕 بناء 193 (قاعدة المالك 18/10): لقطة أسعار التكلفة **قبل** أي لمس — عشان «حذف الفاتورة
+    // 🆕 بناء 196 (قاعدة المالك 18/10): لقطة أسعار التكلفة **قبل** أي لمس — عشان «حذف الفاتورة
     // يرجّع كل حاجة لحسابها كان الفاتورة متعملتش خالص». اللقطة دي هي المرجع الوحيد للترجيع:
     // المتوسط/سعر الشراء بيتحسبوا من الكميات، فأي محاولة إعادة حساب من جديد بعد الحذف بتدي
     // رقم مختلف (مقياس: 3 سطور بنفس الصنف والكميات ⇒ متوسط 100/103.33/106.67 حسب الترتيب).
@@ -7895,13 +7944,19 @@
     }
     if (suppEditingId) {
       const s = suppliers.find((x) => x.id === suppEditingId);
+      const opening = moneyVal("#fSOpening") || 0;
+      const openingChanged = round2(opening) !== round2(s.openingBalance || 0);
+      if (openingChanged && !applyPartyOpeningBalance("supplier", s, opening)) return;
       s.code = $("#fSCode").value.trim();
       s.nameAr = name;
       s.phone = $("#fSPhone").value.trim();
       s.walletPhone = $("#fSWallet").value.trim();
       s.address = $("#fSAddress").value.trim();
       s.notes = $("#fSNotes").value.trim();
-      s.openingBalance = moneyVal("#fSOpening") || 0;
+      if (openingChanged) {
+        recalculateSupplierBalances();
+        saveSupplierTxs();
+      }
       saveSuppliers();
       addActivity("تعديل مورد", "تعديل بيانات المورد: " + s.nameAr);
       toast("تم حفظ التعديلات بنجاح.", "success");
@@ -7941,11 +7996,11 @@
         desc: "↩️ مرتجع مشتريات رقم " + retNo(r) + " — استلام نقدية بقيمة " + fmt(retCashOf(r)) + " ج.م",
         debit: 0, credit: 0
       }));
-    const rows = supplierTxs
-      .filter((t) => Number(t.supplierId) === Number(sup.id))
-      .concat(memoRows)
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-    let run = (parseFloat(sup.openingBalance) || 0);
+    const partyTxs = supplierTxs
+      .filter((t) => Number(t.supplierId) === Number(sup.id));
+    const hasOpeningTx = partyTxs.some(isPartyOpeningTx);
+    const rows = partyTxs.concat(memoRows).sort((a, b) => new Date(a.date) - new Date(b.date));
+    let run = hasOpeningTx ? 0 : (parseFloat(sup.openingBalance) || 0);
     return rows.map((t) => {
       run = Math.round((run + t.debit - t.credit) * 100) / 100;
       // 🔁 بناء 119: نفس كشف العميل — id + وسيلة الدفع عشان سطر «الدفع النقدي» يتحذف
@@ -8296,7 +8351,7 @@
         saveSupplierTxs();
       }
     }
-    /* 🆕 بناء 193 (قاعدة المالك 18/10 بحرفه): «لو عملت حذف مش ارتجاع لفاتورة عميل دافع جزء وعليه جزء،
+    /* 🆕 بناء 196 (قاعدة المالك 18/10 بحرفه): «لو عملت حذف مش ارتجاع لفاتورة عميل دافع جزء وعليه جزء،
        الحذف يخلي كل حاجة ترجع لحسابها كأن الفاتورة متعملتش خالص: النقدي بنفس القيمة، حساب العميل
        بنفس القيمة، المخزون بنفس القيمة» — والمرتجع هو اللي بيدي اختيار حسابات، الحذف مافيش فيه اختيار.
        فقيمة اللي دخل/خرج من الخزينة بتتقاس بترتيب مصداقية ثابت (ممنوع التخمين):
@@ -8393,7 +8448,7 @@
     // 3) حذف الفاتورة نفسها + سجل النشاط + تحديث الاستعلام
     if (isSales) { sales = sales.filter((x) => x.id !== inv.id); saveSales(); }
     else { purchases = purchases.filter((x) => x.id !== inv.id); savePurchases(); }
-    /* 🆕 بناء 193: السطر ده بقى يتبني من **الأرقام اللي رجعت فعلًا** (`gonePaid` للخزينة،
+    /* 🆕 بناء 196: السطر ده بقى يتبني من **الأرقام اللي رجعت فعلًا** (`gonePaid` للخزينة،
        `goneDue` للطرف، `costBack` للتكلفة) — مش من «الإجمالي − المتبقي» ولا بشرط «آجل» وحده.
        قاعدة المالك: «الحذف يخلي كل حاجة ترجع لحسابها كان الفاتورة متعملتش خالص».
        ممنوع أي اصطلاح تقني للعميل — بصيغة ودّية فيها الاسم والمبلغ بس. */
@@ -11593,15 +11648,16 @@ id: nextVoucherId(),
     return base + "." + n;
   }
 
-  // خزينة → حساب الدليل المقابل (نقدية 1.1.1 / بنك 1.1.2 / محفظة 1.1.3) مع احتياطي بالاسم ثم بالنقدية
+  // خزينة → حساب الدليل المقابل (نقدية 1.1.1 / بنك 1.1.2 / محفظة 1.1.3)، من غير تحويل النوع لحساب نقدية
   // 🆕 بناء 149 (سطر ٤): في الأدلة بلا نقاط الكود يبقى 111/112/113، وكان الاحتياطي بالاسم
   // مشروطًا بـ Number(parentId) !== 0 — و parent_id في الشركات كلها null ⇒ Number(null)===0 ⇒
   // الاحتياطي كان ميت ⇒ الدالة بترجع null ⇒ invoiceJrnPlan يرد {error:"cash"} ⇒ **الترحيل بيتلغى**.
-  // الإصلاح: الكود بالحرف ⇒ نسخة الكود بلا نقاط ⇒ بالاسم (بلا شرط parentId) ⇒ النقدية.
+  // الإصلاح: الكود بالحرف ⇒ نسخة الكود بلا نقاط ⇒ بالاسم (بلا شرط parentId)، وإلا لا يوجد حساب مطابق.
   function accForTreasuryAcc(t) {
     const byCode = { cash: "1.1.1", bank: "1.1.2", wallet: "1.1.3" };
     const byName = { cash: "صناديق", bank: "البنوك", wallet: "المحافظ" };
-    const key = t && byCode[t.type] ? t.type : "cash";
+    const key = t && byCode[t.type] ? t.type : "";
+    if (!key) return null;
     let a = accounts.find((x) => String(x.code) === byCode[key] && x.isActive);
     if (a) return a;
     const bare = byCode[key].replace(/\./g, "");
@@ -11609,23 +11665,26 @@ id: nextVoucherId(),
     if (a) return a;
     a = accounts.find((x) => x.type === "asset" && x.isActive && (x.nameAr || "").includes(byName[key]));
     if (a) return a;
-    a = accounts.find((x) => String(x.code) === "1.1.1" && x.isActive);
-    if (a) return a;
-    return accounts.find((x) => x && x.isActive && String(x.code || "") === "111") || null;
+    return null;
   }
 
   // قائمة خزائن بملصق الرصيد، والنقدية أولًا (المفضل) ثم البنوك فالمحافظ
-  function fillTreasurySelect(selId) {
+  function fillTreasurySelect(selId, labelMainCash) {
     const el = $(selId);
     el.innerHTML = "";
     const ORD = { cash: 0, bank: 1, wallet: 2 };
     const rank = (t) => (ORD[t.type] !== undefined ? ORD[t.type] : 3);
     const list = treasury.slice().sort((a, b) => rank(a) - rank(b) || String(a.name || "").localeCompare(String(b.name || ""), "ar"));
+    const mainCash = labelMainCash
+      ? list.find((t) => t.type === "cash" && String(t.name || "").includes("الصندوق الرئيسي")) || list.find((t) => t.type === "cash")
+      : null;
     list.forEach((t) => {
       const opt = document.createElement("option");
       opt.value = t.id;
       const typeLbl = t.type === "bank" ? "بنك" : t.type === "wallet" ? "محفظة" : "نقدية";
-      opt.textContent = t.name + " (" + typeLbl + ") — رصيد " + fmt(t.balance || 0) + " ج.م";
+      opt.textContent = mainCash && Number(t.id) === Number(mainCash.id)
+        ? "الخزينة — " + t.name + " — رصيد " + fmt(t.balance || 0) + " ج.م"
+        : t.name + " (" + typeLbl + ") — رصيد " + fmt(t.balance || 0) + " ج.م";
       el.appendChild(opt);
     });
     return list;
@@ -11983,8 +12042,8 @@ id: nextVoucherId(),
     $("#trAmount").value = "";
     $("#trNotes").value = "";
     $("#trDate").value = todayISO();
-    const list = fillTreasurySelect("#trAccFrom");
-    fillTreasurySelect("#trAccTo");
+    const list = fillTreasurySelect("#trAccFrom", true);
+    fillTreasurySelect("#trAccTo", true);
     if (list[1]) $("#trAccTo").value = list[1].id;
     else if (list[0]) $("#trAccTo").value = list[0].id;
     $("#trHint").textContent = "💡 التحويل بين حسابات الخزينة (نقدية / بنك / محفظة) يُسجَّل كسند صرف وسند قبض بنفس المبلغ مع قيد واحد — فرصيد كل حساب بيتحدّث تلقائيًا.";
@@ -12006,11 +12065,13 @@ id: nextVoucherId(),
     if (!from || !to) { toast("اختار الحساب المنقول منه والحساب المنقول إليه.", "warning"); return; }
     if (Number(from.id) === Number(to.id)) { toast("لا يمكن التحويل من الحساب إلى نفس الحساب.", "warning"); return; }
     if (!(amount > 0)) { toast("اكتب مبلغًا صحيحًا أكبر من الصفر.", "warning"); return; }
-    // 🔒 بناء 187: حارس «لا ترحيل بلا حساب» (زي باقي مسارات الصرف/القبض). قبل كده التحويل
-    // كان يخصم الرصيد ويسجّل السندين، ولو حساب الخزينة ناقص يتخطّى القيد بصمت ⇒ الدفتر يفترق.
-    ensureJrnStd();
+    // افحص الحسابين قبل أي كتابة؛ التحويل لا ينشئ حسابات بديلة أو يرحّل على حساب آخر.
     const aFrom = accForTreasuryAcc(from);
     const aTo = accForTreasuryAcc(to);
+    if (!aFrom || !aTo) {
+      toast("مش لاقي حساب الدليل المناسب لكل خزينة (نقدية/بنك/محفظة). أضف الحساب الناقص من شاشة الحسابات قبل التحويل.", "warning");
+      return;
+    }
     if (jrnBlocked("التحويل", voucherJrnPlan("out", aFrom, aTo, amount))) return;
     const bal = round2(from.balance);
     if (amount > bal) {
@@ -12023,8 +12084,7 @@ id: nextVoucherId(),
     // 🆕 بناء 182: وسام `refType` عشان العدّاد ما يعدّهوش مصروف/إيراد (حركة داخلية بين خزائن الشركة)
     vouchers.push({ id: baseId + 1, type: "out", treasuryId: Number(from.id), date: date, amount: amount, desc: "سند صرف — " + tag, refType: "تحويل بين الحسابات", refId: "TFV:" + (baseId + 1) });
     vouchers.push({ id: baseId + 2, type: "in", treasuryId: Number(to.id), date: date, amount: amount, desc: "سند قبض — " + tag, refType: "تحويل بين الحسابات", refId: "TFV:" + (baseId + 1) });
-    saveVouchers();
-    recalculateTreasuryBalances();
+    const syncResults = [saveVouchers(), recalculateTreasuryBalances()];
 
     let jNumber = "";
     // 🔒 بناء 187: aFrom/aTo مضمونين (الحارس فوق منع الحفظ لو ناقصين) ⇒ القيد مضمون مع الحركة.
@@ -12047,16 +12107,28 @@ id: nextVoucherId(),
       // 🆕 بناء 152: نفس مصدر الحقيقة لتسوية أرصدة الدليل — settleJrnLines (سطر-سطر)
       settleJrnLines(lines, 1);
       journalEntries.push(j);
-      persistJournal();
-      saveAccounts();
+      syncResults.push(persistJournal(), saveAccounts());
       jNumber = j.number;
     }
     hideModal("mSimpleTransfer");
     addActivity("تحويل بين الحسابات", tag + " بمبلغ " + fmt(amount) + " ج.م");
-    toast("تم التحويل" + (jNumber ? " (قيد " + jNumber + ")" : "") + " بين «" + from.name + "» و«" + to.name + "\".", "success");
     renderJournal();
     renderLedger();
     try { renderTreasury(); renderTreMoves(); } catch (e) { }
+    const transferLabel = "تم التحويل" + (jNumber ? " (قيد " + jNumber + ")" : "") +
+      " بين «" + from.name + "» و«" + to.name + "».";
+    const cloudSyncRequested = A.online && !A.adopting && !A.cleaning && !!window.CLOUD;
+    if (cloudSyncRequested) {
+      Promise.all(syncResults).then((results) => {
+        if (results.length === 4 && results.every((ok) => ok === true)) {
+          toast(transferLabel + " وبياناته اترفعت للسحابة.", "success");
+        } else {
+          toast(transferLabel + " اتحفظ على الجهاز، لكن رفع بعض بياناته للسحابة ما اكتملش أو ما اتأكدش. راجع تنبيه المزامنة.", "warning");
+        }
+      });
+    } else {
+      toast(transferLabel + " اتحفظ على الجهاز فقط؛ ما اترفعش للسحابة.", "warning");
+    }
   }
 
   /* ================== 🆕 بناء 134: الفواتير تترحّل أوتوماتيك للقيود ==================
@@ -16060,6 +16132,7 @@ id: nextVoucherId(),
   // ============ نسخة النشر الكاملة (كود + سكيما + داتا) — ترحيل ٢٣ ============
   // مجلد واحد يشتغل على أي سيرفر: site/ + database.sql + data.json + README
   var DEPLOY_SITE_FILES = ["index.html", "app.js", "data.js", "cloud.js", "install.js",
+    "excel_import.js", "vendor/exceljs.min.js", "vendor/EXCELJS-LICENSE.txt",
     "lib_supabase.js", "manifest.webmanifest", "sw.js", "styles.css", "supabase.config.js",
     "icons/icon-1024.png", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png"];
   var DEPLOY_DB_FILES = ["db/supabase-schema.sql",
@@ -16159,13 +16232,21 @@ id: nextVoucherId(),
     // العدّادان relacl={postgres,service_role} بس · user_id موجود + FK لـ auth.users · 0 سطور.
     // ⚠️ ناقص مسجّل: العمود password_plain لسه موجود (0 منح للمستخدمين عليه + 0 سطور +
     // دالة واحدة بتلمسه) ⇒ شيله نهائيًا = ترقية ٥٨ بأمر المالك.
-    "db/supabase-upgrade-57-security-hardening.sql"];
-  // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
-  // فاضية دلوقتي بالقياس: كل ملف في db/ اتنفّذ على السحابة ⇒ ينشر معه. أي استبعاد جديد لازم يكون
-  // سببه المكتوب **حقيقي** (مش «خايف أنشره») — حارس check_backup_coverage_124.js بيسأل db/ مباشرة.
+    "db/supabase-upgrade-57-security-hardening.sql",
+    // ترقية ٥٩ محفوظة كما نُفذت؛ ترقية ٦٠ تكمل حارس features وتمنع تعديل المدير لصلاحيات حسابه.
+    "db/supabase-upgrade-59-profile-identity-guard.sql",
+    "db/supabase-upgrade-60-profile-self-features-guard.sql",
+    // ترقية ٦١ (استيراد Excel لمالك البرنامج) اتنفّذت على Supabase بأمر المالك
+    // «انشر و ارفع ترقيه»؛ نسخة النشر تحملها كسجل، وإعادة تشغيلها غير مطلوبة.
+    "db/supabase-upgrade-61-excel-import.sql"];
+  // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب.
+  // ترقية ٥٨ ما زالت مستقلة ومحجوزة لإزالة password_plain، وملفات rollback لا تدخل الحزمة.
   // بناء 141: ترقية ٥ـ (قفل التسجيل + دوال الرموز) **اتنفّذت** 5/10 ≈01:29 ⇒ دخلت FILES فوق
   // وبره الاستبعاد زي أخواتها (٤٣→٤٩)، والقاعدة نفسها: أي ملف جديد لسه ما اتنفّذتش يتحط هنا بسبب.
-  var DEPLOY_DB_EXCLUDE = {};
+  var DEPLOY_DB_EXCLUDE = {
+    "db/supabase-rollback-59-profile-identity-guard.sql": "ملف رجوع احتياطي يزيل حارس ترقية ٥٩ ويعيد السياسة السابقة؛ لا يدخل حزمة النشر.",
+    "db/supabase-rollback-60-profile-self-features-guard.sql": "ملف رجوع يعيد تعريف حارس ترقية ٥٩؛ لا يدخل حزمة النشر.",
+  };
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "car_trips", "categories", "cashier_shifts", "customer_txs", "customers",
     "fixed_assets",
@@ -20332,6 +20413,312 @@ const pwEye = document.getElementById("btnShowPass");
     setUserInfo("👤 " + (p && p.full_name ? p.full_name : DATA.email()) + " | الصلاحية: " + roleLabel(adminRow));
   }
 
+  let adminExcelPlan = null;
+  let adminExcelBackup = null;
+  function adminExcelSetStatus(message, isError) {
+    const status = document.getElementById("adminExcelStatus");
+    if (!status) return;
+    status.textContent = message || "";
+    status.className = isError ? "login-msg err" : "login-sub";
+  }
+  function adminExcelResetPreview(message) {
+    adminExcelPlan = null;
+    adminExcelBackup = null;
+    const preview = document.getElementById("adminExcelPreview");
+    const backupBox = document.getElementById("adminExcelBackupBox");
+    const backupAck = document.getElementById("adminExcelBackupAck");
+    const upload = document.getElementById("btnAdminExcelUpload");
+    const mode = document.getElementById("adminExcelMode");
+    if (preview) preview.textContent = "";
+    if (backupBox) backupBox.hidden = !mode || mode.value !== "replace";
+    if (backupAck) backupAck.checked = false;
+    if (upload) upload.disabled = true;
+    adminExcelSetStatus(message || "");
+  }
+  function adminExcelStableJson(value) {
+    if (Array.isArray(value)) return "[" + value.map(adminExcelStableJson).join(",") + "]";
+    if (value && typeof value === "object") {
+      return "{" + Object.keys(value).sort().map((key) =>
+        JSON.stringify(key) + ":" + adminExcelStableJson(value[key])
+      ).join(",") + "}";
+    }
+    return JSON.stringify(value);
+  }
+  function adminExcelRowsFingerprint(rows) {
+    return (rows || []).map(adminExcelStableJson).sort().join("\n");
+  }
+  function adminExcelDownload(name, content) {
+    const blob = new Blob([content], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function adminExcelRenderPreview(plan) {
+    const box = document.getElementById("adminExcelPreview");
+    const upload = document.getElementById("btnAdminExcelUpload");
+    if (!box || !upload) return;
+    const lines = [];
+    lines.push('<p class="login-sub">الجدول: <b>' + esc(plan.table.label) + "</b> — صفوف صالحة: <b>" + plan.rows.length + "</b></p>");
+    lines.push('<p class="login-sub">الأعمدة المتعرّف عليها: ' + esc(plan.mappedHeaders.join("، ")) + "</p>");
+    if (plan.ignoredHeaders.length) {
+      lines.push('<p class="login-sub">أعمدة غير معروفة تم تجاهلها دون تغيير ترتيب البيانات: ' + esc(plan.ignoredHeaders.join("، ")) + "</p>");
+    }
+    if (plan.errors.length) {
+      lines.push('<p class="login-msg err">لن يتم رفع الملف لوجود ' + plan.errors.length + " صف غير صالح:</p><ul>");
+      plan.errors.slice(0, 8).forEach((error) => lines.push("<li>صف " + error.row + ": " + esc(error.message) + "</li>"));
+      if (plan.errors.length > 8) lines.push("<li>وأخطاء أخرى…</li>");
+      lines.push("</ul>");
+    }
+    const columns = plan.table.fields.filter((field) => plan.rows.some((row) => Object.prototype.hasOwnProperty.call(row, field[0])));
+    lines.push('<div class="tbl-wrap"><table class="data-table"><thead><tr>' +
+      columns.map((field) => "<th>" + esc(field[1]) + "</th>").join("") +
+      "</tr></thead><tbody>");
+    plan.rows.slice(0, 5).forEach((row) => {
+      lines.push("<tr>" + columns.map((field) => "<td>" + esc(row[field[0]] == null ? "" : row[field[0]]) + "</td>").join("") + "</tr>");
+    });
+    lines.push("</tbody></table></div>");
+    if (plan.rows.length > 5) lines.push('<p class="login-sub">المعاينة تعرض أول ٥ صفوف فقط.</p>');
+    box.innerHTML = lines.join("");
+    const backupAck = document.getElementById("adminExcelBackupAck");
+    upload.disabled = !plan.rows.length || plan.errors.length > 0 ||
+      (plan.mode === "replace" && (!adminExcelBackup || !backupAck || !backupAck.checked));
+  }
+  function toggleAdminExcel() {
+    if (!isSuperAcct()) {
+      toast("رفع Excel متاح لمالك البرنامج فقط", "error");
+      return;
+    }
+    const box = document.getElementById("adminExcelBox");
+    if (!box) return;
+    box.hidden = !box.hidden;
+    if (box.hidden) return;
+    const tableSelect = document.getElementById("adminExcelTable");
+    if (tableSelect && !tableSelect.dataset.ready && window.MizanExcelImport) {
+      window.MizanExcelImport.TABLES.forEach((table) => {
+        const option = document.createElement("option");
+        option.value = table.key;
+        option.textContent = table.label;
+        tableSelect.appendChild(option);
+      });
+      tableSelect.dataset.ready = "1";
+    }
+    const orgSelect = document.getElementById("adminExcelOrg");
+    if (orgSelect) {
+      orgSelect.innerHTML = '<option value="">جارٍ تحميل الشركات...</option>';
+      DATA.adminOrgs().then((orgs) => {
+        if (!isSuperAcct()) throw new Error("رفع Excel متاح لمالك البرنامج فقط");
+        orgSelect.innerHTML = '<option value="">اختر الشركة</option>';
+        (orgs || []).forEach((org) => {
+          const option = document.createElement("option");
+          option.value = org.org_id;
+          option.textContent = org.org_name || "شركة بدون اسم";
+          orgSelect.appendChild(option);
+        });
+      }).catch((error) => {
+        orgSelect.innerHTML = '<option value="">تعذّر تحميل الشركات</option>';
+        adminExcelSetStatus("تعذّر تحميل قائمة الشركات: " + (error.message || error), true);
+      });
+    }
+    adminExcelResetPreview("");
+  }
+  async function adminExcelPreviewFile() {
+    if (!isSuperAcct()) { toast("رفع Excel متاح لمالك البرنامج فقط", "error"); return; }
+    const file = document.getElementById("adminExcelFile");
+    const org = document.getElementById("adminExcelOrg");
+    const table = document.getElementById("adminExcelTable");
+    const previewButton = document.getElementById("btnAdminExcelPreview");
+    const upload = document.getElementById("btnAdminExcelUpload");
+    adminExcelResetPreview("");
+    if (!file || !file.files || !file.files[0]) {
+      adminExcelSetStatus("اختر ملف Excel أو CSV أولًا.", true);
+      return;
+    }
+    if (!org || !org.value || !table || !table.value) {
+      adminExcelSetStatus("اختر الشركة والجدول أولًا.", true);
+      return;
+    }
+    const input = file.files[0];
+    if (input.size > 10 * 1024 * 1024) {
+      adminExcelSetStatus("حجم الملف أكبر من ١٠ ميجابايت.", true);
+      return;
+    }
+    if (!window.MizanExcelImport || !window.ExcelJS) {
+      adminExcelSetStatus("قارئ ملفات Excel غير متاح؛ لم يتم تغيير أي بيانات.", true);
+      return;
+    }
+    if (previewButton) previewButton.disabled = true;
+    if (upload) upload.disabled = true;
+    adminExcelSetStatus("جارٍ قراءة الملف ومطابقة أسماء الأعمدة...");
+    try {
+      const parsed = await window.MizanExcelImport.parseFile(input, table.value, window.ExcelJS);
+      adminExcelPlan = {
+        orgId: org.value,
+        table: parsed.table,
+        mode: document.getElementById("adminExcelMode").value,
+        fileName: input.name,
+        rows: parsed.rows,
+        mappedHeaders: parsed.mappedHeaders,
+        ignoredHeaders: parsed.ignoredHeaders,
+        errors: parsed.errors
+      };
+      adminExcelRenderPreview(adminExcelPlan);
+      const msg = parsed.errors.length
+        ? "صحّح الصفوف غير الصالحة في الملف ثم أعد اختياره."
+        : ("المعاينة جاهزة — " + parsed.rows.length + " صف.");
+      adminExcelSetStatus(msg, parsed.errors.length > 0);
+    } catch (error) {
+      adminExcelSetStatus(error.message || String(error), true);
+    } finally {
+      if (previewButton) previewButton.disabled = false;
+    }
+  }
+  async function adminExcelDownloadBackup() {
+    if (!isSuperAcct()) { toast("رفع Excel متاح لمالك البرنامج فقط", "error"); return; }
+    const orgSelect = document.getElementById("adminExcelOrg");
+    const tableSelect = document.getElementById("adminExcelTable");
+    const button = document.getElementById("btnAdminExcelBackup");
+    const orgId = orgSelect && orgSelect.value;
+    const table = tableSelect && tableSelect.value;
+    if (!orgId || !table) { adminExcelSetStatus("اختر الشركة والجدول أولًا.", true); return; }
+    if (button) button.disabled = true;
+    adminExcelSetStatus("جارٍ تجهيز نسخة أمان من الجدول المختار...");
+    try {
+      const snapshot = await DATA.adminExportOne(orgId);
+      if (!snapshot || !Array.isArray(snapshot[table])) {
+        throw new Error("لم تصل نسخة أمان كاملة لهذا الجدول؛ لم يتم تفريغ أي بيانات.");
+      }
+      const orgName = (orgSelect.options[orgSelect.selectedIndex] || {}).textContent || "company";
+      const backupRows = snapshot[table];
+      const backup = {
+        exported_at: new Date().toISOString(),
+        organization: { id: orgId, name: orgName },
+        table: table,
+        rows: backupRows
+      };
+      const safeName = String(orgName).replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
+      adminExcelDownload("mizan-excel-before-" + safeName + "-" + table + ".json", JSON.stringify(backup, null, 2));
+      adminExcelBackup = { orgId: orgId, table: table, fingerprint: adminExcelRowsFingerprint(backupRows), count: backupRows.length };
+      const info = document.getElementById("adminExcelBackupInfo");
+      const ack = document.getElementById("adminExcelBackupAck");
+      if (info) info.textContent = "تم تجهيز نسخة من " + backupRows.length + " سجلًا قبل الاستبدال. احتفظ بالملف الذي نُزّل.";
+      if (ack) ack.checked = false;
+      adminExcelSetStatus("نسخة الأمان جاهزة. أكّد أنك حفظتها قبل الاستبدال.");
+    } catch (error) {
+      adminExcelBackup = null;
+      adminExcelSetStatus(error.message || String(error), true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+  async function adminExcelUpload() {
+    if (!isSuperAcct()) { toast("رفع Excel متاح لمالك البرنامج فقط", "error"); return; }
+    const plan = adminExcelPlan;
+    const button = document.getElementById("btnAdminExcelUpload");
+    const mode = document.getElementById("adminExcelMode");
+    if (!plan || !plan.rows.length || plan.errors.length) {
+      adminExcelSetStatus("عاين ملفًا صالحًا قبل الرفع.", true);
+      return;
+    }
+    if (plan.orgId !== document.getElementById("adminExcelOrg").value ||
+        plan.table.key !== document.getElementById("adminExcelTable").value ||
+        plan.mode !== mode.value) {
+      adminExcelResetPreview("تغير الاختيار؛ أعد معاينة الملف.");
+      return;
+    }
+    if (plan.mode === "replace") {
+      const ack = document.getElementById("adminExcelBackupAck");
+      if (!adminExcelBackup || adminExcelBackup.orgId !== plan.orgId ||
+          adminExcelBackup.table !== plan.table.key || !ack || !ack.checked) {
+        adminExcelSetStatus("نزّل نسخة الأمان واحفظها وأكّد ذلك قبل الاستبدال.", true);
+        return;
+      }
+      if (!confirm("سيتم تفريغ جدول «" + plan.table.label + "» في الشركة المختارة ثم إضافة " +
+          plan.rows.length + " صف من الملف. باقي الجداول لن تتغير. هل تريد المتابعة؟")) return;
+      const typed = prompt("للتأكيد النهائي، اكتب كلمة استبدال:");
+      if (typed !== "استبدال") {
+        adminExcelSetStatus("تم إلغاء الاستبدال؛ لم يتغير أي سجل.");
+        return;
+      }
+      try {
+        const current = await DATA.adminExportOne(plan.orgId);
+        if (!current || !Array.isArray(current[plan.table.key]) ||
+            adminExcelRowsFingerprint(current[plan.table.key]) !== adminExcelBackup.fingerprint) {
+          adminExcelBackup = null;
+          const ack = document.getElementById("adminExcelBackupAck");
+          if (ack) ack.checked = false;
+          adminExcelSetStatus("تغير الجدول منذ تنزيل نسخة الأمان. نزّل نسخة جديدة قبل المتابعة.", true);
+          return;
+        }
+      } catch (error) {
+        adminExcelSetStatus("تعذّر التأكد من نسخة الجدول الحالية؛ لم يتم تفريغ أي بيانات.", true);
+        return;
+      }
+    }
+    if (!DATA.adminImportExcel) {
+      adminExcelSetStatus("خدمة الرفع غير جاهزة؛ لم يتم تغيير أي بيانات.", true);
+      return;
+    }
+    if (button) button.disabled = true;
+    adminExcelSetStatus("جارٍ رفع الصفوف للشركة والجدول المختارين...");
+    try {
+      const result = await DATA.adminImportExcel(plan.orgId, plan.table.key, plan.mode, plan.rows);
+      const removed = Number(result && result.removed) || 0;
+      const inserted = Number(result && result.inserted) || 0;
+      adminExcelSetStatus("تمت العملية: أُضيف " + inserted + " سجلًا" +
+        (plan.mode === "replace" ? " بعد تفريغ " + removed + " سجل قديم." : " دون تعديل أو حذف السجلات الموجودة."));
+      toast("اكتمل رفع بيانات Excel", "success");
+      adminExcelPlan = null;
+      adminExcelBackup = null;
+      const preview = document.getElementById("adminExcelPreview");
+      if (preview) preview.textContent = "";
+      const file = document.getElementById("adminExcelFile");
+      if (file) file.value = "";
+      if (button) button.disabled = true;
+    } catch (error) {
+      const code = String((error && error.code) || "");
+      const message = code === "42883"
+        ? "خدمة الرفع غير مجهّزة بعد؛ لم يتغير أي سجل."
+        : (error.message || String(error));
+      adminExcelSetStatus("لم يكتمل الرفع: " + message, true);
+    } finally {
+      if (button && adminExcelPlan) button.disabled = false;
+    }
+  }
+  function setupAdminExcelImport() {
+    const opener = document.getElementById("btnAdminExcel");
+    const preview = document.getElementById("btnAdminExcelPreview");
+    const backup = document.getElementById("btnAdminExcelBackup");
+    const upload = document.getElementById("btnAdminExcelUpload");
+    const org = document.getElementById("adminExcelOrg");
+    const table = document.getElementById("adminExcelTable");
+    const mode = document.getElementById("adminExcelMode");
+    const file = document.getElementById("adminExcelFile");
+    const ack = document.getElementById("adminExcelBackupAck");
+    if (opener) opener.addEventListener("click", toggleAdminExcel);
+    if (preview) preview.addEventListener("click", adminExcelPreviewFile);
+    if (backup) backup.addEventListener("click", adminExcelDownloadBackup);
+    if (upload) upload.addEventListener("click", adminExcelUpload);
+    if (org) org.addEventListener("change", () => adminExcelResetPreview("تغيرت الشركة؛ أعد معاينة الملف."));
+    if (table) table.addEventListener("change", () => adminExcelResetPreview("تغير الجدول؛ أعد معاينة الملف."));
+    if (mode) mode.addEventListener("change", () => {
+      const backupBox = document.getElementById("adminExcelBackupBox");
+      if (backupBox) backupBox.hidden = mode.value !== "replace";
+      adminExcelResetPreview("تغيرت طريقة الرفع؛ أعد معاينة الملف.");
+    });
+    if (file) file.addEventListener("change", () => adminExcelResetPreview("تم اختيار ملف جديد؛ عاينه قبل الرفع."));
+    if (ack) ack.addEventListener("change", () => {
+      if (upload && adminExcelPlan && adminExcelPlan.mode === "replace") {
+        upload.disabled = !ack.checked || !adminExcelBackup ||
+          adminExcelBackup.orgId !== adminExcelPlan.orgId || adminExcelBackup.table !== adminExcelPlan.table.key;
+      }
+    });
+  }
+
   // شاشة بيانات الشركة (ضغط مزدوج)
   function loadOrgMembers(orgId, boxSel, dlg) {
     const box = document.querySelector(boxSel);
@@ -21883,6 +22270,7 @@ const pwEye = document.getElementById("btnShowPass");
 
   function setupAdmin() {
     $("#btnAdmin").addEventListener("click", openAdmin);
+    setupAdminExcelImport();
     $("#btnAdminRefresh").addEventListener("click", renderAdminOrgs);
     const so = $("#admSearchOrg");
     const su = $("#admSearchUser");

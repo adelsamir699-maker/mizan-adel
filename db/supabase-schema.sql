@@ -36,6 +36,7 @@ create table if not exists public.profiles (
   is_active boolean default true,
   blocked boolean default false,
   is_superadmin boolean default false,
+  features jsonb default '{}'::jsonb,
   created_at timestamptz default now()
 );
 
@@ -177,6 +178,105 @@ returns uuid language sql stable security definer set search_path = public
 as $$
   select org_id from public.profiles where id = auth.uid()
 $$;
+
+-- Permitir actualizar un perfil propio o de la misma empresa a su administrador.
+-- SECURITY DEFINER evita recursión de RLS al consultar profiles desde la política.
+create or replace function public.can_manage_org_profiles()
+returns boolean language sql stable security definer set search_path = public, auth, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.profiles actor
+    where actor.id = auth.uid()
+      and (actor.is_superadmin is true or actor.role = 'admin')
+  )
+$$;
+
+-- RLS لا تستطيع مقارنة قيم NEW بقيم OLD؛ الحارس يمنع تغيير هوية/صلاحية العضوية مباشرةً.
+create or replace function public.protect_profile_security_fields()
+returns trigger language plpgsql security definer set search_path = public, auth, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_org uuid;
+  v_role text;
+  v_super boolean;
+begin
+  if new.org_id is not distinct from old.org_id
+     and new.role is not distinct from old.role
+     and new.is_superadmin is not distinct from old.is_superadmin
+     and new.blocked is not distinct from old.blocked
+     and new.is_active is not distinct from old.is_active
+     and new.features is not distinct from old.features then
+    return new;
+  end if;
+
+  -- Database maintenance/service-role calls have no end-user JWT and remain supported.
+  if v_uid is null then return new; end if;
+
+  select org_id, role, is_superadmin
+    into v_org, v_role, v_super
+    from public.profiles
+    where id = v_uid;
+
+  if coalesce(v_super, false) then return new; end if;
+
+  if new.org_id is distinct from old.org_id
+     or new.is_superadmin is distinct from old.is_superadmin then
+    raise exception 'غير مصرح بتغيير شركة الحساب أو صفة مالك البرنامج';
+  end if;
+
+  if new.blocked is distinct from old.blocked
+     and not (
+       v_role = 'admin'
+       and v_org = old.org_id
+       and old.id <> v_uid
+       and old.is_superadmin is not true
+     ) then
+    raise exception 'غير مصرح بتغيير حالة هذا الحساب';
+  end if;
+
+  if new.is_active is distinct from old.is_active
+     and not (
+       v_role = 'admin'
+       and v_org = old.org_id
+       and old.id <> v_uid
+       and old.is_superadmin is not true
+     ) then
+    raise exception 'غير مصرح بتغيير حالة هذا الحساب';
+  end if;
+
+  if new.features is distinct from old.features
+     and not (
+       v_role = 'admin'
+       and v_org = old.org_id
+       and old.id <> v_uid
+       and old.is_superadmin is not true
+     ) then
+    raise exception 'غير مصرح بتغيير صلاحيات هذا الحساب';
+  end if;
+
+  if new.role is distinct from old.role
+     and not (
+       v_role = 'admin'
+       and v_org = old.org_id
+       and old.id <> v_uid
+       and old.is_superadmin is not true
+     ) then
+    raise exception 'غير مصرح بتغيير دور هذا الحساب';
+  end if;
+
+  return new;
+end $$;
+
+drop trigger if exists profiles_protect_security_fields on public.profiles;
+create trigger profiles_protect_security_fields
+  before update on public.profiles
+  for each row execute function public.protect_profile_security_fields();
+
+revoke all on function public.can_manage_org_profiles() from public, anon;
+grant execute on function public.can_manage_org_profiles() to authenticated;
+revoke all on function public.protect_profile_security_fields() from public, anon, authenticated;
 
 -- حالة وصول المستخدم + بيانات الإدارة (الوقت/القفل/الأعضاء/المزايا) للتطبيق
 drop function if exists public.mizan_access();
@@ -361,7 +461,9 @@ drop policy if exists prof_delete on public.profiles;
 create policy prof_select on public.profiles
   for select using (org_id = public.current_org());
 create policy prof_update on public.profiles
-  for update using (org_id = public.current_org());
+  for update
+  using (org_id = public.current_org() and (id = auth.uid() or public.can_manage_org_profiles()))
+  with check (org_id = public.current_org() and (id = auth.uid() or public.can_manage_org_profiles()));
 create policy prof_delete on public.profiles
   for delete using (org_id = public.current_org());
 
