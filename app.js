@@ -609,6 +609,11 @@
   }
   window.mizanOnLazyReady = mizanOnLazyReady;
 
+  function isPartyOpeningTx(tx) {
+    const desc = String((tx && tx.desc) || "");
+    return desc.includes("افتتاحي") || desc.includes("أول المدة");
+  }
+
   function recalculateCustomerBalances() {
     ensureCashEntities();
     if (!customers || !txs) return false;
@@ -616,7 +621,7 @@
     customers.forEach((c) => {
       const custTxs = txs.filter((t) => Number(t.customerId) === Number(c.id));
       let bal = 0;
-      const hasOpeningTx = custTxs.some((t) => (t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة"));
+      const hasOpeningTx = custTxs.some(isPartyOpeningTx);
       if (!hasOpeningTx && Number(c.openingBalance || 0) > 0) {
         bal += Number(c.openingBalance || 0);
       }
@@ -634,7 +639,7 @@
     suppliers.forEach((s) => {
       const sTxs = supplierTxs.filter((t) => Number(t.supplierId) === Number(s.id));
       let bal = 0;
-      const hasOpeningTx = sTxs.some((t) => (t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة"));
+      const hasOpeningTx = sTxs.some(isPartyOpeningTx);
       if (!hasOpeningTx && Number(s.openingBalance || 0) > 0) {
         bal += Number(s.openingBalance || 0);
       }
@@ -643,6 +648,42 @@
       });
       s.currentBalance = Math.round(bal * 100) / 100;
     });
+    return true;
+  }
+
+  function applyPartyOpeningBalance(kind, party, opening) {
+    const isCustomer = kind === "customer";
+    const table = isCustomer ? "customer_txs" : "supplier_txs";
+    if (!bigDataLoaded(table)) {
+      toast("حركات الحساب لسه بتنزل — استنى لحظة وجرّب حفظ الرصيد الافتتاحي تاني.", "warning");
+      return false;
+    }
+    const rows = isCustomer ? txs : supplierTxs;
+    const idField = isCustomer ? "customerId" : "supplierId";
+    const openingRows = rows.filter((row) =>
+      Number(row[idField]) === Number(party.id) && isPartyOpeningTx(row)
+    );
+    const amount = round2(opening);
+    party.openingBalance = amount;
+    if (openingRows.length) {
+      const first = openingRows[0];
+      const otherNet = openingRows.slice(1).reduce(
+        (sum, row) => sum + (Number(row.debit) || 0) - (Number(row.credit) || 0), 0
+      );
+      const firstNet = round2(amount - otherNet);
+      first.debit = Math.max(firstNet, 0);
+      first.credit = Math.max(-firstNet, 0);
+    } else if (amount !== 0) {
+      const row = {
+        id: isCustomer ? nextTxId() : supplierTxs.reduce((max, tx) => Math.max(max, Number(tx.id) || 0), 0) + 1,
+        [idField]: party.id,
+        date: todayISO(),
+        desc: isCustomer ? "رصيد افتتاحي (أول المدة)" : "رصيد افتتاحي (مستحق للمورد)",
+        debit: Math.max(amount, 0),
+        credit: Math.max(-amount, 0)
+      };
+      rows.push(row);
+    }
     return true;
   }
 
@@ -2784,7 +2825,7 @@
       $("#fAddress").value = customer.address || "";
       $("#fNotes").value = customer.notes || "";
       $("#fBalance").value = moneyStr(customer.openingBalance);
-      $("#fBalance").disabled = true;
+      $("#fBalance").disabled = false;
     } else {
       $("#addEditTitle").textContent = "إضافة عميل جديد";
       $("#btnSaveCustomer").textContent = "💾 إضافة العميل";
@@ -2836,12 +2877,18 @@
       toast("تمت إضافة العميل بنجاح.", "success");
     } else {
       const cust = customers.find((c) => c.id === editingId);
+      const openingChanged = round2(bal) !== round2(cust.openingBalance || 0);
+      if (openingChanged && !applyPartyOpeningBalance("customer", cust, bal)) return;
       cust.nameAr = name;
       cust.phone = $("#fPhone").value.trim();
       cust.secondaryPhone = $("#fSecPhone").value.trim();
       cust.walletPhone = $("#fWallet").value.trim();
       cust.address = $("#fAddress").value.trim();
       cust.notes = $("#fNotes").value.trim();
+      if (openingChanged) {
+        recalculateCustomerBalances();
+        saveTxs();
+      }
       saveCustomers();
       toast("تم حفظ التعديلات بنجاح.", "success");
     }
@@ -3019,11 +3066,11 @@
           debit: 0, credit: 0
         };
       });
-    const rows = txs
-      .filter((t) => Number(t.customerId) === Number(cust.id))
-      .concat(memoRows)
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-    let run = 0;
+    const partyTxs = txs
+      .filter((t) => Number(t.customerId) === Number(cust.id));
+    const hasOpeningTx = partyTxs.some(isPartyOpeningTx);
+    const rows = partyTxs.concat(memoRows).sort((a, b) => new Date(a.date) - new Date(b.date));
+    let run = hasOpeningTx ? 0 : (Number(cust.openingBalance) || 0);
     return rows.map((t) => {
       run = Math.round((run + t.debit - t.credit) * 100) / 100;
       return {
@@ -7864,13 +7911,19 @@
     }
     if (suppEditingId) {
       const s = suppliers.find((x) => x.id === suppEditingId);
+      const opening = moneyVal("#fSOpening") || 0;
+      const openingChanged = round2(opening) !== round2(s.openingBalance || 0);
+      if (openingChanged && !applyPartyOpeningBalance("supplier", s, opening)) return;
       s.code = $("#fSCode").value.trim();
       s.nameAr = name;
       s.phone = $("#fSPhone").value.trim();
       s.walletPhone = $("#fSWallet").value.trim();
       s.address = $("#fSAddress").value.trim();
       s.notes = $("#fSNotes").value.trim();
-      s.openingBalance = moneyVal("#fSOpening") || 0;
+      if (openingChanged) {
+        recalculateSupplierBalances();
+        saveSupplierTxs();
+      }
       saveSuppliers();
       addActivity("تعديل مورد", "تعديل بيانات المورد: " + s.nameAr);
       toast("تم حفظ التعديلات بنجاح.", "success");
@@ -7910,11 +7963,11 @@
         desc: "↩️ مرتجع مشتريات رقم " + retNo(r) + " — استلام نقدية بقيمة " + fmt(retCashOf(r)) + " ج.م",
         debit: 0, credit: 0
       }));
-    const rows = supplierTxs
-      .filter((t) => Number(t.supplierId) === Number(sup.id))
-      .concat(memoRows)
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-    let run = (parseFloat(sup.openingBalance) || 0);
+    const partyTxs = supplierTxs
+      .filter((t) => Number(t.supplierId) === Number(sup.id));
+    const hasOpeningTx = partyTxs.some(isPartyOpeningTx);
+    const rows = partyTxs.concat(memoRows).sort((a, b) => new Date(a.date) - new Date(b.date));
+    let run = hasOpeningTx ? 0 : (parseFloat(sup.openingBalance) || 0);
     return rows.map((t) => {
       run = Math.round((run + t.debit - t.credit) * 100) / 100;
       // 🔁 بناء 119: نفس كشف العميل — id + وسيلة الدفع عشان سطر «الدفع النقدي» يتحذف
