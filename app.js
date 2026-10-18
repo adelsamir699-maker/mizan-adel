@@ -11514,17 +11514,22 @@ id: nextVoucherId(),
   }
 
   // قائمة خزائن بملصق الرصيد، والنقدية أولًا (المفضل) ثم البنوك فالمحافظ
-  function fillTreasurySelect(selId) {
+  function fillTreasurySelect(selId, labelMainCash) {
     const el = $(selId);
     el.innerHTML = "";
     const ORD = { cash: 0, bank: 1, wallet: 2 };
     const rank = (t) => (ORD[t.type] !== undefined ? ORD[t.type] : 3);
     const list = treasury.slice().sort((a, b) => rank(a) - rank(b) || String(a.name || "").localeCompare(String(b.name || ""), "ar"));
+    const mainCash = labelMainCash
+      ? list.find((t) => t.type === "cash" && String(t.name || "").includes("الصندوق الرئيسي")) || list.find((t) => t.type === "cash")
+      : null;
     list.forEach((t) => {
       const opt = document.createElement("option");
       opt.value = t.id;
       const typeLbl = t.type === "bank" ? "بنك" : t.type === "wallet" ? "محفظة" : "نقدية";
-      opt.textContent = t.name + " (" + typeLbl + ") — رصيد " + fmt(t.balance || 0) + " ج.م";
+      opt.textContent = mainCash && Number(t.id) === Number(mainCash.id)
+        ? "الخزينة — " + t.name + " — رصيد " + fmt(t.balance || 0) + " ج.م"
+        : t.name + " (" + typeLbl + ") — رصيد " + fmt(t.balance || 0) + " ج.م";
       el.appendChild(opt);
     });
     return list;
@@ -11882,8 +11887,8 @@ id: nextVoucherId(),
     $("#trAmount").value = "";
     $("#trNotes").value = "";
     $("#trDate").value = todayISO();
-    const list = fillTreasurySelect("#trAccFrom");
-    fillTreasurySelect("#trAccTo");
+    const list = fillTreasurySelect("#trAccFrom", true);
+    fillTreasurySelect("#trAccTo", true);
     if (list[1]) $("#trAccTo").value = list[1].id;
     else if (list[0]) $("#trAccTo").value = list[0].id;
     $("#trHint").textContent = "💡 التحويل بين حسابات الخزينة (نقدية / بنك / محفظة) يُسجَّل كسند صرف وسند قبض بنفس المبلغ مع قيد واحد — فرصيد كل حساب بيتحدّث تلقائيًا.";
