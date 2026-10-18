@@ -3079,12 +3079,29 @@
     if (!isSuperAcct() && !isCompanyOwnerAcct()) return ""; // نفس بوابة حذف الفاتورة
     return statementCtx.type === "supplier" ? "supplier" : "customer";
   }
-  function stmRowDeletable(r) { return !!(r && r.id != null && r.paymentMethod); }
-  function stmRowWhyLocked(r) {
-    if (!r || r.id == null) return "سطر توضيحي لمرتجع — بيتشال من شاشة المرتجعات.";
-    if (/رصيد افتتاحي/.test(String(r.desc || ""))) return "الرصيد الافتتاحي بيتعدّل من بطاقة العميل/المورد نفسه، مش بيتم حذفه من الكشف.";
-    return "دي حركة جاية من فاتورة — تتحذف من زر 🗑️ في الفاتورة نفسها علشان المخزون والقيود تتراجع صح.";
+  // 🔁 بناء 181 (بلاغ عميل 18/10): القرار كان متبني على «نص وسيلة الدفع» — ووسيلة الدفع
+  // ما بتسافرش للسحابة أصلًا (مفيش عمود payment_method في customer_txs / supplier_txs —
+  // مقاس في cloud.js: toCloud/fromCloud ما بينادوش) ⇒ أي تحصيل/سداد نازل من السحابة كان
+  // بيبان 🔒، والرسالة بتتّهمه باطلًا إنه «جاي من فاتورة».
+  // القرار دلوقتي على شكل السطر نفسه: حركة نقدية (دائن بلا مدين) وليست أثر مستند أصلي.
+  // مصدر واحد للقرار والرسالة ⇒ الزرار والبوابة جوّه __stmDelTx مستحيل يختلفوا.
+  const STM_OPENING_TX_RE = /رصيد افتتاحي/;
+  const STM_INVOICE_TX_RE = /فاتورة\s+(مبيعات|مشتريات)\s+آجلة/;
+  const STM_RETURN_BAL_RE = /خصم من الرصيد/;
+  function stmRowLockReason(r) {
+    if (!r) return "السطر مش موجود — حدّث الصفحة.";
+    if (r.id == null) return "سطر توضيحي لمرتجع — بيتشال من شاشة المرتجعات.";
+    if (stmIsCarryRow(r)) return "ده رصيد مرحّل من فترة قبل كده — مش حركة حقيقية تتحذف.";
+    const d = String(r.desc || "");
+    if (STM_OPENING_TX_RE.test(d)) return "الرصيد الافتتاحي بيتعدّل من بطاقة العميل/المورد نفسه، مش بيتم حذفه من الكشف.";
+    if (STM_INVOICE_TX_RE.test(d)) return "دي حركة جاية من فاتورة — تتحذف من زر 🗑️ في الفاتورة نفسها علشان المخزون والقيود تتراجع صح.";
+    if (STM_RETURN_BAL_RE.test(d)) return "دي قيمة مرتجع اتخصمت من الرصيد — المرتجع نفسه بيتحذف من شاشة المرتجعات والمرجوع بيرجع معه.";
+    if ((Number(r.debit) || 0) > 0) return "ده أثر مستند على العميل/المورد — بيتراجع من شاشة المستند نفسه.";
+    if (!((Number(r.credit) || 0) > 0)) return "السطر بلا حركة نقدية — مش قابل للحذف من الكشف.";
+    return ""; // حركة نقدية عادية (تحصيل من عميل / سداد لمورد) ⇒ الحذف متاح
   }
+  function stmRowDeletable(r) { return stmRowLockReason(r) === ""; }
+  function stmRowWhyLocked(r) { return stmRowLockReason(r) || "الحركة دي قابلة للحذف من زرار 🗑️."; }
   function renderStmRows(tbodyEl, rows, emptyMsg, actKind) {
     tbodyEl.innerHTML = "";
     const cols = actKind ? 6 : 5;
@@ -3108,8 +3125,12 @@
           b.type = "button";
           b.className = "btn small red stm-del-btn";
           b.textContent = "🗑️ حذف";
+          // 🆕 بناء 181: وسيلة الدفع بتتقال لو موجودة بس — لأنها ما بترجعش من السحابة،
+          // فأي حركة نازلة منها كانت بتدي «()» فاضية في الجملة التوضيحية.
           b.title = "حذف حركة " + (actKind === "supplier" ? "الدفع للمورد" : "السداد من العميل") +
-            " («" + (r.paymentMethod || "") + "» " + fmt(Math.max(r.debit, r.credit)) + " ج.م) — ترجّع المبلغ للخزينة/الحساب.";
+            " (" + fmt(Math.max(r.debit, r.credit)) + " ج.م" +
+            (r.paymentMethod ? " — «" + r.paymentMethod + "»" : "") +
+            ") — ترجّع المبلغ للخزينة/الحساب.";
           b.addEventListener("click", () => window.__stmDelTx(actKind, r.id));
           td.appendChild(b);
         } else {
@@ -3155,9 +3176,19 @@
     // السند المرتبط بنفس الحركة (customer_tx / supplier_tx)
     // 🆕 بناء 151: الشغل عدّى على نقطة الارتكاز — لو للسند قيد (`VC:`+id) بيرجع قبل ما السند يتشال
     const vBefore = vouchers.length;
-    const vDrop = dropVouchersWithJournal(
-      vouchers.filter((v) => v.refType === (isSup ? "supplier_tx" : "customer_tx") && Number(v.refId) === Number(tx.id))
-    );
+    let vList = vouchers.filter((v) => v.refType === (isSup ? "supplier_tx" : "customer_tx") && Number(v.refId) === Number(tx.id));
+    // 🆕 بناء 181: السند كمان ما بيشيلش ref_type/ref_id على السحابة (مقاس في cloud.js) ⇒ لو
+    // الحركة نازلة من السحابة بقت بلا ربط، فنتعرّف على سندها من بيانه + تاريخه + مبلغه.
+    // **سند واحد بس** — عشان تحصيلان متطابقان في نفس اليوم ما يلغاش الاتنين.
+    if (!vList.length) {
+      const vPrefix = (isSup ? "سداد لمورد: " : "تحصيل من عميل: ") + partyName;
+      const cents = Math.round(amount * 100);
+      vList = vouchers.filter((v) => !v.refType &&
+        String(v.desc || v.notes || "").indexOf(vPrefix) === 0 &&
+        Math.round((Number(v.amount) || 0) * 100) === cents &&
+        String(v.date || "") === String(tx.date || "")).slice(0, 1);
+    }
+    const vDrop = dropVouchersWithJournal(vList);
     pool.splice(idx, 1);
     // 🆕 بناء 149 (سطر ١): حذف الحركة بيرجع قيدها كمان — تراجع كامل بنفس عرف الفاتورة (بناء 134)
     const jRemoved = removePartyTxJournal(isSup ? "supp" : "cust", tx.id);
@@ -3173,8 +3204,12 @@
     if (isSup) { saveSupplierTxs(); saveVouchers(); saveSuppliers(); }
     else { saveTxs(); saveVouchers(); saveCustomers(); }
     saveTreasury();
-    toast("تم حذف الحركة — " + fmt(amount) + " ج.م رجع لـ«" + (accName || "الحساب") + "»." +
-      (vBefore !== vouchers.length ? " والسند المرتبط اتشال معاه." : "") +
+    // 🆕 بناء 181: أمانة الرسالة — المبلغ «يرجع» فعلًا لما سندها يتشال؛ ولو السند مش على
+    // الجهاز ده (حركة قديمة اترفعت بلا سند) نقول كده بدل ما ندّعي إرجاع ما حصلش.
+    toast((vBefore !== vouchers.length
+      ? "تم حذف الحركة والسند المرتبط — " + fmt(amount) + " ج.م رجع لـ«" + (accName || "الحساب") + "»."
+      : "تم حذف حركة «" + (tx.desc || (isSup ? "دفع للمورد" : "سداد من العميل")) + "» من كشف " + partyName +
+        " — مافيش سند مرتبط على الجهاز ده، فرصيد الخزينة ما اتغيّرش.") +
       (jRemoved ? " والقيد المرتبط اتراجع." : "") +
       // 🆕 بناء 151: أمانة الرسالة — لو السند كان مترحّل فعلًا («VC:»/«SE:») قيده رجع معه، مش كلام عام
       (vDrop.journals ? " وقيود السندات المرتبطة اتراجعت." : ""), "success");
