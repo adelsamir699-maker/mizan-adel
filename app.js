@@ -2555,13 +2555,19 @@
     const monthKey = today.slice(0, 7);
     const isThisMonth = (d) => (d || "").slice(0, 7) === monthKey;
     // 🔁 بناء 108: المرتجعات بت تخصم من أرقام اليوم (والسندات اللي منها ما تتحسبش مصروف/إيراد)
-    const isRetVoucher = (v) => String((v && v.refType) || "").indexOf("_return") !== -1;
+    // 🆕 بناء 182: نفس الاستثناء لسندات **الحركة الداخلية** بين خزائن الشركة — التحويل بين الخزائن
+    // والتسليم الوردي بيتسجّلوا «سند صرف + سند قبض» عشان رصيد كل خزينة يتحرك، وما هماش مصروف/إيراد.
+    //    (نفس نمط استثناء الوردية اللي في computeShiftBreakdown — سطر 9284.)
+    const isMoveVoucher = (v) => {
+      const rt = String((v && v.refType) || "");
+      return rt.indexOf("_return") !== -1 || rt.indexOf("تحويل") !== -1 || rt.indexOf("وردية") === 0;
+    };
     const retSaleToday = saleReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + (Number(r.grandTotal) || 0), 0);
     const retPurToday = purchaseReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + (Number(r.grandTotal) || 0), 0);
     const salesToday = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => m + (s.grandTotal || 0), 0) - retSaleToday;
     const purToday = purchases.filter((p) => isToday(p.invoiceDate)).reduce((m, p) => m + (p.grandTotal || 0), 0) - retPurToday;
-    const expToday = vouchers.filter((v) => v.type === "out" && isToday(v.date) && !isRetVoucher(v)).reduce((m, v) => m + (v.amount || 0), 0);
-    const revToday = vouchers.filter((v) => v.type === "in" && isToday(v.date) && !isRetVoucher(v)).reduce((m, v) => m + (v.amount || 0), 0);
+    const expToday = vouchers.filter((v) => v.type === "out" && isToday(v.date) && !isMoveVoucher(v)).reduce((m, v) => m + (v.amount || 0), 0);
+    const revToday = vouchers.filter((v) => v.type === "in" && isToday(v.date) && !isMoveVoucher(v)).reduce((m, v) => m + (v.amount || 0), 0);
     const treTotal = treasury.reduce((m, t) => m + (t.balance || 0), 0);
 
     $("#kSales").textContent = fmt(salesToday) + " ج.م";
@@ -11677,8 +11683,9 @@
     const tag = "تحويل من «" + from.name + "» إلى «" + to.name + "»" + (note ? " — " + note : "");
     const baseId = vouchers.reduce((m, x) => Math.max(m, x.id), 0);
     // سندان مرتبطان بنفس الوصف: صرف من الأول وقبض في التاني — معادلة recalculateTreasuryBalances بتمشي زي ما هي
-    vouchers.push({ id: baseId + 1, type: "out", treasuryId: Number(from.id), date: date, amount: amount, desc: "سند صرف — " + tag });
-    vouchers.push({ id: baseId + 2, type: "in", treasuryId: Number(to.id), date: date, amount: amount, desc: "سند قبض — " + tag });
+    // 🆕 بناء 182: وسام `refType` عشان العدّاد ما يعدّهوش مصروف/إيراد (حركة داخلية بين خزائن الشركة)
+    vouchers.push({ id: baseId + 1, type: "out", treasuryId: Number(from.id), date: date, amount: amount, desc: "سند صرف — " + tag, refType: "تحويل بين الحسابات", refId: "TFV:" + (baseId + 1) });
+    vouchers.push({ id: baseId + 2, type: "in", treasuryId: Number(to.id), date: date, amount: amount, desc: "سند قبض — " + tag, refType: "تحويل بين الحسابات", refId: "TFV:" + (baseId + 1) });
     saveVouchers();
     recalculateTreasuryBalances();
 
