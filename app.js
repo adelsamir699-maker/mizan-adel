@@ -4807,15 +4807,13 @@
     return pct + " %";
   }
 
-  function renderProducts() {
-    fillSelect("#cmbProductCategory", ["الكل"].concat(productCategories()), $("#cmbProductCategory").value || "الكل");
-
+  /* 🆕 بناء 197: مصدر فرز واحد — كانت الفرزة جوّه `renderProducts` بس.
+     دلوقتي `renderProducts` وتصدير Excel بينادوا نفس الدالة نفسها، فمستحيل
+     الملف ينزّل حاجة مختلفة عن اللي ظاهر قدامك على الشاشة. */
+  function productsFilteredList() {
     const q = normalizeAr($("#txtProductSearch").value);
     const cat = $("#cmbProductCategory").value;
-    const tbody = $("#dgvProducts tbody");
-    tbody.innerHTML = "";
-
-    const filtered = products.filter((p) => {
+    return products.filter((p) => {
       if (cat !== "الكل" && p.category !== cat) return false;
       if (!q) return true;
       return (
@@ -4832,6 +4830,15 @@
         (p.isActive ? "نشط" : "معطل").includes(q)
       );
     });
+  }
+
+  function renderProducts() {
+    fillSelect("#cmbProductCategory", ["الكل"].concat(productCategories()), $("#cmbProductCategory").value || "الكل");
+
+    const tbody = $("#dgvProducts tbody");
+    tbody.innerHTML = "";
+
+    const filtered = productsFilteredList();
 
     filtered.forEach((p) => {
       const tr = document.createElement("tr");
@@ -4867,6 +4874,214 @@
       tr.addEventListener("dblclick", () => openProductDialog(p));
       tbody.appendChild(tr);
     });
+  }
+
+  /* ================== 🆕 بناء 197: تنزيل الأصناف في ملف Excel ==================
+   * طلب المالك الحرفي (19/10): «عايز انزل الاصناف الموجوده بالبرنامج فى ملف اكسيل»
+   * وقال «ابدا» على **العيار ٣** = ملف `.xlsx` حقيقي + تصدير حسب الفلتر الظاهر +
+   * عمود لكل مخزن + إجمالي قيمة المخزون.
+   *
+   * خمس قواعد حاكمة (كسر أي واحدة منها بيلغي الفائدة كلها):
+   *  (١) **مصدر فرز واحد** — `productsFilteredList()` بيناديها `renderProducts` والتصدير،
+   *      فالملف المستخرَج = اللي ظاهر قدامك بالحرف (فلترت على «البقالة» ⇒ أصناف البقالة بس).
+   *  (٢) **عناوين الأعمدة = نفس الأسماء اللي بتتعرف عليها شاشة «رفع بيانات Excel»**
+   *      (`excel_import.js` → `TABLES.products`) ⇒ تنزّل ⇒ تعدّل في إكسل ⇒ ترفع، من غير ما
+   *      خانة تضيع. والأعمدة اللي للعرض بس («رصيد مخزن: …» / «الخصم» / «قيمة المخزون»)
+   *      مقصود أسماء **بره** قائمة المترادفات، فالقارئ بيتجاهلها ببلاش وما بيرمش «عمود مكرر».
+   *  (٣) **الورقة الأولى = الأصناف فقط**، والإجماليات في ورقة تانية — عشان سطر الإجمالي
+   *      ما يتقراش صنفًا جديدًا لو الملف اترفع تاني.
+   *  (٤) **الأرقام أرقام مش نص** (`numFmt` للعرض بس) ⇒ بتتحسب في إكسل، و`normalizeValue`
+   *      بتاع القارئ بترجّعها أرقام زي ما هي.
+   *  (٥) التنزيل بنمط البيت (`appendChild` + `revokeObjectURL` متأجّل ثانية) — **مش** نمط
+   *      `downloadCSV` اللي بيفصل الرابط قبل ما التنزيل يلحق يمسكه.
+   */
+
+  /* مواصفات الأعمدة — **ترتيبها = ترتيب الأعمدة على شاشة «دليل الأصناف» بالحرف**
+   * (طلب المالك 19/10: «و تكون بنفس ترتيب الاعمده»):
+   *   كود الصنف · الباركود · اسم الصنف · التصنيف · الوحدة · الرصيد الحالي · آخر سعر شراء ·
+   *   متوسط سعر الشراء · سعر البيع · الخصم · الحالة
+   * وبعدها باقي حقول الرفع (الاسم بالإنجليزية · سعر الشراء · حد التنبيه) ثم رصيد كل مخزن ثم
+   * قيمة المخزون. «الرصيد الحالي» على الشاشة بقت «الكمية الحالية» و«الحالة» بقت «حالة النشاط»
+   * لأن دول بس الاسماء اللي شاشة «رفع بيانات Excel» بتعرفها (مترادفات `stock_qty`
+   * و`is_active`) — فالملف ينزل يتعدّل ويرفع. الأعمدة للعرض بس («الخصم» / «قيمة المخزون» /
+   * «رصيد مخزن: …») أسماء مقصودها بره قائمة المترادفات ⇒ القارئ بيتجاهلها ببلاش.
+   * كل عمود ليه مفتاح `k` واحد ⇒ المجاميع وتنسيق الأرقام بيتحسبوا من نفس الجدول، فمستحيل
+   * مؤشر غلط يطلع (درس البناء ده: المؤشرات المكتوبة يدويًا اتزحلقت خانات واحدة).
+   */
+  function productsExportSpec(whs) {
+    const spec = [
+      { h: "كود الصنف", k: "code" },
+      { h: "الباركود", k: "barcode" },
+      { h: "اسم الصنف", k: "nameAr" },
+      { h: "التصنيف", k: "category" },
+      { h: "الوحدة", k: "unit" },
+      { h: "الكمية الحالية", k: "qty", num: "#,##0" },
+      { h: "آخر سعر شراء", k: "last", num: "#,##0.00" },
+      { h: "متوسط سعر الشراء", k: "avg", num: "#,##0.00" },
+      { h: "سعر البيع", k: "sale", num: "#,##0.00" },
+      { h: "الخصم", k: "disc" },
+      { h: "حالة النشاط", k: "active" },
+      { h: "اسم الصنف بالإنجليزية", k: "nameEn" },
+      { h: "سعر الشراء", k: "buy", num: "#,##0.00" },
+      { h: "حد التنبيه", k: "reorder", num: "#,##0" },
+    ];
+    whs.forEach((w) => { spec.push({ h: "رصيد مخزن: " + w, k: "wh:" + w, num: "#,##0" }); });
+    spec.push({ h: "قيمة المخزون", k: "value", num: "#,##0.00" });
+    return spec;
+  }
+
+  /* رقم عمود بالمفتاح — المصدر الوحيد للمؤشرات (`-1` معناه المفتاح مش موجود). */
+  function productsExportCol(spec, k) {
+    for (let i = 0; i < spec.length; i++) if (spec[i].k === k) return i;
+    return -1;
+  }
+
+  // الأعمدة الرقمية وتنسيقها — `[مؤشر العمود (0-based)، قالب العرض]` مولّدة من المواصفات.
+  function productsExportNumericCols(spec) {
+    const out = [];
+    spec.forEach((s, i) => { if (s.num) out.push([i, s.num]); });
+    return out;
+  }
+
+  /* صفوف التصدير: `{ list, whs, spec, heads, rows, numCols }` — مصدر واحد للبيانات والمجاميع. */
+  function productsExportData() {
+    const list = productsFilteredList();
+    const whs = warehouseList();
+    const spec = productsExportSpec(whs);
+    const heads = spec.map((s) => s.h);
+    const numCols = productsExportNumericCols(spec);
+
+    const rows = list.map((p) => {
+      const avg = Number(avgPriceOf(p)) || 0;
+      const qty = Number(p.qty) || 0;
+      const val = round2(qty * avg);
+      const cell = (k, w) => {
+        if (k === "code") return String(p.code == null ? "" : p.code);
+        if (k === "barcode") return String(bcDigits(p.barcode) || "");
+        if (k === "nameAr") return String(p.nameAr || "");
+        if (k === "nameEn") return String(p.nameEn || "");
+        if (k === "category") return String(p.category || "");
+        if (k === "unit") return String(p.unit || "");
+        if (k === "disc") return String(discountStatusText(p) || "");
+        if (k === "active") return p.isActive ? "نعم" : "لا";
+        if (k === "qty") return qty;
+        if (k === "last") return Number(lastPriceOf(p)) || 0;
+        if (k === "avg") return avg;
+        if (k === "sale") return Number(p.salePrice) || 0;
+        if (k === "buy") return Number(p.purchasePrice) || 0;
+        if (k === "reorder") return Number(p.reorder) || 0;
+        if (k === "value") return val;
+        if (k.slice(0, 3) === "wh:") return Number(stockAt(p, k.slice(3))) || 0;
+        return "";
+      };
+      return spec.map((s) => cell(s.k, s.h));
+    });
+
+    return { list, whs, spec, heads, rows, numCols };
+  }
+
+  /* مجاميع ورقة «الإجمالي» — محسوبة من نفس `d.rows` اللي اتنزلت، ومن نفس المواصفات. */
+  function productsExportTotals(d) {
+    const i = (k) => productsExportCol(d.spec, k);
+    const IQ = i("qty"), IV = i("value"), IS = i("sale"), IB = i("barcode"), IA = i("active"), IM = i("reorder");
+    let qty = 0, value = 0, saleValue = 0, noBarcode = 0, inactive = 0, lowStock = 0;
+    d.rows.forEach((r) => {
+      qty = round2(qty + (Number(r[IQ]) || 0));
+      value = round2(value + (Number(r[IV]) || 0));
+      saleValue = round2(saleValue + (Number(r[IQ]) || 0) * (Number(r[IS]) || 0));
+      if (!String(r[IB]).trim()) noBarcode++;
+      if (r[IA] === "لا") inactive++;
+      if ((Number(r[IQ]) || 0) <= (Number(r[IM]) || 0)) lowStock++;
+    });
+    return { count: d.rows.length, qty, value, saleValue, noBarcode, inactive, lowStock };
+  }
+
+  function productsExcelDownload(filename, buffer) {
+    const blob = new Blob([new Uint8Array(buffer)], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => { URL.revokeObjectURL(url); }, 1000);
+    return blob.size;
+  }
+
+  function productsExcelFileName(d) {
+    const t = new Date();
+    const pad = (n) => (n < 10 ? "0" + n : String(n));
+    const scope = $("#cmbProductCategory").value !== "الكل" ? "_" + $("#cmbProductCategory").value : "";
+    const q = String($("#txtProductSearch").value || "").trim();
+    const stamp = t.getFullYear() + "-" + pad(t.getMonth() + 1) + "-" + pad(t.getDate()) +
+      "_" + pad(t.getHours()) + "-" + pad(t.getMinutes());
+    return "اصناف_" + d.list.length + "صنف" + scope + (q ? "_بحث" : "") + "_" + stamp + ".xlsx";
+  }
+
+  async function exportProductsExcel() {
+    if (!(window.ExcelJS && window.ExcelJS.Workbook)) {
+      toast("أداة ملفات الإكسل ما اتحمّلتش على الجهاز ده — قفل الصفحة وافتحها من جديد ثم حاول.", "warning");
+      return;
+    }
+    const d = productsExportData();
+    if (!d.rows.length) {
+      toast("مافيش أصناف في العرض الحالي — امسح كلمة البحث أو اختار «الكل» الأول.", "info");
+      return;
+    }
+    let t = null;
+    try {
+      const wb = new ExcelJS.Workbook();
+      wb.created = new Date();
+      wb.title = "أصناف " + invOrgName();
+
+      const ws = wb.addWorksheet("الأصناف", { views: [{ rightToLeft: true, state: "frozen", ySplit: 1 }] });
+      ws.columns = d.heads.map((h) => ({ header: h, width: h.length > 14 ? 22 : Math.max(11, h.length + 4) }));
+      const headRow = ws.getRow(1);
+      headRow.font = { bold: true };
+      headRow.alignment = { vertical: "middle", horizontal: "center" };
+      headRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDCE6F1" } };
+      headRow.commit();
+      d.rows.forEach((r) => {
+        const row = ws.addRow(r);
+        d.numCols.forEach((nc) => { row.getCell(nc[0] + 1).numFmt = nc[1]; });
+      });
+      ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: d.heads.length } };
+
+      t = productsExportTotals(d);
+      const su = wb.addWorksheet("الإجمالي", { views: [{ rightToLeft: true }] });
+      su.columns = [{ header: "البيان", width: 30 }, { header: "القيمة", width: 22 }];
+      su.getRow(1).font = { bold: true };
+      const lines = [
+        ["الشركة", invOrgName()],
+        ["عدد الأصناف في الملف", t.count],
+        ["إجمالي الكميات", t.qty],
+        ["إجمالي قيمة المخزون (بالمتوسط)", t.value],
+        ["إجمالي قيمة المخزون (بثمن البيع)", t.saleValue],
+        ["أصناف بلا باركود", t.noBarcode],
+        ["أصناف معطلة", t.inactive],
+        ["أصناف عند حد التنبيه أو أقل", t.lowStock],
+        ["التصنيف المعروض", $("#cmbProductCategory").value],
+        ["كلمة البحث", String($("#txtProductSearch").value || "").trim() || "—"],
+        ["عدد المخازن", d.whs.length],
+        ["وقت التنزيل", new Date().toLocaleString("en-GB")],
+      ];
+      lines.forEach((l) => {
+        const row = su.addRow(l);
+        if (typeof l[1] === "number") row.getCell(2).numFmt = "#,##0.00";
+      });
+
+      productsExcelDownload(productsExcelFileName(d), await wb.xlsx.writeBuffer());
+    } catch (e) {
+      toast("ملف الإكسل ما اتجهّزش — جرّب مرة تانية، ولو اتكرّر قفل الصفحة وافتحها.", "warning");
+      return;
+    }
+    addActivity("تنزيل أصناف Excel",
+      "ملف Excel فيه " + t.count + " صنف (قيمة المخزون " + fmt(t.value) + ") — التصنيف: " +
+      $("#cmbProductCategory").value + "، البحث: " + (String($("#txtProductSearch").value || "").trim() || "—"));
+    toast("نزّلنا لك ملف الإكسل فيه " + t.count + " صنف (قيمة المخزون " + fmt(t.value) + ").", "success");
   }
 
   /* ---- حذف صنف: مسموح فقط إذا كان رصيده صفر في كل المستودعات ---- */
@@ -5921,7 +6136,12 @@
     try { renderProducts(); } catch (e) { }
 
     // ٢) قيد الفروق — نفس بدائل بناء 134 (تسوية سطر-سطر + refId يمنع التكرار)
-    let jrnNo = "";
+    // 🔴 إصلاح 197 (باگ حيّ مقاس في كروم): المتغير المحلي كان اسمه `jrnNo` ⇒ **بيحجب**
+    // دالة بناء 186 `jrnNo(id)` (رقم القيد مشتق من الـ id). النداء `jrnNo()` على نص فاضي
+    // كان بيرمي «TypeError: jrnNo is not a function» **بعد** ما المخزون اتعدّل و`saveProducts()`
+    // عدّى ⇒ الورقة تتطبّع في المخزون من غير قيد، ومن غير `appliedAt` ومن غير `scPersist()`
+    // ⇒ «اعتماد الجرد» يكمل نصه ويسيب الدفتر بلا قيد فروق. الاسم بقى `jrnNoText`.
+    let jrnNoText = "";
     if (plan.lines.length) {
       const j = {
         id: nextJournalId(),
@@ -5939,18 +6159,18 @@
       journalEntries.push(j);
       persistJournal();
       saveAccounts();
-      jrnNo = j.number;
+      jrnNoText = j.number;
       try { renderJournal(); } catch (e) { }
     }
     sh.appliedAt = new Date().toISOString();
-    sh.appliedJrn = jrnNo;
+    sh.appliedJrn = jrnNoText;
     sh.diffAcc = $("#scDiffAcc") ? String($("#scDiffAcc").value || "") : sh.diffAcc;
     scPersist();
-    addActivity("اعتماد جرد بالباركود", "ورق " + sh.no + " — مخزن («" + sh.wh + "») — " + plan.rows.length + " صنف — فروق " + fmt(plan.total) + " ج.م" + (jrnNo ? " — قيد " + jrnNo : " — بلا قيد"));
+    addActivity("اعتماد جرد بالباركود", "ورق " + sh.no + " — مخزن («" + sh.wh + "») — " + plan.rows.length + " صنف — فروق " + fmt(plan.total) + " ج.م" + (jrnNoText ? " — قيد " + jrnNoText : " — بلا قيد"));
     renderStockCount();
     try { renderDashboard(); } catch (e) { }
     toast("✅ اعتمدنا الجرد: " + plan.rows.length + " صنف اتسوّى في («" + sh.wh + "»)" +
-      (jrnNo ? " و اتكتب القيد " + jrnNo : " (الفروق متزنينة — مافيش قيد)") + ".", "success");
+      (jrnNoText ? " و اتكتب القيد " + jrnNoText : " (الفروق متزنينة — مافيش قيد)") + ".", "success");
   }
 
   /* ---- نقل الأصناف بين المخازن ---- */
@@ -17065,6 +17285,8 @@ id: nextVoucherId(),
     $("#btnStockTake").addEventListener("click", openStockTake);
     $("#btnTransferStock").addEventListener("click", openTransferModal);
     $("#btnRefreshProducts").addEventListener("click", renderProducts);
+    /* 🆕 بناء 197: زرار تنزيل دليل الأصناف ملف Excel حقيقي (.xlsx) — بياخد نفس اللي ظاهر على الشاشة بالضبط */
+    $("#btnExportProductsXlsx").addEventListener("click", () => exportProductsExcel());
     $("#txtProductSearch").addEventListener("input", renderProducts);
     $("#cmbProductCategory").addEventListener("change", renderProducts);
 
