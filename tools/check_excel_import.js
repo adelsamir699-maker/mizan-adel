@@ -89,6 +89,12 @@ function testMigrationFunctionReferencesAndGrants() {
   assert(sql.includes(
     "grant execute on function public.mizan_admin_import_excel(uuid, text, text, jsonb) to authenticated;"
   ));
+  [
+    "public.sale_returns", "public.purchase_returns", "public.sale_return_items",
+    "public.purchase_return_items", "public.car_trips", "public.cashier_shifts",
+    "public.vouchers", "child.parent_id = parent.local_id"
+  ].forEach((reference) => assert(sql.includes(reference), "Missing replacement safety check: " + reference));
+  assert(sql.includes("jsonb_build_object('المخزن الرئيسي'"));
 }
 
 (async () => {

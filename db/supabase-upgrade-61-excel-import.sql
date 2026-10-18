@@ -60,6 +60,10 @@ begin
       select 1 from public.sales x join public.customers t
         on t.org_id = x.org_id and (x.customer_id = t.local_id::text or x.customer = t.name_ar)
       where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.sale_returns x join public.customers t
+        on t.org_id = x.org_id and (x.customer_id = t.local_id::text or x.customer = t.name_ar)
+      where t.org_id = p_org_id
     );
   elsif p_table = 'suppliers' then
     return exists (
@@ -68,6 +72,10 @@ begin
       where t.org_id = p_org_id
     ) or exists (
       select 1 from public.purchases x join public.suppliers t
+        on t.org_id = x.org_id and (x.supplier_id = t.local_id::text or x.supplier = t.name_ar)
+      where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.purchase_returns x join public.suppliers t
         on t.org_id = x.org_id and (x.supplier_id = t.local_id::text or x.supplier = t.name_ar)
       where t.org_id = p_org_id
     );
@@ -80,6 +88,20 @@ begin
       select 1 from public.purchase_items x join public.products t
         on t.org_id = x.org_id and x.product_id = t.local_id::text
       where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.sale_return_items x join public.products t
+        on t.org_id = x.org_id and x.product_id = t.local_id::text
+      where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.purchase_return_items x join public.products t
+        on t.org_id = x.org_id and x.product_id = t.local_id::text
+      where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.car_trips x
+      where x.org_id = p_org_id
+        and jsonb_array_length(
+          case when jsonb_typeof(x.loaded) = 'array' then x.loaded else '[]'::jsonb end
+        ) > 0
     );
   elsif p_table = 'treasury' then
     return exists (
@@ -94,12 +116,37 @@ begin
       select 1 from public.purchases x join public.treasury t
         on t.org_id = x.org_id and x.treasury_id = t.local_id::text
       where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.sale_returns x join public.treasury t
+        on t.org_id = x.org_id and x.treasury_id = t.local_id::text
+      where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.purchase_returns x join public.treasury t
+        on t.org_id = x.org_id and x.treasury_id = t.local_id::text
+      where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.cashier_shifts x join public.treasury t
+        on t.org_id = x.org_id and
+          (x.treasury_id = t.local_id or x.main_treasury_id = t.local_id)
+      where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.car_trips x join public.treasury t
+        on t.org_id = x.org_id and x.treasury_id = t.local_id
+      where t.org_id = p_org_id
     );
   elsif p_table = 'accounts' then
     return exists (
       select 1 from public.journal_lines x join public.accounts t
         on t.org_id = x.org_id and x.account_id = t.local_id::text
       where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.vouchers x join public.accounts t
+        on t.org_id = x.org_id and x.account_id = t.local_id::text
+      where t.org_id = p_org_id
+    ) or exists (
+      select 1 from public.accounts child join public.accounts parent
+        on parent.org_id = child.org_id and child.parent_id = parent.local_id
+      where parent.org_id = p_org_id
     );
   end if;
   return false;
@@ -225,9 +272,19 @@ begin
 
   foreach v_row in array v_clean_rows
   loop
+    v_record := v_row;
+    if p_table = 'products' and v_row ? 'stock_qty' then
+      v_record := v_record || jsonb_build_object(
+        'stock',
+        case when (v_row->>'stock_qty')::numeric > 0
+          then jsonb_build_object('المخزن الرئيسي', (v_row->>'stock_qty')::numeric)
+          else '{}'::jsonb
+        end
+      );
+    end if;
     if v_has_local_id then
       v_next_local := v_next_local + 1;
-      v_record := v_row || jsonb_build_object(
+      v_record := v_record || jsonb_build_object(
         'id', public.mizan_excel_row_uuid(p_org_id, p_table, v_next_local),
         'org_id', p_org_id,
         'local_id', v_next_local
@@ -262,3 +319,5 @@ revoke all on function public.mizan_excel_row_uuid(uuid, text, bigint) from publ
 revoke all on function public.mizan_admin_excel_replace_has_references(uuid, text) from public, anon, authenticated;
 revoke all on function public.mizan_admin_import_excel(uuid, text, text, jsonb) from public, anon;
 grant execute on function public.mizan_admin_import_excel(uuid, text, text, jsonb) to authenticated;
+
+notify pgrst, 'reload schema';

@@ -16031,7 +16031,7 @@ id: nextVoucherId(),
   // ============ نسخة النشر الكاملة (كود + سكيما + داتا) — ترحيل ٢٣ ============
   // مجلد واحد يشتغل على أي سيرفر: site/ + database.sql + data.json + README
   var DEPLOY_SITE_FILES = ["index.html", "app.js", "data.js", "cloud.js", "install.js",
-    "excel_import.js", "vendor/exceljs.min.js",
+    "excel_import.js", "vendor/exceljs.min.js", "vendor/EXCELJS-LICENSE.txt",
     "lib_supabase.js", "manifest.webmanifest", "sw.js", "styles.css", "supabase.config.js",
     "icons/icon-1024.png", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png"];
   var DEPLOY_DB_FILES = ["db/supabase-schema.sql",
@@ -16134,7 +16134,10 @@ id: nextVoucherId(),
     "db/supabase-upgrade-57-security-hardening.sql",
     // ترقية ٥٩ محفوظة كما نُفذت؛ ترقية ٦٠ تكمل حارس features وتمنع تعديل المدير لصلاحيات حسابه.
     "db/supabase-upgrade-59-profile-identity-guard.sql",
-    "db/supabase-upgrade-60-profile-self-features-guard.sql"];
+    "db/supabase-upgrade-60-profile-self-features-guard.sql",
+    // ترقية ٦١ (استيراد Excel لمالك البرنامج) اتنفّذت على Supabase بأمر المالك
+    // «انشر و ارفع ترقيه»؛ نسخة النشر تحملها كسجل، وإعادة تشغيلها غير مطلوبة.
+    "db/supabase-upgrade-61-excel-import.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب.
   // ترقية ٥٨ ما زالت مستقلة ومحجوزة لإزالة password_plain، وملفات rollback لا تدخل الحزمة.
   // بناء 141: ترقية ٥ـ (قفل التسجيل + دوال الرموز) **اتنفّذت** 5/10 ≈01:29 ⇒ دخلت FILES فوق
@@ -16142,7 +16145,6 @@ id: nextVoucherId(),
   var DEPLOY_DB_EXCLUDE = {
     "db/supabase-rollback-59-profile-identity-guard.sql": "ملف رجوع احتياطي يزيل حارس ترقية ٥٩ ويعيد السياسة السابقة؛ لا يدخل حزمة النشر.",
     "db/supabase-rollback-60-profile-self-features-guard.sql": "ملف رجوع يعيد تعريف حارس ترقية ٥٩؛ لا يدخل حزمة النشر.",
-    "db/supabase-upgrade-61-excel-import.sql": "ترقية استيراد Excel لم تُنفّذ على Supabase؛ تُستبعد إلى أن يأذن المالك بتطبيقها."
   };
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "car_trips", "categories", "cashier_shifts", "customer_txs", "customers",
