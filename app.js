@@ -6214,6 +6214,8 @@
 
   function posPaymentVisibility() {
     const m = $("#cmbPaymentMethod").value;
+    // 🆕 بناء 191: تغيير وسيلة الدفع يفضّي «المدفوع» — مبلغ قديم كان بيقطّر من حساب العميل
+    if ($("#txtPosPaid")) $("#txtPosPaid").value = "0";
     const isBank = m.includes("بنكي");
     const isWallet = m.includes("محفظة") || m.includes("محافظ");
     $("#fldPosBank").hidden = !isBank;
@@ -6765,6 +6767,32 @@
     return { ajal: ajal, paid: paid, due: due };
   }
 
+  /* 🆕 بناء 191 (بلاغ عميل — شركة محمد رافت): الفاتورة «آجل» + خانة «المدفوع» فيها مبلغ
+     كانت بتتخصم من حساب العميل **بلا أي سؤال** (فاتورة 4,600 آجل نزل على العميل صفر،
+     و3,300 نزل منها 300 بس، والمبلغ البواقي دخل الخزينة كأنه قبض فعلي).
+     القرار: أي «آجل» وفيه مدفوع = سؤال صريح بالأرقام قبل أي أثر، والرفض يرجّع للخانة. */
+  function ajalPaidGate(kind, t) {
+    if (kind !== "sale" && kind !== "purchase") return true;
+    if (!(t && t.paid > 0)) return true;
+    const who = kind === "sale" ? "العميل" : "المورد";
+    const box = kind === "sale" ? "الخزينة" : "الخزينة/حساب الدفع";
+    const inp = $(kind === "sale" ? "#txtPosPaid" : "#txtPPPaid");
+    let msg;
+    if (!(t.due > 0)) {
+      msg = "الفاتورة مختارة «آجل» وخانة «المدفوع» فيها كامل المبلغ (" + fmt(t.grand) + " ج.م).\n\n" +
+        "لو ضغطت «موافق» البرنامج هيسجّلها **قبض/دفع فعلي داخل " + box + "**، و" + who + " مش هيترحل عليه حاجة خالص.\n" +
+        "ولو المقصود إنها آجل بالكامل: اضغط «إلغاء» وفضّي خانة «المدفوع» (خليها 0).";
+    } else {
+      msg = "الفاتورة مختارة «آجل» وفيها مدفوع " + fmt(t.paid) + " ج.م من إجمالي " + fmt(t.grand) + " ج.م.\n\n" +
+        "هيترحل على حساب " + who + ": " + fmt(t.due) + " ج.م بس (الباقي)، و" + fmt(t.paid) + " ج.م هتدخل " + box + ".\n" +
+        "مؤكّد؟ (لو المقصود آجل بالكامل اضغط «إلغاء» وفضّي خانة «المدفوع».)";
+    }
+    if (confirm(msg)) return true;
+    try { if (inp) { inp.value = "0"; inp.focus(); } } catch (e) { }
+    toast("الفاتورة ما اتسجلتش — فضّينا خانة «المدفوع». اختار «آجل» بالكامل أو اكتب المبلغ المقبول قبضه.", "warning");
+    return false;
+  }
+
   function partyBalanceInfo(kind) {
     if (kind === "sale") {
       const c = posFindCustomer($("#cmbPosCustomer").value);
@@ -6915,6 +6943,8 @@
     }
 
     const t = posRecalc();
+    // 🆕 بناء 191: آجل + «مدفوع» = سؤال صريح قبل أي أثر (بلاغ شركة محمد رافت)
+    if (payment === "آجل" && !ajalPaidGate("sale", t)) return;
     const invNo = $("#txtInvoiceNo").value || nextInvoiceNumber();
     const invDate = $("#dtpDate").value || todayISO();
     const invoice = {
@@ -7271,6 +7301,8 @@
 
   function ppPaymentVisibility() {
     const m = $("#cmbPPaymentMethod").value;
+    // 🆕 بناء 191: تغيير وسيلة الدفع يفضّي «المدفوع» (نفس البيع)
+    if ($("#txtPPPaid")) $("#txtPPPaid").value = "0";
     const isBank = m.includes("بنكي");
     const isWallet = m.includes("محفظة") || m.includes("محافظ");
     $("#fldPPBank").hidden = !isBank;
@@ -7542,6 +7574,8 @@
     }
 
     const t = ppRecalc();
+    // 🆕 بناء 191: آجل + «مدفوع» = سؤال صريح قبل أي أثر (نفس البيع)
+    if (payment === "آجل" && !ajalPaidGate("purchase", t)) return;
     const invNo = $("#txtPInvNo").value || nextPurchaseInvoiceNumber();
     const invDate = $("#dtpPDate").value || todayISO();
     const invoice = {
