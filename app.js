@@ -10859,6 +10859,9 @@ id: nextVoucherId(),
     return d.indexOf("تحويل من «") !== -1 || d.indexOf("تحويل بين الحسابات") !== -1;
   }
   // الساق التانية للنقل: بالمفتاح المشترك أولًا، وإلا (نفس اليوم + نفس المبلغ + اتجاه معاكس + خزينة مختلفة)
+  // 🆕 بناء 188: الـfallback كان ياخد أول سطر مطابق باليوم+المبلغ بس ⇒ **تحويلان بنفس المبلغ نفس اليوم**
+  // كان يتيمه يلقط **الساق الغلط** (شريك تحويل تاني). التشديد: نطابق كمان **وصف التحويل** (نفس «من X إلى Y»).
+  const TR_MOVE_TOKEN = /تحويل من «([^»]*)» إلى «([^»]*)»/;
   function trMovePairOf(v) {
     if (!v) return [];
     const rid = String(v.refId || "");
@@ -10868,11 +10871,27 @@ id: nextVoucherId(),
     }
     const d0 = String(v.date || "").slice(0, 10), amt = Number(v.amount) || 0;
     const kin = String(v.type || v.kind) === "in" ? "in" : "out";
-    const sib = vouchers.filter((x) => x && Number(x.id) !== Number(v.id) &&
-      String(x.date || "").slice(0, 10) === d0 && (Number(x.amount) || 0) === amt &&
-      (String(x.type || x.kind) === "in" ? "in" : "out") !== kin &&
-      Number(x.treasuryId) !== Number(v.treasuryId) && trMoveIsTransfer(x));
-    return [v].concat(sib.slice(0, 1));
+    const mv = TR_MOVE_TOKEN.exec(String(v.desc || ""));
+    const tok = mv ? mv[0] : "";
+    const cand = vouchers.filter((x) => {
+      if (!x || Number(x.id) === Number(v.id)) return false;
+      if (String(x.date || "").slice(0, 10) !== d0) return false;
+      if ((Number(x.amount) || 0) !== amt) return false;
+      if ((String(x.type || x.kind) === "in" ? "in" : "out") === kin) return false;
+      if (Number(x.treasuryId) === Number(v.treasuryId)) return false;
+      if (!trMoveIsTransfer(x)) return false;
+      return true;
+    });
+    // (١) الشريك الملاصق بالأرقام: ساقا التحويل **دائمًا متتاليتان** (الصرف = القبض−1) ⇒ أدق مرشّح
+    const wantId = kin === "out" ? Number(v.id) + 1 : Number(v.id) - 1;
+    const adj = cand.filter((x) => Number(x.id) === wantId);
+    if (adj.length) return [v, adj[0]];
+    // (٢) نفس وصف «من X إلى Y» (يمنع مطابقة تحويل تاني بنفس المبلغ/اليوم)
+    if (tok) {
+      const tokCand = cand.filter((x) => { const mx = TR_MOVE_TOKEN.exec(String(x.desc || "")); return mx && mx[0] === tok; });
+      if (tokCand.length) return [v, tokCand[0]];
+    }
+    return [v].concat(cand.slice(0, 1));
   }
   function deleteTreMove(vId) {
     if (typeof simpleGate === "function" && !simpleGate()) return;
@@ -12966,11 +12985,22 @@ id: nextVoucherId(),
     if (!(id > 0)) return [];
     // «TF:» = قيد التحويل (سندان متتاليان + قيد واحد) — المفتاح على id سند **الصرف** (= baseId+1).
     const out = [voucherJrnKey(id), "SE:" + id, "TF:" + id];
-    // الساق التانية (القبض، id = الصرف+1): يطابق «TF:+(id−1)» **بس** لو سند الصرف موجود فعلًا —
-    // ids فريدة والحذف بيشيل القيد مع السند ⇒ مافيش مفتاح توهم (متقاس في الحارس J4ب).
-    // **تنبيه لمن بعدي (١٥٤):** حذف ساق واحدة من تحويل = القيد بيرجع بس الساق التانية بتفضل —
-    // حذف تحويل لازم يكون **الساقين مع بعض**، وده شغل بناء 154 (الضغطتين + `RV:`).
-    if (vouchers.some((v) => v && Number(v.id) === id - 1)) out.push("TF:" + (id - 1));
+    // 🆕 بناء 188: «TF:+(id−1)» للساق الثانية (القبض) كان بيتضاف لمجرّد وجود أي سند رقمه id−1
+    // ⇒ **تحويلان ورا بعض** (out=10/in=11 ثم out=12/in=13) كان السند 12 (ساق صرف!) يمسك «TF:11»
+    // = قيد التحويل الأول غلط. التشديد: لازم السند الحالي يكون **ساق قبض** فعلًا وشريكه رقمه id−1.
+    const v = vouchers.find((x) => x && Number(x.id) === id) || null;
+    const prev = vouchers.find((x) => x && Number(x.id) === id - 1) || null;
+    let isInLeg = false;
+    if (v && prev && trMoveIsTransfer(v) && trMoveIsTransfer(prev) &&
+        String(v.type || v.kind) === "in" && String(prev.type || prev.kind) !== "in") {
+      const ridV = String(v.refId || ""), ridP = String(prev.refId || "");
+      isInLeg = (ridV && ridP)
+        ? (ridV === ridP)                       // حديث: نفس مفتاح «TFV:» على الساقين
+        : (String(prev.date || "").slice(0, 10) === String(v.date || "").slice(0, 10) &&
+           (Number(prev.amount) || 0) === (Number(v.amount) || 0) &&
+           Number(prev.treasuryId) !== Number(v.treasuryId)); // قديم (بلا وسم): مطابقة دقيقة
+    }
+    if (isInLeg) out.push("TF:" + (id - 1));
     return out;
   }
   function voucherJrnsOf(vId) {
