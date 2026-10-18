@@ -782,7 +782,7 @@
       tr.balance = Math.round(bal * 100) / 100;
       syncTreasuryItemToSett(tr);
     });
-    saveTreasury();
+    return saveTreasury();
   }
 
   let diskSyncTimer = null;
@@ -931,10 +931,12 @@
 
   function pushTable(name) {
     // الحفظ محلي أولًا دائمًا؛ الرفع للسحابة بيتم بس لو متصل (من غير طابور أوفلاين).
-    if (!A.online || A.adopting || A.cleaning) return;
-    if (!window.CLOUD) return;
+    if (!A.online || A.adopting || A.cleaning || !window.CLOUD) return null;
     mirror();
-    window.CLOUD.push(name).catch((e) => console.warn("push", name, e.message));
+    return window.CLOUD.push(name).then((ok) => ok === true).catch((e) => {
+      console.warn("push", name, e && e.message ? e.message : e);
+      return false;
+    });
   }
 
   function setDbStatus(txt) {
@@ -1285,7 +1287,7 @@
 
   function saveTreasury() {
     localStorage.setItem(LS_TREASURY, JSON.stringify(treasury));
-    pushTable("treasury"); syncToLocalDisk();
+    const sync = pushTable("treasury"); syncToLocalDisk(); return sync;
   }
 
 
@@ -1324,7 +1326,7 @@
 
   function saveAccounts() {
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
-    pushTable("accounts"); syncToLocalDisk();
+    const sync = pushTable("accounts"); syncToLocalDisk(); return sync;
   }
 
   function persistJournal() {
@@ -1332,7 +1334,7 @@
     journalEntries.forEach((j) => { const n = Number(j && j.id) || 0; if (n > JRN_ID_FLOOR) JRN_ID_FLOOR = n; });
     idFloorsSave();
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
-    pushTable("journal_entries"); syncToLocalDisk();
+    const sync = pushTable("journal_entries"); syncToLocalDisk(); return sync;
   }
 
   function saveUsers() {
@@ -1344,7 +1346,7 @@
     vouchers.forEach((v) => { const n = Number(v && v.id) || 0; if (n > VOU_ID_FLOOR) VOU_ID_FLOOR = n; });
     idFloorsSave();
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
-    pushTable("vouchers"); syncToLocalDisk();
+    const sync = pushTable("vouchers"); syncToLocalDisk(); return sync;
   }
 
   function saveSettings() {
@@ -11492,15 +11494,16 @@ id: nextVoucherId(),
     return base + "." + n;
   }
 
-  // خزينة → حساب الدليل المقابل (نقدية 1.1.1 / بنك 1.1.2 / محفظة 1.1.3) مع احتياطي بالاسم ثم بالنقدية
+  // خزينة → حساب الدليل المقابل (نقدية 1.1.1 / بنك 1.1.2 / محفظة 1.1.3)، من غير تحويل النوع لحساب نقدية
   // 🆕 بناء 149 (سطر ٤): في الأدلة بلا نقاط الكود يبقى 111/112/113، وكان الاحتياطي بالاسم
   // مشروطًا بـ Number(parentId) !== 0 — و parent_id في الشركات كلها null ⇒ Number(null)===0 ⇒
   // الاحتياطي كان ميت ⇒ الدالة بترجع null ⇒ invoiceJrnPlan يرد {error:"cash"} ⇒ **الترحيل بيتلغى**.
-  // الإصلاح: الكود بالحرف ⇒ نسخة الكود بلا نقاط ⇒ بالاسم (بلا شرط parentId) ⇒ النقدية.
+  // الإصلاح: الكود بالحرف ⇒ نسخة الكود بلا نقاط ⇒ بالاسم (بلا شرط parentId)، وإلا لا يوجد حساب مطابق.
   function accForTreasuryAcc(t) {
     const byCode = { cash: "1.1.1", bank: "1.1.2", wallet: "1.1.3" };
     const byName = { cash: "صناديق", bank: "البنوك", wallet: "المحافظ" };
-    const key = t && byCode[t.type] ? t.type : "cash";
+    const key = t && byCode[t.type] ? t.type : "";
+    if (!key) return null;
     let a = accounts.find((x) => String(x.code) === byCode[key] && x.isActive);
     if (a) return a;
     const bare = byCode[key].replace(/\./g, "");
@@ -11508,9 +11511,7 @@ id: nextVoucherId(),
     if (a) return a;
     a = accounts.find((x) => x.type === "asset" && x.isActive && (x.nameAr || "").includes(byName[key]));
     if (a) return a;
-    a = accounts.find((x) => String(x.code) === "1.1.1" && x.isActive);
-    if (a) return a;
-    return accounts.find((x) => x && x.isActive && String(x.code || "") === "111") || null;
+    return null;
   }
 
   // قائمة خزائن بملصق الرصيد، والنقدية أولًا (المفضل) ثم البنوك فالمحافظ
@@ -11905,11 +11906,13 @@ id: nextVoucherId(),
     if (!from || !to) { toast("اختار الحساب المنقول منه والحساب المنقول إليه.", "warning"); return; }
     if (Number(from.id) === Number(to.id)) { toast("لا يمكن التحويل من الحساب إلى نفس الحساب.", "warning"); return; }
     if (!(amount > 0)) { toast("اكتب مبلغًا صحيحًا أكبر من الصفر.", "warning"); return; }
-    // 🔒 بناء 187: حارس «لا ترحيل بلا حساب» (زي باقي مسارات الصرف/القبض). قبل كده التحويل
-    // كان يخصم الرصيد ويسجّل السندين، ولو حساب الخزينة ناقص يتخطّى القيد بصمت ⇒ الدفتر يفترق.
-    ensureJrnStd();
+    // افحص الحسابين قبل أي كتابة؛ التحويل لا ينشئ حسابات بديلة أو يرحّل على حساب آخر.
     const aFrom = accForTreasuryAcc(from);
     const aTo = accForTreasuryAcc(to);
+    if (!aFrom || !aTo) {
+      toast("مش لاقي حساب الدليل المناسب لكل خزينة (نقدية/بنك/محفظة). أضف الحساب الناقص من شاشة الحسابات قبل التحويل.", "warning");
+      return;
+    }
     if (jrnBlocked("التحويل", voucherJrnPlan("out", aFrom, aTo, amount))) return;
     const bal = round2(from.balance);
     if (amount > bal) {
@@ -11922,8 +11925,7 @@ id: nextVoucherId(),
     // 🆕 بناء 182: وسام `refType` عشان العدّاد ما يعدّهوش مصروف/إيراد (حركة داخلية بين خزائن الشركة)
     vouchers.push({ id: baseId + 1, type: "out", treasuryId: Number(from.id), date: date, amount: amount, desc: "سند صرف — " + tag, refType: "تحويل بين الحسابات", refId: "TFV:" + (baseId + 1) });
     vouchers.push({ id: baseId + 2, type: "in", treasuryId: Number(to.id), date: date, amount: amount, desc: "سند قبض — " + tag, refType: "تحويل بين الحسابات", refId: "TFV:" + (baseId + 1) });
-    saveVouchers();
-    recalculateTreasuryBalances();
+    const syncResults = [saveVouchers(), recalculateTreasuryBalances()];
 
     let jNumber = "";
     // 🔒 بناء 187: aFrom/aTo مضمونين (الحارس فوق منع الحفظ لو ناقصين) ⇒ القيد مضمون مع الحركة.
@@ -11946,16 +11948,28 @@ id: nextVoucherId(),
       // 🆕 بناء 152: نفس مصدر الحقيقة لتسوية أرصدة الدليل — settleJrnLines (سطر-سطر)
       settleJrnLines(lines, 1);
       journalEntries.push(j);
-      persistJournal();
-      saveAccounts();
+      syncResults.push(persistJournal(), saveAccounts());
       jNumber = j.number;
     }
     hideModal("mSimpleTransfer");
     addActivity("تحويل بين الحسابات", tag + " بمبلغ " + fmt(amount) + " ج.م");
-    toast("تم التحويل" + (jNumber ? " (قيد " + jNumber + ")" : "") + " بين «" + from.name + "» و«" + to.name + "\".", "success");
     renderJournal();
     renderLedger();
     try { renderTreasury(); renderTreMoves(); } catch (e) { }
+    const transferLabel = "تم التحويل" + (jNumber ? " (قيد " + jNumber + ")" : "") +
+      " بين «" + from.name + "» و«" + to.name + "».";
+    const cloudSyncRequested = A.online && !A.adopting && !A.cleaning && !!window.CLOUD;
+    if (cloudSyncRequested) {
+      Promise.all(syncResults).then((results) => {
+        if (results.length === 4 && results.every((ok) => ok === true)) {
+          toast(transferLabel + " وبياناته اترفعت للسحابة.", "success");
+        } else {
+          toast(transferLabel + " اتحفظ على الجهاز، لكن رفع بعض بياناته للسحابة ما اكتملش أو ما اتأكدش. راجع تنبيه المزامنة.", "warning");
+        }
+      });
+    } else {
+      toast(transferLabel + " اتحفظ على الجهاز فقط؛ ما اترفعش للسحابة.", "warning");
+    }
   }
 
   /* ================== 🆕 بناء 134: الفواتير تترحّل أوتوماتيك للقيود ==================
@@ -16058,13 +16072,18 @@ id: nextVoucherId(),
     // العدّادان relacl={postgres,service_role} بس · user_id موجود + FK لـ auth.users · 0 سطور.
     // ⚠️ ناقص مسجّل: العمود password_plain لسه موجود (0 منح للمستخدمين عليه + 0 سطور +
     // دالة واحدة بتلمسه) ⇒ شيله نهائيًا = ترقية ٥٨ بأمر المالك.
-    "db/supabase-upgrade-57-security-hardening.sql"];
-  // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
-  // فاضية دلوقتي بالقياس: كل ملف في db/ اتنفّذ على السحابة ⇒ ينشر معه. أي استبعاد جديد لازم يكون
-  // سببه المكتوب **حقيقي** (مش «خايف أنشره») — حارس check_backup_coverage_124.js بيسأل db/ مباشرة.
+    "db/supabase-upgrade-57-security-hardening.sql",
+    // ترقية ٥٩ محفوظة كما نُفذت؛ ترقية ٦٠ تكمل حارس features وتمنع تعديل المدير لصلاحيات حسابه.
+    "db/supabase-upgrade-59-profile-identity-guard.sql",
+    "db/supabase-upgrade-60-profile-self-features-guard.sql"];
+  // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب.
+  // ترقية ٥٨ ما زالت مستقلة ومحجوزة لإزالة password_plain، وملفات rollback لا تدخل الحزمة.
   // بناء 141: ترقية ٥ـ (قفل التسجيل + دوال الرموز) **اتنفّذت** 5/10 ≈01:29 ⇒ دخلت FILES فوق
   // وبره الاستبعاد زي أخواتها (٤٣→٤٩)، والقاعدة نفسها: أي ملف جديد لسه ما اتنفّذتش يتحط هنا بسبب.
-  var DEPLOY_DB_EXCLUDE = {};
+  var DEPLOY_DB_EXCLUDE = {
+    "db/supabase-rollback-59-profile-identity-guard.sql": "ملف رجوع احتياطي يزيل حارس ترقية ٥٩ ويعيد السياسة السابقة؛ لا يدخل حزمة النشر.",
+    "db/supabase-rollback-60-profile-self-features-guard.sql": "ملف رجوع يعيد تعريف حارس ترقية ٥٩؛ لا يدخل حزمة النشر."
+  };
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "car_trips", "categories", "cashier_shifts", "customer_txs", "customers",
     "fixed_assets",
