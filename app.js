@@ -1176,8 +1176,18 @@
     p.qty = Math.round(total * 100) / 100;
   }
 
+  /* 🆕 بناء 193 (قاعدة المالك 18/10): الكتابة بقت بالمخزن المحدد بالظبط.
+     `stockAt` (قراءة) يفضل راجع للإجمالي لو اسم المخزن مش في الخريطة — ده قرار «السقف» (ممنوع
+     رفض بيع وفي مخزون) ومش هيتغيّر. بس `addStockAt` (كتابة) ما ينفعش يستخدم نفس الاحتياطي:
+     مقياس قبل التعديل — صنف {الرئيسي:10} وفاتورة على مخزن «فرعي» مش في الخريطة:
+       بيع 2 ⇒ {الرئيسي:10, فرعي:8} والإجمالي 18 (وهم +8!) ⇒ حذفها ⇒ 20 🔴
+     بعد التعديل: بيع 2 ⇒ فرعي = −2 والإجمالي 8 ⇒ حذفها ⇒ فرعي 0 والإجمالي 10 ✅ عكس حرفي.
+     صنف قديم بلا خريطة مخازن: الأساس = الإجمالي الحالي، والنتيجة نفس القيمة ✅ */
   function addStockAt(p, wh, v) {
-    setStockAt(p, wh, stockAt(p, wh) + v);
+    if (!p) return;
+    if (!p.stock || typeof p.stock !== "object") { setStockAt(p, wh, (Number(p.qty) || 0) + v); return; }
+    const raw = Object.prototype.hasOwnProperty.call(p.stock, wh) ? (Number(p.stock[wh]) || 0) : 0;
+    setStockAt(p, wh, raw + v);
   }
 
   function loadData() {
@@ -7655,6 +7665,27 @@
       saveSupplierTxs();
     }
 
+    // 🆕 بناء 193 (قاعدة المالك 18/10): لقطة أسعار التكلفة **قبل** أي لمس — عشان «حذف الفاتورة
+    // يرجّع كل حاجة لحسابها كان الفاتورة متعملتش خالص». اللقطة دي هي المرجع الوحيد للترجيع:
+    // المتوسط/سعر الشراء بيتحسبوا من الكميات، فأي محاولة إعادة حساب من جديد بعد الحذف بتدي
+    // رقم مختلف (مقياس: 3 سطور بنفس الصنف والكميات ⇒ متوسط 100/103.33/106.67 حسب الترتيب).
+    // بتتخزن على الفاتورة نفسها في localStorage وفي لقطة الديسك (مش عمود سحابي — `sales/purchases`
+    // مالهمش عمودات مدفوع/متبقي، فأي إضافة عمود = ترقية مستنية «نفّذ»).
+    invoice.costBefore = ppItems.map((it) => {
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
+      if (!p) return null;
+      const snap = {
+        productId: p.id,
+        weightedAvgCost: Number(p.weightedAvgCost),
+        avgPurchasePrice: Number(p.avgPurchasePrice),
+        purchasePrice: Number(p.purchasePrice),
+        lastPurchasePrice: Number(p.lastPurchasePrice)
+      };
+      const anyNum = [snap.weightedAvgCost, snap.avgPurchasePrice, snap.purchasePrice, snap.lastPurchasePrice]
+        .some((n) => Number.isFinite(n));
+      return anyNum ? snap : null;
+    }).filter(Boolean);
+
     ppItems.forEach((it) => {
       const p = products.find((x) => Number(x.id) === Number(it.productId));
       if (!p) return;
@@ -8264,47 +8295,117 @@
         saveSuppliers();
         saveSupplierTxs();
       }
-      // 🆕 192: الدفعة اللي دخلت الخزينة (بيع) أو خرجت منها (شراء) وقت التسجيل = الإجمالي − المتبقي على الطرف.
-      // قبل كده فرع «آجل» ما كانش بيرجعلها خالص (الاسترجاع كان مكتوب في فرع «نقدي» بس).
-      const gonePaid = Math.round((amt - goneDue) * 100) / 100;
-      if (gonePaid > 0.0001) {
-        const isBank = pm.includes("بنك") || pm.includes("تحويل");
-        const isWallet = pm.includes("محفظ");
-        const type = isBank ? "bank" : isWallet ? "wallet" : "cash";
-        const ptr = treasury.find((x) => x.id === inv.treasuryId)
-          || treasury.find((x) => x.type === type)
-          || treasury.find((x) => x.type === "cash") || treasury[0] || null;
-        if (ptr) {
-          ptr.balance = Math.round(((ptr.balance || 0) + (isSales ? -gonePaid : gonePaid)) * 100) / 100;
-          saveTreasury();
-          syncTreasuryItemToSett(ptr);
+    }
+    /* 🆕 بناء 193 (قاعدة المالك 18/10 بحرفه): «لو عملت حذف مش ارتجاع لفاتورة عميل دافع جزء وعليه جزء،
+       الحذف يخلي كل حاجة ترجع لحسابها كأن الفاتورة متعملتش خالص: النقدي بنفس القيمة، حساب العميل
+       بنفس القيمة، المخزون بنفس القيمة» — والمرتجع هو اللي بيدي اختيار حسابات، الحذف مافيش فيه اختيار.
+       فقيمة اللي دخل/خرج من الخزينة بتتقاس بترتيب مصداقية ثابت (ممنوع التخمين):
+         ١) سطر الطرف اللي شلناه من الكشف: المتبقي على العميل/المورد ⇒ الدفعة = الإجمالي − المتبقي.
+            ده أدق مصدر لأنه الرقم اللي اتسجّل وقت الفاتورة نفسه، و`description/debit` بيمشّي المزامنة.
+         ٢) قيد الفاتورة (بناء 134): بيع = مجموع المدين − سطر «مديونيات العملاء» · شراء = مجموع
+            الدائن − سطر «مستحقات الموردين» — يُستعمل لو مافيش سطر طرف (مدفوع بالكامل أو سطر ضايع).
+         ٣) حقل paidAmount على الفاتورة — موجود على الجهاز اللي سجّلها بس، وجدول sales/purchases
+            مالوش أعمدة للمدفوع/المتبقي (مقياس cloud.js:463-505) ⇒ يُستخدم بس لو الحقل موجود فعلًا.
+         ٤) احتياط أخير: الإجمالي.
+       والصندوق اللي الفلوس ترجع له: inv.treasuryId (بينزل ويرجع من السحابة بمقياس نفس الملف) ⇒
+       نوع حساب القيد ⇒ نوع وسيلة الدفع ⇒ الصندوق النقدي ⇒ أول خزينة.
+       🚚 استثناء مقيس: بيع المندوب (بناء 178) قبضه بيرحّل لحساب «ذمم المناديب» مش لصندوق —
+       فالقيد لو بيقول حساب مش خزينة، الحذف ما يلمسش أي خزينة (الكشف بيتراجع في removeInvoiceJournal). */
+    const r2n = (n) => Math.round(Number(n || 0) * 100) / 100;
+    const dueAcc = accByCode(isSales ? "1.1.5" : "2.1.1", isSales ? "مديونيات العملاء" : "مستحقات الموردين");
+    const jOfInv = invoiceJrnOf(isSales ? "sale" : "purchase", inv);
+    let paidFromJrn = null, paidAccId = null;
+    if (jOfInv && Array.isArray(jOfInv.lines) && jOfInv.lines.length) {
+      let side = 0, dueSide = 0;
+      jOfInv.lines.forEach((l) => {
+        const v = r2n(isSales ? (l && l.debit) : (l && l.credit));
+        if (!(v > 0)) return;
+        side = r2n(side + v);
+        if (dueAcc && Number(l.accountId) === Number(dueAcc.id)) dueSide = r2n(dueSide + v);
+        else if (paidAccId == null) paidAccId = Number(l.accountId);
+      });
+      const cand = r2n(side - dueSide);
+      if (cand >= 0 && cand <= r2n(amt)) paidFromJrn = cand;
+    }
+    const isBank = pm.includes("بنك") || pm.includes("تحويل");
+    const isWallet = pm.includes("محفظ");
+    const pmType = isBank ? "bank" : isWallet ? "wallet" : "cash";
+    // نوع الحساب من كوده الدليلي (accByCode بيلفظ الأدلة المجرّدة والمرادفات — مقياس بناء 149)
+    const typeOfAccId = (id) => {
+      if (id == null || isNaN(Number(id))) return "";
+      const pairs = [["bank", "1.1.2", "البنوك"], ["wallet", "1.1.3", "المحافظ"], ["cash", "1.1.1", "الصناديق"]];
+      for (const p of pairs) {
+        const a = accByCode(p[1], p[2]);
+        if (a && Number(a.id) === Number(id)) return p[0];
+      }
+      return "";
+    };
+    // 🧭 ترتيب المصادر (مقيّس، مش تفضيل شخصي):
+    //  (أ) الطرف أمانة: السطر اللي شلناه من كشف حسابه = المتبقي ⇒ الدفعة = الإجمالي − المتبقي.
+    //      ده أدق مصدر لأنه نفس الرقم اللي اتسجّل وقت الفاتورة وبيمشي مع المزامنة.
+    //  (ب) القيد: لو مافيش سطر طرف (مدفوع بالكامل/سطر ضايع) ⇒ مجموع المدين − سطر الطرف.
+    //  (ج) حقل paidAmount على الفاتورة (بينزل من السحابة بدون الحقل ⇒ يُستخدم بس لو موجود فعلًا).
+    //  (د) احتياط: آجل بلا سطر = الإجمالي (شكل باگ 191)، وغير الآجل = الإجمالي كله.
+    const hasPaidField = Object.prototype.hasOwnProperty.call(inv, "paidAmount") && Number.isFinite(Number(inv.paidAmount));
+    let gonePaid = null;
+    if (pm === "آجل" && goneDue > 0.0001) gonePaid = r2n(Math.max(0, r2n(amt) - goneDue));
+    if (gonePaid == null && paidFromJrn != null) gonePaid = paidFromJrn;
+    if (gonePaid == null && hasPaidField) gonePaid = r2n(Number(inv.paidAmount));
+    if (gonePaid == null) gonePaid = pm === "آجل" ? r2n(Math.max(0, amt - goneDue)) : r2n(amt);
+    if (gonePaid < 0) gonePaid = 0;
+    if (gonePaid > r2n(amt)) gonePaid = r2n(amt);
+    let ptr = null, ptrNotTreasury = false;
+    if (gonePaid > 0.0001) {
+      if (inv.treasuryId != null && inv.treasuryId !== "") {
+        ptr = treasury.find((x) => Number(x.id) === Number(inv.treasuryId)) || null;
+      }
+      if (!ptr) {
+        const jType = paidAccId != null ? typeOfAccId(paidAccId) : "";
+        // 🚚 بيع المندوب (بناء 178): القبض راح لحساب «ذمم المناديب» وصندوقه = null بالذات
+        ptrNotTreasury = !!inv.isVan || (paidFromJrn != null && paidAccId != null && jType === "");
+        if (!ptrNotTreasury) {
+          const want = jType || pmType;
+          ptr = treasury.find((x) => x.type === want) || treasury.find((x) => x.type === "cash") || treasury[0] || null;
         }
       }
-    } else {
-      // نقدي/بنك/محفظة: انعكاس حركة الخزينة اللي اتسجلت بيها الفاتورة
-      let tr = treasury.find((x) => x.id === inv.treasuryId);
-      if (!tr) {
-        const isBank = pm.includes("بنك") || pm.includes("تحويل");
-        const isWallet = pm.includes("محفظ");
-        const type = isBank ? "bank" : isWallet ? "wallet" : "cash";
-        tr = treasury.find((x) => x.type === type) || treasury.find((x) => x.type === "cash") || treasury[0];
-      }
-      if (tr) {
-        tr.balance = Math.round(((tr.balance || 0) + (isSales ? -amt : amt)) * 100) / 100;
+      if (ptr) {
+        ptr.balance = r2n((Number(ptr.balance) || 0) + (isSales ? -gonePaid : gonePaid));
         saveTreasury();
-        syncTreasuryItemToSett(tr);
+        syncTreasuryItemToSett(ptr);
       }
+    }
+    // 🆕 193: تكلفة الشراء ترجع زي ما كانت قبل الفاتورة (متوسطة/آخر شراء) — لو اللقطة محفوظة
+    let costBack = 0;
+    if (!isSales && Array.isArray(inv.costBefore) && inv.costBefore.length) {
+      inv.costBefore.forEach((c) => {
+        const p = products.find((x) => Number(x.id) === Number(c.productId));
+        if (!p) return;
+        if (Number.isFinite(Number(c.weightedAvgCost))) p.weightedAvgCost = Number(c.weightedAvgCost);
+        if (Number.isFinite(Number(c.avgPurchasePrice))) p.avgPurchasePrice = Number(c.avgPurchasePrice);
+        if (Number.isFinite(Number(c.purchasePrice))) p.purchasePrice = Number(c.purchasePrice);
+        if (Number.isFinite(Number(c.lastPurchasePrice))) p.lastPurchasePrice = Number(c.lastPurchasePrice);
+        costBack++;
+      });
+      saveProducts();
     }
     // 🆕 بناء 134: القيد اللي اتترحّل مع الفاتورة بيرجع معاه (تسوية الأرصدة بتلغى سطر-سطر)
     const goneJ = removeInvoiceJournal(isSales ? "sale" : "purchase", inv);
     // 3) حذف الفاتورة نفسها + سجل النشاط + تحديث الاستعلام
     if (isSales) { sales = sales.filter((x) => x.id !== inv.id); saveSales(); }
     else { purchases = purchases.filter((x) => x.id !== inv.id); savePurchases(); }
-    // 🆕 بناء 192: النشاط والتوست بيقولوا بالرقم exactly إيه اللي رجع — المتبقي على الطرف والدفعة للخزينة
-    const backTxt = pm === "آجل"
-      ? (" (شيلنا من حساب " + who + " " + fmt(goneDue) + " ج.م" +
-          ((amt - goneDue) > 0.0001 ? "، وردّينا " + fmt(amt - goneDue) + " ج.م للخزينة" : "") + ")")
-      : "";
+    /* 🆕 بناء 193: السطر ده بقى يتبني من **الأرقام اللي رجعت فعلًا** (`gonePaid` للخزينة،
+       `goneDue` للطرف، `costBack` للتكلفة) — مش من «الإجمالي − المتبقي» ولا بشرط «آجل» وحده.
+       قاعدة المالك: «الحذف يخلي كل حاجة ترجع لحسابها كان الفاتورة متعملتش خالص».
+       ممنوع أي اصطلاح تقني للعميل — بصيغة ودّية فيها الاسم والمبلغ بس. */
+    const bits = [];
+    if (goneDue > 0.0001) bits.push("شيلنا من حساب " + who + " " + fmt(goneDue) + " ج.م");
+    if (gonePaid > 0.0001) {
+      if (ptr) bits.push((isSales ? "وطلعنا " : "وردّينا ") + fmt(gonePaid) + " ج.م " + (isSales ? "من" : "لـ") + " «" + ptr.name + "»");
+      else if (ptrNotTreasury) bits.push("ورجّعنا دفعة " + fmt(gonePaid) + " ج.م على حسابها اللي اتدفعت منه (مش صندوق)");
+      else bits.push("وردّينا " + fmt(gonePaid) + " ج.م للحساب اللي اتدفعت منه");
+    }
+    if (costBack > 0) bits.push("ورجّعنا أسعار التكلفة لـ " + costBack + " صنف");
+    const backTxt = bits.length ? (" (" + bits.join("، ") + ")") : "";
     addActivity("حذف فاتورة", "حذف فاتورة " + kind + " رقم (" + num + ") - " + who + " - بمبلغ " + fmt(amt) +
       " ج.م (تراجع كامل للمخزون والأرصدة" + (goneJ ? " والقيد " + goneJ.number : "") + ")" + backTxt);
     toast("تم حذف فاتورة (" + num + ") بنجاح وتراجع أثرها بالكامل" +
