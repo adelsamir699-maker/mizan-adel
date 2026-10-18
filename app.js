@@ -21748,7 +21748,10 @@ const pwEye = document.getElementById("btnShowPass");
         $("#bootSplash").hidden = false;
         window.DATA.autoLogin().then(function (ok) {
           $("#bootSplash").hidden = true;
-          if (ok && DATA.getProfile()) { proceedOnline(null, null); return; }
+          // 🆕 بناء 185: استرجاع الجلسة التلقائي (بعد تحديث/تنشيط) يدخل البرنامج مباشرة
+          // من غير ما يرجّع صاحب الشركة لشاشة «حسابات شركتك» (bypassMembers=true) — كانت
+          // سبب «البرنامج بيخرج» عند أي reload. شاشة الحسابات تفضل تظهر فقط بعد دخول صريح.
+          if (ok && DATA.getProfile()) { proceedOnline(null, null, true); return; }
           setDbStatus("🟡 أونلاين — سجّل الدخول");
           showLogin();
         }).catch(function () {
