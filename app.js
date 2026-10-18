@@ -10825,11 +10825,73 @@
     renderTreMoves();
   }
 
+  // 🆕 بناء 184: حذف «التحويل بين الحسابات» (السندان + القيد) من قائمة «آخر الحركات».
+  // التحويل = سند صرف + سند قبض بنفس المبلغ/اليوم ووصف «تحويل من «X» إلى «Y»» + قيد واحد «TF:».
+  // التعرف: بالوسم (refType/refId) لو وصل من السحابة (ترحيل ٥٦)، وإلا بالوصف — عشان يشتغل
+  // على أي جهاز حتى قبل ما الوسم يتزامن. الحذف يعدّي على `dropVouchersWithJournal` (نقطة ارتكاز 151).
+  function trMoveIsTransfer(v) {
+    if (!v) return false;
+    const rt = String(v.refType || ""), rid = String(v.refId || "");
+    if (rt.indexOf("تحويل") !== -1) return true;
+    if (rid.indexOf("TFV") === 0 || rid.indexOf("TF") === 0) return true;
+    const d = String(v.desc || "");
+    return d.indexOf("تحويل من «") !== -1 || d.indexOf("تحويل بين الحسابات") !== -1;
+  }
+  // الساق التانية للنقل: بالمفتاح المشترك أولًا، وإلا (نفس اليوم + نفس المبلغ + اتجاه معاكس + خزينة مختلفة)
+  function trMovePairOf(v) {
+    if (!v) return [];
+    const rid = String(v.refId || "");
+    if (rid) {
+      const same = vouchers.filter((x) => x && String(x.refId || "") === rid);
+      if (same.length >= 2) return same;
+    }
+    const d0 = String(v.date || "").slice(0, 10), amt = Number(v.amount) || 0;
+    const kin = String(v.type || v.kind) === "in" ? "in" : "out";
+    const sib = vouchers.filter((x) => x && Number(x.id) !== Number(v.id) &&
+      String(x.date || "").slice(0, 10) === d0 && (Number(x.amount) || 0) === amt &&
+      (String(x.type || x.kind) === "in" ? "in" : "out") !== kin &&
+      Number(x.treasuryId) !== Number(v.treasuryId) && trMoveIsTransfer(x));
+    return [v].concat(sib.slice(0, 1));
+  }
+  function deleteTreMove(vId) {
+    if (typeof simpleGate === "function" && !simpleGate()) return;
+    const v = vouchers.find((x) => Number(x.id) === Number(vId));
+    if (!v) return;
+    const pair = trMovePairOf(v);
+    if (!pair.length) return;
+    const amt = fmt(Number(v.amount) || 0);
+    if (!confirm("حذف التحويل بين الحسابات بمبلغ " + amt + " ج.م؟\nهيتشال " + pair.length +
+      " سند + القيد المحاسبي المرتبط، وترجع أرصدة الخزائن زي ما كانت قبل التحويل.")) return;
+    const res = dropVouchersWithJournal(pair);
+    saveVouchers();
+    recalculateTreasuryBalances();
+    addActivity("حذف تحويل بين الحسابات", amt + " ج.م (" + res.vouchers + " سند + " + res.journals + " قيد)");
+    toast("تم حذف التحويل (" + res.vouchers + " سند" + (res.journals ? " + " + res.journals + " قيد" : "") + ").", "success");
+    try { renderTreasury(); renderTreMoves(); } catch (e) { }
+    try { renderJournal(); } catch (e) { }
+    try { renderLedger(); } catch (e) { }
+    try { renderDashboard(); } catch (e) { }
+  }
+  let trMovesBound = false;
+  function trMovesBindOnce() {
+    if (trMovesBound) return;
+    const tb = $("#dgvTreMoves tbody");
+    if (!tb) return;
+    tb.addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest("[data-trdel]") : null;
+      if (!btn) return;
+      ev.preventDefault();
+      deleteTreMove(btn.getAttribute("data-trdel"));
+    });
+    trMovesBound = true;
+  }
+
   function renderTreMoves() {
+    trMovesBindOnce();
     const moves = [];
     sales.filter((s) => s.treasuryId && s.paymentMethod !== "آجل").forEach((s) => moves.push({ date: s.invoiceDate || s.date || todayISO(), name: (treasury.find((t) => Number(t.id) === Number(s.treasuryId)) || {}).name || "-", desc: "فاتورة مبيعات " + (s.invoiceNumber || s.invoiceNo), in: s.grandTotal, out: 0 }));
     purchases.filter((p) => p.treasuryId && p.paymentMethod !== "آجل").forEach((p) => moves.push({ date: p.invoiceDate || p.date || todayISO(), name: (treasury.find((t) => Number(t.id) === Number(p.treasuryId)) || {}).name || "-", desc: "فاتورة مشتريات " + (p.invoiceNumber || p.invoiceNo), in: 0, out: p.grandTotal }));
-    vouchers.forEach((v) => moves.push({ date: v.date, name: (treasury.find((t) => Number(t.id) === Number(v.treasuryId)) || {}).name || "-", desc: v.desc || (v.type === "in" ? "إيراد (سند قبض)" : "مصروف (سند صرف)"), in: (v.type === "in" || v.kind === "in") ? v.amount : 0, out: (v.type === "out" || v.kind === "out") ? v.amount : 0 }));
+    vouchers.forEach((v) => moves.push({ date: v.date, name: (treasury.find((t) => Number(t.id) === Number(v.treasuryId)) || {}).name || "-", desc: v.desc || (v.type === "in" ? "إيراد (سند قبض)" : "مصروف (سند صرف)"), in: (v.type === "in" || v.kind === "in") ? v.amount : 0, out: (v.type === "out" || v.kind === "out") ? v.amount : 0, voucherId: Number(v.id) || 0, transfer: trMoveIsTransfer(v) }));
     moves.sort((a, b) => new Date(b.date) - new Date(a.date));
     const tbody = $("#dgvTreMoves tbody");
     tbody.innerHTML = "";
@@ -10840,10 +10902,11 @@
         '<td>' + esc(m.name) + '</td>' +
         '<td style="text-align:right">' + esc(m.desc) + '</td>' +
         amtTd(m.in, "in", true) +
-        amtTd(m.out, "out", true);
+        amtTd(m.out, "out", true) +
+        '<td class="cell-actions">' + (m.transfer && m.voucherId ? '<button class="btn small red" type="button" title="حذف التحويل بين الحسابات (السندان + القيد)" data-trdel="' + m.voucherId + '">🗑️</button>' : '') + '</td>';
       tbody.appendChild(tr);
     });
-    if (!moves.length) tbody.innerHTML = '<tr><td colspan="5">لا توجد حركات بعد.</td></tr>';
+    if (!moves.length) tbody.innerHTML = '<tr><td colspan="6">لا توجد حركات بعد.</td></tr>';
   }
 
   /* ================== دليل الحسابات ================== */
@@ -15821,7 +15884,11 @@
     // 🚚 ترقية ٥٥ (سيارات مناديب المبيعات): جدول car_trips + RLS عزل الشركة + عمود
     // organizations.cars (سجل السيارات) + فرع حفظه في mizan_client_sett_save. كُتب بلا تنفيذ بعد،
     // وقبل تنفيذه المزامنة بتسجّل الرحلات محليًا فقط (علامة CT_TABLE_MISSING في cloud.js).
-    "db/supabase-upgrade-55-car-trips.sql"];
+    "db/supabase-upgrade-55-car-trips.sql",
+    // 🆕 ترقية ٥٦ (وسم السند): عمودا ref_type/ref_id على جدول vouchers + فهرس بحث بالمفتاح.
+    // كُتبت بلا تنفيذ بعد، وقبل تنفيذها المزامنة بترفع السندات **بلا** الوسم (علامة
+    // HAS_VOUCHER_REFS في cloud.js)، فلا يتوقف رفع السندات ولا يظهر تحذير «المزامنة وقفت».
+    "db/supabase-upgrade-56-voucher-refs.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب، والحارس يرفض أي إضافة هنا من غير سبب
   // فاضية دلوقتي بالقياس: كل ملف في db/ اتنفّذ على السحابة ⇒ ينشر معه. أي استبعاد جديد لازم يكون
   // سببه المكتوب **حقيقي** (مش «خايف أنشره») — حارس check_backup_coverage_124.js بيسأل db/ مباشرة.

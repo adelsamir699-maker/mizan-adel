@@ -224,6 +224,23 @@
       .catch(function (e) { if (isMissingTableError(e)) CT_TABLE_MISSING = true; return false; });
   }
 
+  // 🆕 بناء 184: خانتا وسم السند (ref_type/ref_id) على جدول vouchers — ترحيل ٥٦ بيضيفهم،
+  // وtoCloud بيبعتهما بس لما HAS_VOUCHER_REFS=true (فحص مرّة قبل أول رفع سندات).
+  // قبل الترحيل: منبعتهمش خالص وإلا PostgREST يرفض الصف كله (عمود غير موجود/42703) فتوقف
+  // مزامنة كل السندات بلا سبب — نفس درس عمود unit (بناء ١١٧) وسعرَي الأصناف (بناء ١٧٩).
+  // أول ما الترحيل يتنفّذ، الفحص ينجح والوسم يبدأ يترفع تلقائيًا من نفس اللحظة.
+  var HAS_VOUCHER_REFS = false;
+  function probeVoucherRefs() {
+    if (!DATA.client()) return Promise.resolve(false);
+    return Promise.resolve()
+      .then(function () { return DATA.client().from("vouchers").select("ref_type, ref_id").limit(1); })
+      .then(function (r) {
+        HAS_VOUCHER_REFS = !(r && r.error);
+        return HAS_VOUCHER_REFS;
+      })
+      .catch(function () { HAS_VOUCHER_REFS = false; return false; });
+  }
+
   // خريطة تحويل (محلي → سماوي / سماوي → محلي)
   var META = {
     customers: {
@@ -774,16 +791,22 @@
     vouchers: {
       local: function () { return W.vouchers; },
       toCloud: function (r) {
-        return { id: detUuid("vouchers", r.id), org_id: DATA.orgId(), local_id: r.id,
+        var row = { id: detUuid("vouchers", r.id), org_id: DATA.orgId(), local_id: r.id,
           no: r.no || r.id, doc_date: docDate(r), kind: r.kind || r.type || "in",
           treasury_id: (r.treasuryId || "").toString(), account_id: (r.accountId || "").toString(),
           amount: r.amount || 0, notes: r.notes || r.desc || "" };
+        // 🆕 بناء 184: وسم السند (refType/refId) بيترفع بس لو العمودان موجودان على السحابة
+        // (ترحيل ٥٦). قبل الترحيل منبعتهمش خالص وإلا PostgREST يرفض الصف كله (42703)
+        // ⇒ مزامنة السندات كلها تقف — نفس درس عمود unit في بناء ١١٧.
+        if (HAS_VOUCHER_REFS) { row.ref_type = r.refType || ""; row.ref_id = r.refId || ""; }
+        return row;
       },
       fromCloud: function (r) {
         var k = r.kind || "in";
         return { id: r.local_id, no: r.no, date: r.doc_date, kind: k, type: k,
           treasuryId: Number(r.treasury_id || 0), accountId: Number(r.account_id || 0),
-          amount: Number(r.amount || 0), desc: r.notes || "", notes: r.notes || "" };
+          amount: Number(r.amount || 0), desc: r.notes || "", notes: r.notes || "",
+          refType: r.ref_type || "", refId: r.ref_id || "" };
       }
     },
     journal_entries: {
@@ -980,6 +1003,7 @@
     probeFixedAssetsTable(); // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
     probeCashierShiftsTable(); // 🧾 بناء 176: هل جدول cashier_shifts اتعمل (ترحيل ٥٤) ولا لسه
     probeCarTripsTable(); // 🚚 بناء 178: هل جدول car_trips اتعمل (ترحيل ٥٥) ولا لسه
+    probeVoucherRefs(); // 🆕 بناء 184: هل عمودا وسم السند (ref_type/ref_id) على vouchers موجودان (ترحيل ٥٦) ولا لسه
     // 🆕 بناء 125 (بند 16): هل جدول messages اتعمل (ترقية ٤٥) ولا لسه على القرص بس.
     // الفحص ده بيحدد وحده ظهور تبويب «الدردشة» — فالترحيل لما يتنفّذ بأمر المالك
     // التبويب يطلع لوحده من نفس اللحظة، وبلا أي تغيير كود. (الجدول **ممنوع** يدخل
