@@ -9433,6 +9433,9 @@ id: nextVoucherId(),
     if (!box) return { ok: false, msg: "صندوق الوردية مش موجود." };
     if (!main) return { ok: false, msg: "اختار الخزينة الرئيسية." };
     if (Number(box.id) === Number(main.id)) return { ok: false, msg: "صندوق الوردية هو نفسه الخزينة الرئيسية." };
+    // 🔒 بناء 187: نفس حارس «لا ترحيل بلا حساب» — تأمين الحسابات القياسية قبل التسليم
+    // (وإلا لو النقدية ناقصة يتخطّى قيد التحويل بصمت ويفترق الدفتر عن الخزينة).
+    ensureJrnStd();
     recalculateTreasuryBalances();
     const amt = round2(box.balance);
     if (!(amt > 0)) return { ok: false, msg: "رصيد الصندوق " + fmt(amt) + " ج.م — مافيش حاجة تتسلّم." };
@@ -11814,6 +11817,12 @@ id: nextVoucherId(),
     if (!from || !to) { toast("اختار الحساب المنقول منه والحساب المنقول إليه.", "warning"); return; }
     if (Number(from.id) === Number(to.id)) { toast("لا يمكن التحويل من الحساب إلى نفس الحساب.", "warning"); return; }
     if (!(amount > 0)) { toast("اكتب مبلغًا صحيحًا أكبر من الصفر.", "warning"); return; }
+    // 🔒 بناء 187: حارس «لا ترحيل بلا حساب» (زي باقي مسارات الصرف/القبض). قبل كده التحويل
+    // كان يخصم الرصيد ويسجّل السندين، ولو حساب الخزينة ناقص يتخطّى القيد بصمت ⇒ الدفتر يفترق.
+    ensureJrnStd();
+    const aFrom = accForTreasuryAcc(from);
+    const aTo = accForTreasuryAcc(to);
+    if (jrnBlocked("التحويل", voucherJrnPlan("out", aFrom, aTo, amount))) return;
     const bal = round2(from.balance);
     if (amount > bal) {
       if (!confirm(shortfallText(from, amount, "transfer") + "\n\nهل تريد تنفيذ التحويل من «" + from.name + "» رغم ذلك؟")) return;
@@ -11829,9 +11838,8 @@ id: nextVoucherId(),
     recalculateTreasuryBalances();
 
     let jNumber = "";
-    const aFrom = accForTreasuryAcc(from);
-    const aTo = accForTreasuryAcc(to);
-    if (aFrom && aTo) {
+    // 🔒 بناء 187: aFrom/aTo مضمونين (الحارس فوق منع الحفظ لو ناقصين) ⇒ القيد مضمون مع الحركة.
+    {
       const lines = [{ accountId: aTo.id, debit: amount, credit: 0 }, { accountId: aFrom.id, debit: 0, credit: amount }];
       const j = {
         id: nextJournalId(),
