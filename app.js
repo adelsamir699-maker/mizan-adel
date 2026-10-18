@@ -2549,19 +2549,60 @@
     return Math.round((sold - returned) * 100) / 100;
   }
 
+  // 🆕 بناء 182-183: استثناء كامل وشامل لسندات الحركة والتحويلات الداخلية بين الخزائن وحسابات النقدية
+  // لا تُحسب مصروفًا ولا إيرادًا سواء كان السند موسومًا بـ refType أو refId أو كان الوصف يحمل كلمة تحويل/نقل نقدية
+  // أو كان القيد بين حسابات أصول (خزائن/بنوك/نقدية) بلا إيراد ولا مصروف.
+  function isMoveVoucher(v) {
+    if (!v) return false;
+    const rt = String(v.refType || "");
+    const desc = String(v.desc || "");
+    const refId = String(v.refId || "");
+
+    // 1. وسوم النظام الصريحة (المرتجعات، التحويلات، تسليم الوردية)
+    if (rt.indexOf("_return") !== -1 || rt.indexOf("تحويل") !== -1 || rt.indexOf("وردية") === 0) return true;
+    if (refId.indexOf("TF") === 0 || refId.indexOf("TFV") === 0) return true;
+
+    // 2. الكلمات الدالة في الوصف والبيان
+    if (desc.indexOf("تحويل") !== -1 || desc.indexOf("نقل نقدية") !== -1 || desc.indexOf("نقل نقديه") !== -1) return true;
+    if (desc.indexOf("تغذية خزينة") !== -1 || desc.indexOf("تغذية الصندوق") !== -1 || desc.indexOf("توريد للخزينة") !== -1 || desc.indexOf("إيداع بالخزينة") !== -1) return true;
+
+    // 3. نمط «من [خزينة] إلى [خزينة]» أو أسماء الخزائن المعروفة في النظام
+    if (desc.indexOf("من كاش") !== -1 || desc.indexOf("إلى كاش") !== -1 || desc.indexOf("الى كاش") !== -1) return true;
+    if (desc.indexOf("إلى الصندوق") !== -1 || desc.indexOf("الى الصندوق") !== -1 || desc.indexOf("من الصندوق") !== -1) return true;
+    if (Array.isArray(treasury)) {
+      for (let i = 0; i < treasury.length; i++) {
+        const tn = treasury[i] && treasury[i].name ? treasury[i].name.trim() : "";
+        if (tn && tn.length >= 2) {
+          if (desc.indexOf("إلى «" + tn) !== -1 || desc.indexOf("الى «" + tn) !== -1 || desc.indexOf("من «" + tn) !== -1 ||
+              desc.indexOf("إلى " + tn) !== -1 || desc.indexOf("الى " + tn) !== -1 || desc.indexOf("من " + tn) !== -1) {
+            return true;
+          }
+        }
+      }
+    }
+
+    // 4. فحص القيد المحاسبي المرتبط: لو أطراف القيد بين حسابات أصول (نقدية/بنوك) بلا إيراد ولا مصروف
+    try {
+      if (typeof voucherJrnOf === "function") {
+        const j = voucherJrnOf(v.id);
+        if (j && Array.isArray(j.lines) && j.lines.length > 0) {
+          const hasIncomeOrExp = j.lines.some((l) => {
+            const a = (accounts || []).find((x) => Number(x.id) === Number(l.accountId));
+            return a && (a.type === "revenue" || a.type === "expense");
+          });
+          if (!hasIncomeOrExp) return true;
+        }
+      }
+    } catch (e) { }
+
+    return false;
+  }
+
   function renderDashboard() {
     const today = todayISO();
     const isToday = (d) => (d || "").slice(0, 10) === today;
     const monthKey = today.slice(0, 7);
     const isThisMonth = (d) => (d || "").slice(0, 7) === monthKey;
-    // 🔁 بناء 108: المرتجعات بت تخصم من أرقام اليوم (والسندات اللي منها ما تتحسبش مصروف/إيراد)
-    // 🆕 بناء 182: نفس الاستثناء لسندات **الحركة الداخلية** بين خزائن الشركة — التحويل بين الخزائن
-    // والتسليم الوردي بيتسجّلوا «سند صرف + سند قبض» عشان رصيد كل خزينة يتحرك، وما هماش مصروف/إيراد.
-    //    (نفس نمط استثناء الوردية اللي في computeShiftBreakdown — سطر 9284.)
-    const isMoveVoucher = (v) => {
-      const rt = String((v && v.refType) || "");
-      return rt.indexOf("_return") !== -1 || rt.indexOf("تحويل") !== -1 || rt.indexOf("وردية") === 0;
-    };
     const retSaleToday = saleReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + (Number(r.grandTotal) || 0), 0);
     const retPurToday = purchaseReturns.filter((r) => isToday(retDateOf(r))).reduce((m, r) => m + (Number(r.grandTotal) || 0), 0);
     const salesToday = sales.filter((s) => isToday(s.invoiceDate)).reduce((m, s) => m + (s.grandTotal || 0), 0) - retSaleToday;
@@ -9286,8 +9327,7 @@
     const toD = (shift.closedAt ? String(shift.closedAt) : shiftNowISO()).slice(0, 10);
     (vouchers || []).forEach((v) => {
       if (Number(v.treasuryId) !== trId) return;
-      const rt = String(v.refType || "");
-      if (rt.indexOf("وردية") === 0) return;   // سندات الوردية نفسها (رقاقة/تسوية) مش «مصروفات»
+      if (isMoveVoucher(v)) return;   // سندات التحويل وحركة الخزائن والوردية ليست مصروفات
       if (v.type === "out" || v.kind === "out") {
         const d = String(v.date || "").slice(0, 10);
         if (fromD && d && d < fromD) return;
@@ -10757,13 +10797,20 @@
     }
     const sign = voucherMode === "in" ? 1 : -1;
     t.balance = round2(t.balance + sign * amount);
+    const vDesc = $("#vDesc").value.trim() || (voucherMode === "in" ? "إيراد" : "مصروف");
+    const isTfKw = vDesc.indexOf("تحويل") !== -1 || vDesc.indexOf("نقل نقدية") !== -1 || vDesc.indexOf("نقل نقديه") !== -1 || vDesc.indexOf("إلى الصندوق") !== -1 || vDesc.indexOf("الى الصندوق") !== -1 || vDesc.indexOf("من كاش") !== -1;
+    const chAcc = chosenVoucherAcc();
+    const isAssetAcc = chAcc && chAcc.type === "asset";
+    const vId = vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1;
     const vRow = {
-      id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+      id: vId,
       type: voucherMode,
       treasuryId: tid,
       date: $("#vDate").value || todayISO(),
       amount: Math.round(amount * 100) / 100,
-      desc: $("#vDesc").value.trim() || (voucherMode === "in" ? "إيراد" : "مصروف")
+      desc: vDesc,
+      refType: (isTfKw || isAssetAcc) ? "تحويل بين الحسابات" : undefined,
+      refId: (isTfKw || isAssetAcc) ? "TFV:" + vId : undefined
     };
     vouchers.push(vRow);
     saveTreasury();
@@ -11477,6 +11524,17 @@
     if (!itemText) { toast("اكتب اسم البند أو اختاره من القائمة.", "warning"); return; }
     if (!(amount > 0)) { toast("اكتب مبلغًا صحيحًا أكبر من الصفر.", "warning"); return; }
     if (!t) { toast("اختار الحساب: خزينة نقدية أو بنك أو محفظة.", "warning"); return; }
+
+    const normItem = itemText.toLowerCase();
+    const isTreasuryHit = (treasury || []).some((x) => (x.name || "").trim().toLowerCase() === normItem);
+    const isAssetAccHit = (accounts || []).some((a) => a.type === "asset" && (a.nameAr || "").trim().toLowerCase() === normItem);
+    const isTransferKw = itemText.includes("تحويل") || itemText.includes("نقل نقدية") || itemText.includes("نقل نقديه") ||
+      itemText.includes("من كاش") || itemText.includes("إلى كاش") || itemText.includes("الى كاش") ||
+      itemText.includes("إلى الصندوق") || itemText.includes("الى الصندوق") || itemText.includes("من الصندوق");
+    if (isTreasuryHit || isAssetAccHit || isTransferKw) {
+      toast("البند «" + itemText + "» يمثل حساب خزينة/نقدية أو تحويل وليس " + (income ? "إيرادًا" : "مصروفًا") + ".\nلنقل أموال بين الخزائن يرجى استخدام زر «🔁 تحويل من حساب إلى حساب» حتى لا يُحتسب مصروفًا.", "warning");
+      return;
+    }
 
     let itemAcc = resolveItemAccount(itemText, type);
     if (!itemAcc) {
@@ -13496,10 +13554,10 @@
     const capital = bsRound(bsLeaves("equity", ["3.1"], ["3.2", "3.3"]).reduce((m, r) => m + r[1], 0));
     const retained = bsRound(bsLeaves("equity", ["3.2"], null).reduce((m, r) => m + r[1], 0));
     const drawings = bsRound(bsLeaves("equity", ["3.3"], null).reduce((m, r) => m + r[1], 0));
-    // 🆕 استثناء سندات الشريك (رأس المال/المسحوبات) من معادلة الربح — المسحوبات ورأس المال ليسا مصروفًا/إيرادًا
-    // (طلب المالك: «مسحوبات الشركاء خصم من الأرباح مش مصروف»)، فالسند اللي طرفه حساب حقوق ملكية ما يلمسش الربح.
-    const nonEqOut = vouchers.filter((v) => v.type === "out" && !voucherIsEquityCounterpart(v)).reduce((m, v) => m + v.amount, 0);
-    const nonEqIn = vouchers.filter((v) => v.type === "in" && !voucherIsEquityCounterpart(v)).reduce((m, v) => m + v.amount, 0);
+    // 🆕 استثناء سندات الشريك (رأس المال/المسحوبات) وسندات التحويلات الداخلية بين الخزائن من معادلة الربح
+    // (طلب المالك: «مسحوبات الشركاء خصم من الأرباح مش مصروف» والتحويل بين الخزائن حركة أصول لا تمس الأرباح)
+    const nonEqOut = vouchers.filter((v) => v.type === "out" && !voucherIsEquityCounterpart(v) && !isMoveVoucher(v)).reduce((m, v) => m + v.amount, 0);
+    const nonEqIn = vouchers.filter((v) => v.type === "in" && !voucherIsEquityCounterpart(v) && !isMoveVoucher(v)).reduce((m, v) => m + v.amount, 0);
     const profits = bsRound(sales.reduce((m, s) => m + (s.grandTotal || 0), 0) - purchases.reduce((m, p2) => m + (p2.grandTotal || 0), 0) - nonEqOut + nonEqIn);
     // 🆕 مهمة 98: سجل الأصول الثابتة لو فيه بيانات هو المرجع لقسميه؛ ولو فاضي يرجع لحسابات الدليل (سلوك 97)
     const faFix = faBalanceRows("noncurrent");
