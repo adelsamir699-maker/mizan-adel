@@ -46,6 +46,13 @@
   // مندوب يوم معيّن، ثم بيع من السيارة (النقدية تبقى على ذمة المندوب)، ثم تصفية آخر اليوم
   // (الباقي يرجع للمخزن + النقد يورَّد لخزينة يختارها المالك) + تقرير.
   const LS_CAR_TRIPS = "mizan_car_trips_v1";
+  /* 🧱 بناء 186: «أرضية» أرقام السندات والقيود — أعلى رقم استُخدم ما يتعادش أبدًا.
+     السبب: الهوية السحابية (detUuid) **حتمية من الرقم المحلي**؛ فلو الرقم اتعاد استخدامه،
+     الصف الجديد ياخد نفس الـ uuid ⇒ upsert يكتب فوق صف قديم. القيود كان عندها JRN_ID_FLOOR
+     في الذاكرة بس (بتضيع بعد إعادة التحميل)، والسندات ماكانش عندها ولا هو. المفتاح ده
+     **بره LS_ALL_KEYS عمدًا** (ما يتمسحش عند تبديل الشركة: أرضية أعلى = تخطّي أرقام،
+     ومفيش أي تصادم لأن detUuid بيشمل رقم الشركة). */
+  const LS_ID_FLOORS = "mizan_id_floors_v1";
   /* 🧮 بناء 145 → 146: ورق «الجرد بالباركود» على جهاز العميل بس (مافيش جدول سحابي ومافيش ترقية).
      ⚠️ المفتاح **بره** `LS_ALL_KEYS` عندنا عمدًا، والسبب مقاس حيًّا (طلب المالك 06/10 ≈23:50:
      «مش بيحفظ ورقة الجرد»): `guardOrgSwitch()` بينادي `wipeLocalTables()` اللي بتمسح **كل**
@@ -477,6 +484,9 @@
   let journalEntries = [];
   let users = [];
   let vouchers = [];
+  // 🧱 بناء 186: «أرضية» الأرقام — أعلى رقم مستخدم في السندات/القيود (ما يتعادش استخدامه)
+  let VOU_ID_FLOOR = 0;
+  let JRN_ID_FLOOR = 0;
   // 🆕 مهمة 98: سجل الأصول الثابتة — لكل أصل: اسم/تصنيف (noncurrent|intangible)/فئة/تاريخ/تكلفة/إهلاك
   let fixedAssets = [];
   // 🧮 بناء 145: «الجرد بالباركود» — ورق الجرد على **جهاز العميل بس** (قرار المالك 05/10):
@@ -691,7 +701,7 @@
 
       const cust = (customers || []).find((c) => Number(c.id) === Number(t.customerId));
       vouchers.push({
-        id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+        id: nextVoucherId(),
         type: "in",
         treasuryId: targetTr.id,
         date: t.date || todayISO(),
@@ -729,7 +739,7 @@
 
       const supp = (suppliers || []).find((s) => Number(s.id) === Number(t.supplierId));
       vouchers.push({
-        id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+        id: nextVoucherId(),
         type: "out",
         treasuryId: targetTr.id,
         date: t.date || todayISO(),
@@ -1259,6 +1269,8 @@
     } catch (e) {
       console.warn("mizan: المتصفح رفض تثبيت الحالة على القرص — البرنامج شغال في الذاكرة", e && e.message);
     }
+    // 🧱 بناء 186: استرجاع «أرضية» أرقام السندات/القيود (لو كان الرقم الأعلى محذوف من قبل)
+    idFloorsLoad();
   }
 
   function saveProducts() {
@@ -1316,6 +1328,9 @@
   }
 
   function persistJournal() {
+    // 🧱 بناء 186: نرفّع «أرضية» القيود لأعلى رقم مستخدم فعلًا + نثبّتها على القرص
+    journalEntries.forEach((j) => { const n = Number(j && j.id) || 0; if (n > JRN_ID_FLOOR) JRN_ID_FLOOR = n; });
+    idFloorsSave();
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
     pushTable("journal_entries"); syncToLocalDisk();
   }
@@ -1325,6 +1340,9 @@
   }
 
   function saveVouchers() {
+    // 🧱 بناء 186: نرفّع «أرضية» السندات لأعلى رقم مستخدم فعلًا (كل مسارات الإنشاء بتعدّي من هنا)
+    vouchers.forEach((v) => { const n = Number(v && v.id) || 0; if (n > VOU_ID_FLOOR) VOU_ID_FLOOR = n; });
+    idFloorsSave();
     localStorage.setItem(LS_VOUCHERS, JSON.stringify(vouchers));
     pushTable("vouchers"); syncToLocalDisk();
   }
@@ -2932,7 +2950,7 @@
     };
     txs.push(txRow);
     vouchers.push({
-      id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+      id: nextVoucherId(),
       type: "in",
       treasuryId: tr ? tr.id : trId,
       date: todayISO(),
@@ -5848,7 +5866,7 @@
     if (plan.lines.length) {
       const j = {
         id: nextJournalId(),
-        number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+        number: jrnNo(),
         date: todayISO(),
         desc: scJrnRef() + " ورق " + sh.no + " — مخزن («" + sh.wh + "») — " + plan.rows.length + " صنف — فروق " + fmt(plan.total) + " ج.م",
         ref: scJrnRef(),
@@ -7988,7 +8006,7 @@
     };
     supplierTxs.push(txRow);
     vouchers.push({
-      id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+      id: nextVoucherId(),
       type: "out",
       treasuryId: tr ? tr.id : trId,
       date: todayISO(),
@@ -8836,7 +8854,7 @@
     // 2) التسوية: جزء كاش = حركة خزينة (سند)، وجزء الرصيد = حركة على حساب الطرف (بناء 172)
     if (cashAmt > 0.0001) {
       const v = {
-        id: vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+id: nextVoucherId(),
         type: isSales ? "out" : "in",
         treasuryId: tr.id,
         date: date,
@@ -9262,7 +9280,7 @@
     // 🧾 بناء 176: الرقاقة الافتتاحية تتحفظ كسند قبض على صندوق الوردية ⇒ رصيد الصندوق
     // بيبدأ من الرقاقة + مبيعات النقد للوردية (نفس مسار recalculateTreasuryBalances).
     if (s.openingFloat > 0) {
-      const baseId = (vouchers || []).reduce((m, x) => Math.max(m, Number(x.id) || 0), 0);
+      const baseId = nextVoucherId() - 1;
       vouchers.push({ id: baseId + 1, type: "in", treasuryId: tr.id, date: shiftNowISO().slice(0, 10), amount: round2(s.openingFloat), desc: "رقاقة افتتاحية — وردية #" + s.id + " — " + s.cashierName, refType: "وردية فتح — #" + s.id });
       try { saveVouchers(); } catch (e) {}
       try { recalculateTreasuryBalances(); } catch (e) {}
@@ -9364,7 +9382,7 @@
       const osc = ensureShiftOverShortAccount(box.name, shift.cashierName, isOver ? "over" : "short");
       const cashAcc = accForTreasuryAcc(box);
       // (١) سند على الصندوق يعادله للعدّ الفعلي (مصدر رصيد الخزينة)
-      const baseId = (vouchers || []).reduce((m, x) => Math.max(m, Number(x.id) || 0), 0);
+      const baseId = nextVoucherId() - 1;
       vouchers.push({
         id: baseId + 1, type: isOver ? "in" : "out", treasuryId: box.id, date: date, amount: amt,
         desc: (isOver ? "زيادة" : "عجز") + " وردية #" + shift.id + " — " + shift.cashierName,
@@ -9377,7 +9395,7 @@
           ? [{ accountId: cashAcc.id, debit: amt, credit: 0 }, { accountId: osc.id, debit: 0, credit: amt }]
           : [{ accountId: osc.id, debit: amt, credit: 0 }, { accountId: cashAcc.id, debit: 0, credit: amt }];
         const j = {
-          id: nextJournalId(), number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+          id: nextJournalId(), number: jrnNo(),
           date: date,
           desc: "تسوية " + (isOver ? "زيادة" : "عجز") + " وردية #" + shift.id + " — " + shift.cashierName + " — " + fmt(amt) + " ج.م",
           ref: "تسوية وردية", refType: "تسوية وردية", refId: "SH:" + shift.id,
@@ -9430,7 +9448,7 @@
     if (aFrom && aTo && Number(aFrom.id) !== Number(aTo.id)) {
       const lines = [{ accountId: aTo.id, debit: amt, credit: 0 }, { accountId: aFrom.id, debit: 0, credit: amt }];
       const j = {
-        id: nextJournalId(), number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+        id: nextJournalId(), number: jrnNo(),
         date: date, desc: tag + " — " + fmt(amt) + " ج.م", ref: "تسليم وردية", refType: "تسليم وردية", refId: "SHX:" + shift.id,
         debit: amt, credit: amt, lines: lines
       };
@@ -9810,7 +9828,7 @@
     if (journalEntries.some((j) => j && String(j.refId || "") === key)) return null;
     const j = {
       id: nextJournalId(),
-      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      number: jrnNo(),
       date: todayISO(),
       desc: "مصروف سيارة " + trip.carName + " — " + exp.category + " — مندوب " + trip.repName + " — رحلة #" + trip.id,
       ref: "مصروف سيارة", refType: "مصروف سيارة", refId: key,
@@ -10521,7 +10539,7 @@
     const repAcc = vanRepAcc(trip.repName);
     if (counted > 0) {
       const tr = treasury.find((x) => Number(x.id) === tid);
-      const baseId = (vouchers || []).reduce((mx, x) => Math.max(mx, Number(x.id) || 0), 0);
+      const baseId = nextVoucherId() - 1;
       const v = { id: baseId + 1, type: "in", treasuryId: tid, date: todayISO(), amount: counted, desc: "توريد نقدية سيارة " + trip.carName + " — مندوب " + trip.repName + " — رحلة #" + trip.id, refType: "تصفية رحلة سيارة — #" + trip.id };
       vouchers.push(v);
       try { saveVouchers(); } catch (e) {}
@@ -10801,7 +10819,7 @@
     const isTfKw = vDesc.indexOf("تحويل") !== -1 || vDesc.indexOf("نقل نقدية") !== -1 || vDesc.indexOf("نقل نقديه") !== -1 || vDesc.indexOf("إلى الصندوق") !== -1 || vDesc.indexOf("الى الصندوق") !== -1 || vDesc.indexOf("من كاش") !== -1;
     const chAcc = chosenVoucherAcc();
     const isAssetAcc = chAcc && chAcc.type === "asset";
-    const vId = vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1;
+    const vId = nextVoucherId();
     const vRow = {
       id: vId,
       type: voucherMode,
@@ -11135,7 +11153,7 @@
     if (!lines.length) { toast("القيد بلا أسطر — ميتعكسش.", "warning"); return null; }
     const rev = {
       id: nextJournalId(),
-      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      number: jrnNo(),
       date: todayISO(),
       desc: "قيد عكسي للقيد " + j.number + " — " + (j.desc || ""),
       ref: "قيد عكسي",
@@ -11318,8 +11336,8 @@
       return;
     }
     const j = {
-      id: journalEntries.reduce((m, x) => Math.max(m, x.id), 0) + 1,
-      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      id: nextJournalId(),
+      number: jrnNo(),
       date: $("#jDate").value || todayISO(),
       desc: desc,
       ref: $("#jRef").value.trim() || "قيد يدوي",
@@ -11634,7 +11652,7 @@
     const vDesc = (income ? "إيراد: " : "مصروف: ") + itemAcc.nameAr + (note ? " — " + note : "");
     // 🆕 بناء 151: السند يبقى له اسم، عشان خيط «SE:» يمسك id بتاعه (نفس نمط VC:/SR:/PR:/S:/P:)
     const seV = {
-      id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+      id: nextVoucherId(),
       type: income ? "in" : "out",
       treasuryId: Number(t.id),
       date: date,
@@ -11649,8 +11667,8 @@
       ? [{ accountId: cashAcc.id, debit: amount, credit: 0 }, { accountId: itemAcc.id, debit: 0, credit: amount }]
       : [{ accountId: itemAcc.id, debit: amount, credit: 0 }, { accountId: cashAcc.id, debit: 0, credit: amount }];
     const j = {
-      id: journalEntries.reduce((m, x) => Math.max(m, x.id), 0) + 1,
-      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      id: nextJournalId(),
+      number: jrnNo(),
       date: date,
       desc: vDesc,
       ref: income ? "تسجيل إيرادات" : "تسجيل مصروفات",
@@ -11754,7 +11772,7 @@
     }
     const note = $("#ownerNotes").value.trim();
     const vDesc = (dep ? "إيداع أصحاب المؤسسة: " : "سحب أصحاب المؤسسة: ") + ownerName + (note ? " — " + note : "");
-    const v = { id: vouchers.reduce((m, x) => Math.max(m, x.id), 0) + 1, type: dep ? "in" : "out", treasuryId: Number(t.id), date: date, amount: amount, desc: vDesc };
+    const v = { id: nextVoucherId(), type: dep ? "in" : "out", treasuryId: Number(t.id), date: date, amount: amount, desc: vDesc };
     vouchers.push(v);
     saveVouchers();
     recalculateTreasuryBalances();
@@ -11802,7 +11820,7 @@
     }
     const note = $("#trNotes").value.trim();
     const tag = "تحويل من «" + from.name + "» إلى «" + to.name + "»" + (note ? " — " + note : "");
-    const baseId = vouchers.reduce((m, x) => Math.max(m, x.id), 0);
+    const baseId = nextVoucherId() - 1;   // 🧱 186: سند الصرف = baseId+1، القبض = baseId+2 (أرقام فريدة عبر الأرضية)
     // سندان مرتبطان بنفس الوصف: صرف من الأول وقبض في التاني — معادلة recalculateTreasuryBalances بتمشي زي ما هي
     // 🆕 بناء 182: وسام `refType` عشان العدّاد ما يعدّهوش مصروف/إيراد (حركة داخلية بين خزائن الشركة)
     vouchers.push({ id: baseId + 1, type: "out", treasuryId: Number(from.id), date: date, amount: amount, desc: "سند صرف — " + tag, refType: "تحويل بين الحسابات", refId: "TFV:" + (baseId + 1) });
@@ -11816,8 +11834,8 @@
     if (aFrom && aTo) {
       const lines = [{ accountId: aTo.id, debit: amount, credit: 0 }, { accountId: aFrom.id, debit: 0, credit: amount }];
       const j = {
-        id: journalEntries.reduce((m, x) => Math.max(m, x.id), 0) + 1,
-        number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+        id: nextJournalId(),
+        number: jrnNo(),
         date: date,
         desc: tag,
         ref: "تحويل بين الحسابات",
@@ -11864,10 +11882,39 @@
        • **الفاتورة ما تلغيش لو الترحيل تعثّر:** لو دليل الحسابات ناقش حساب (شركة جديدة فاضية)،
          الفاتورة تتحفظ وتظهر رسالة ودّية بالخطوة اللي تنفع — صفر فشل صامت وصفر فقدان بيانات. */
 
-  // ما نعيدش استخدام id قيد اتشال (detUuid على السحابة=based on local id)
-  let JRN_ID_FLOOR = 0;
+  // 🧱 بناء 186: ما نعيدش استخدام id قيد/سند اتشال (detUuid على السحابة = based on local id).
+  //   nextJournalId()/nextVoucherId() بيحترموا «الأرضية» + أكبر رقم موجود فعلًا.
+  //   __jrnLastId = آخر id قيد اتولّد، عشان رقم «JRN-####» يطابق id القيد (مش طول المصفوفة).
+  let __jrnLastId = 0;
   function nextJournalId() {
-    return Math.max(JRN_ID_FLOOR, journalEntries.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
+    const id = Math.max(JRN_ID_FLOOR, journalEntries.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
+    __jrnLastId = id;
+    return id;
+  }
+  // رقم القيد المعروض/المطبوع/المرفوع — مشتق من الـ id (فريد أبدًا بعد أي حذف)، أو من id صريح.
+  function jrnNo(id) {
+    const n = (id != null) ? Number(id) : __jrnLastId;
+    return "JRN-" + String(n || 0).padStart(4, "0");
+  }
+  function nextVoucherId() {
+    return Math.max(VOU_ID_FLOOR, vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
+  }
+  // رفع «الأرضية» عند الحذف (قبل ما الرقم يتاح للتوليد تاني) + تثبيتها على القرص
+  function bumpIdFloor(kind, id) {
+    const n = Number(id) || 0;
+    if (kind === "voucher") { if (n > VOU_ID_FLOOR) VOU_ID_FLOOR = n; }
+    else { if (n > JRN_ID_FLOOR) JRN_ID_FLOOR = n; }
+    idFloorsSave();
+  }
+  function idFloorsLoad() {
+    let o = {};
+    try { o = JSON.parse(localStorage.getItem(LS_ID_FLOORS) || "{}") || {}; } catch (e) { }
+    VOU_ID_FLOOR = Math.max(Number(o.vouchers) || 0, (vouchers || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0));
+    JRN_ID_FLOOR = Math.max(Number(o.journal) || 0, (journalEntries || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0));
+    __jrnLastId = Math.max(__jrnLastId, JRN_ID_FLOOR);
+  }
+  function idFloorsSave() {
+    try { localStorage.setItem(LS_ID_FLOORS, JSON.stringify({ vouchers: VOU_ID_FLOOR, journal: JRN_ID_FLOOR })); } catch (e) { }
   }
   function invoiceJrnRef(kind) { return kind === "sale" ? "فاتورة مبيعات" : "فاتورة مشتريات"; }
   // مفتاح منع التكرار: نوع الفاتورة + رقمها (الرقم تسلسلي لكل شركة وثابت على كل الأجهزة)
@@ -12066,7 +12113,7 @@
       (tax > 0 ? " (منها ضريبة " + fmt(tax) + ")" : "");
     const j = {
       id: nextJournalId(),
-      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      number: jrnNo(),
       date: inv.invoiceDate || inv.date || todayISO(),
       desc: desc,
       ref: invoiceJrnRef(kind),
@@ -12173,7 +12220,7 @@
     }
     const j = {
       id: nextJournalId(),
-      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      number: jrnNo(),
       date: tx.date || todayISO(),
       desc: cfg.ref + (partyName ? ": " + partyName : "") + " — " + fmt(amount) + " ج.م",
       ref: cfg.ref,
@@ -12302,7 +12349,7 @@
     const ref = voucherJrnRef(v.type);
     const j = {
       id: nextJournalId(),
-      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      number: jrnNo(),
       date: v.date || todayISO(),
       desc: ref + " — " + (v.desc || "") + " — " + fmt(amount) + " ج.م",
       ref: ref,
@@ -12412,7 +12459,7 @@
     const p = plan.part;
     const j = {
       id: nextJournalId(),
-      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      number: jrnNo(),
       date: rec.date || rec.returnDate || todayISO(),
       desc: cfg.ref + " رقم (" + (rec.returnNumber || rec.returnNo || "") + ") — " +
         (kind === "sale" ? (rec.customerName || rec.customer || "") : (rec.supplierName || rec.supplier || "")) +
@@ -12555,7 +12602,7 @@
   function jrnHealEntry(desc, date, ref, refId, plan) {
     return {
       id: nextJournalId(),
-      number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      number: jrnNo(),
       date: date || todayISO(),
       desc: desc,
       ref: ref, refType: ref, refId: refId,
@@ -12955,7 +13002,7 @@
     if (!(id > 0)) return res;
     res.journals = removeVoucherJournal(id);
     const i = vouchers.findIndex((v) => Number(v.id) === id);
-    if (i >= 0) { vouchers.splice(i, 1); res.voucher = true; }
+    if (i >= 0) { bumpIdFloor("voucher", vouchers[i].id); vouchers.splice(i, 1); res.voucher = true; }
     return res;
   }
   function dropVouchersWithJournal(list) {
@@ -13505,7 +13552,7 @@
     const note = ((vatEl("vatPayNote") || {}).value || "").trim();
     const amt = round2(amount);
     const vRow = {
-      id: vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+      id: nextVoucherId(),
       type: "out", treasuryId: Number(t.id), date: date, amount: amt,
       desc: VAT_PAY_TYPE + (note ? " — " + note : ""), refType: VAT_PAY_TYPE
     };
@@ -13515,7 +13562,7 @@
     saveVouchers();
     const lines = [{ accountId: Number(o.id), debit: amt, credit: 0 }, { accountId: Number(cashAcc.id), debit: 0, credit: amt }];
     const j = {
-      id: nextJournalId(), number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+      id: nextJournalId(), number: jrnNo(),
       date: date, desc: VAT_PAY_TYPE + " — " + t.name + " — " + fmt(amt) + " ج.م" + (note ? " — " + note : ""),
       ref: VAT_PAY_TYPE, refType: VAT_PAY_TYPE, refId: "VATPAY:" + vRow.id,
       debit: amt, credit: amt, lines: lines
@@ -13555,7 +13602,7 @@
         ? [{ accountId: Number(o.id), debit: amt, credit: 0 }, { accountId: Number(eq.id), debit: 0, credit: amt }]
         : [{ accountId: Number(eq.id), debit: amt, credit: 0 }, { accountId: Number(o.id), debit: 0, credit: amt }];
       const j = {
-        id: nextJournalId(), number: "JRN-" + String(journalEntries.length + 1).padStart(4, "0"),
+        id: nextJournalId(), number: jrnNo(),
         date: date,
         desc: VAT_OPEN_TYPE + " — " + eq.nameAr + " — " + (side === "credit" ? "رصيد لنا عند المصلحة" : "مستحق للمصلحة"),
         ref: VAT_OPEN_TYPE, refType: VAT_OPEN_TYPE, refId: VAT_OPEN_KEY,
@@ -18268,6 +18315,8 @@ const pwEye = document.getElementById("btnShowPass");
     // 🚚 بناء 178: رحلات سيارات المناديب
     step("car_trips", S.car_trips, carTrips, function (v) { carTrips = v; });
     step("journal_entries", S.journalEntries, journalEntries, function (v) { journalEntries = v; });
+    // 🧱 بناء 186: بعد دمج السندات/القيود من السحابة، نحدّث «أرضية» الأرقام
+    if (typeof idFloorsLoad === "function") idFloorsLoad();
     linkInvoiceParties();
     recalculateCustomerBalances();
     recalculateSupplierBalances();
