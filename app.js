@@ -2772,17 +2772,27 @@
      لأسطر فواتير البيع، **ناقص** نفس الهامش لمرتجعات البيع. والبره بالقرار: الضريبة (أمانة مش
      إيراد) · المشتريات والمصروفات والسندات (ده هامش بيع مش صرف مخزني).
      `within(تاريخ)` = المجال الزمني: اليوم ⇒ كارت اللوحة، الشهر ⇒ كارت اللوحة التاني —
-     فممنوع يبقى في البرنامج اتنين منطقتين حسابيتين للرقم الواحد. */
-  function profitMarginOf(items) {
-    return (items || []).reduce((mm, it) => {
+     فممنوع يبقى في البرنامج اتنين منطقتين حسابيتين للرقم الواحد.
+     🔧 بناء 202: الهامش بيخصم **خصم السطر** (`it.discount`) و**الخصم الإضافي للفاتورة**
+     (`discountAmount`/`discount`) — كانوا متجاهَلين فيتضخّم الربح عن الواقع النقدي.
+     الإيراد يتوقف عند صفر لو الخصم أكبر من الصافي (زي ما الفاتورة نفسها بتقصّ عند صفر)،
+     والتكلفة تفضل محسوبة كاملة. الضريبة برّه الحساب (أمانة مش إيراد). */
+  function profitMarginOf(items, invoiceDiscount) {
+    let revenue = 0, cost = 0;
+    (items || []).forEach((it) => {
+      const qty = Number(it.qty) || 0;
       const pr = products.find((x) => Number(x.id) === Number(it.productId));
-      const cost = pr ? avgPriceOf(pr) : 0;   // 🆕 179: الهامش على **متوسط سعر الشراء** (قرار المالك)
-      return mm + (Number(it.qty) || 0) * ((Number(it.price) || 0) - cost);
-    }, 0);
+      const unitCost = pr ? avgPriceOf(pr) : 0;   // 🆕 179: الهامش على **متوسط سعر الشراء** (قرار المالك)
+      revenue += qty * (Number(it.price) || 0) - (Number(it.discount) || 0);
+      cost += qty * unitCost;
+    });
+    revenue = Math.max(revenue - (Number(invoiceDiscount) || 0), 0);
+    return Math.round((revenue - cost) * 100) / 100;
   }
   function netSaleProfit(within) {
-    const sold = sales.filter((s) => within(s.invoiceDate)).reduce((m, s) => m + profitMarginOf(s.items), 0);
-    const returned = saleReturns.filter((r) => within(retDateOf(r))).reduce((m, r) => m + profitMarginOf(r.items), 0);
+    const discOf = (d) => Number(d && (d.discountAmount != null ? d.discountAmount : d.discount)) || 0;
+    const sold = sales.filter((s) => within(s.invoiceDate)).reduce((m, s) => m + profitMarginOf(s.items, discOf(s)), 0);
+    const returned = saleReturns.filter((r) => within(retDateOf(r))).reduce((m, r) => m + profitMarginOf(r.items, discOf(r)), 0);
     return Math.round((sold - returned) * 100) / 100;
   }
 
