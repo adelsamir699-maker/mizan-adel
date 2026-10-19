@@ -812,6 +812,22 @@
     }
   }
 
+  // 🆕 بناء 199: مبلغ سطور السداد اللي دخلت خزينة `tid` (بلا «آجل»/«شيك»).
+  // ترجّع `null` لو الفاتورة مالهاش سطور سداد (توافق خلفي: القاعدة القديمة).
+  function recalcLinesIn(inv, tid) {
+    if (!inv || !Array.isArray(inv.payments) || !inv.payments.length) return null;
+    let sum = 0;
+    inv.payments.forEach((p) => {
+      const m = String((p && p.method) || "").toLowerCase();
+      if (m === "ajal" || m === "check") return;
+      const amt = Number((p && p.amount) || 0);
+      if (!(amt > 0)) return;
+      if (p.treasuryId != null && Number(p.treasuryId) === Number(tid)) sum += amt;
+      else if (p.treasuryId == null && Number(inv.treasuryId) === Number(tid)) sum += amt;
+    });
+    return Math.round(sum * 100) / 100;
+  }
+
   function recalculateTreasuryBalances() {
     if (!Array.isArray(treasury)) return;
     reconcileTreasuryWithTxs();
@@ -822,12 +838,16 @@
       const tid = Number(tr.id);
       let bal = Number(tr.openingBalance || 0);
 
-      (sales || []).filter((s) => Number(s.treasuryId) === tid && s.paymentMethod !== "آجل").forEach((s) => {
-        bal += Number(s.grandTotal || 0);
+      // 🆕 بناء 199: لو الفاتورة فيها سطور سداد مفصّلة ⇒ كل سطر بيتوزّع على خزينته هو
+      // (والسطر «آجل»/«شيك» مايدخلش خزينة أصلًا: الآجل على حساب الطرف والشيك على 1.1.7).
+      (sales || []).forEach((s) => {
+        if (recalcLinesIn(s, tid) != null) { bal += recalcLinesIn(s, tid); return; }
+        if (Number(s.treasuryId) === tid && s.paymentMethod !== "آجل") bal += Number(s.grandTotal || 0);
       });
 
-      (purchases || []).filter((p) => Number(p.treasuryId) === tid && p.paymentMethod !== "آجل").forEach((p) => {
-        bal -= Number(p.grandTotal || 0);
+      (purchases || []).forEach((p) => {
+        if (recalcLinesIn(p, tid) != null) { bal -= recalcLinesIn(p, tid); return; }
+        if (Number(p.treasuryId) === tid && p.paymentMethod !== "آجل") bal -= Number(p.grandTotal || 0);
       });
 
       (vouchers || []).filter((v) => Number(v.treasuryId) === tid).forEach((v) => {
@@ -1896,6 +1916,21 @@
       rows.push({ label: "الصافي النهائي", value: fmt(inv.grandTotal) + " ج.م", grand: true });
     }
     // 🆕 (طلب المالك) ملخّص الطرف على الطبعة — نفس ترتيب الشاشة، وبنفس الألوان (مديون أحمر/مدفوع أخضر)
+    // 🆕 بناء 199 (طلب المالك): تحت «المدفوع» تتكتب **كل طرق الدفع** كل طريقة بمبلغها.
+    // (الفواتير القديمة اللي مالهاش سطور سداد: نكتب سطر واحد من وسيلة الفاتورة ومبلغها المدفوع.)
+    const methodRows = () => {
+      let _pl = Array.isArray(inv.payments) ? inv.payments.filter((p) => Number(p.amount) > 0) : [];
+      if (!_pl.length && Number(inv.paidAmount) > 0) _pl = [{ method: inv.paymentMethod || "نقداً", amount: Number(inv.paidAmount) }];
+      return _pl.map((p) => {
+        const isAjal = payMethodLabelOf(p.method) === "آجل";
+        return {
+          label: "    • " + payMethodLabelOf(p.method) + (isAjal ? " (على الحساب)" : ""),
+          value: fmt(p.amount) + " ج.م",
+          sum: true,
+          cls: isAjal ? "amount-neg" : "amount-pos"
+        };
+      });
+    };
     if (inv.partyPrevBalance != null) {
       const paid = Number(inv.paidAmount) || 0;
       const due = Number(inv.dueAmount) || 0;
@@ -1906,8 +1941,29 @@
       rows.push({ label: "الآجل", value: fmt(due) + " ج.م", sum: true, cls: due > 0 ? "amount-neg" : "" });
       rows.push({ label: "الرصيد السابق", value: fmt(prev) + " ج.م", sum: true, cls: prev > 0 ? "amount-neg" : prev < 0 ? "amount-pos" : "" });
       rows.push({ label: "الرصيد الحالي", value: fmt(curr) + " ج.م", sum: true, cls: curr > 0 ? "amount-neg" : curr < 0 ? "amount-pos" : "" });
+      methodRows().forEach((r) => rows.push(r));
+    } else if (methodRows().length) {
+      // 🔧 بناء 199: عميل كاش محمي (مافيش رصيد سابق) — برضه نطبع المدفوع وطرقه بمبالغها
+      const paid = Number(inv.paidAmount) || 0;
+      const due = Number(inv.dueAmount) || 0;
+      rows.push({ label: "الإجمالي", value: fmt(inv.grandTotal) + " ج.م", sum: true });
+      rows.push({ label: "المدفوع", value: fmt(paid) + " ج.م", sum: true, cls: "amount-pos" });
+      rows.push({ label: "الآجل", value: fmt(due) + " ج.م", sum: true, cls: due > 0 ? "amount-neg" : "" });
+      methodRows().forEach((r) => rows.push(r));
     }
     return rows;
+  }
+
+  // 🆕 بناء 199: اسم طريقة الدفع للطبعة (تقبل كود السطر المخزّن على الفاتورة أو الاسم العربي).
+  function payMethodLabelOf(m) {
+    const c = String(m || "").trim();
+    const l = c.toLowerCase();
+    if (c.indexOf("بنك") >= 0 || l === "bank") return "تحويل بنكي";
+    if (c.indexOf("محفظ") >= 0 || l === "wallet") return "محافظ إلكترونية";
+    if (c.indexOf("إنستا") >= 0 || c.indexOf("انستا") >= 0 || l === "instapay") return "إنستا باي";
+    if (c.indexOf("شيك") >= 0 || l === "check") return "شيك";
+    if (c.indexOf("آجل") >= 0 || c.indexOf("اجل") >= 0 || l === "ajal") return "آجل";
+    return "نقداً";
   }
 
   /* ===== حجم ورق الطباعة من الضبط (A4 / A5 / حراري 80mm) ===== */
@@ -7173,16 +7229,24 @@
   function posExtraArr(kind) { return kind === "sale" ? posExtraPays : ppExtraPays; }
   function posPayMode(method) {
     const m = String(method || "");
+    const k = m.toLowerCase();
+    // 🆕 بناء 199 (إصلاح باگ من الحراسة): السطور **المحفوظة على الفاتورة** بمفاتيح إنجليزية
+    // (cash/wallet/instapay/bank/check/ajal) واللي بتُقرأ في `invoiceJrnPlan` والطبعة وإعادة
+    // حساب الخزائن ⇒ لازم نفهم الحالتين (العربي اللي المستخدم بيختاره + الإنجليزي المخزّن)
+    // وإلا «آجل» تُحسب مدفوعة فيترحّل مبلغها على الخزينة بدل حساب الطرف.
     return {
-      isCheck: m.includes("شيك"),
-      isBank: m.includes("بنكي") || m.includes("بنك"),
-      isWallet: m.includes("محفظ") || m.includes("محافظ"),
-      isInsta: m.includes("إنستا") || m.includes("انستا"),
-      isAjal: m === "آجل"
+      isCheck: m.includes("شيك") || k === "check",
+      isBank: m.includes("بنكي") || m.includes("بنك") || k === "bank",
+      isWallet: m.includes("محفظ") || m.includes("محافظ") || k === "wallet",
+      isInsta: m.includes("إنستا") || m.includes("انستا") || k === "instapay",
+      isAjal: m === "آجل" || k === "ajal",
+      // 🆕 بناء 199: «الكاش» = النقدية الخالصة — التعديل (قصّ الزيادة) يبدأ منها (طلب المالك).
+      isCash: /نقد/.test(m) || k === "cash"
     };
   }
-  const POS_PAY_METHODS = ["نقداً", "تحويل بنكي", "محافظ إلكترونية", "إنستا باي", "شيك"];
-  const PP_PAY_METHODS = ["نقداً", "تحويل بنكي", "محافظ إلكترونية", "إنستا باي"];
+  // 🆕 بناء 199 (مواصفة المالك): سطور السداد تشمل «آجل» (المبلغ كله/جزء يروح على حساب الطرف).
+  const POS_PAY_METHODS = ["نقداً", "تحويل بنكي", "محافظ إلكترونية", "إنستا باي", "شيك", "آجل"];
+  const PP_PAY_METHODS = ["نقداً", "تحويل بنكي", "محافظ إلكترونية", "إنستا باي", "آجل"];
   function posExtraAmount(p) {
     const n = parseFloat(String(p && p.amount != null ? p.amount : "").replace(/,/g, ""));
     return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
@@ -7211,30 +7275,24 @@
     });
     if (selectedId != null && selectedId !== "") el.value = String(selectedId);
   }
+  /* 🆕 بناء 199 (مواصفة المالك 19/10): **شالنا قائمة «الدفع» خالص.**
+     السطر الأول ثابت اسمه «نقداً» وخانته فيها مبلغ الفاتورة كامل تلقائيًا، وجنبه زرار
+     «➕ إضافة طريقة سداد». أي وسيلة يختارها (بنكي/محفظة/إنستا/شيك/آجل) سطر مبلغه **ينزل من
+     مبلغ النقدي**، ولو مجموع السطور زاد عن الفاتورة ⇒ رسالة «المبلغ المسدد أكبر من مبلغ
+     الفاتورة» وممنوع الحفظ (مافيش قصّ صامت). وسطر «آجل» مبلغه **مش مدفوع** — يروح على حساب
+     العميل/المورد (لأن «آجل» = الفاتورة على الحساب)، والباقي من غير تغطية يبقى آجل كذلك. */
   function posPrimaryEntry(kind) {
-    const methodSel = kind === "sale" ? "#cmbPaymentMethod" : "#cmbPPaymentMethod";
-    const paidInpSel = kind === "sale" ? "#txtPosPaid" : "#txtPPPaid";
-    const method = $(methodSel).value;
-    const mode = posPayMode(method);
-    const raw = parseFloat(String($(paidInpSel).value).replace(/,/g, ""));
-    const entry = { method: method, treasuryId: null, bankName: "", checkNo: "", dueDate: "", amount: isFinite(raw) ? raw : 0 };
-    if (mode.isCheck) {
-      entry.bankName = (($("#txtPosCheckBank") || { value: "" }).value || "").trim();
-      entry.checkNo = (($("#txtPosCheckNo") || { value: "" }).value || "").trim();
-      entry.dueDate = ($("#txtPosCheckDue") || { value: "" }).value || todayISO();
-    } else if (mode.isBank || mode.isInsta || mode.isWallet) {
-      const sel = kind === "sale"
-        ? (mode.isBank ? "#cmbPosBank" : mode.isInsta ? "#cmbPosInsta" : "#cmbPosWallet")
-        : (mode.isBank ? "#cmbPPBank" : mode.isInsta ? "#cmbPPInsta" : "#cmbPPWallet");
-      const el = $(sel);
-      entry.treasuryId = el ? (parseInt(el.value, 10) || null) : null;
-    }
+    const entry = { method: "نقداً", treasuryId: null, bankName: "", checkNo: "", dueDate: "", amount: 0 };
+    const cash = posTreasuryForPay(kind, { method: "نقداً", treasuryId: null });
+    entry.treasuryId = cash ? cash.id : null;
     return entry;
   }
-  // يرجّع قائمة سطور السداد مُطبَّعة (المجموع ≤ الإجمالي، ولغير آجل/شيك = الإجمالي بالكامل)
+  // يرجّع قائمة سطور السداد مُطبَّعة: السطر الأول «نقداً» بمبلغ = الإجمالي − سطور السداد
+  // 🆕 بناء 199 (طلب المالك): **مافيش قصّ صامت** — لو مجموع السطور زاد عن الفاتورة يُرجَّع
+  // `overBy` بالأرقام ويتولّى `posPayOverError`/`posPayOverMsg` إظهار الرسالة ومنع الحفظ.
+  // وسطر «آجل» مبلغه يبقى **مش مدفوع** (يترحّل على حساب الطرف في `partyPaidDue`).
   function posCollectPayments(kind, grand) {
     const prim = posPrimaryEntry(kind);
-    const mode = posPayMode(prim.method);
     const extras = posExtraArr(kind)
       .map((p) => ({
         method: p.method || "نقداً", amount: posExtraAmount(p),
@@ -7243,33 +7301,36 @@
       }))
       .filter((p) => p.amount > 0);
     const extrasTotal = round2(extras.reduce((m, p) => m + p.amount, 0));
-    let primaryAmt = (mode.isAjal || mode.isCheck) ? round2(Math.max(prim.amount, 0)) : round2(grand - extrasTotal);
+    let primaryAmt = round2(grand - extrasTotal);
+    const overBy = primaryAmt < -0.001 ? round2(-primaryAmt) : 0;
     if (primaryAmt < 0) primaryAmt = 0;
-    const list = [Object.assign({}, prim, { amount: primaryAmt })];
-    extras.forEach((e) => list.push(e));
-    let over = round2(list.reduce((m, p) => m + p.amount, 0) - grand);
-    for (let i = list.length - 1; i >= 0 && over > 0.001; i--) {
-      const d = Math.min(list[i].amount, over);
-      list[i].amount = round2(list[i].amount - d);
-      over = round2(over - d);
-    }
-    let clean = list.filter((p) => p.amount > 0.0001);
-    if (!mode.isAjal && !mode.isCheck) {
-      const sum = round2(clean.reduce((m, p) => m + p.amount, 0));
-      if (sum < grand) {
-        if (clean.length) clean[0].amount = round2(clean[0].amount + (grand - sum));
-        else clean = [Object.assign({}, prim, { amount: round2(grand) })];
-      }
-    }
-    return { list: clean, mode: mode };
+    const list = [Object.assign({}, prim, { amount: primaryAmt })]
+      .concat(extras)
+      .filter((p) => p.amount > 0.0001);
+    return { list: list, mode: posPayMode("نقداً"), overBy: overBy };
   }
   function partyPaidDue(kind, grand) {
     const cp = posCollectPayments(kind, grand);
-    let paid = round2(cp.list.reduce((m, p) => m + p.amount, 0));
+    // 🆕 بناء 199: سطر «آجل» لا يُحتسب مدفوعًا — مبلغه يترحّل على حساب العميل/المورد.
+    const paidLines = cp.list.filter((p) => !posPayMode(p.method).isAjal);
+    let paid = round2(paidLines.reduce((m, p) => m + p.amount, 0));
     if (!(paid >= 0)) paid = 0;
     if (paid > grand) paid = round2(grand);
     const due = round2(grand - paid);
-    return { ajal: cp.mode.isAjal, paid: paid, due: due, payments: cp.list };
+    return { ajal: due > 0, paid: paid, due: due, payments: cp.list, overBy: cp.overBy };
+  }
+  // مبلغ سطر «نقداً» (السطر الأول) — للعرض في خانته المقفولة.
+  function posCashLineAmount(pd) {
+    const line = (pd && Array.isArray(pd.payments) ? pd.payments : []).find((p) => posPayMode(p.method).isCash);
+    return line ? round2(line.amount) : 0;
+  }
+  // 🆕 بناء 199: فحص الزيادة قبل أي حفظ — رسالة صريحة بدل القصّ الصامت.
+  function posPayOverError(kind, grand) {
+    const cp = posCollectPayments(kind, grand);
+    if (!(cp.overBy > 0.001)) return "";
+    return "المبلغ المسدد أكبر من مبلغ الفاتورة.\n\n" +
+      "الفاتورة: " + fmt(grand) + " ج.م — سطور السداد: " + fmt(round2(grand + cp.overBy)) + " ج.م" +
+      " (زيادة " + fmt(cp.overBy) + " ج.م).\nعدّل مبالغ السطور (أو خليها تغطي الفاتورة بالظبط) وحاول تاني.";
   }
   function posRenderExtraPays(kind) {
     const listEl = $(kind === "sale" ? "#posPayExtraList" : "#ppPayExtraList");
@@ -7284,14 +7345,14 @@
       row.dataset.idx = i;
       row.innerHTML =
         '<select class="pl-method">' + methods.map((m) => '<option' + (m === p.method ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select>' +
-        '<select class="pl-treasury"' + (mode.isCheck ? ' hidden' : '') + '></select>' +
+        '<select class="pl-treasury"' + ((mode.isCheck || mode.isAjal) ? ' hidden' : '') + '></select>' +
         '<input class="pl-bank" type="text" placeholder="اسم البنك" value="' + esc(p.bankName || '') + '"' + (mode.isCheck ? '' : ' hidden') + ' />' +
         '<input class="pl-no" type="text" placeholder="رقم الشيك" value="' + esc(p.checkNo || '') + '"' + (mode.isCheck ? '' : ' hidden') + ' />' +
         '<input class="pl-due" type="date" value="' + esc(p.dueDate || todayISO()) + '"' + (mode.isCheck ? '' : ' hidden') + ' />' +
         '<input class="pl-amount" type="text" placeholder="المبلغ" value="' + esc(p.amount == null ? '' : p.amount) + '" autocomplete="off" />' +
         '<button class="btn small red" type="button" data-pldel="1" title="حذف السطر">❌</button>';
       listEl.appendChild(row);
-      if (!mode.isCheck) {
+      if (!mode.isCheck && !mode.isAjal) {
         const wantType = mode.isBank ? "bank" : mode.isInsta ? "instapay" : mode.isWallet ? "wallet" : "cash";
         posFillTreasurySelect(row.querySelector(".pl-treasury"), wantType, p.treasuryId);
       }
@@ -7299,11 +7360,15 @@
   }
   function posAddExtraPay(kind) {
     const grand = kind === "sale" ? posRecalc().grand : ppRecalc().grand;
-    const cur = partyPaidDue(kind, grand);
-    const remain = round2(Math.max(cur.due, 0));
-    posExtraArr(kind).push({ method: "نقداً", amount: remain > 0 ? remain : "", treasuryId: null, bankName: "", checkNo: "", dueDate: todayISO() });
+    // 🆕 بناء 199: السطر الجديد يبدأ بالباقي (الإجمالي − مجموع السطور)، والمستخدم يختار
+    // طريقته من قائمة السطر نفسه (واللي منها «آجل»).
+    const lines = posExtraArr(kind);
+    const sumAll = round2(lines.reduce((m, p) => m + posExtraAmount(p), 0));
+    const remain = round2(Math.max(grand - sumAll, 0));
+    lines.push({ method: "نقداً", amount: remain > 0 ? remain : "", treasuryId: null, bankName: "", checkNo: "", dueDate: todayISO() });
     posRenderExtraPays(kind);
     if (kind === "sale") posRecalc(); else ppRecalc();
+    posPayOverMsg(kind);
   }
   function posBindExtraPays(kind) {
     const listEl = $(kind === "sale" ? "#posPayExtraList" : "#ppPayExtraList");
@@ -7319,10 +7384,22 @@
           p.method = e.target.value;
           const mode = posPayMode(p.method);
           const trSel = row.querySelector(".pl-treasury"), bk = row.querySelector(".pl-bank"), no = row.querySelector(".pl-no"), due = row.querySelector(".pl-due");
-          if (trSel) trSel.hidden = mode.isCheck;
+          if (trSel) trSel.hidden = mode.isCheck || mode.isAjal;
           if (bk) bk.hidden = !mode.isCheck;
           if (no) no.hidden = !mode.isCheck;
           if (due) due.hidden = !mode.isCheck;
+          if (mode.isAjal) {
+            // 🆕 بناء 199 (طلب المالك): اختار «آجل» ⇒ مبلغ السطر = الباقي كامل على حساب الطرف
+            p.treasuryId = null;
+            const others = posExtraArr(kind).reduce((m, q) => m + ((q === p || posPayMode(q.method).isAjal) ? 0 : posExtraAmount(q)), 0);
+            const grand = kind === "sale" ? posRecalc().grand : ppRecalc().grand;
+            const credit = round2(Math.max(grand - others, 0));
+            p.amount = credit > 0 ? credit : "";
+            posRenderExtraPays(kind);
+            refresh();
+            posPayOverMsg(kind);
+            return;
+          }
           if (!mode.isCheck) {
             const wantType = mode.isBank ? "bank" : mode.isInsta ? "instapay" : mode.isWallet ? "wallet" : "cash";
             posFillTreasurySelect(trSel, wantType, null);
@@ -7332,7 +7409,9 @@
         else if (e.target.classList.contains("pl-bank")) p.bankName = e.target.value;
         else if (e.target.classList.contains("pl-no")) p.checkNo = e.target.value;
         else if (e.target.classList.contains("pl-due")) p.dueDate = e.target.value;
+        else if (e.target.classList.contains("pl-amount")) { p.amount = e.target.value; refresh(); posPayOverMsg(kind); return; } // 🆕 199
         refresh();
+        posPayOverMsg(kind); // 🆕 199: تنبيه «المبلغ المسدد أكبر من مبلغ الفاتورة» لو المجموع زاد
       });
       listEl.addEventListener("input", (e) => {
         if (!e.target.classList.contains("pl-amount")) return;
@@ -7347,6 +7426,7 @@
         posExtraArr(kind).splice(parseInt(row.dataset.idx, 10), 1);
         posRenderExtraPays(kind);
         refresh();
+        posPayOverMsg(kind); // 🆕 199
       });
     }
   }
@@ -7358,6 +7438,10 @@
   function ajalPaidGate(kind, t) {
     if (kind !== "sale" && kind !== "purchase") return true;
     if (!(t && t.paid > 0)) return true;
+    // 🆕 بناء 199 (مواصفة المالك): بعد ما شالنا قائمة «الدفع» وخانة «المدفوع» المكتوبة، مافيش
+    // «مدفوع مخفي» يتخصم من حساب الطرف — المدفوع بقى **سطور سداد صريحة** يعرفها المستخدم.
+    // فالسؤال بقى للفواتير القديمة/المسودات اللي جايّة بخانة مدفوع مكتوبة بس.
+    if (Array.isArray(t.payments) && t.payments.some((p) => !posPayMode(p.method).isAjal && Number(p.amount) > 0)) return true;
     const who = kind === "sale" ? "العميل" : "المورد";
     const box = kind === "sale" ? "الخزينة" : "الخزينة/حساب الدفع";
     const inp = $(kind === "sale" ? "#txtPosPaid" : "#txtPPPaid");
@@ -7367,13 +7451,19 @@
         "لو ضغطت «موافق» البرنامج هيسجّلها **قبض/دفع فعلي داخل " + box + "**، و" + who + " مش هيترحل عليه حاجة خالص.\n" +
         "ولو المقصود إنها آجل بالكامل: اضغط «إلغاء» وفضّي خانة «المدفوع» (خليها 0).";
     } else {
-      msg = "الفاتورة مختارة «آجل» وفيها مدفوع " + fmt(t.paid) + " ج.م من إجمالي " + fmt(t.grand) + " ج.م.\n\n" +
+      msg = "الفاتورة مختارة «آجل» وفيها سداد " + fmt(t.paid) + " ج.م من إجمالي " + fmt(t.grand) + " ج.م.\n\n" +
         "هيترحل على حساب " + who + ": " + fmt(t.due) + " ج.م بس (الباقي)، و" + fmt(t.paid) + " ج.م هتدخل " + box + ".\n" +
-        "مؤكّد؟ (لو المقصود آجل بالكامل اضغط «إلغاء» وفضّي خانة «المدفوع».)";
+        "مؤكّد؟ (لو المقصود آجل بالكامل اضغط «إلغاء» وتشيل سطور السداد.)";
     }
     if (confirm(msg)) return true;
-    try { if (inp) { inp.value = "0"; inp.focus(); } } catch (e) { }
-    toast("الفاتورة ما اتسجلتش — فضّينا خانة «المدفوع». اختار «آجل» بالكامل أو اكتب المبلغ المقبول قبضه.", "warning");
+    try {
+      if (inp) { inp.value = "0"; inp.focus(); }
+      // 🆕 بناء 199: خانة «المدفوع» مخفية في الآجل ⇒ الرفض كمان يشيل سطور السداد الصريحة
+      posExtraArr(kind).splice(0, posExtraArr(kind).length);
+      posRenderExtraPays(kind);
+      if (kind === "sale") posRecalc(); else ppRecalc();
+    } catch (e) { }
+    toast("الفاتورة ما اتسجلتش — شيلنا سطور السداد. اختار «آجل» بالكامل أو اكتب المبلغ المقبول قبضه.", "warning");
     return false;
   }
 
@@ -7425,12 +7515,28 @@
     setSummaryVal("#" + p + "Curr", curr, curr > 0 ? "amount-neg" : curr < 0 ? "amount-pos" : "");
   }
 
-  function posPaymentFieldToggle(kind) {
-    const m = $(kind === "sale" ? "#cmbPaymentMethod" : "#cmbPPaymentMethod").value;
-    const mode = posPayMode(m);
+  function posPaymentFieldToggle(kind, cashAmt) {
     const row = $(kind === "sale" ? "#posPaidRow" : "#ppPaidRow");
-    // 🧾 بناء 190: خانة «المدفوع» تظهر للآجل وللشيك (مبلغ الشيك)، وتُشتق بقية الطرق تلقائيًا
-    if (row) row.hidden = !(mode.isAjal || mode.isCheck);
+    const inp = $(kind === "sale" ? "#txtPosPaid" : "#txtPPPaid");
+    const view = $(kind === "sale" ? "#posPayCashView" : "#ppPayCashView");
+    // 🆕 بناء 199 (مواصفة المالك): «نقداً» خانة **مقفولة** والبرنامج هو اللي بيكتبها
+    // (الإجمالي − سطور السداد). ولو المبلغ كله اتحط في سطر سداد تاني ⇒ **الخانة تختفي**،
+    // وأول ما تقلّل مبالغ السطور التانية ⇒ ترجع تظهر **بالفرق**.
+    const amt = (cashAmt != null) ? round2(Number(cashAmt) || 0) : null;
+    if (inp) { inp.readOnly = true; inp.title = "مبلغ الفاتورة ناقص سطور السداد (البرنامج بيحسبه)"; }
+    if (amt != null && inp) { inp.value = String(amt); }
+    if (row) row.hidden = (amt != null) ? !(amt > 0.0001) : false;
+    if (view) { view.textContent = fmt(amt != null ? amt : posExtraAmount({ amount: inp ? inp.value : 0 })); }
+  }
+
+  // 🆕 بناء 199 (مواصفة المالك): لو مجموع سطور السداد زاد عن إجمالي الفاتورة ⇒ رسالة صريحة
+  // «المبلغ المسدد أكبر من مبلغ الفاتورة» بدل القصّ الصامت. (والحفظ نفسه ممنوع بنفس الفحص.)
+  function posPayOverMsg(kind) {
+    const grand = kind === "sale" ? posRecalc().grand : ppRecalc().grand;
+    const msg = posPayOverError(kind, grand);
+    if (!msg) return false;
+    toast("المبلغ المسدد أكبر من مبلغ الفاتورة — عدّل مبالغ السطور.", "warning");
+    return true;
   }
 
   function posRecalc() {
@@ -7453,10 +7559,12 @@
     $("#lblPosTotalLabel").textContent = TAX.enabled ? "الصافي النهائي" : "الصافي";
     $("#lblPosTotal").textContent = fmt(grand);
     const pd = partyPaidDue("sale", grand);
-    posPaymentFieldToggle("sale");
+    // 🆕 بناء 199: خانة «نقداً» مقفولة وبيكتبها البرنامج = الإجمالي − سطور السداد
+    // (وتختفي لو المبلغ كله راح لسطر سداد تاني، وترجع بالفرق لو السطور التانية قلّت).
+    posPaymentFieldToggle("sale", posCashLineAmount(pd));
     posUpdatePartyBalance("sale");
     posUpdateSummary("sale", { grand: grand, paid: pd.paid, due: pd.due });
-    return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments };
+    return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments, overBy: pd.overBy };
   }
 
   function renderPosItems() {
@@ -7489,7 +7597,11 @@
     // 🧾 بناء 176: «بره الشيفت ممنوع البيع لغير المالك» — العضو لازم يكون فاتح وردية
     // (على صندوقه). المالك/صاحب الشركة معفيان. لو الشاشة مفعّلة على الحساب بس فيه وردية
     // مفتوحة على كاشير تاني — نمنع برضه (كل واحد بيبيع من صندوقه).
-    if (!(isSuperAcct() || isCompanyOwnerAcct())) {
+    // 🔧 بناء 199 (إصلاح): البوابة تشتغل **بس** لما فيه حساب شركة والشاشة متاحة له؛
+    //    على جهاز بلا حساب (وضع العرض/أوفلاين بلا دخول) شاشة الورديات نفسها مخفية ⇒
+    //    لو منعنا البيع كان المستخدم يقف عاجزًا بلا أي طريقة يفتح وردية.
+    const _acct176 = currentAcct();
+    if (_acct176 && canUseView("cashierShifts") && !(isSuperAcct() || isCompanyOwnerAcct())) {
       const _cs176 = currentAcct();
       const _ck176 = _cs176 && (_cs176.user_id || _cs176.id || _cs176.username) ? (_cs176.user_id || _cs176.id || _cs176.username) : activityUser();
       const _hasMine = (shifts || []).some((s) => s.status === "open" && String(s.cashierKey || "") === String(_ck176));
@@ -7498,15 +7610,11 @@
         return;
       }
     }
-    const payment = $("#cmbPaymentMethod").value || "نقداً";
+    let payment = "نقداً"; // 🆕 199: بتُحسب من سطور السداد بعد `t` (مافيش قائمة «الدفع» خلاص)
     const custId = posCustId();
     const cust = customers.find((c) => c.id === custId);
     if (!cust) {
       toast("العميل مش موجود في قائمة العملاء — اكتب اسمه أو اختره من القائمة.", "warning");
-      return;
-    }
-    if (payment === "آجل" && cust.protected) {
-      toast("الرجاء اختيار عميل حقيقي للبيع الآجل (لا يمكن ترحيلها للعميل النقدي).", "warning");
       return;
     }
     const warehouse = $("#cmbPosWarehouse").value;
@@ -7528,6 +7636,15 @@
     }
 
     const t = posRecalc();
+    // 🆕 بناء 199 (مواصفة المالك): «الدفع» بقى **مشتق** من سطور السداد — «آجل» = فيه جزء على
+    // حساب العميل، وإلا وسيلة السطر الفعلي. ومبلغ «نقداً» = الإجمالي ناقص مجموع سطور السداد.
+    payment = t.due > 0 ? "آجل" : (((t.payments || []).find((p) => !posPayMode(p.method).isAjal) || {}).method || "نقداً");
+    const _overMsg = posPayOverError("sale", t.grand);
+    if (_overMsg) { alert(_overMsg); return; }
+    if (payment === "آجل" && cust.protected) {
+      toast("الرجاء اختيار عميل حقيقي للبيع الآجل (لا يمكن ترحيلها للعميل النقدي).", "warning");
+      return;
+    }
     // 🆕 بناء 191: آجل + «مدفوع» = سؤال صريح قبل أي أثر (بلاغ شركة محمد رافت)
     if (payment === "آجل" && !ajalPaidGate("sale", t)) return;
     const invNo = $("#txtInvoiceNo").value || nextInvoiceNumber();
@@ -7574,22 +7691,25 @@
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
     // 🧾 بناء 190: منظومة السداد المتعدّد (نقدي/بنك/محفظة/إنستا باي + «شيك» على حساب 1.1.7)
+    // 🆕 بناء 199: والسطر الأول «نقداً» + سطر «آجل» (مبلغه على حساب العميل مش مدفوع).
     const _payLines = Array.isArray(t.payments) ? t.payments : [];
-    const _isMulti = _payLines.some((p) => posPayMode(p.method).isCheck) || _payLines.length > 1;
+    const _isMulti = _payLines.some((p) => { const m = posPayMode(p.method); return m.isCheck || m.isAjal || !m.isCash; }) || _payLines.length > 1;
     let posTr = null;
     let paidTreasury = null;
     if (_isMulti) {
       invoice.payments = _payLines.map((p) => {
         const md = posPayMode(p.method);
         return {
-          method: md.isCheck ? "check" : md.isBank ? "bank" : md.isInsta ? "instapay" : md.isWallet ? "wallet" : "cash",
+          method: md.isAjal ? "ajal" : md.isCheck ? "check" : md.isBank ? "bank" : md.isInsta ? "instapay" : md.isWallet ? "wallet" : "cash",
           amount: round2(p.amount), treasuryId: (p.treasuryId != null ? p.treasuryId : null),
           bankName: p.bankName || "", checkNo: p.checkNo || "", dueDate: p.dueDate || ""
         };
       });
       if (jrnBlocked("الفاتورة", invoiceJrnPlan("sale", invoice, null))) return;
-      for (const p of _payLines) {
+      for (let _i = 0; _i < _payLines.length; _i++) {
+        const p = _payLines[_i];
         const md = posPayMode(p.method);
+        if (md.isAjal) continue; // 🆕 199: الآجل مايدخلش خزينة — يترحّل على حساب العميل (t.due)
         if (md.isCheck) {
           addCheck({ customerId: cust.id, customerName: cust.nameAr, bankName: p.bankName || "", checkNo: p.checkNo || "",
             dueDate: p.dueDate || todayISO(), amount: round2(p.amount), refType: "invoice", refId: String(invoice.invoiceNumber || invNo) });
@@ -7598,11 +7718,13 @@
         const _tr = posTreasuryForPay("sale", p);
         if (_tr) {
           _tr.balance = round2((_tr.balance || 0) + round2(p.amount));
+          // 🆕 199: نخزّن الخزينة الفعّالة على السطر المحفوظ (توزيع دقيق عند إعادة الحساب)
+          if (invoice.payments && invoice.payments[_i]) invoice.payments[_i].treasuryId = _tr.id;
           if (!invoice.treasuryId) { invoice.treasuryId = _tr.id; paidTreasury = _tr; }
         }
       }
       saveTreasury();
-      _payLines.forEach((p) => { if (!posPayMode(p.method).isCheck) { const _tr = posTreasuryForPay("sale", p); if (_tr) syncTreasuryItemToSett(_tr); } });
+      _payLines.forEach((p) => { const m = posPayMode(p.method); if (!m.isCheck && !m.isAjal) { const _tr = posTreasuryForPay("sale", p); if (_tr) syncTreasuryItemToSett(_tr); } });
     } else {
       const _isBank = payment === "تحويل بنكي" || payment.includes("بنك");
       const _isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
@@ -8132,10 +8254,11 @@
     $("#lblPPTotalLabel").textContent = TAX.enabled ? "الصافي النهائي" : "الصافي";
     $("#lblPPTotal").textContent = fmt(grand);
     const pd = partyPaidDue("purchase", grand);
-    posPaymentFieldToggle("purchase");
+    // 🆕 بناء 199: خانة «نقداً» مقفولة وبيكتبها البرنامج = الإجمالي − سطور السداد (تختفي لو المبلغ كله راح لسطر تاني).
+    posPaymentFieldToggle("purchase", posCashLineAmount(pd));
     ppUpdatePartyBalance("purchase");
     posUpdateSummary("purchase", { grand: grand, paid: pd.paid, due: pd.due });
-    return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments };
+    return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments, overBy: pd.overBy };
   }
 
   function renderPPItems() {
@@ -8165,15 +8288,11 @@
       toast("يرجى إضافة أصناف إلى الفاتورة أولاً.", "warning");
       return;
     }
-    const payment = $("#cmbPPaymentMethod").value || "نقداً";
+    let payment = "نقداً"; // 🆕 199: بتُحسب من سطور السداد بعد `t` (مافيش قائمة «الدفع» خلاص)
     const supId = posSupId();
     const supplier = suppliers.find((s) => s.id === supId);
     if (!supplier) {
       toast("المورد مش موجود في قائمة الموردين — اكتب اسمه أو اختره من القائمة.", "warning");
-      return;
-    }
-    if (payment === "آجل" && supplier.protected) {
-      toast("الرجاء اختيار مورد حقيقي للشراء الآجل (لا يمكن ترحيلها للمورد النقدي).", "warning");
       return;
     }
     const warehouse = $("#cmbPPWarehouse").value;
@@ -8183,6 +8302,14 @@
     }
 
     const t = ppRecalc();
+    // 🆕 بناء 199 (مواصفة المالك): «الدفع» مشتق من سطور السداد — «آجل» = فيه جزء على حساب المورد.
+    payment = t.due > 0 ? "آجل" : (((t.payments || []).find((p) => !posPayMode(p.method).isAjal) || {}).method || "نقداً");
+    const _overMsg = posPayOverError("purchase", t.grand);
+    if (_overMsg) { alert(_overMsg); return; }
+    if (payment === "آجل" && supplier.protected) {
+      toast("الرجاء اختيار مورد حقيقي للشراء الآجل (لا يمكن ترحيلها للمورد النقدي).", "warning");
+      return;
+    }
     // 🆕 بناء 191: آجل + «مدفوع» = سؤال صريح قبل أي أثر (نفس البيع)
     if (payment === "آجل" && !ajalPaidGate("purchase", t)) return;
     const invNo = $("#txtPInvNo").value || nextPurchaseInvoiceNumber();
@@ -8227,35 +8354,40 @@
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
     // 🧾 بناء 190: سطور سداد متعدّدة للمشتريات (نقدي/بنك/محفظة/إنستا — الشيكات للعملاء فقط)
+    // 🆕 بناء 199: والسطر الأول «نقداً» + سطر «آجل» (مبلغه على حساب المورد مش مدفوع).
     const _ppPayLines = Array.isArray(t.payments) ? t.payments : [];
-    const _ppMulti = _ppPayLines.length > 1;
+    const _ppMulti = _ppPayLines.some((p) => { const m = posPayMode(p.method); return m.isAjal || !m.isCash; }) || _ppPayLines.length > 1;
     let ppTr = null;
     let paidTreasury = null;
     if (_ppMulti) {
       invoice.payments = _ppPayLines.map((p) => {
         const md = posPayMode(p.method);
         return {
-          method: md.isBank ? "bank" : md.isInsta ? "instapay" : md.isWallet ? "wallet" : "cash",
+          method: md.isAjal ? "ajal" : md.isBank ? "bank" : md.isInsta ? "instapay" : md.isWallet ? "wallet" : "cash",
           amount: round2(p.amount), treasuryId: (p.treasuryId != null ? p.treasuryId : null)
         };
       });
       if (jrnBlocked("الفاتورة", invoiceJrnPlan("purchase", invoice, null))) return;
       // تحذير نقص الرصيد مجمّعًا على الخزينة المطلوبة
       for (const p of _ppPayLines) {
+        if (posPayMode(p.method).isAjal) continue;
         const _tr = posTreasuryForPay("purchase", p);
         if (_tr && round2(_tr.balance) < round2(p.amount)) {
           if (!confirm(shortfallText(_tr, p.amount) + "\n\nهل تريد تسجيل فاتورة المشتريات من «" + _tr.name + "» رغم ذلك؟")) return;
         }
       }
-      for (const p of _ppPayLines) {
+      for (let _i = 0; _i < _ppPayLines.length; _i++) {
+        const p = _ppPayLines[_i];
+        if (posPayMode(p.method).isAjal) continue; // 🆕 199: الآجل مايدخلش خزينة — على حساب المورد (t.due)
         const _tr = posTreasuryForPay("purchase", p);
         if (_tr) {
           _tr.balance = round2((_tr.balance || 0) - round2(p.amount));
+          if (invoice.payments && invoice.payments[_i]) invoice.payments[_i].treasuryId = _tr.id;
           if (!invoice.treasuryId) { invoice.treasuryId = _tr.id; paidTreasury = _tr; }
         }
       }
       saveTreasury();
-      _ppPayLines.forEach((p) => { const _tr = posTreasuryForPay("purchase", p); if (_tr) syncTreasuryItemToSett(_tr); });
+      _ppPayLines.forEach((p) => { if (posPayMode(p.method).isAjal) return; const _tr = posTreasuryForPay("purchase", p); if (_tr) syncTreasuryItemToSett(_tr); });
     } else {
       const _isBank = payment === "تحويل بنكي" || payment.includes("بنك");
       const _isWallet = payment === "محافظ إلكترونية" || payment.includes("محفظ");
@@ -9990,6 +10122,7 @@ id: nextVoucherId(),
         (pend
           ? '<button class="btn small green" type="button" data-act="collect">💰 تحصيل</button> <button class="btn small red" type="button" data-act="return">⛔ ارتجاع</button>'
           : '<button class="btn small dark" type="button" data-act="del">🗑️ حذف</button>') +
+        ' <button class="btn small sky" type="button" data-act="edit" title="تعديل بيانات الشيك (البنك/الرقم/الاستحقاق)">✏️ تعديل</button>' +
         '</td>';
       tr.dataset.cid = c.id;
       tb.appendChild(tr);
@@ -10047,6 +10180,8 @@ id: nextVoucherId(),
     on("#btnChkRefresh", "click", renderChecks);
     on("#btnChkCollectCancel", "click", () => hideModal("mCheckCollect"));
     on("#btnChkCollectSave", "click", saveCheckCollect);
+    on("#btnChkEditCancel", "click", () => hideModal("mCheckEdit"));
+    on("#btnChkEditSave", "click", saveCheckEdit);
     const tb = $("#dgvChecks tbody");
     if (tb) tb.addEventListener("click", (e) => {
       const btn = e.target.closest("[data-act]");
@@ -10059,7 +10194,40 @@ id: nextVoucherId(),
         if (confirm("تأكيد ارتجاع شيك «" + (c.customerName || "-") + "» بمبلغ " + fmt(round2(c.amount)) +
           " ج.م؟\nالمديونية هترجع على حساب العميل تاني.")) { returnCheck(id); renderChecks(); renderDashboard(); }
       } else if (btn.dataset.act === "del") deleteCheckRec(id);
+      else if (btn.dataset.act === "edit") openCheckEditDialog(c);
     });
+  }
+
+  /* 🆕 بناء 199 (طلب المالك): البايع لو ماكتبش بيانات الشيك وقت البيع، يقدر يعدّلها من هنا
+     (البنك/رقم الشيك/تاريخ الاستحقاق) — بلا أي أثر مالي أو على القيود. */
+  let checkEditId = null;
+  function openCheckEditDialog(c) {
+    if (!c) return;
+    if ((c.status || "pending") !== "pending") {
+      toast("الشيك ده خلص (اتحصّل/اترجّع) — تعديل البيانات بقى للمعلّق بس.", "warning");
+      return;
+    }
+    checkEditId = c.id;
+    const info = $("#chkEditInfo");
+    if (info) info.textContent = "شيك «" + (c.customerName || "-") + "» — " + fmt(round2(c.amount)) + " ج.م";
+    const b = $("#chkEditBank"), n = $("#chkEditNo"), d = $("#chkEditDue");
+    if (b) b.value = c.bankName || "";
+    if (n) n.value = c.checkNo || "";
+    if (d) d.value = c.dueDate || todayISO();
+    showModal("mCheckEdit");
+  }
+  function saveCheckEdit() {
+    const c = checks.find((x) => Number(x.id) === Number(checkEditId));
+    if (!c) { hideModal("mCheckEdit"); return; }
+    c.bankName = (($("#chkEditBank") || {}).value || "").trim();
+    c.checkNo = (($("#chkEditNo") || {}).value || "").trim();
+    const due = (($("#chkEditDue") || {}).value || "").trim();
+    if (due) c.dueDate = due;
+    saveChecks();
+    hideModal("mCheckEdit");
+    renderChecks();
+    renderDashboard();
+    toast("تم تعديل بيانات الشيك ✅", "success");
   }
 
   /* ================== 🧾 بناء 190 — منظومة الشيكات (أوراق القبض) ==================
@@ -13108,7 +13276,9 @@ id: nextVoucherId(),
     // 🆕 (طلب المالك) السداد الجزئي: أى «مدفوع» نقدًا الآن، والباقي (الآجل) على حساب الطرف
     let paid = (inv.paidAmount != null) ? round2(inv.paidAmount) : (ajal ? 0 : total);
     // 🧾 بناء 190: لو الفاتورة فيها سطور سداد مفصّلة (نقدي/محافظ/إنستا باي/شيك) ⇒ المدفوع = مجموعها
-    const payLines = (Array.isArray(inv.payments) ? inv.payments : []).filter((p) => p && Number(p.amount) > 0);
+    // 🆕 بناء 199: وسطر «آجل» **ليس مدفوعًا** — مبلغه يترحّل على حساب الطرف (يدخل في `due`).
+    const allPayLines = (Array.isArray(inv.payments) ? inv.payments : []).filter((p) => p && Number(p.amount) > 0);
+    const payLines = allPayLines.filter((p) => !posPayMode(p.method).isAjal);
     if (payLines.length) paid = round2(payLines.reduce((m, p) => m + (Number(p.amount) || 0), 0));
     if (!(paid >= 0)) paid = 0;
     if (paid > total) paid = total;

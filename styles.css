@@ -938,6 +938,55 @@ body {
 .inv-total-box .t-value { font-size: 40px; font-weight: 900; color: #000; line-height: 1.05; direction: rtl; }
 .inv-total-box .t-cur { font-size: 20px; font-weight: 800; color: #111; }
 
+/* ═══ بناء 199 (طلب المالك 19/10): عمود جانبي = مربع الإجمالي + **لوحة السداد** بلون مستقل ═══
+   اللوحة بلون مختلف عن الفاتورة (أخضر مالي فاتح) مع شريط جانبي ملوّن + عناوين واضحة،
+   ونفس الأسلوب المتبع في أنظمة ERP المعتمدة (Odoo/Zoho): لوحة دفع مستقلة + جدول سطور. */
+.entry-side { flex: 0 0 300px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+/* المربع واخد `flex:0 0 300px` فوق (كان عرضه في صف) — في العمود بيبقى **طول** 300px ⇒ نثبّته 300×150 */
+.entry-side .inv-total-box { width: 100%; flex: 0 0 auto; height: 150px; align-self: auto; box-sizing: border-box; }
+
+.pay-panel {
+  background: #F0FDF4;
+  border: 1px solid #BBF7D0;
+  border-inline-start: 5px solid #16A34A;
+  border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(16, 163, 74, .10);
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.pay-panel-buy { background: #EFF6FF; border-color: #BFDBFE; border-inline-start-color: #2563EB; box-shadow: 0 2px 8px rgba(37, 99, 235, .10); }
+.pay-panel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pay-panel-title { font-size: 13px; font-weight: 900; color: #14532D; letter-spacing: .2px; }
+.pay-panel-buy .pay-panel-title { color: #1E3A8A; }
+.pay-panel-cash { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: #15803D; background: #DCFCE7; border: 1px solid #BBF7D0; border-radius: 999px; padding: 2px 10px; }
+.pay-panel-cash b { font-size: 15px; font-weight: 900; color: #065F46; font-variant-numeric: tabular-nums; }
+.pay-panel-buy .pay-panel-cash { color: #1D4ED8; background: #DBEAFE; border-color: #BFDBFE; }
+.pay-panel-buy .pay-panel-cash b { color: #1E3A8A; }
+.pay-add-btn { height: 28px !important; padding: 0 10px; margin-inline-start: auto; white-space: nowrap; }
+.pay-panel-body { display: flex; flex-direction: column; gap: 6px; max-height: 168px; overflow: auto; }
+.pay-panel .pos-paid-row { margin-top: 0; }
+.pay-panel .pos-paid-label { font-size: 12px; font-weight: 800; color: #166534; }
+.pay-panel-buy .pos-paid-label { color: #1E40AF; }
+.pay-cash-inp { flex: 0 0 130px; text-align: center; font-weight: 900; font-size: 14px; background: #fff !important; color: #065F46 !important; border: 1.5px solid #86EFAC !important; border-radius: 8px; font-variant-numeric: tabular-nums; }
+.pay-panel-buy .pay-cash-inp { color: #1E3A8A !important; border-color: #93C5FD !important; }
+.pay-panel .pay-line { background: #fff; border-color: #BBF7D0; }
+.pay-panel-buy .pay-line { border-color: #BFDBFE; }
+.pay-panel .pl-amount { font-variant-numeric: tabular-nums; }
+
+/* 🆕 بناء 199 (شكوى المالك: «الجزء اللي فوق واخد معظم الشاشة والأصناف صغيرة») —
+   رأس الفاتورة مضغوط، والمساحة الزايدة تروح لجدول الأصناف. */
+.pos-fields { padding: 6px 8px; gap: 6px; }
+.pos-row { gap: 8px; }
+.fld { gap: 2px; }
+.fld label { font-size: 11px; }
+.fld input, .fld select { padding: 5px 7px; font-size: 12.5px; }
+.entry-right { gap: 6px; }
+.pos-fields-entry { gap: 10px; }
+@media (max-width: 980px) { .entry-side { flex: 1 1 100%; } }
+
 .fld label {
   font-size: 12px;
   color: var(--text-secondary);

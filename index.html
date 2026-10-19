@@ -303,15 +303,14 @@
               <label>العميل:<span class="pos-party-balance" id="posCustBalance" hidden></span></label>
               <select id="cmbPosCustomer"></select>
             </div>
-            <div class="fld">
+            <!-- 🆕 بناء 199 (طلب المالك): شالنا قائمة «الدفع» من الشاشة. «الدفع» بقى مشتق من
+                 لوحة السداد: السطر الأول «نقداً» (البرنامج بيحسبه = الإجمالي − سطور السداد،
+                 وبيختفي لو المبلغ كله اتحط في سطر تاني) + زرار «إضافة طريقة سداد». -->
+            <div class="fld" hidden>
               <label>الدفع:</label>
               <select id="cmbPaymentMethod">
                 <option>نقداً</option><option>آجل</option><option>تحويل بنكي</option><option>محافظ إلكترونية</option><option>إنستا باي</option><option>شيك</option>
               </select>
-              <div class="pos-paid-row" id="posPaidRow" hidden>
-                <label class="pos-paid-label">المدفوع:</label>
-                <input id="txtPosPaid" type="text" value="0" autocomplete="off" />
-              </div>
             </div>
             <div class="fld" id="fldPosBank" hidden><label>البنك المستلم:</label><select id="cmbPosBank"></select></div>
             <div class="fld" id="fldPosWallet" hidden><label>المحفظة الإلكترونية:</label><select id="cmbPosWallet"></select></div>
@@ -323,11 +322,6 @@
                 <input id="txtPosCheckNo" type="text" placeholder="رقم الشيك" autocomplete="off" />
                 <input id="txtPosCheckDue" type="date" title="تاريخ استحقاق الشيك" />
               </div>
-            </div>
-            <div class="fld fld-payextra" id="fldPosPayExtra">
-              <label>طرق سداد إضافية (للباقي):</label>
-              <div id="posPayExtraList"></div>
-              <button id="btnPosAddPay" class="btn small sky" type="button">➕ إضافة طريقة سداد أخرى</button>
             </div>
             <div class="fld"><label>المستودع:</label><select id="cmbPosWarehouse"></select></div>
             <!-- 📷 بناء 143 (طلب 05/10 ≈18:05): زرار المسح في **رأس الفاتورة** — يجهّز خانة الكود للماسح -->
@@ -353,10 +347,27 @@
           </div>
               <div class="scan-hint" id="posScanHint" hidden></div>
             </div>
+            <div class="entry-side">
             <div id="invTotalBox" class="inv-total-box">
               <span class="t-label" id="lblPosTotalLabel">الصافي النهائي</span>
               <span class="t-value" id="lblPosTotal">0.00</span>
               <span class="t-cur">ج.م</span>
+            </div>
+            <!-- 🆕 بناء 199: لوحة السداد — بلوك بلون مستقل عن الفاتورة (تصميم نمط أنظمة ERP) -->
+            <div class="pay-panel" id="posPayPanel">
+              <div class="pay-panel-head">
+                <span class="pay-panel-title">💳 السداد</span>
+                <span class="pay-panel-cash"><span>نقداً</span><b id="posPayCashView">0.00</b><span>ج.م</span></span>
+                <button id="btnPosAddPay" class="btn small sky pay-add-btn" type="button" title="إضافة طريقة سداد">➕ إضافة طريقة سداد</button>
+              </div>
+              <div class="pay-panel-body">
+                <div class="pos-paid-row" id="posPaidRow">
+                  <label class="pos-paid-label">نقداً</label>
+                  <input id="txtPosPaid" class="pay-cash-inp" type="text" value="0" readonly title="مبلغ الفاتورة ناقص سطور السداد (البرنامج بيحسبه)" />
+                </div>
+                <div id="posPayExtraList"></div>
+              </div>
+            </div>
             </div>
           </div>
         </div>
@@ -426,24 +437,16 @@
               <label>المورد:<span class="pos-party-balance" id="ppSuppBalance" hidden></span></label>
               <select id="cmbPosSupplier"></select>
             </div>
-            <div class="fld">
+            <!-- 🆕 بناء 199: نفس معالجة شاشة البيع — قائمة «الدفع» اتشالت ولوحة السداد هي المرجع -->
+            <div class="fld" hidden>
               <label>الدفع:</label>
               <select id="cmbPPaymentMethod">
                 <option>نقداً</option><option>آجل</option><option>تحويل بنكي</option><option>محافظ إلكترونية</option><option>إنستا باي</option>
               </select>
-              <div class="pos-paid-row" id="ppPaidRow" hidden>
-                <label class="pos-paid-label">المدفوع:</label>
-                <input id="txtPPPaid" type="text" value="0" autocomplete="off" />
-              </div>
             </div>
             <div class="fld" id="fldPPBank" hidden><label>البنك المُحول منه:</label><select id="cmbPPBank"></select></div>
             <div class="fld" id="fldPPWallet" hidden><label>المحفظة الإلكترونية:</label><select id="cmbPPWallet"></select></div>
             <div class="fld" id="fldPPInsta" hidden><label>حساب إنستا باي:</label><select id="cmbPPInsta"></select></div>
-            <div class="fld fld-payextra" id="fldPPPayExtra">
-              <label>طرق سداد إضافية (للباقي):</label>
-              <div id="ppPayExtraList"></div>
-              <button id="btnPPAddPay" class="btn small sky" type="button">➕ إضافة طريقة سداد أخرى</button>
-            </div>
             <div class="fld"><label>المستودع:</label><select id="cmbPPWarehouse"></select></div>
             <!-- 📷 بناء 143 (طلب 05/10 ≈18:05): نفس زرار المسح في رأس فاتورة الشراء -->
             <div class="fld fld-btn"><button id="btnPPScanArm" class="btn small sky" type="button" title="جهّز خانة الباركود للماسح الضوئي">📷 مسح</button></div>
@@ -465,10 +468,27 @@
           </div>
               <div class="scan-hint" id="ppScanHint" hidden></div>
             </div>
+            <div class="entry-side">
             <div id="invTotalBoxP" class="inv-total-box">
               <span class="t-label" id="lblPPTotalLabel">الصافي النهائي</span>
               <span class="t-value" id="lblPPTotal">0.00</span>
               <span class="t-cur">ج.م</span>
+            </div>
+            <!-- 🆕 بناء 199: لوحة السداد (الشراء) — لون مستقل عن الفاتورة، والسطر الأول «نقداً» -->
+            <div class="pay-panel pay-panel-buy" id="ppPayPanel">
+              <div class="pay-panel-head">
+                <span class="pay-panel-title">💳 السداد</span>
+                <span class="pay-panel-cash"><span>نقداً</span><b id="ppPayCashView">0.00</b><span>ج.م</span></span>
+                <button id="btnPPAddPay" class="btn small sky pay-add-btn" type="button" title="إضافة طريقة سداد">➕ إضافة طريقة سداد</button>
+              </div>
+              <div class="pay-panel-body">
+                <div class="pos-paid-row" id="ppPaidRow">
+                  <label class="pos-paid-label">نقداً</label>
+                  <input id="txtPPPaid" class="pay-cash-inp" type="text" value="0" readonly title="مبلغ الفاتورة ناقص سطور السداد (البرنامج بيحسبه)" />
+                </div>
+                <div id="ppPayExtraList"></div>
+              </div>
+            </div>
             </div>
           </div>
         </div>
@@ -2960,6 +2980,26 @@
       <div class="modal-actions">
         <button id="btnChkCollectCancel" class="btn gray" type="button">إلغاء</button>
         <button id="btnChkCollectSave" class="btn teal" type="button">💾 تحصيل</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🆕 بناء 199: تعديل بيانات الشيك (بنك/رقم/استحقاق) من تبويب الشيكات — بلا أثر مالي -->
+  <div class="modal-overlay" id="mCheckEdit" hidden>
+    <div class="modal m560" id="mCheckEditBox">
+      <h3>✏️ تعديل بيانات الشيك</h3>
+      <div id="chkEditInfo" class="van-info"></div>
+      <div class="sett-box">
+        <label class="filter-label" for="chkEditBank">اسم البنك</label>
+        <input type="text" id="chkEditBank" placeholder="اسم البنك" autocomplete="off" />
+        <label class="filter-label" for="chkEditNo">رقم الشيك</label>
+        <input type="text" id="chkEditNo" placeholder="رقم الشيك" autocomplete="off" />
+        <label class="filter-label" for="chkEditDue">تاريخ الاستحقاق</label>
+        <input type="date" id="chkEditDue" />
+      </div>
+      <div class="modal-actions">
+        <button id="btnChkEditCancel" class="btn gray" type="button">إلغاء</button>
+        <button id="btnChkEditSave" class="btn teal" type="button">💾 حفظ التعديل</button>
       </div>
     </div>
   </div>
