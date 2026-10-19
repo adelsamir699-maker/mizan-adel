@@ -740,8 +740,11 @@
       if ((t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة")) return;
       // حركة مرتجع (خصم من رصيد العميل) ليست تحصيل — ما ينفعش تولّد سند قبض (بناء 108)
       if ((t.desc || "").includes("مرتجع")) return;
-      const hasVoucher = vouchers.some((v) => (v.refType === "customer_tx" && v.refId === t.id) || (v.refId === t.id));
-      if (hasVoucher) return;
+      // 🧾 بناء 201: المقارنة بالنص — `ref_id` بيرجع من السحابة نصًا و`t.id` رقم،
+      // فالمقارنة الصارمة كانت بتقول «مفيش سند» وتعمل سندًا مكررًا بعد أي مزامنة.
+      const txLink = (v) => v && String(v.refId || "") === String(t.id)
+        && (!String(v.refType || "").trim() || String(v.refType) === "customer_tx");
+      if (vouchers.some(txLink)) return;
 
       let targetTr = null;
       if (t.treasuryId) {
@@ -766,6 +769,21 @@
       if (!targetTr) return;
 
       const cust = (customers || []).find((c) => Number(c.id) === Number(t.customerId));
+      // 🧾 بناء 201 (بند «حركة سحابية بلا سند مرتبط»): سند قديم اترفع قبل ترقية ٥٦/بناء ١٨٤
+      // فوصل الجهاز بلا `refId` ⇒ نربطه بالحركة بدل ما نعمل سندًا تاني. لازم مطابقة قاطعة وفريدة.
+      const legacy = vouchers.filter((v) => v && !String(v.refId || "").trim()
+        && String(v.type || "") === "in"
+        && Math.round(Number(v.amount || 0) * 100) === Math.round(Number(t.credit || 0) * 100)
+        && String(v.date || "") === String(t.date || "")
+        && Number(v.treasuryId) === Number(targetTr.id)
+        && (!cust || normalizeAr(v.desc || "").includes(normalizeAr(cust.nameAr || ""))));
+      if (legacy.length === 1) {
+        legacy[0].refType = "customer_tx";
+        legacy[0].refId = t.id;
+        changed = true;
+        return;
+      }
+      if (legacy.length > 1) return;
       vouchers.push({
         id: nextVoucherId(),
         type: "in",
@@ -784,8 +802,9 @@
       if ((t.desc || "").includes("افتتاحي") || (t.desc || "").includes("أول المدة")) return;
       // حركة مرتجع مشتريات (خصم من مستحق المورد) ليست سدادًا — ما تولّدش سند صرف (بناء 108)
       if ((t.desc || "").includes("مرتجع")) return;
-      const hasVoucher = vouchers.some((v) => (v.refType === "supplier_tx" && v.refId === t.id) || (v.refId === t.id));
-      if (hasVoucher) return;
+      const txLink = (v) => v && String(v.refId || "") === String(t.id)
+        && (!String(v.refType || "").trim() || String(v.refType) === "supplier_tx");
+      if (vouchers.some(txLink)) return;
 
       let targetTr = null;
       if (t.treasuryId) {
@@ -810,6 +829,19 @@
       if (!targetTr) return;
 
       const supp = (suppliers || []).find((s) => Number(s.id) === Number(t.supplierId));
+      const legacy = vouchers.filter((v) => v && !String(v.refId || "").trim()
+        && String(v.type || "") === "out"
+        && Math.round(Number(v.amount || 0) * 100) === Math.round(Number(t.credit || 0) * 100)
+        && String(v.date || "") === String(t.date || "")
+        && Number(v.treasuryId) === Number(targetTr.id)
+        && (!supp || normalizeAr(v.desc || "").includes(normalizeAr(supp.nameAr || ""))));
+      if (legacy.length === 1) {
+        legacy[0].refType = "supplier_tx";
+        legacy[0].refId = t.id;
+        changed = true;
+        return;
+      }
+      if (legacy.length > 1) return;
       vouchers.push({
         id: nextVoucherId(),
         type: "out",
@@ -13232,6 +13264,46 @@ id: nextVoucherId(),
   }
   function idFloorsSave() {
     try { localStorage.setItem(LS_ID_FLOORS, JSON.stringify({ vouchers: VOU_ID_FLOOR, journal: JRN_ID_FLOOR, txs: TX_ID_FLOOR, supplierTxs: STX_ID_FLOOR })); } catch (e) { }
+    idFloorsPush();
+  }
+  // 🧾 بناء 201 (بند #13/٣): الأرضيات تتزامن بين الأجهزة عبر organizations.settings.idFloors
+  //   (ترقية ٦٤) — دمج max فقط (الأرقام تزيد ومش بتنقص) ⇒ جهازان ما يكتبوش فوق بعض.
+  let idFloorsPushTimer = null;
+  function idFloorsObj() { return { vouchers: VOU_ID_FLOOR, journal: JRN_ID_FLOOR, txs: TX_ID_FLOOR, supplierTxs: STX_ID_FLOOR }; }
+  function idFloorsPersist() {
+    try { localStorage.setItem(LS_ID_FLOORS, JSON.stringify(idFloorsObj())); } catch (e) { }
+  }
+  function idFloorsApply(o) {
+    const s = o || {};
+    VOU_ID_FLOOR = Math.max(VOU_ID_FLOOR, Number(s.vouchers) || 0);
+    JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(s.journal) || 0);
+    TX_ID_FLOOR = Math.max(TX_ID_FLOOR, Number(s.txs) || 0);
+    STX_ID_FLOOR = Math.max(STX_ID_FLOOR, Number(s.supplierTxs) || 0);
+    __jrnLastId = Math.max(__jrnLastId, JRN_ID_FLOOR);
+  }
+  function idFloorsPush() {
+    if (!A.online || A.adopting || A.cleaning) return;
+    if (!(window.DATA && DATA.saveClientSett)) return;
+    if (idFloorsPushTimer) clearTimeout(idFloorsPushTimer);
+    idFloorsPushTimer = setTimeout(() => {
+      idFloorsPushTimer = null;
+      try {
+        const p = DATA.saveClientSett({ org: { settings: { idFloors: idFloorsObj() } } });
+        if (p && p.catch) p.catch(() => { });
+      } catch (e) { }
+    }, 1200);
+  }
+  function idFloorsPull() {
+    if (!A.online || !(window.DATA && DATA.clientSett)) return;
+    try {
+      DATA.clientSett().then((p) => {
+        const st = p && p.org && p.org.settings;
+        if (!st || !st.idFloors) return;
+        const before = JSON.stringify(idFloorsObj());
+        idFloorsApply(st.idFloors);
+        if (JSON.stringify(idFloorsObj()) !== before) idFloorsPersist();
+      }).catch(() => { });
+    } catch (e) { }
   }
   function invoiceJrnRef(kind) { return kind === "sale" ? "فاتورة مبيعات" : "فاتورة مشتريات"; }
   // مفتاح منع التكرار: نوع الفاتورة + رقمها (الرقم تسلسلي لكل شركة وثابت على كل الأجهزة)
@@ -17323,6 +17395,7 @@ id: nextVoucherId(),
     // السحابة بأمر المالك الصريح (لحد ما يتنفّذ المزامنة محمية بـprobeChecksTable).
     "db/supabase-upgrade-62-checks.sql",
     "db/supabase-upgrade-63-party-tx-receipt.sql",
+    "db/supabase-upgrade-64-org-settings.sql",
     // 🔐 ترقية ٥٨ (بند المراجعة #17 — إخفاء كلمات المرور الصريحة): تعيد تعريف ٧ دوال بلا حفظ
     // الصريح، وتحذف mizan_admin_get_password، وتحذف عمودَي plain_password/password_plain.
     "db/supabase-upgrade-58-hide-plain-passwords.sql"];
@@ -19720,6 +19793,8 @@ const pwEye = document.getElementById("btnShowPass");
     step("journal_entries", S.journalEntries, journalEntries, function (v) { journalEntries = v; });
     // 🧱 بناء 186: بعد دمج السندات/القيود من السحابة، نحدّث «أرضية» الأرقام
     if (typeof idFloorsLoad === "function") idFloorsLoad();
+    // 🧾 بناء 201: نقرأ أرضيات الأرقام المشتركة بين الأجهزة (organizations.settings) — max فقط
+    if (typeof idFloorsPull === "function") idFloorsPull();
     linkInvoiceParties();
     recalculateCustomerBalances();
     recalculateSupplierBalances();
