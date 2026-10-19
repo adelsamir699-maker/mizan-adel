@@ -2807,6 +2807,12 @@
 
     // 1. وسوم النظام الصريحة (المرتجعات، التحويلات، تسليم الوردية)
     if (rt.indexOf("_return") !== -1 || rt.indexOf("تحويل") !== -1 || rt.indexOf("وردية") === 0) return true;
+    // 🆕 بناء 203 (بند #10 + #20): تسوية أرصدة/التزامات مش مصروف ولا إيراد:
+    //   • تحصيل من عميل / سداد لمورد (customer_tx/supplier_tx) = نقل بين المديونية والخزينة
+    //   • سداد ضريبة القيمة المضافة للمصلحة = تخفيض التزام (مش مصروف) — كان بيتخصم من الأرباح بالغلط
+    if (rt === "customer_tx" || rt === "supplier_tx") return true;
+    if (rt.indexOf("ضريبة القيمة المضافة للمصلحة") !== -1) return true;
+    if (refId.indexOf("VATPAY:") === 0 || refId.indexOf("CT:") === 0 || refId.indexOf("ST:") === 0) return true;
     // 🧾 بناء 190: «تحصيل شيك»/«ارتجاع شيك» نقل داخلي (1.1.7 ⇄ خزينة/مديونية) مش إيراد/مصروف
     if (rt.indexOf("تحصيل شيك") !== -1 || rt.indexOf("ارتجاع شيك") !== -1) return true;
     if (refId.indexOf("TF") === 0 || refId.indexOf("TFV") === 0) return true;
@@ -3206,6 +3212,7 @@
       txs.push(txRow2);
       const chk = addCheck({ customerId: cid, customerName: c2 ? c2.nameAr : "", bankName: bank, checkNo: cno,
         dueDate: due, amount: amount, refType: "customer_tx", refId: txId2 });
+      txRow2.checkJrnKey = "CHCUST:" + chk.id;   // 🆕 بناء 203: ربط محلي سريع (المصدر الدائم = الشيك نفسه)
       const j = { id: nextJournalId(), number: jrnNo(), date: todayISO(),
         desc: "تحصيل بشيك من " + (c2 ? c2.nameAr : "-") + " — " + fmt(amount) + " ج.م (شيك #" + cno + " — " + bank + ")",
         ref: "تحصيل بشيك", refType: "تحصيل بشيك", refId: "CHCUST:" + chk.id,
@@ -3542,6 +3549,9 @@
     if (idx < 0) { toast("الحركة مش موجودة — حدّث الصفحة.", "warning"); return; }
     const tx = pool[idx];
     if (!stmRowDeletable(tx)) { toast(stmRowWhyLocked(tx), "warning"); return; }
+    // 🆕 بناء 203 (بند #3): لو الحركة دي «تحصيل بشيك» ⇒ لازم نرجّع قيد الشيك (CHCUST:) ونفكّ الشيك،
+    // ومعه سند التحصيل لو الشيك اتحصّل بعد كده (وإلا الخزينة تفضل زايدة بقيمة شيك اترجع).
+    const chkRec0 = !isSup ? checkOfTx(tx.id) : null;
     const party = isSup
       ? suppliers.find((s) => Number(s.id) === Number(tx.supplierId))
       : customers.find((c) => Number(c.id) === Number(tx.customerId));
@@ -3559,6 +3569,8 @@
       "الحساب: " + partyName + "\nالمبلغ: " + fmt(amount) + " ج.م" + (recvName ? ("\nالمستلِم: " + recvName) : "") +
       (recvMethod ? ("\nالوسيلة: " + recvMethod) : "") +
       "\nالتاريخ: " + (tx.date || "") +
+      (chkRec0 ? "\nالشيك: رقم " + (chkRec0.checkNo || chkRec0.id) + " (" + (chkRec0.bankName || "-") + ")" +
+        (chkRec0.status === "collected" ? " — متحصّل، وسنده هيتشال معاه" : "") : "") +
       "\n\nالمبلغ هيرجع لرصيد «" + (recvName || "الحساب") + "»، والسند المرتبط بيتحذف معاه.";
     if (!confirm(msg)) return;
     // السند المرتبط بنفس الحركة (customer_tx / supplier_tx)
@@ -3587,6 +3599,11 @@
         Math.round((Number(v.amount) || 0) * 100) === _cents &&
         String(v.date || "") === String(tx.date || "")).slice(0, 1);
     }
+    // 🆕 بناء 203 (بند #3): الشيك المتحصّل — سند التحصيل (`CHC:` + معرّف الشيك) يتشال مع حركته
+    if (chkRec0 && (chkRec0.status || "") === "collected") {
+      const chcId = "CHC:" + chkRec0.id;
+      vouchers.filter((v) => String(v.refId || "") === chcId && vList.indexOf(v) < 0).forEach((v) => vList.push(v));
+    }
     const vDrop = dropVouchersWithJournal(vList);
     pool.splice(idx, 1);
     bumpIdFloor(isSup ? "stx" : "tx", tx.id);   // 🧱 بناء 199: ما نعيدش رقم الحركة المحذوفة (منع الكتابة فوق صف سحابي)
@@ -3611,6 +3628,7 @@
       : "تم حذف حركة «" + (tx.desc || (isSup ? "دفع للمورد" : "سداد من العميل")) + "» من كشف " + partyName +
         " — مافيش سند مرتبط على الجهاز ده، فرصيد الخزينة ما اتغيّرش.") +
       (jRemoved ? " والقيد المرتبط اتراجع." : "") +
+      (chkRec0 ? " والشيك رقم " + (chkRec0.checkNo || chkRec0.id) + " اتلغى وقيمته رجعت لمديونية العميل." : "") +
       // 🆕 بناء 151: أمانة الرسالة — لو السند كان مترحّل فعلًا («VC:»/«SE:») قيده رجع معه، مش كلام عام
       (vDrop.journals ? " وقيود السندات المرتبطة اتراجعت." : ""), "success");
     // تحديث الشاشات المفتوحة
@@ -7635,9 +7653,15 @@
       tax += it.tax;
     });
     sub = Math.round(sub * 100) / 100;
-    tax = Math.round(tax * 100) / 100;
-    const extra = parseFloat(String($("#txtPosDiscount").value).replace(/,/g, "")) || 0;
-    let grand = Math.round((sub + tax - extra) * 100) / 100;
+    let extra = parseFloat(String($("#txtPosDiscount").value).replace(/,/g, "")) || 0;
+    if (!(extra > 0)) extra = 0;
+    // 🔧 بناء 203 (بند #6): الضريبة تُحسب على **الصافي بعد الخصم الإضافي للفاتورة** (الخصم التجاري
+    // بيقلّل وعاء الضريبة)، وكانت محسوبة على المجموع قبل الخصم ⇒ ضريبة زايدة في كل فاتورة بخصم،
+    // ولو الخصم أكبر من المجموع كانت تطلع ضريبة على مبلغ بالسالب. القصّ عند الصفر بلا وعاء سالب.
+    if (extra > sub) extra = sub;
+    const base = Math.round((sub - extra) * 100) / 100;
+    tax = TAX.enabled ? Math.round(base * TAX.rate * 100) / 100 : 0;
+    let grand = Math.round((base + tax) * 100) / 100;
     if (grand < 0) grand = 0;
     const pct = getTaxPercent();
     $("#lblPosSubTotal").textContent = (TAX.enabled ? "المجموع: " : "الإجمالي: ") + fmt(sub) + " ج.م";
@@ -8331,9 +8355,13 @@
       tax += it.tax;
     });
     sub = Math.round(sub * 100) / 100;
-    tax = Math.round(tax * 100) / 100;
-    const extra = parseFloat(String($("#txtPPDiscount").value).replace(/,/g, "")) || 0;
-    let grand = Math.round((sub + tax - extra) * 100) / 100;
+    let extra = parseFloat(String($("#txtPPDiscount").value).replace(/,/g, "")) || 0;
+    if (!(extra > 0)) extra = 0;
+    // 🔧 بناء 203 (بند #6): نفس إصلاح المبيعات — الضريبة على الصافي بعد الخصم الإضافي
+    if (extra > sub) extra = sub;
+    const base = Math.round((sub - extra) * 100) / 100;
+    tax = TAX.buyEnabled ? Math.round(base * TAX.rateBuy * 100) / 100 : 0;
+    let grand = Math.round((base + tax) * 100) / 100;
     if (grand < 0) grand = 0;
     const pct = getTaxBuyPercent();
     $("#lblPPSubTotal").textContent = (TAX.buyEnabled ? "المجموع: " : "الإجمالي: ") + fmt(sub) + " ج.م";
@@ -10349,6 +10377,18 @@ id: nextVoucherId(),
   }
   function nextCheckId() { return checks.reduce((m, c) => Math.max(m, Number(c && c.id) || 0), 0) + 1; }
   function checkJrnKey(id) { const n = Number(id); return n > 0 ? "CH:" + n : ""; }
+  /* 🆕 بناء 203 (بند #1 + #3): حركة التحصيل الجاية من «تحصيل بشيك» قيدها **مختلف** (CHCUST: + معرّف
+     الشيك على حساب 1.1.7) مش قيد تحصيل عادي (CT:). الربط بين الحركة والشيك محفوظ على **الشيك نفسه**
+     (`refType:"customer_tx"` + `refId = رقم الحركة`) ومتزامن سحابيًا — فالتعرف سليم على أي جهاز. */
+  function checkOfTx(txId) {
+    if (!Array.isArray(checks)) return null;
+    return checks.find((c) => c && String(c.refId || "") === String(txId) &&
+      (!c.refType || String(c.refType) === "customer_tx")) || null;
+  }
+  function checkJrnKeyOfTx(txId) {
+    const c = checkOfTx(txId);
+    return c ? ("CHCUST:" + c.id) : "";
+  }
   function checksPendingOf(partyId, partyKind) {
     const kind = partyKind || "customer";
     return checks.filter((c) => c && c.status === "pending" && (c.partyKind || "customer") === kind &&
@@ -10421,10 +10461,19 @@ id: nextVoucherId(),
     if (!c) return { ok: false, msg: "الشيك مش موجود" };
     if (c.status !== "pending") return { ok: false, msg: "الشيك ده اتحصّل أو اترجع قبل كده" };
     try { postCheckReturnJrn(c); } catch (e) { }
-    // 🧾 بناء 190: الشيك المرتجع ترجع المديونية على حساب العميل (نفس قيمة الشيك)
+    // 🆕 بناء 203 (بند #19): رجوع المديونية يتسجّل **بحركة حقيقية** (مدين) مش بزيادة يدوية على
+    // الرصيد — الزيادة اليدوية كانت بتتمسح من أول إعادة حساب (الرصيد في النظام = مجموع الحركات)
+    // ⇒ كشف العميل يناقض القيد. الحركة دي بتحقّق الاتنين: الكشف والرصيد.
     if ((c.partyKind || "customer") === "customer" && c.customerId) {
-      const cust = customers.find((x) => Number(x.id) === Number(c.customerId));
-      if (cust) { cust.currentBalance = round2((Number(cust.currentBalance) || 0) + round2(c.amount)); saveCustomers(); }
+      const txId3 = nextTxId();
+      txs.push({
+        id: txId3, customerId: c.customerId, treasuryId: null, treasuryName: "",
+        paymentMethod: "شيك", date: todayISO(),
+        desc: "ارتجاع شيك #" + (c.checkNo || c.id) + (c.bankName ? " — " + c.bankName : "") + " (رجعت المديونية)",
+        debit: round2(c.amount), credit: 0
+      });
+      try { saveTxs(); } catch (e) { }
+      try { recalculateCustomerBalances(); } catch (e) { }
     }
     c.status = "returned"; c.returnedAt = todayISO();
     if (notes) c.notes = (c.notes ? c.notes + " | " : "") + notes;
@@ -10674,6 +10723,11 @@ id: nextVoucherId(),
       const amt = Math.abs(diff);
       const osc = ensureShiftOverShortAccount(box.name, shift.cashierName, isOver ? "over" : "short");
       const cashAcc = accForTreasuryAcc(box);
+      // 🔒 بناء 203 (بند #22): قيد العجز/الزيادة **مضمون** — قبل كده لو الحساب ناقص كان السند
+      // يتدفع والقيد يتخطّى بصمت (الخزينة تتحرك والدفتر لأ). دلوقتي نمنع الإغلاق برسالة واضحة.
+      if (!osc || !cashAcc) {
+        return { ok: false, msg: "حساب «الصندوق» أو «عجز/زيادة الوردية» مش موجود في دليل حساباتك — أكمله من شاشة الحسابات وبعدها اقفل الوردية." };
+      }
       // (١) سند على الصندوق يعادله للعدّ الفعلي (مصدر رصيد الخزينة)
       const baseId = nextVoucherId() - 1;
       vouchers.push({
@@ -10683,7 +10737,7 @@ id: nextVoucherId(),
       });
       saveVouchers();
       // (٢) القيد المحاسبي: العجز مصروف / الزيادة إيراد — على حساب مستقل لكل صندوق
-      if (osc && cashAcc) {
+      {
         const lines = isOver
           ? [{ accountId: cashAcc.id, debit: amt, credit: 0 }, { accountId: osc.id, debit: 0, credit: amt }]
           : [{ accountId: osc.id, debit: amt, credit: 0 }, { accountId: cashAcc.id, debit: 0, credit: amt }];
@@ -12453,9 +12507,16 @@ id: nextVoucherId(),
       S: "فاتورة مبيعات", P: "فاتورة مشتريات",
       CT: "تحصيل من عميل", ST: "سداد لمورد",
       VC: (j.ref || "سند خزينة"), SR: "مرتجع مبيعات", PR: "مرتجع مشتريات",
-      SE: (j.ref || "تسجيل مصروفات/إيرادات"), TF: "تحويل بين الحسابات", SC: "جرد بالباركود"
+      SE: (j.ref || "تسجيل مصروفات/إيرادات"), TF: "تحويل بين الحسابات", SC: "جرد بالباركود",
+      // 🆕 بناء 203 (بند #11): بادئات كانت **مش** في الخريطة (والريبجيكس قديمًا بياخد ٣ حروف بس)
+      // ⇒ القيد الحيّ يبان «حر» ويتعكس من شاشة القيود (أثر مزدوج). دي كل بادئات النظام دلوقتي.
+      TFV: "تحويل بين الحسابات",
+      CH: "ارتجاع شيك", CHCUST: "تحصيل بشيك", CHC: "تحصيل شيك",
+      SH: "تسوية وردية", SHX: "تسليم وردية",
+      VATPAY: "سداد ضريبة القيمة المضافة للمصلحة", VATOPEN: "رصيد افتتاحي - ضريبة القيمة المضافة",
+      VEX: "مصروف سيارة مندوب"
     };
-    const m = String(j.refId || "").match(/^([A-Z]{1,3}):/);
+    const m = String(j.refId || "").match(/^([A-Z]{1,8}):/);
     if (m && byId[m[1]]) return byId[m[1]];
     if (j.refType && JRN_DOC_REF[j.refType]) return j.refType;
     return null;
@@ -13669,8 +13730,35 @@ id: nextVoucherId(),
   }
   // حذف الحركة = تراجع قيدها كمان (نفسعرف removeInvoiceJournal: تسوية −1 ثم إسقاط ثم حفظ)
   function removePartyTxJournal(kind, txId) {
+    // 🆕 بناء 203 (بند #3): حركة «تحصيل بشيك» قيدها بمفتاح «CHCUST:» (مدين 1.1.7 / دائن 1.1.5)
+    // — من غير السطر ده كان القيد يفضل يتيم والشيك يفضل معلّق ⇒ تحصيل مزدوج ودفتر لا يطابق الكشف.
+    let chkRemoved = null;
+    if (kind === "cust" && Array.isArray(checks)) {
+      const chkRec = checkOfTx(txId);
+      const ck = chkRec ? ("CHCUST:" + chkRec.id) : "";
+      if (ck) {
+        const cj = journalEntries.find((x) => x && String(x.refId || "") === ck);
+        if (cj) {
+          settleJrnLines(cj.lines, -1);
+          const ci = journalEntries.findIndex((x) => x === cj);
+          if (ci >= 0) journalEntries.splice(ci, 1);
+          JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(cj.id) || 0);
+          chkRemoved = cj;
+        }
+        // نفكّ الشيك: «ملغي» (مش حذف) — رقمه يفضل محجوز فمافيش كتابة فوق صف سحابي،
+        // ومابيتحسبش في «تحت التحصيل» ولا في قيمته.
+        if ((chkRec.status || "pending") === "pending") {
+          chkRec.status = "cancelled";
+          chkRec.notes = (chkRec.notes ? chkRec.notes + " | " : "") + "اتشال مع حذف حركة التحصيل";
+          try { saveChecks(); } catch (e) { }
+        }
+      }
+    }
     const j = partyJrnOf(kind, txId);
-    if (!j) return null;
+    if (!j) {
+      if (chkRemoved) { persistJournal(); saveAccounts(); try { renderJournal(); } catch (e) { } }
+      return chkRemoved;
+    }
     settleJrnLines(j.lines, -1);
     const i = journalEntries.findIndex((x) => x === j);
     if (i >= 0) journalEntries.splice(i, 1);
@@ -13678,7 +13766,7 @@ id: nextVoucherId(),
     persistJournal();
     saveAccounts();
     try { renderJournal(); } catch (e) { }
-    return j;
+    return chkRemoved || j;
   }
 
   /* ================== 🆕 بناء 149 — سطر ٢ من الخطة: سند القبض/الصرف يترحّل لقيد ==================
@@ -14065,6 +14153,13 @@ id: nextVoucherId(),
       if (d.includes("افتتاحي") || d.includes("أول المدة") || d.includes("مرتجع")) return;
       const key = partyJrnKey(kind, t.id);
       if (!key || partyJrnOf(kind, t.id)) return;
+      // 🆕 بناء 203 (بند #1 — قيد مكرر كل دخول): حركة «تحصيل بشيك» قيدها على 1.1.7 بمفتاح
+      // CHCUST: (مش CT:) — و`partyJrnOf` ما بتشوفهوش، فالتصحيح الذاتي كان بيعمل قيد «تحصيل»
+      // تاني لنفس الحركة (نقد + دين مرتين). نتخطّاها لو قيد شيكها موجود.
+      const chkKey = (kind === "cust")
+        ? (String(t.checkJrnKey || "") || checkJrnKeyOfTx(t.id))
+        : "";
+      if (chkKey && journalEntries.some((j) => j && String(j.refId || "") === chkKey)) return;
       const plan = partyJrnPlan(kind, jrnHealTreasury(t), partyTxAmountOf(t));
       if (!plan || plan.error) return;
       const party = (partyList || []).find((x) => Number(x.id) === Number(t[partyIdField]));
@@ -14387,7 +14482,18 @@ id: nextVoucherId(),
     const id = Number(vId);
     if (!(id > 0)) return [];
     // «TF:» = قيد التحويل (سندان متتاليان + قيد واحد) — المفتاح على id سند **الصرف** (= baseId+1).
-    const out = [voucherJrnKey(id), "SE:" + id, "TF:" + id];
+    const out = [voucherJrnKey(id), "SE:" + id, "TF:" + id, "VATPAY:" + id];
+    // 🆕 بناء 203 (بند #21): سندات الوردية (تسوية/تسليم) مالهاش `refId` على السند — وسمها في `refType`
+    // «وردية تسوية — #N» / «وردية تسليم — #N» والقيود مفاتيحها `SH:`/`SHX:`. من غير الربط ده
+    // كان حذف السند يترك قيد العجز/التحويل يتيمًا في الأستاذ.
+    try {
+      const vRow = vouchers.find((x) => x && Number(x.id) === id) || null;
+      const rt = String((vRow && vRow.refType) || "");
+      if (rt.indexOf("وردية") !== -1) {
+        const mm = rt.match(/#(\d+)/) || String((vRow && vRow.desc) || "").match(/#(\d+)/);
+        if (mm) out.push((rt.indexOf("تسليم") !== -1 ? "SHX:" : "SH:") + mm[1]);
+      }
+    } catch (e) { }
     // 🆕 بناء 188: «TF:+(id−1)» للساق الثانية (القبض) كان بيتضاف لمجرّد وجود أي سند رقمه id−1
     // ⇒ **تحويلان ورا بعض** (out=10/in=11 ثم out=12/in=13) كان السند 12 (ساق صرف!) يمسك «TF:11»
     // = قيد التحويل الأول غلط. التشديد: لازم السند الحالي يكون **ساق قبض** فعلًا وشريكه رقمه id−1.
