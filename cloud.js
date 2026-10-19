@@ -287,6 +287,37 @@
     return row;
   }
 
+  // 🆕 بناء 204 (بند المراجعة #2): «المدفوع/الآجل/سطور السداد» على فواتير البيع والشراء
+  // (paid_amount/due_amount/payments) — ترقية ٦٥. منبعتهمش ولا نقراهم قبل الترحيل،
+  // وإلا PostgREST يرفض الصف كله (42703) فتتوقف مزامنة الفواتير — نفس درس ٦٣/١٨٤.
+  var HAS_INV_PAID = false;
+  function probeInvPaid() {
+    if (!DATA.client()) return Promise.resolve(false);
+    return Promise.resolve()
+      .then(function () { return DATA.client().from("sales").select("paid_amount, due_amount, payments").limit(1); })
+      .then(function (r) { HAS_INV_PAID = !(r && r.error); return HAS_INV_PAID; })
+      .catch(function () { HAS_INV_PAID = false; return false; });
+  }
+  // تعبئة أعمدة المدفوع/الآجل/السطور على صف فاتورة (بتُنادى جوّه toCloud بشرط HAS_INV_PAID)
+  function invPaidCols(r) {
+    var pays = Array.isArray(r.payments)
+      ? r.payments.filter(function (p) { return p && Number(p.amount) > 0; })
+      : [];
+    return {
+      paid_amount: Number(r.paidAmount != null ? r.paidAmount : 0) || 0,
+      due_amount: Number(r.dueAmount != null ? r.dueAmount : 0) || 0,
+      payments: pays
+    };
+  }
+  // قراءة أعمدة المدفوع/الآجل/السطور من صف سحابي — بتكتب بس لو العمود رجع فعلًا
+  // (قبل الترحيل مش موجود ⇒ undefined ⇒ القيمة المحليّة تفضل زي ما هي · صفر فقدان)
+  function invPaidOut(r, row) {
+    if (r.paid_amount != null) row.paidAmount = Number(r.paid_amount);
+    if (r.due_amount != null) row.dueAmount = Number(r.due_amount);
+    if (Array.isArray(r.payments)) row.payments = r.payments.map(function (p) { return p || {}; });
+    return row;
+  }
+
   // خريطة تحويل (محلي → سماوي / سماوي → محلي)
   var META = {
     customers: {
@@ -534,7 +565,7 @@
     sales: {
       local: function () { return W.sales; },
       toCloud: function (r) {
-        return {
+        var row = {
           id: detUuid("sales", r.id),
           org_id: DATA.orgId(),
           local_id: r.id,
@@ -550,9 +581,11 @@
           tax: r.taxAmount || r.tax || 0,
           grand_total: r.grandTotal || 0
         };
+        if (HAS_INV_PAID) { var _p1 = invPaidCols(r); row.paid_amount = _p1.paid_amount; row.due_amount = _p1.due_amount; row.payments = _p1.payments; }
+        return row;
       },
       fromCloud: function (r) {
-        return {
+        return invPaidOut(r, {
           id: r.local_id,
           invoiceNo: r.invoice_no,
           invoiceNumber: r.invoice_no,
@@ -574,7 +607,7 @@
           subTotal: Number(r.grand_total || 0) + Number(r.discount || 0) - Number(r.tax || 0),
           status: "posted",
           items: []
-        };
+        });
       },
       itemsTable: "sale_items",
       itemFromCloud: function (r) {
@@ -616,7 +649,7 @@
     purchases: {
       local: function () { return W.purchases; },
       toCloud: function (r) {
-        return {
+        var row = {
           id: detUuid("purchases", r.id),
           org_id: DATA.orgId(),
           local_id: r.id,
@@ -632,9 +665,11 @@
           tax: r.taxAmount || r.tax || 0,
           grand_total: r.grandTotal || 0
         };
+        if (HAS_INV_PAID) { var _p2 = invPaidCols(r); row.paid_amount = _p2.paid_amount; row.due_amount = _p2.due_amount; row.payments = _p2.payments; }
+        return row;
       },
       fromCloud: function (r) {
-        return {
+        return invPaidOut(r, {
           id: r.local_id,
           invoiceNo: r.invoice_no,
           invoiceNumber: r.invoice_no,
@@ -656,7 +691,7 @@
           subTotal: Number(r.grand_total || 0) + Number(r.discount || 0) - Number(r.tax || 0),
           status: "posted",
           items: []
-        };
+        });
       },
       itemsTable: "purchase_items",
       itemFromCloud: function (r) {
@@ -1090,6 +1125,7 @@
     probeChecksTable(); // 🧾 بناء 190: هل جدول checks اتعمل (ترحيل ٦٢) ولا لسه
     probeVoucherRefs(); // 🆕 بناء 184: هل عمودا وسم السند (ref_type/ref_id) على vouchers موجودان (ترحيل ٥٦) ولا لسه
     probePartyTxReceipt(); // 🆕 بناء 199 (بند #15ب): هل أعمدة مصدر السداد على حركات الأطراف موجودة (ترحيل ٦٣) ولا لسه
+    probeInvPaid(); // 🆕 بناء 204 (بند #2): هل أعمدة المدفوع/الآجل/السطور على الفواتير موجودة (ترحيل ٦٥) ولا لسه
     // 🆕 بناء 125 (بند 16): هل جدول messages اتعمل (ترقية ٤٥) ولا لسه على القرص بس.
     // الفحص ده بيحدد وحده ظهور تبويب «الدردشة» — فالترحيل لما يتنفّذ بأمر المالك
     // التبويب يطلع لوحده من نفس اللحظة، وبلا أي تغيير كود. (الجدول **ممنوع** يدخل

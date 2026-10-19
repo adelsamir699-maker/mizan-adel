@@ -17512,6 +17512,7 @@ id: nextVoucherId(),
     "db/supabase-upgrade-62-checks.sql",
     "db/supabase-upgrade-63-party-tx-receipt.sql",
     "db/supabase-upgrade-64-org-settings.sql",
+    "db/supabase-upgrade-65-invoice-paid.sql",
     // 🔐 ترقية ٥٨ (بند المراجعة #17 — إخفاء كلمات المرور الصريحة): تعيد تعريف ٧ دوال بلا حفظ
     // الصريح، وتحذف mizan_admin_get_password، وتحذف عمودَي plain_password/password_plain.
     "db/supabase-upgrade-58-hide-plain-passwords.sql"];
