@@ -653,13 +653,6 @@
       return true;
     });
   }
-  function adminGetPassword(userId) {
-    return sb.rpc("mizan_admin_get_password", { p_user_id: userId }).then(function (r) {
-      if (r.error) throw r.error;
-      var d = r.data;
-      return Array.isArray(d) ? (d[0] || null) : d;
-    });
-  }
   function adminSetUsername(userId, username) {
     return sb.rpc("mizan_admin_set_username", { p_user_id: userId, p_username: username }).then(function (r) {
       if (r.error) throw r.error;
@@ -823,7 +816,7 @@ function changeMyPassword(oldPass, newPass) {
    return r.data || null;
    });
    }
-   // قائمة كلمة المرور الحالية لكل الحسابات (للمالك العام فقط)
+   // آخر تحديث لكلمات المرور لكل الحسابات (للمالك العام فقط) — بلا كلمة المرور (ترقية ٥٨)
    function adminPwStore() {
    return sb.rpc("mizan_admin_pw_store").then(function (r) {
    if (r.error) throw r.error;
@@ -1001,7 +994,6 @@ function changeMyPassword(oldPass, newPass) {
     adminResetPassword: adminResetPassword,
     adminEditOrg: adminEditOrg,
     adminSetUsername: adminSetUsername,
-    adminGetPassword: adminGetPassword,
     adminExportAll: adminExportAll,
     adminExportOne: adminExportOne,
     adminRestoreOne: adminRestoreOne,

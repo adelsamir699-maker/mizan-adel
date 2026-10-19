@@ -17311,8 +17311,7 @@ id: nextVoucherId(),
     // subs_plans_cfg relrowsecurity=1 · سياسات=0 · منح anon/authenticated/public=0 ·
     // mizan_set_subs_plans فيها حارس is_superadmin=1 وSECURITY DEFINER=1 وsearch_path مثبّت=1 ·
     // العدّادان relacl={postgres,service_role} بس · user_id موجود + FK لـ auth.users · 0 سطور.
-    // ⚠️ ناقص مسجّل: العمود password_plain لسه موجود (0 منح للمستخدمين عليه + 0 سطور +
-    // دالة واحدة بتلمسه) ⇒ شيله نهائيًا = ترقية ٥٨ بأمر المالك.
+    // ⚠️ ناقص مسجّل: العمود password_plain اتشال بترقية ٥٨ (تحت).
     "db/supabase-upgrade-57-security-hardening.sql",
     // ترقية ٥٩ محفوظة كما نُفذت؛ ترقية ٦٠ تكمل حارس features وتمنع تعديل المدير لصلاحيات حسابه.
     "db/supabase-upgrade-59-profile-identity-guard.sql",
@@ -17323,9 +17322,12 @@ id: nextVoucherId(),
     // 🧾 ترقية ٦٢ (الشيكات + إنستا باي + حساب 1.1.7) — في الحزمة كسجل، والتنفيذ على
     // السحابة بأمر المالك الصريح (لحد ما يتنفّذ المزامنة محمية بـprobeChecksTable).
     "db/supabase-upgrade-62-checks.sql",
-    "db/supabase-upgrade-63-party-tx-receipt.sql"];
+    "db/supabase-upgrade-63-party-tx-receipt.sql",
+    // 🔐 ترقية ٥٨ (بند المراجعة #17 — إخفاء كلمات المرور الصريحة): تعيد تعريف ٧ دوال بلا حفظ
+    // الصريح، وتحذف mizan_admin_get_password، وتحذف عمودَي plain_password/password_plain.
+    "db/supabase-upgrade-58-hide-plain-passwords.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب.
-  // ترقية ٥٨ ما زالت مستقلة ومحجوزة لإزالة password_plain، وملفات rollback لا تدخل الحزمة.
+  // ملفات rollback لا تدخل الحزمة.
   // بناء 141: ترقية ٥ـ (قفل التسجيل + دوال الرموز) **اتنفّذت** 5/10 ≈01:29 ⇒ دخلت FILES فوق
   // وبره الاستبعاد زي أخواتها (٤٣→٤٩)، والقاعدة نفسها: أي ملف جديد لسه ما اتنفّذتش يتحط هنا بسبب.
   var DEPLOY_DB_EXCLUDE = {
@@ -22003,7 +22005,7 @@ const pwEye = document.getElementById("btnShowPass");
     const dlg = document.createElement("div");
     dlg.className = "modal-overlay";
     dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🔑 ' + title + '</div>' +
-      '<div class="feat-line" style="margin:6px 0">كلمة المرور الحالية: <code id="rpCur" style="flex:1">جارٍ الجلب...</code></div>' +
+      '<div class="feat-line" style="margin:6px 0;color:var(--text-secondary)">كلمات المرور مش محفوظة في البرنامج — اكتب كلمة جديدة أو اضغط «🎲 توليد».</div>' +
       '<label class="feat-line" style="margin:6px 0">كلمة المرور الجديدة <input id="rpPass" class="inp" type="text" placeholder="اكتب الكلمة الجديدة" style="flex:1" /></label>' +
       '<label class="feat-line" style="margin:6px 0">تأكيد كلمة المرور <input id="rpConfirm" class="inp" type="text" placeholder="أعد كتابة الكلمة الجديدة" style="flex:1" /></label>' +
       '<div class="feat-btns">' +
@@ -22011,18 +22013,6 @@ const pwEye = document.getElementById("btnShowPass");
       '<button class="btn green" type="button" id="rpOk">حفظ</button>' +
       '<button class="btn gray" type="button" id="rpCancel">إلغاء</button></div></div>';
     document.body.appendChild(dlg);
-    // عرض الكلمة الحالية للعلم فقط — لا تُكتب ولا تُطلب
-    const curEl = dlg.querySelector("#rpCur");
-    const cur = DATA.adminGetPassword(userId);
-    if (cur && typeof cur.then === "function") {
-      cur.then(function (pw) {
-        curEl.textContent = pw ? pw : "لا توجد كلمة محفوظة";
-      }).catch(function () { curEl.textContent = "—"; });
-    } else if (typeof cur === "string") {
-      curEl.textContent = cur || "لا توجد كلمة محفوظة";
-    } else {
-      curEl.textContent = "—";
-    }
     dlg.querySelector("#rpGen").onclick = () => {
       const v = Math.random().toString(36).slice(2, 8) +
                 Math.random().toString(36).slice(2, 5).toUpperCase() + "1";
@@ -22186,13 +22176,12 @@ const pwEye = document.getElementById("btnShowPass");
         return;
       }
       let h = "<table class=\"data-table\"><thead><tr><th>الشركة</th><th>اسم المستخدم</th>" +
-        "<th>كلمة المرور الحالية</th><th>آخر تحديث</th><th></th></tr></thead><tbody>";
+        "<th>آخر تحديث</th><th></th></tr></thead><tbody>";
       rows.forEach((r) => {
         const d = r.updated_at ? new Date(r.updated_at).toLocaleString("ar-EG") : "—";
         h += "<tr>" +
           "<td>" + (r.org_name || "—") + "</td>" +
           "<td><code>" + (r.username || "—") + "</code></td>" +
-          "<td><code style=\"font-size:15px;color:#1d7a46\">" + (r.password_plain || "—") + "</code></td>" +
           "<td>" + d + "</td>" +
           "<td><button class=\"btn small orange\" type=\"button\" onclick=\"window.__admResetPw('" +
             r.user_id + "')\">🔑 إعادة تعيين</button></td>" +
@@ -22228,8 +22217,8 @@ const pwEye = document.getElementById("btnShowPass");
         if (!(k in latest)) latest[k] = true;
       });
 
-      let h = "<p class=\"login-sub\" style=\"margin:4px 0 8px\">🔑 كلمة المرور <b>الحالية</b> لكل حساب. الصفوف الرمادية «سابقة» بعد تغيير كلمة المرور.</p>" +
-        "<table class=\"data-table\"><thead><tr><th>الحالة</th><th>الشركة</th><th>اسم المستخدم</th><th>كلمة المرور</th><th>الاسم</th><th>التاريخ</th><th></th></tr></thead><tbody>";
+      let h = "<p class=\"login-sub\" style=\"margin:4px 0 8px\">🔑 سجل الحسابات المُنشأة (بلا كلمات مرور — الكلمات مش محفوظة في البرنامج).</p>" +
+        "<table class=\"data-table\"><thead><tr><th>الحالة</th><th>الشركة</th><th>اسم المستخدم</th><th>الاسم</th><th>التاريخ</th><th></th></tr></thead><tbody>";
       sorted.forEach((r) => {
         const k = (r.org_id || "") + "|" + (r.username || "");
         const isCurrent = !!latest[k];
@@ -22243,7 +22232,6 @@ const pwEye = document.getElementById("btnShowPass");
           "<td>" + tag + "</td>" +
           "<td>" + (r.org_name || "—") + "</td>" +
           "<td><code>" + (r.username || "—") + "</code></td>" +
-          "<td><code>" + (r.password_plain || "—") + "</code></td>" +
           "<td>" + (r.full_name || "—") + "</td>" +
           "<td>" + d + "</td>" +
           "<td><button class=\"btn small red\" type=\"button\" onclick=\"window.__delCreatedAccount(" + r.id + ")\">🗑️</button></td>" +
