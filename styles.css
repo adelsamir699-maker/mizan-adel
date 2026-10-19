@@ -2485,6 +2485,20 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .pos-paid-row { display:flex; align-items:center; gap:6px; margin-top:4px; }
 .pos-paid-label { font-size:12px; color:#475569; }
 #txtPosPaid, #txtPPPaid { width:90px; padding:4px 6px; font-size:13px; text-align:center; font-weight:700; }
+/* 🧾 بناء 190: بيانات الشيك + سطور طرق السداد المتعددة في الفاتورة */
+.pos-check-row { display:flex; gap:6px; flex-wrap:wrap; }
+.pos-check-row input { flex:1 1 110px; min-width:90px; padding:4px 6px; font-size:13px; }
+.fld-payextra { flex:1 1 100%; }
+#posPayExtraList, #ppPayExtraList { display:flex; flex-direction:column; gap:6px; margin-bottom:6px; }
+.pay-line { display:flex; gap:6px; align-items:center; flex-wrap:wrap; background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:4px 6px; }
+.pay-line select, .pay-line input { padding:4px 6px; font-size:13px; }
+.pay-line .pl-method { flex:0 0 130px; }
+.pay-line .pl-treasury { flex:1 1 130px; min-width:100px; }
+.pay-line .pl-bank { flex:1 1 110px; min-width:90px; }
+.pay-line .pl-no { flex:0 0 90px; }
+.pay-line .pl-due { flex:0 0 130px; }
+.pay-line .pl-amount { flex:0 0 100px; text-align:center; font-weight:700; }
+.pay-line [hidden] { display:none !important; }
 .pos-summary-block { display:flex; gap:28px; justify-content:flex-start; flex-wrap:wrap; border-top:1px dashed var(--border); padding-top:6px; }
 .pos-sum-col { display:flex; flex-direction:column; gap:4px; }
 .pos-sum-line { display:flex; gap:10px; font-size:13px; color:#1e293b; }
