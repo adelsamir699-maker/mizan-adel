@@ -246,7 +246,7 @@ begin
         v_row := v_row - v_key;
       end if;
     end loop;
-    if jsonb_object_length(v_row) = 0 then continue; end if;
+    if (select count(*) from jsonb_object_keys(v_row)) = 0 then continue; end if;
     if not (v_row ? v_required) or coalesce(v_row->>v_required, '') = '' then
       raise exception 'هناك صف ينقصه الحقل المطلوب: %', v_required;
     end if;
