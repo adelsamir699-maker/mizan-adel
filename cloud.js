@@ -256,6 +256,37 @@
       .catch(function () { HAS_VOUCHER_REFS = false; return false; });
   }
 
+  // 🆕 بناء 199 (بند #15 — الخيار ب): «مصدر السداد» على حركات العملاء/الموردين
+  // (treasury_id/treasury_name/payment_method) — ترحيل ٦٣ بيضيفهم، وtoCloud بيبعتهما
+  // **بس** لما HAS_TX_RECEIPT=true. قبل الترحيل منبعتهمش خالص وإلا PostgREST يرفض الصف
+  // كله (42703) فتوقف مزامنة الحركات كلها — نفس درس وسم السند (١٨٤) وعمود unit (١١٧).
+  var HAS_TX_RECEIPT = false;
+  function probePartyTxReceipt() {
+    if (!DATA.client()) return Promise.resolve(false);
+    return Promise.resolve()
+      .then(function () { return DATA.client().from("customer_txs").select("treasury_id, treasury_name, payment_method").limit(1); })
+      .then(function (r) { HAS_TX_RECEIPT = !(r && r.error); return HAS_TX_RECEIPT; })
+      .catch(function () { HAS_TX_RECEIPT = false; return false; });
+  }
+  // تعبئة أعمدة مصدر السداد على صف حركة طرف (بتُنادى جوّه toCloud بشرط HAS_TX_RECEIPT)
+  function partyRecvCols(r) {
+    return {
+      treasury_id: (r.treasuryId == null || r.treasuryId === "") ? null : String(r.treasuryId),
+      treasury_name: r.treasuryName || "",
+      payment_method: r.paymentMethod || ""
+    };
+  }
+  // قراءة أعمدة مصدر السداد من صف سحابي — **ما بتمسحش قيمة محلية أبدًا**:
+  // بتكتب بس لو السحابة رجّعت قيمة فعلية (قبل الترحيل الأعمدة مش موجودة ⇒ undefined ⇒
+  // القيمة المحلية تفضل زي ما هي). كده أول تنزيل على جهاز جديد ياخد مصدر السداد الصح،
+  // وقبل الترحيل مايحصلش أي فقدان لبيانات محلية.
+  function partyRecvOut(r, row) {
+    if (r.treasury_id != null && r.treasury_id !== "") row.treasuryId = Number(r.treasury_id);
+    if (r.treasury_name) row.treasuryName = r.treasury_name;
+    if (r.payment_method) row.paymentMethod = r.payment_method;
+    return row;
+  }
+
   // خريطة تحويل (محلي → سماوي / سماوي → محلي)
   var META = {
     customers: {
@@ -798,11 +829,14 @@
     supplier_txs: {
       local: function () { return W.supplier_txs || []; },
       toCloud: function (r) {
-        return { id: detUuid("supplier_txs", r.id), org_id: DATA.orgId(), local_id: r.id,
+        var row = { id: detUuid("supplier_txs", r.id), org_id: DATA.orgId(), local_id: r.id,
           supplier_id: localIdStr(r.supplierId), doc_date: docDate(r),
           type: r.type || "", amount: r.amount || 0,
           description: r.desc || r.description || "",
           debit: r.debit || 0, credit: r.credit || 0 };
+        // 🆕 بناء 199 (بند #15ب): مصدر السداد بيترفع بس بعد ترحيل ٦٣ (وإلا PostgREST يرفض الصف)
+        if (HAS_TX_RECEIPT) { var c1 = partyRecvCols(r); row.treasury_id = c1.treasury_id; row.treasury_name = c1.treasury_name; row.payment_method = c1.payment_method; }
+        return row;
       },
       fromCloud: function (r) {
         // السطور القديمة مفيهاش debit/credit (اتسجلت نوع/مبلغ بس) → نشتقهم
@@ -811,23 +845,25 @@
           if (String(r.type || "").indexOf("مرتجع") !== -1 || String(r.description || "").indexOf("مرتجع") !== -1) c = Number(r.amount);
           else d = Number(r.amount);
         }
-        return { id: r.local_id, supplierId: localIdNum(r.supplier_id), date: r.doc_date,
+        return partyRecvOut(r, { id: r.local_id, supplierId: localIdNum(r.supplier_id), date: r.doc_date,
           createdAt: r.created_at || null,
           type: r.type || "", amount: Number(r.amount || 0),
-          desc: r.description || "", debit: d, credit: c };
+          desc: r.description || "", debit: d, credit: c });
       }
     },
     customer_txs: {
       local: function () { return W.customer_txs || []; },
       toCloud: function (r) {
-        return { id: detUuid("customer_txs", r.id), org_id: DATA.orgId(), local_id: r.id,
+        var row = { id: detUuid("customer_txs", r.id), org_id: DATA.orgId(), local_id: r.id,
           customer_id: localIdStr(r.customerId), doc_date: docDate(r),
           description: r.desc || "", debit: r.debit || 0, credit: r.credit || 0 };
+        if (HAS_TX_RECEIPT) { var c2 = partyRecvCols(r); row.treasury_id = c2.treasury_id; row.treasury_name = c2.treasury_name; row.payment_method = c2.payment_method; }
+        return row;
       },
       fromCloud: function (r) {
-        return { id: r.local_id, customerId: localIdNum(r.customer_id), date: r.doc_date,
+        return partyRecvOut(r, { id: r.local_id, customerId: localIdNum(r.customer_id), date: r.doc_date,
           createdAt: r.created_at || null,
-          desc: r.description || "", debit: Number(r.debit || 0), credit: Number(r.credit || 0) };
+          desc: r.description || "", debit: Number(r.debit || 0), credit: Number(r.credit || 0) });
       }
     },
     vouchers: {
@@ -1053,6 +1089,7 @@
     probeCarTripsTable(); // 🚚 بناء 178: هل جدول car_trips اتعمل (ترحيل ٥٥) ولا لسه
     probeChecksTable(); // 🧾 بناء 190: هل جدول checks اتعمل (ترحيل ٦٢) ولا لسه
     probeVoucherRefs(); // 🆕 بناء 184: هل عمودا وسم السند (ref_type/ref_id) على vouchers موجودان (ترحيل ٥٦) ولا لسه
+    probePartyTxReceipt(); // 🆕 بناء 199 (بند #15ب): هل أعمدة مصدر السداد على حركات الأطراف موجودة (ترحيل ٦٣) ولا لسه
     // 🆕 بناء 125 (بند 16): هل جدول messages اتعمل (ترقية ٤٥) ولا لسه على القرص بس.
     // الفحص ده بيحدد وحده ظهور تبويب «الدردشة» — فالترحيل لما يتنفّذ بأمر المالك
     // التبويب يطلع لوحده من نفس اللحظة، وبلا أي تغيير كود. (الجدول **ممنوع** يدخل

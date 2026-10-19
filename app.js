@@ -498,6 +498,10 @@
   // 🧱 بناء 186: «أرضية» الأرقام — أعلى رقم مستخدم في السندات/القيود (ما يتعادش استخدامه)
   let VOU_ID_FLOOR = 0;
   let JRN_ID_FLOOR = 0;
+  // 🧱 بناء 199: أرضيات أرقام حركات الطرف كمان (customer_txs/supplier_txs بتُرفع للسحابة
+  // بهوية `detUuid` مشتقة من الرقم المحلي ⇒ إعادة استخدام رقم محذوف = الكتابة فوق صف قديم).
+  let TX_ID_FLOOR = 0;
+  let STX_ID_FLOOR = 0;
   // 🆕 مهمة 98: سجل الأصول الثابتة — لكل أصل: اسم/تصنيف (noncurrent|intangible)/فئة/تاريخ/تكلفة/إهلاك
   let fixedAssets = [];
   // 🧮 بناء 145: «الجرد بالباركود» — ورق الجرد على **جهاز العميل بس** (قرار المالك 05/10):
@@ -690,7 +694,7 @@
       first.credit = Math.max(-firstNet, 0);
     } else if (amount !== 0) {
       const row = {
-        id: isCustomer ? nextTxId() : supplierTxs.reduce((max, tx) => Math.max(max, Number(tx.id) || 0), 0) + 1,
+        id: isCustomer ? nextTxId() : nextSupplierTxId(),
         [idField]: party.id,
         date: todayISO(),
         desc: isCustomer ? "رصيد افتتاحي (أول المدة)" : "رصيد افتتاحي (مستحق للمورد)",
@@ -743,6 +747,12 @@
       if (t.treasuryId) {
         targetTr = treasury.find((x) => Number(x.id) === Number(t.treasuryId));
       }
+      // 🆕 بناء 199 (بند #15ب): الاسم المسجّل على الحركة وقت التحصيل أدق من تخمين البيان
+      if (!targetTr && t.treasuryName) {
+        const tn = normalizeAr(t.treasuryName);
+        targetTr = treasury.find((x) => normalizeAr(x.name) === tn)
+          || (tn ? treasury.find((x) => normalizeAr(x.name).includes(tn)) : null);
+      }
       if (!targetTr && t.desc) {
         const d = normalizeAr(t.desc);
         targetTr = treasury.find((x) => d.includes(normalizeAr(x.name)) || (x.accountNo && d.includes(x.accountNo)));
@@ -780,6 +790,12 @@
       let targetTr = null;
       if (t.treasuryId) {
         targetTr = treasury.find((x) => Number(x.id) === Number(t.treasuryId));
+      }
+      // 🆕 بناء 199 (بند #15ب): الاسم المسجّل على الحركة وقت التحصيل أدق من تخمين البيان
+      if (!targetTr && t.treasuryName) {
+        const tn = normalizeAr(t.treasuryName);
+        targetTr = treasury.find((x) => normalizeAr(x.name) === tn)
+          || (tn ? treasury.find((x) => normalizeAr(x.name).includes(tn)) : null);
       }
       if (!targetTr && t.desc) {
         const d = normalizeAr(t.desc);
@@ -1675,8 +1691,14 @@
     return Math.max(1, customers.reduce((m, c) => Math.max(m, Number(c.id) || 0), 0)) + 1;
   }
 
+  // 🧱 بناء 199: الاحترام لأرضية الرقم — بعد أي حذف حركة، رقمها مايتولّدش تاني
+  // (وإلا `detUuid("customer_txs", id)` يرجّع نفس الـuuid ⇒ السطر الجديد يكتب فوق القديم على السحابة).
   function nextTxId() {
-    return txs.reduce((m, t) => Math.max(m, t.id), 0) + 1;
+    return Math.max(TX_ID_FLOOR, txs.reduce((m, t) => Math.max(m, Number(t.id) || 0), 0)) + 1;
+  }
+  // حركات الموردين لها مساحة أرقام مستقلة ⇒ أرضية مستقلة
+  function nextSupplierTxId() {
+    return Math.max(STX_ID_FLOOR, (supplierTxs || []).reduce((m, t) => Math.max(m, Number(t.id) || 0), 0)) + 1;
   }
 
   function nextCustomerCode() {
@@ -3135,7 +3157,9 @@
       const c2 = customers.find((c) => c.id === cid);
       c2.currentBalance = Math.round((c2.currentBalance - amount) * 100) / 100;
       const txId2 = nextTxId();
-      const txRow2 = { id: txId2, customerId: cid, treasuryId: null, paymentMethod: $("#pMethod").value,
+      // 🆕 بناء 199 (بند #15ب): الشيك مش بيدخل خزينة (القيمة على 1.1.7) ⇒ treasuryId فاضي
+      // والوسيلة «شيك» مسجّلة على الحركة نفسها وبترتفع للسحابة (ترحيل ٦٣).
+      const txRow2 = { id: txId2, customerId: cid, treasuryId: null, treasuryName: "", paymentMethod: $("#pMethod").value,
         date: todayISO(), desc: notes || ("تحصيل بشيك #" + cno + " — " + bank), debit: 0, credit: amount };
       txs.push(txRow2);
       const chk = addCheck({ customerId: cid, customerName: c2 ? c2.nameAr : "", bankName: bank, checkNo: cno,
@@ -3177,6 +3201,7 @@
       id: txId,
       customerId: cid,
       treasuryId: tr ? tr.id : (trId || null),
+      treasuryName: tr ? tr.name : "",
       paymentMethod: $("#pMethod").value,
       date: todayISO(),
       desc: notes,
@@ -3282,7 +3307,8 @@
         // 🔁 بناء 119: السطر التوضيحي (مرتجع) ملوش id ومانحذفوش من هنا
         id: t.id == null ? null : t.id,
         paymentMethod: t.paymentMethod || "",
-        treasuryId: t.treasuryId == null ? null : t.treasuryId
+        treasuryId: t.treasuryId == null ? null : t.treasuryId,
+        treasuryName: t.treasuryName || ""   // 🆕 بناء 199 (بند #15ب): مصدر السداد المسجّل على الحركة
       };
     });
   }
@@ -3439,9 +3465,12 @@
           b.textContent = "🗑️ حذف";
           // 🆕 بناء 181: وسيلة الدفع بتتقال لو موجودة بس — لأنها ما بترجعش من السحابة،
           // فأي حركة نازلة منها كانت بتدي «()» فاضية في الجملة التوضيحية.
+          // 🆕 بناء 199 (بند #15ب): الوسيلة **بقيت** بترجع من السحابة (ترحيل ٦٣) ومعاها اسم الخزينة
+          // اللي استقبلت السداد ⇒ الجملة تقول المبلغ هيرجع لفين بالظبط.
           b.title = "حذف حركة " + (actKind === "supplier" ? "الدفع للمورد" : "السداد من العميل") +
             " (" + fmt(Math.max(r.debit, r.credit)) + " ج.م" +
             (r.paymentMethod ? " — «" + r.paymentMethod + "»" : "") +
+            (r.treasuryName ? " من «" + r.treasuryName + "»" : "") +
             ") — ترجّع المبلغ للخزينة/الحساب.";
           b.addEventListener("click", () => window.__stmDelTx(actKind, r.id));
           td.appendChild(b);
@@ -3479,29 +3508,46 @@
       const tr = treasury.find((x) => Number(x.id) === Number(tx.treasuryId));
       return tr ? tr.name : null;
     })();
+    // 🆕 بناء 199 (بند #15ب): مصدر السداد المسجّل على الحركة (خزينة/اسم/وسيلة) — بيتزامن سحابيًا
+    // من ترحيل ٦٣ ⇒ الحركة القادمة من أي جهاز بقت تعرف دخلت فين بالظبط بلا تخمين.
+    const recvName = accName || tx.treasuryName || "";
+    const recvMethod = tx.paymentMethod || "";
     const amount = Math.max(Number(tx.debit) || 0, Number(tx.credit) || 0);
     const msg = "تحذف حركة «" + (tx.desc || (isSup ? "دفع نقدي للمورد" : "سداد نقدي من العميل")) + "»؟\n\n" +
-      "الحساب: " + partyName + "\nالمبلغ: " + fmt(amount) + " ج.م" + (accName ? ("\nالحساب: " + accName) : "") +
+      "الحساب: " + partyName + "\nالمبلغ: " + fmt(amount) + " ج.م" + (recvName ? ("\nالمستلِم: " + recvName) : "") +
+      (recvMethod ? ("\nالوسيلة: " + recvMethod) : "") +
       "\nالتاريخ: " + (tx.date || "") +
-      "\n\nالمبلغ هيرجع لرصيد «" + (accName || "الحساب") + "»، والسند المرتبط بيتحذف معاه.";
+      "\n\nالمبلغ هيرجع لرصيد «" + (recvName || "الحساب") + "»، والسند المرتبط بيتحذف معاه.";
     if (!confirm(msg)) return;
     // السند المرتبط بنفس الحركة (customer_tx / supplier_tx)
     // 🆕 بناء 151: الشغل عدّى على نقطة الارتكاز — لو للسند قيد (`VC:`+id) بيرجع قبل ما السند يتشال
     const vBefore = vouchers.length;
     let vList = vouchers.filter((v) => v.refType === (isSup ? "supplier_tx" : "customer_tx") && Number(v.refId) === Number(tx.id));
+    // 🆕 بناء 199 (بند #15ب): المطابقة الأدق — نفس الخزينة المسجّلة على الحركة + نفس المبلغ + نفس
+    // التاريخ + نفس الاتجاه (قبض للعميل / صرف للمورد). دي بتمنع «تصحيح الرصيد على الخزينة الغلط».
+    const _wantType = isSup ? "out" : "in";
+    const _cents = Math.round(amount * 100);
+    const _tid = (tx.treasuryId == null || tx.treasuryId === "") ? null : Number(tx.treasuryId);
+    if (!vList.length && _tid != null) {
+      vList = vouchers.filter((v) => Number(v.treasuryId) === _tid
+        && String(v.type || v.kind || "") === _wantType
+        && Math.round((Number(v.amount) || 0) * 100) === _cents
+        && String(v.date || "") === String(tx.date || "")).slice(0, 1);
+    }
     // 🆕 بناء 181: السند كمان ما بيشيلش ref_type/ref_id على السحابة (مقاس في cloud.js) ⇒ لو
     // الحركة نازلة من السحابة بقت بلا ربط، فنتعرّف على سندها من بيانه + تاريخه + مبلغه.
     // **سند واحد بس** — عشان تحصيلان متطابقان في نفس اليوم ما يلغاش الاتنين.
     if (!vList.length) {
       const vPrefix = (isSup ? "سداد لمورد: " : "تحصيل من عميل: ") + partyName;
-      const cents = Math.round(amount * 100);
       vList = vouchers.filter((v) => !v.refType &&
         String(v.desc || v.notes || "").indexOf(vPrefix) === 0 &&
-        Math.round((Number(v.amount) || 0) * 100) === cents &&
+        String(v.type || v.kind || "") === _wantType &&
+        Math.round((Number(v.amount) || 0) * 100) === _cents &&
         String(v.date || "") === String(tx.date || "")).slice(0, 1);
     }
     const vDrop = dropVouchersWithJournal(vList);
     pool.splice(idx, 1);
+    bumpIdFloor(isSup ? "stx" : "tx", tx.id);   // 🧱 بناء 199: ما نعيدش رقم الحركة المحذوفة (منع الكتابة فوق صف سحابي)
     // 🆕 بناء 149 (سطر ١): حذف الحركة بيرجع قيدها كمان — تراجع كامل بنفس عرف الفاتورة (بناء 134)
     const jRemoved = removePartyTxJournal(isSup ? "supp" : "cust", tx.id);
     if (isSup) {
@@ -3519,7 +3565,7 @@
     // 🆕 بناء 181: أمانة الرسالة — المبلغ «يرجع» فعلًا لما سندها يتشال؛ ولو السند مش على
     // الجهاز ده (حركة قديمة اترفعت بلا سند) نقول كده بدل ما ندّعي إرجاع ما حصلش.
     toast((vBefore !== vouchers.length
-      ? "تم حذف الحركة والسند المرتبط — " + fmt(amount) + " ج.م رجع لـ«" + (accName || "الحساب") + "»."
+      ? "تم حذف الحركة والسند المرتبط — " + fmt(amount) + " ج.م رجع لـ«" + (recvName || "الحساب") + "»."
       : "تم حذف حركة «" + (tx.desc || (isSup ? "دفع للمورد" : "سداد من العميل")) + "» من كشف " + partyName +
         " — مافيش سند مرتبط على الجهاز ده، فرصيد الخزينة ما اتغيّرش.") +
       (jRemoved ? " والقيد المرتبط اتراجع." : "") +
@@ -7759,7 +7805,8 @@
         date: invoice.invoiceDate,
         desc: "فاتورة مبيعات آجلة رقم " + invoice.invoiceNumber,
         debit: t.due,
-        credit: 0
+        credit: 0,
+        treasuryId: null, treasuryName: "", paymentMethod: "آجل"   // 🆕 بناء 199: الجزء الآجل مالوش خزينة
       });
       recalculateCustomerBalances();
       saveCustomers();
@@ -8414,12 +8461,13 @@
     if (t.due > 0) {
       supplier.currentBalance = Math.round(((Number(supplier.currentBalance) || 0) + t.due) * 100) / 100;
       supplierTxs.push({
-        id: supplierTxs.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1,
+        id: nextSupplierTxId(),
         supplierId: supplier.id,
         date: invoice.invoiceDate,
         desc: "فاتورة مشتريات آجلة رقم " + invoice.invoiceNumber,
         debit: t.due,
-        credit: 0
+        credit: 0,
+        treasuryId: null, treasuryName: "", paymentMethod: "آجل"   // 🆕 بناء 199: الجزء الآجل مالوش خزينة
       });
       recalculateSupplierBalances();
       saveSuppliers();
@@ -8688,7 +8736,7 @@
       };
       suppliers.push(s);
       if (opening > 0) {
-        supplierTxs.push({ id: supplierTxs.reduce((m, x) => Math.max(m, x.id), 0) + 1, supplierId: s.id, date: todayISO(), desc: "رصيد افتتاحي (مستحق للمورد)", debit: opening, credit: 0 });
+        supplierTxs.push({ id: nextSupplierTxId(), supplierId: s.id, date: todayISO(), desc: "رصيد افتتاحي (مستحق للمورد)", debit: opening, credit: 0 });
         saveSupplierTxs();
       }
       saveSuppliers();
@@ -8718,7 +8766,8 @@
       // 🔁 بناء 119: نفس كشف العميل — id + وسيلة الدفع عشان سطر «الدفع النقدي» يتحذف
       return { date: t.date, desc: t.desc, debit: t.debit, credit: t.credit, balance: run,
         id: t.id == null ? null : t.id, paymentMethod: t.paymentMethod || "",
-        treasuryId: t.treasuryId == null ? null : t.treasuryId };
+        treasuryId: t.treasuryId == null ? null : t.treasuryId,
+        treasuryName: t.treasuryName || "" };   // 🆕 بناء 199 (بند #15ب)
     });
   }
 
@@ -8825,11 +8874,12 @@
       saveTreasury();
       syncTreasuryItemToSett(tr);
     }
-    const txId = supplierTxs.reduce((m, x) => Math.max(m, x.id), 0) + 1;
+    const txId = nextSupplierTxId();
     const txRow = {
       id: txId,
       supplierId: sid,
       treasuryId: tr ? tr.id : (trId || null),
+      treasuryName: tr ? tr.name : "",
       paymentMethod: $("#psMethod").value,
       date: todayISO(),
       desc: $("#psNotes").value.trim() || "سداد مستحقات مورد",
@@ -9044,6 +9094,7 @@
             && dueDescOk(t.desc, "فاتورة مبيعات آجلة")) {
             goneDue = Math.round((goneDue + (Number(t.debit) || 0)) * 100) / 100;
             txs.splice(i, 1);
+            bumpIdFloor("tx", t.id);   // 🧱 بناء 199: ما نعيدش رقم الحركة المحذوفة
           }
         }
         recalculateCustomerBalances();
@@ -9056,6 +9107,7 @@
             && dueDescOk(t.desc, "فاتورة مشتريات آجلة")) {
             goneDue = Math.round((goneDue + (Number(t.debit) || 0)) * 100) / 100;
             supplierTxs.splice(i, 1);
+            bumpIdFloor("stx", t.id);   // 🧱 بناء 199: ما نعيدش رقم حركة المورد المحذوفة
           }
         }
         recalculateSupplierBalances();
@@ -9806,16 +9858,18 @@ id: nextVoucherId(),
       rec.voucherId = v.id;
     }
     if (balAmt > 0.0001) {
-      const desc = "مرتجع " + retWord(isSales) + " رقم " + no + " — خصم من الرصيد";
-      let tx;
-      if (isSales) {
-        tx = { id: nextTxId(), customerId: partyId, date: date, desc: desc, debit: 0, credit: balAmt };
-        txs.push(tx);
-        recalculateCustomerBalances();
-        saveCustomers();
-        saveTxs();
-      } else {
-        tx = { id: supplierTxs.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1, supplierId: partyId, date: date, desc: desc, debit: 0, credit: balAmt };
+    const desc = "مرتجع " + retWord(isSales) + " رقم " + no + " — خصم من الرصيد";
+    // 🆕 بناء 199 (بند #15ب): الجزء اللي على الحساب مالوش خزينة — بنسجّل الوسيلة صراحةً
+    // فالسطر يبان مفهوم على أي جهاز وبلا أي تخمين وقت الحذف.
+    let tx;
+    if (isSales) {
+      tx = { id: nextTxId(), customerId: partyId, date: date, desc: desc, debit: 0, credit: balAmt, treasuryId: null, treasuryName: "", paymentMethod: "خصم من الرصيد" };
+      txs.push(tx);
+      recalculateCustomerBalances();
+      saveCustomers();
+      saveTxs();
+    } else {
+      tx = { id: nextSupplierTxId(), supplierId: partyId, date: date, desc: desc, debit: 0, credit: balAmt, treasuryId: null, treasuryName: "", paymentMethod: "خصم من الرصيد" };
         supplierTxs.push(tx);
         recalculateSupplierBalances();
         saveSuppliers();
@@ -10638,7 +10692,10 @@ id: nextVoucherId(),
     if (!(amt > 0)) return { ok: false, msg: "رصيد الصندوق " + fmt(amt) + " ج.م — مافيش حاجة تتسلّم." };
     const date = shiftNowISO().slice(0, 10);
     const tag = "تسليم وردية #" + shift.id + " — " + shift.cashierName;
-    const baseId = (vouchers || []).reduce((m, x) => Math.max(m, Number(x.id) || 0), 0);
+    // 🧱 بناء 199 (بند #13/١): كان `max(vouchers)+1` بلا أرضية ⇒ بعد حذف سند برقم عالي
+    // الرقم بيتولّد تاني، و`detUuid("vouchers", id)` على السحابة ثابت من الرقم المحلي
+    // ⇒ السندان الجديدان **يكتبان فوق صفّين قديمين**. دلوقتي بناخد الأرضية زي باقي المسارات.
+    const baseId = nextVoucherId() - 1;
     vouchers.push({ id: baseId + 1, type: "out", treasuryId: box.id, date: date, amount: amt, desc: tag + " (من " + box.name + ")", refType: "وردية تسليم — #" + shift.id });
     vouchers.push({ id: baseId + 2, type: "in", treasuryId: main.id, date: date, amount: amt, desc: tag + " (إلى " + main.name + ")", refType: "وردية تسليم — #" + shift.id });
     saveVouchers();
@@ -11052,6 +11109,8 @@ id: nextVoucherId(),
     settleJrnLines(j.lines, -1);
     const i = journalEntries.indexOf(j);
     if (i >= 0) journalEntries.splice(i, 1);
+    // 🧱 بناء 199 (بند #13/٢): رفع أرضية رقم القيد قبل ما الرقم يتاح للتوليد تاني
+    bumpIdFloor("journal", j.id);
     persistJournal();
     saveAccounts();
     try { renderJournal(); } catch (e) {}
@@ -11660,7 +11719,7 @@ id: nextVoucherId(),
     // الآجل يزيد رصيد العميل
     if (due > 0) {
       cust.currentBalance = Math.round(((Number(cust.currentBalance) || 0) + due) * 100) / 100;
-      txs.push({ id: nextTxId(), customerId: cust.id, date: invoice.invoiceDate, desc: "فاتورة مبيعات آجلة (سيارة " + trip.carName + ") رقم " + invNo, debit: due, credit: 0 });
+      txs.push({ id: nextTxId(), customerId: cust.id, date: invoice.invoiceDate, desc: "فاتورة مبيعات آجلة (سيارة " + trip.carName + ") رقم " + invNo, debit: due, credit: 0, treasuryId: null, treasuryName: "", paymentMethod: "آجل مندوب" });
       recalculateCustomerBalances();
       saveCustomers();
       saveTxs();
@@ -13067,7 +13126,13 @@ id: nextVoucherId(),
 
     let jNumber = "";
     // 🔒 بناء 187: aFrom/aTo مضمونين (الحارس فوق منع الحفظ لو ناقصين) ⇒ القيد مضمون مع الحركة.
-    {
+    // 🧱 بناء 199 (بند #13/٤): لو الخزينتان على **نفس حساب الدليل** (كل الصناديق النقدية على
+    // `1.1.1` مثلًا) فالقيد هيبقى مدين ودائن على نفس الحساب ⇒ `settleJrnLines` بتزوّد الطرفين
+    // مع بعض فيظهر الحساب مضاعف (مدين+دائن بنفس المبلغ) والحركة نفسها صفر. النقل الداخلي
+    // بين صندوقين **مايترحّلش** (نفس عرف `settleShiftEngine` سطر 10648) — الفلوس بتتنقل
+    // بين الخزينتين و`recalculateTreasuryBalances` هي اللي بتضبط الأرصدة، بلا أي قيد مكرّر.
+    const sameAcc = Number(aFrom.id) === Number(aTo.id);
+    if (!sameAcc) {
       const lines = [{ accountId: aTo.id, debit: amount, credit: 0 }, { accountId: aFrom.id, debit: 0, credit: amount }];
       const j = {
         id: nextJournalId(),
@@ -13090,7 +13155,7 @@ id: nextVoucherId(),
       jNumber = j.number;
     }
     hideModal("mSimpleTransfer");
-    addActivity("تحويل بين الحسابات", tag + " بمبلغ " + fmt(amount) + " ج.م");
+    addActivity("تحويل بين الحسابات", tag + " بمبلغ " + fmt(amount) + " ج.م" + (sameAcc ? " (نقل داخلي بين صندوقين على نفس حساب الدليل — بلا قيد)" : ""));
     renderJournal();
     renderLedger();
     try { renderTreasury(); renderTreMoves(); } catch (e) { }
@@ -13151,6 +13216,8 @@ id: nextVoucherId(),
   function bumpIdFloor(kind, id) {
     const n = Number(id) || 0;
     if (kind === "voucher") { if (n > VOU_ID_FLOOR) VOU_ID_FLOOR = n; }
+    else if (kind === "tx") { if (n > TX_ID_FLOOR) TX_ID_FLOOR = n; }
+    else if (kind === "stx") { if (n > STX_ID_FLOOR) STX_ID_FLOOR = n; }
     else { if (n > JRN_ID_FLOOR) JRN_ID_FLOOR = n; }
     idFloorsSave();
   }
@@ -13159,10 +13226,12 @@ id: nextVoucherId(),
     try { o = JSON.parse(localStorage.getItem(LS_ID_FLOORS) || "{}") || {}; } catch (e) { }
     VOU_ID_FLOOR = Math.max(Number(o.vouchers) || 0, (vouchers || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0));
     JRN_ID_FLOOR = Math.max(Number(o.journal) || 0, (journalEntries || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0));
+    TX_ID_FLOOR = Math.max(Number(o.txs) || 0, (txs || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0));
+    STX_ID_FLOOR = Math.max(Number(o.supplierTxs) || 0, (supplierTxs || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0));
     __jrnLastId = Math.max(__jrnLastId, JRN_ID_FLOOR);
   }
   function idFloorsSave() {
-    try { localStorage.setItem(LS_ID_FLOORS, JSON.stringify({ vouchers: VOU_ID_FLOOR, journal: JRN_ID_FLOOR })); } catch (e) { }
+    try { localStorage.setItem(LS_ID_FLOORS, JSON.stringify({ vouchers: VOU_ID_FLOOR, journal: JRN_ID_FLOOR, txs: TX_ID_FLOOR, supplierTxs: STX_ID_FLOOR })); } catch (e) { }
   }
   function invoiceJrnRef(kind) { return kind === "sale" ? "فاتورة مبيعات" : "فاتورة مشتريات"; }
   // مفتاح منع التكرار: نوع الفاتورة + رقمها (الرقم تسلسلي لكل شركة وثابت على كل الأجهزة)
@@ -14885,7 +14954,9 @@ id: nextVoucherId(),
     if (!o) { toast("حساب «ض.ق.م المحصّلة» (2.1.2) مش موجود.", "warning"); return; }
     if (!eq) { toast("حساب حقوق الملكية (الأرباح المحتجزة/رأس المال) مش موجود.", "warning"); return; }
     const old = vatOpeningEntry();
-    if (old) { settleJrnLines(old.lines, -1); const k = journalEntries.indexOf(old); if (k >= 0) journalEntries.splice(k, 1); }
+    // 🧱 بناء 199 (بند #13/٢): القيد القديم بيتشال ⇒ نرفع أرضية رقمه فمايتولّدش تاني
+    // (وإلا إعادة الحفظ تكرّر رقم قيد قديم ⇒ `detUuid` يكتب فوق صف على السحابة).
+    if (old) { settleJrnLines(old.lines, -1); const k = journalEntries.indexOf(old); if (k >= 0) journalEntries.splice(k, 1); bumpIdFloor("journal", old.id); }
     const amt = round2(amount);
     if (amt > 0) {
       const lines = side === "credit"
@@ -17251,7 +17322,8 @@ id: nextVoucherId(),
     "db/supabase-upgrade-61-excel-import.sql",
     // 🧾 ترقية ٦٢ (الشيكات + إنستا باي + حساب 1.1.7) — في الحزمة كسجل، والتنفيذ على
     // السحابة بأمر المالك الصريح (لحد ما يتنفّذ المزامنة محمية بـprobeChecksTable).
-    "db/supabase-upgrade-62-checks.sql"];
+    "db/supabase-upgrade-62-checks.sql",
+    "db/supabase-upgrade-63-party-tx-receipt.sql"];
   // ملفات موجودة في db/ بس مش داخلة في نسخة النشر — كل واحد بسبب مكتوب.
   // ترقية ٥٨ ما زالت مستقلة ومحجوزة لإزالة password_plain، وملفات rollback لا تدخل الحزمة.
   // بناء 141: ترقية ٥ـ (قفل التسجيل + دوال الرموز) **اتنفّذت** 5/10 ≈01:29 ⇒ دخلت FILES فوق
