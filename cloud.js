@@ -224,6 +224,21 @@
       .catch(function (e) { if (isMissingTableError(e)) CT_TABLE_MISSING = true; return false; });
   }
 
+  // 🧾 بناء 190: الشيكات (ترحيل ٦٢) — نفس نمط car_trips: الجدول بيتعمل بترحيل ٦٢، ولحد ما
+  // يتنفّذ (بأمر المالك) الشيكات بتتسجّل محليًا + على الديسك وما نحاولش رفعها (مافيش جدول)
+  // عشان كل تحصيل/ارتجاع ما يطلعلوش تحذير «المزامنة وقفت» بلا سبب.
+  var CH_TABLE_MISSING = false;
+  function probeChecksTable() {
+    if (!DATA.client()) return Promise.resolve(false);
+    return Promise.resolve()
+      .then(function () { return DATA.client().from("checks").select("id").limit(1); })
+      .then(function (r) {
+        if (r && r.error) { if (isMissingTableError(r.error)) CH_TABLE_MISSING = true; return false; }
+        CH_TABLE_MISSING = false; return true;
+      })
+      .catch(function (e) { if (isMissingTableError(e)) CH_TABLE_MISSING = true; return false; });
+  }
+
   // 🆕 بناء 184: خانتا وسم السند (ref_type/ref_id) على جدول vouchers — ترحيل ٥٦ بيضيفهم،
   // وtoCloud بيبعتهما بس لما HAS_VOUCHER_REFS=true (فحص مرّة قبل أول رفع سندات).
   // قبل الترحيل: منبعتهمش خالص وإلا PostgREST يرفض الصف كله (عمود غير موجود/42703) فتوقف
@@ -440,6 +455,33 @@
           treasuryId: (r.treasury_id != null ? Number(r.treasury_id) : null),
           settleWarehouse: r.settle_warehouse || "",
           notes: r.notes || "" };
+      }
+    },
+    // 🧾 بناء 190: الشيكات (ترحيل ٦٢). كل شيك = ورقة قبض بتاريخ استحقاق وحالة.
+    checks: {
+      local: function () { return W.checks || []; },
+      toCloud: function (r) {
+        return { id: detUuid("checks", r.id), org_id: DATA.orgId(), local_id: r.id,
+          direction: r.direction || "in", party_kind: r.partyKind || "customer",
+          customer_id: (r.customerId != null ? String(r.customerId) : null),
+          customer_name: r.customerName || "", bank_name: r.bankName || "",
+          check_no: r.checkNo || "", due_date: r.dueDate || null,
+          amount: Number(r.amount) || 0, status: r.status || "pending",
+          treasury_id: (r.treasuryId != null ? String(r.treasuryId) : null),
+          collected_at: r.collectedAt || null, notes: r.notes || "",
+          ref_type: r.refType || "", ref_id: r.refId || "", deleted: false };
+      },
+      fromCloud: function (r) {
+        var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("checks", r.id);
+        return { id: lid,
+          direction: r.direction || "in", partyKind: r.party_kind || "customer",
+          customerId: (r.customer_id != null ? r.customer_id : null),
+          customerName: r.customer_name || "", bankName: r.bank_name || "",
+          checkNo: r.check_no || "", dueDate: r.due_date || "",
+          amount: Number(r.amount) || 0, status: r.status || "pending",
+          treasuryId: (r.treasury_id != null ? r.treasury_id : null),
+          collectedAt: r.collected_at || null, notes: r.notes || "",
+          refType: r.ref_type || "", refId: r.ref_id || "" };
       }
     },
     accounts: {
@@ -861,6 +903,7 @@
     if (name === "fixed_assets" && FA_TABLE_MISSING) return Promise.resolve(null);
     if (name === "cashier_shifts" && CS_TABLE_MISSING) return Promise.resolve(null);
     if (name === "car_trips" && CT_TABLE_MISSING) return Promise.resolve(null);
+    if (name === "checks" && CH_TABLE_MISSING) return Promise.resolve(null);
     var failed = false;
     function fail(what, err) { failed = true; syncFailed(what, err); }
     var local = meta.local() || [];
@@ -1008,6 +1051,7 @@
     probeFixedAssetsTable(); // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
     probeCashierShiftsTable(); // 🧾 بناء 176: هل جدول cashier_shifts اتعمل (ترحيل ٥٤) ولا لسه
     probeCarTripsTable(); // 🚚 بناء 178: هل جدول car_trips اتعمل (ترحيل ٥٥) ولا لسه
+    probeChecksTable(); // 🧾 بناء 190: هل جدول checks اتعمل (ترحيل ٦٢) ولا لسه
     probeVoucherRefs(); // 🆕 بناء 184: هل عمودا وسم السند (ref_type/ref_id) على vouchers موجودان (ترحيل ٥٦) ولا لسه
     // 🆕 بناء 125 (بند 16): هل جدول messages اتعمل (ترقية ٤٥) ولا لسه على القرص بس.
     // الفحص ده بيحدد وحده ظهور تبويب «الدردشة» — فالترحيل لما يتنفّذ بأمر المالك

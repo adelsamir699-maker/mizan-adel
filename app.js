@@ -46,6 +46,10 @@
   // مندوب يوم معيّن، ثم بيع من السيارة (النقدية تبقى على ذمة المندوب)، ثم تصفية آخر اليوم
   // (الباقي يرجع للمخزن + النقد يورَّد لخزينة يختارها المالك) + تقرير.
   const LS_CAR_TRIPS = "mizan_car_trips_v1";
+  // 🧾 بناء 190 (ترقية ٦٢): الشيكات (أوراق القبض) — الشيك الوارد بيخصم مديونية العميل
+  // **فورًا** ويقف هنا بتاريخ الاستحقاق لحد التحصيل (يدخل خزينة) أو الارتجاع (ترجع المديونية).
+  // المفتاح جوّه LS_ALL_KEYS عمدًا: بيانات شركة ⇒ تتزامن وتُمسح مع تبديل الشركة.
+  const LS_CHECKS = "mizan_checks_v1";
   /* 🧱 بناء 186: «أرضية» أرقام السندات والقيود — أعلى رقم استُخدم ما يتعادش أبدًا.
      السبب: الهوية السحابية (detUuid) **حتمية من الرقم المحلي**؛ فلو الرقم اتعاد استخدامه،
      الصف الجديد ياخد نفس الـ uuid ⇒ upsert يكتب فوق صف قديم. القيود كان عندها JRN_ID_FLOOR
@@ -67,7 +71,7 @@
     LS_CUSTOMERS, LS_TXS, LS_PRODUCTS, LS_ACTIVITY, LS_SALES, LS_TREASURY,
     LS_SUPPLIERS, LS_SUP_TXS, LS_PURCHASES, LS_ACCOUNTS, LS_JOURNAL,
     LS_USERS, LS_VOUCHERS, LS_SALE_RETURNS, LS_PURCHASE_RETURNS, LS_SETTINGS,
-    LS_FIXED_ASSETS, LS_OWNERS, LS_SHIFTS, LS_CAR_TRIPS
+    LS_FIXED_ASSETS, LS_OWNERS, LS_SHIFTS, LS_CAR_TRIPS, LS_CHECKS
   ];
   // 🛡 عزل الشركات: أي مفتاح آخر كتبته بيانات شركة معينة
   // (لو دخل حساب من شركة تانية → البيانات القديمة تُمسح قبل التحميل)
@@ -255,8 +259,13 @@
 
   // الشركات الجديدة تبدأ "بيور": صندوق نقدي واحد برصيد صفر — لا بنوك ولا محافظ ولا أرصدة.
   // صاحب الشركة يضيف حساباته بنفسه من إعدادات مؤسسته.
+  // 🧾 بناء 190 (طلب المالك 19/10): الافتراضي بقى يشمل «المحفظة» (رقم 000000 قابل للتعديل،
+  // والرقم مش بيأثر على الرصيد) + «إنستا باي» نوع مستقل **محمي بالنظام** (ما يغيّروش العميل
+  // ولا يشيله — لأن رصيده بيظهر لوحده في الشاشة الرئيسية).
   const seedTreasury = [
-    { id: 1, name: "الصندوق الرئيسي (نقدي)", type: "cash", balance: 0 }
+    { id: 1, name: "الصندوق الرئيسي", type: "cash", balance: 0 },
+    { id: 2, name: "المحفظة", type: "wallet", accountNo: "000000", balance: 0 },
+    { id: 3, name: "إنستا باي", type: "instapay", balance: 0, system: true }
   ];
 
   const seedSuppliers = [
@@ -286,6 +295,8 @@
     { id: 5, code: "1.1.3", nameAr: "المحافظ الإلكترونية", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
     { id: 6, code: "1.1.4", nameAr: "المخزون (بضاعة)", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
     { id: 7, code: "1.1.5", nameAr: "مديونيات العملاء", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
+    // 🧾 بناء 190 (ترقية ٦٢): أوراق القبض — الشيك الوارد يقف هنا (أصل) لحد التحصيل
+    { id: 24, code: "1.1.7", nameAr: "شيكات لدى العملاء", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
     { id: 8, code: "1.3", nameAr: "الأصول الثابتة", type: "asset", parentId: 1, openingBalance: 0, isActive: true },
     { id: 9, code: "1.3.1", nameAr: "المباني والمعدات", type: "asset", parentId: 8, openingBalance: 0, isActive: true },
     { id: 10, code: "2", nameAr: "الالتزامات", type: "liability", parentId: 0, openingBalance: 0, isActive: true },
@@ -501,6 +512,10 @@
   // 🚚 بناء 178: رحلات سيارات مناديب المبيعات (سيارات السجل نفسها محفوظة في إعدادات العميل
   // تحت المفتاح `cars`، مش هنا؛ هنا بس الرحلات اللي فيها تحميل/بيع/تصفية).
   let carTrips = [];
+  // 🧾 بناء 190: الشيكات (أوراق القبض) — {id, partyKind, customerId, customerName, bankName,
+  // checkNo, dueDate, amount, status:"pending|collected|returned|cancelled", treasuryId,
+  // collectedAt, notes, refType, refId}
+  let checks = [];
   let editingId = null;
 
   /* ================== أدوات ================== */
@@ -968,6 +983,8 @@
     DB.cashier_shifts = shifts;
     // 🚚 بناء 178: رحلات سيارات المناديب
     DB.car_trips = carTrips;
+    // 🧾 بناء 190: الشيكات — النسخ السحابي بيقرأها من MIZAN_STATE.checks
+    DB.checks = checks;
   }
 
   function pushTable(name) {
@@ -1263,6 +1280,10 @@
       shifts = JSON.parse(localStorage.getItem(LS_SHIFTS)) || [];
       // 🚚 بناء 178: تحميل رحلات سيارات المناديب
       carTrips = JSON.parse(localStorage.getItem(LS_CAR_TRIPS)) || [];
+      // 🧾 بناء 190: تحميل الشيكات
+      checks = JSON.parse(localStorage.getItem(LS_CHECKS)) || [];
+      // 🧾 بناء 190: «إنستا باي» و«المحفظة» الافتراضيتان لأي شركة قديمة ناقصها (بيانات محلية)
+      ensureDefaultTreasuries();
       TAX.enabled = settings.taxEnabled == null ? TAX.enabled : Boolean(settings.taxEnabled);
       if (settings.taxRate != null) {
         const r = parseFloat(settings.taxRate) || 0;
@@ -1318,6 +1339,7 @@
       if (!localStorage.getItem(LS_FIXED_ASSETS)) saveFixedAssets();
       if (!localStorage.getItem(LS_SHIFTS)) saveShifts();
       if (!localStorage.getItem(LS_CAR_TRIPS)) saveCarTrips();
+      if (!localStorage.getItem(LS_CHECKS)) saveChecks();
       if (!localStorage.getItem(LS_SETTINGS)) saveSettings();
     } catch (e) {
       console.warn("mizan: المتصفح رفض تثبيت الحالة على القرص — البرنامج شغال في الذاكرة", e && e.message);
@@ -1414,6 +1436,30 @@
   function saveCarTrips() {
     localStorage.setItem(LS_CAR_TRIPS, JSON.stringify(carTrips));
     pushTable("car_trips"); syncToLocalDisk();
+  }
+
+  // 🧾 بناء 190: حفظ الشيكات — محلي أولًا ثم رفع سحابي ثم لقطة الديسك
+  function saveChecks() {
+    localStorage.setItem(LS_CHECKS, JSON.stringify(checks));
+    pushTable("checks"); syncToLocalDisk();
+  }
+
+  // 🧾 بناء 190: ضمان وجود «إنستا باي» (خزينة نظام محمية) + «المحفظة» الافتراضية لأي شركة
+  // ناقصاها (شركات قديمة اتعملت قبل الترقية ٦٢). بتتنادى عند التحميل المحلي فقط — والشركات
+  // الجديدة بتاخدهم من بذرة القاعدة/`seedTreasury` أصلًا.
+  function ensureDefaultTreasuries() {
+    try {
+      if (!Array.isArray(treasury)) return;
+      let changed = false;
+      if (!treasury.some((t) => t && t.type === "instapay")) {
+        treasury.push({ id: treasury.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+          name: "إنستا باي", type: "instapay", balance: 0, system: true });
+        changed = true;
+      } else {
+        treasury.filter((t) => t && t.type === "instapay").forEach((t) => { if (!t.system) { t.system = true; changed = true; } });
+      }
+      if (changed) saveTreasury();
+    } catch (e) { }
   }
 
   function saveActivity() {
@@ -2681,6 +2727,14 @@
     const expToday = vouchers.filter((v) => v.type === "out" && isToday(v.date) && !isMoveVoucher(v)).reduce((m, v) => m + (v.amount || 0), 0);
     const revToday = vouchers.filter((v) => v.type === "in" && isToday(v.date) && !isMoveVoucher(v)).reduce((m, v) => m + (v.amount || 0), 0);
     const treTotal = treasury.reduce((m, t) => m + (t.balance || 0), 0);
+    // 🧾 بناء 190 (طلب المالك 19/10): تفصيل أرصدة الأموال — النقدية لوحدها بغض النظر عن
+    // المحافظ/إنستا باي، وكل واحد رصيد مستقل، والشيكات (لسه تحت التحصيل) سطر لوحده.
+    const kSum = (ty) => Math.round(treasury.filter((t) => t.type === ty).reduce((m, t) => m + (Number(t.balance) || 0), 0) * 100) / 100;
+    const kCash = kSum("cash"), kBank = kSum("bank"), kWallet = kSum("wallet"), kInsta = kSum("instapay");
+    const kChecks = Math.round((Array.isArray(checks) ? checks : [])
+      .filter((c) => c && c.status === "pending" && c.direction !== "out")
+      .reduce((m, c) => m + (Number(c.amount) || 0), 0) * 100) / 100;
+    const kMoney = Math.round((kCash + kBank + kWallet + kInsta + kChecks) * 100) / 100;
 
     $("#kSales").textContent = fmt(salesToday) + " ج.م";
     $("#kPurchases").textContent = fmt(purToday) + " ج.م";
@@ -2700,6 +2754,14 @@
     $("#kMonthProfit").textContent = fmt(profitMonth) + " ج.م";
     paintDir("#kMonthProfit", profitMonth > 0 ? "in" : profitMonth < 0 ? "out" : "");
     $("#kTreasury").textContent = fmt(treTotal) + " ج.م";
+    // 🧾 بناء 190: سطور الأرصدة المفصّلة (بتُلوّن بالأخضر/الأحمر لو سالبة)
+    const setKBal = (id, v) => { const el = $(id); if (el) el.textContent = fmt(v) + " ج.م"; };
+    setKBal("#kCashBal", kCash);
+    setKBal("#kBankBal", kBank);
+    setKBal("#kWalletBal", kWallet);
+    setKBal("#kInstaBal", kInsta);
+    setKBal("#kCheckBal", kChecks);
+    setKBal("#kMoneyTotal", kMoney);
 
     const low = products.filter((pr) => pr.qty <= pr.reorder);
     $("#kLowStock").textContent = low.length.toString();
@@ -9574,7 +9636,7 @@ id: nextVoucherId(),
       })
       .forEach((t) => {
         const tr = document.createElement("tr");
-        const typeName = t.type === "cash" ? "صندوق نقدي 💵" : t.type === "bank" ? "حساب بنكي 🏛️" : "محفظة 📱";
+        const typeName = t.type === "cash" ? "صندوق نقدي 💵" : t.type === "bank" ? "حساب بنكي 🏛️" : t.type === "instapay" ? "إنستا باي ⚡" : "محفظة 📱";
         const tTotals = totals[t.id] || { in: 0, out: 0 };
         tr.innerHTML =
           '<td hidden></td>' +
@@ -9680,6 +9742,12 @@ id: nextVoucherId(),
   }
 
   function openTreasuryDialog(t) {
+    // 🧾 بناء 190: «إنستا باي» خزينة نظام (رصيدها في الشاشة الرئيسية) — ممنوع تعديلها أو
+    // تغيير نوعها (طلب المالك: يضيف حساب بنك عادي لكن ما يعدّلش إنستا).
+    if (t && t.system) {
+      toast("«إنستا باي» حساب نظامي محمي — رصيده بيتعرض لوحده في الشاشة الرئيسية ومينفعش يتعدّل. ضيف حساب بنكي عادي لو محتاج.", "warning");
+      return;
+    }
     treasuryEditingId = t ? t.id : null;
     $("#treasuryModalTitle").textContent = t ? "✏️ تعديل الخزينة" : "➕ إضافة خزينة / حساب";
     $("#tName").value = t ? t.name : "";
@@ -11874,8 +11942,10 @@ id: nextVoucherId(),
   // الاحتياطي كان ميت ⇒ الدالة بترجع null ⇒ invoiceJrnPlan يرد {error:"cash"} ⇒ **الترحيل بيتلغى**.
   // الإصلاح: الكود بالحرف ⇒ نسخة الكود بلا نقاط ⇒ بالاسم (بلا شرط parentId)، وإلا لا يوجد حساب مطابق.
   function accForTreasuryAcc(t) {
-    const byCode = { cash: "1.1.1", bank: "1.1.2", wallet: "1.1.3" };
-    const byName = { cash: "صناديق", bank: "البنوك", wallet: "المحافظ" };
+    // 🧾 بناء 190: «إنستا باي» بترحّل على حساب البنوك (1.1.2) — رصيدها المنفصل في اللوحة
+    // محسوب من نوع الخزينة نفسه، فالمركز المالي/الدليل يفضلوا بسيطين.
+    const byCode = { cash: "1.1.1", bank: "1.1.2", instapay: "1.1.2", wallet: "1.1.3" };
+    const byName = { cash: "صناديق", bank: "البنوك", instapay: "البنوك", wallet: "المحافظ" };
     const key = t && byCode[t.type] ? t.type : "";
     if (!key) return null;
     let a = accounts.find((x) => String(x.code) === byCode[key] && x.isActive);
@@ -11892,7 +11962,7 @@ id: nextVoucherId(),
   function fillTreasurySelect(selId, labelMainCash) {
     const el = $(selId);
     el.innerHTML = "";
-    const ORD = { cash: 0, bank: 1, wallet: 2 };
+    const ORD = { cash: 0, bank: 1, instapay: 2, wallet: 3 };
     const rank = (t) => (ORD[t.type] !== undefined ? ORD[t.type] : 3);
     const list = treasury.slice().sort((a, b) => rank(a) - rank(b) || String(a.name || "").localeCompare(String(b.name || ""), "ar"));
     const mainCash = labelMainCash
@@ -11901,7 +11971,7 @@ id: nextVoucherId(),
     list.forEach((t) => {
       const opt = document.createElement("option");
       opt.value = t.id;
-      const typeLbl = t.type === "bank" ? "بنك" : t.type === "wallet" ? "محفظة" : "نقدية";
+      const typeLbl = t.type === "bank" ? "بنك" : t.type === "instapay" ? "إنستا باي" : t.type === "wallet" ? "محفظة" : "نقدية";
       opt.textContent = mainCash && Number(t.id) === Number(mainCash.id)
         ? "الخزينة — " + t.name + " — رصيد " + fmt(t.balance || 0) + " ج.م"
         : t.name + " (" + typeLbl + ") — رصيد " + fmt(t.balance || 0) + " ج.م";
@@ -11917,7 +11987,7 @@ id: nextVoucherId(),
   function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
   function treasuryTypeLabel(t) {
-    return (t && t.type) === "bank" ? "بنك" : (t && t.type) === "wallet" ? "محفظة" : "نقدية";
+    return (t && t.type) === "bank" ? "بنك" : (t && t.type) === "instapay" ? "إنستا باي" : (t && t.type) === "wallet" ? "محفظة" : "نقدية";
   }
 
   // الحسابات التانية اللي فيها فلوس (بالترتيب النزولي) + إجمالي أرصدة كل الحسابات
@@ -12487,7 +12557,7 @@ id: nextVoucherId(),
   function ensureJrnStd() {
     const before = accounts.length;
     const was = accounts.filter((x) => x && x.isActive === false && STD_CHART[String(x.code)]).length;
-    ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "2.1.1", "2.1.2", "2.1.3", "4.1"].forEach(ensureJrnAccount);
+    ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "1.1.7", "2.1.1", "2.1.2", "2.1.3", "4.1"].forEach(ensureJrnAccount);
     const now = accounts.filter((x) => x && x.isActive === false && STD_CHART[String(x.code)]).length;
     if (accounts.length !== before || now !== was) { try { saveAccounts(); } catch (e) { } }
     return true;
@@ -17832,7 +17902,12 @@ id: nextVoucherId(),
       if (t) openTreasuryDialog(t);
     });
     $("#tType").addEventListener("change", () => {
-      const type = $("#tType").value;
+    const type = $("#tType").value;
+    // 🧾 بناء 190: حارس النظام — إنستا باي ما يتعدّلش
+    if (treasuryEditingId) {
+      const cur = treasury.find((x) => x.id === treasuryEditingId);
+      if (cur && cur.system) { toast("«إنستا باي» حساب نظامي محمي ومينفعش يتعدّل.", "warning"); hideModal("mTreasury"); return; }
+    }
       $("#tAccountNo").placeholder = type === "bank" ? "رقم الحساب البنكي..." : type === "wallet" ? "رقم المحفظة..." : "غير مطلوب للصندوق";
     });
 
@@ -18845,6 +18920,10 @@ const pwEye = document.getElementById("btnShowPass");
     step("cashier_shifts", S.cashier_shifts, shifts, function (v) { shifts = v; });
     // 🚚 بناء 178: رحلات سيارات المناديب
     step("car_trips", S.car_trips, carTrips, function (v) { carTrips = v; });
+    // 🧾 بناء 190: الشيكات — دمج بنفس الهوية (local_id)
+    step("checks", S.checks, checks, function (v) { checks = v; });
+    // 🧾 بناء 190: تأمين «إنستا باي»/«المحفظة» الافتراضيتين بعد اعتماد السحابة
+    ensureDefaultTreasuries();
     step("journal_entries", S.journalEntries, journalEntries, function (v) { journalEntries = v; });
     // 🧱 بناء 186: بعد دمج السندات/القيود من السحابة، نحدّث «أرضية» الأرقام
     if (typeof idFloorsLoad === "function") idFloorsLoad();
