@@ -7367,7 +7367,10 @@
       const ash = (typeof activeShift === "function") ? activeShift() : null;
       if (ash) tr = treasury.find((x) => Number(x.id) === Number(ash.treasuryId)) || tr;
     }
-    if (!tr) tr = treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    // 🔧 بناء 205: **ممنوع** الرجوع الصامت لحساب النقدية لو الطريقة بنك/محفظة/إنستا.
+    // (قبل كده كانت الفاتورة تتحفظ «محافظ إلكترونية» والقيد يترحّل على الصندوق النقدي
+    //  لو الشركة مش مسجّلة محافظ ⇒ أرقام غلط في الدفتر. الفحص بقى يمنع الحفظ برسالة.)
+    if (!tr && wantType === "cash") tr = treasury.find((x) => x.type === "cash") || treasury[0] || null;
     return tr;
   }
   function posFillTreasurySelect(el, type, selectedId) {
@@ -7438,13 +7441,44 @@
       "الفاتورة: " + fmt(grand) + " ج.م — سطور السداد: " + fmt(round2(grand + cp.overBy)) + " ج.م" +
       " (زيادة " + fmt(cp.overBy) + " ج.م).\nعدّل مبالغ السطور (أو خليها تغطي الفاتورة بالظبط) وحاول تاني.";
   }
+  /* 🆕 بناء 205 (طلب المالك 19/10): سطر «نقداً» ثابت فوق ⇒ **قائمة اختيار طريقة السداد لأي سطر
+     إضافي ما تعرضش «نقداً»** (الاختيارات = باقي الطرق بس: تحويل بنكي/محافظ/إنستا/شيك/آجل). */
+  function posExtraPayMethods(kind) {
+    const all = kind === "sale" ? POS_PAY_METHODS : PP_PAY_METHODS;
+    const rest = all.filter((m) => !posPayMode(m).isCash);
+    return rest.length ? rest : all;
+  }
+  /* 🆕 بناء 205 (طلب المالك 19/10): **مافيش حفظ لفاتورة بمحفظة/بنك/إنستا مش مسجّل**.
+     لو الشركة مش مسجّلة محافظ إلكترونية (أو حسابات بنوك/إنستا) في «إعدادات مؤسستك»،
+     الفاتورة **ما تتحفظش** برسالة واضحة بدل ما القيد يترحّل صامتًا على الصندوق النقدي.
+     (لو مسجّل رقم واحد ⇒ بيظهر ويتختار تلقائيًا؛ أكتر من رقم ⇒ المستخدم يختار من الخانة.) */
+  function posPayTreasuryError(kind, t) {
+    const need = { wallet: "المحافظ الإلكترونية", bank: "حسابات البنوك", instapay: "حسابات إنستا باي" };
+    const missing = [];
+    ((t && t.payments) || []).forEach((p) => {
+      if (!(Number(p.amount) > 0.0001)) return;
+      const mode = posPayMode(p.method);
+      const type = mode.isWallet ? "wallet" : mode.isBank ? "bank" : mode.isInsta ? "instapay" : "";
+      if (!type) return;
+      if (!treasury.some((x) => x.type === type)) missing.push(type);
+    });
+    if (!missing.length) return "";
+    const uniq = missing.filter((x, i) => missing.indexOf(x) === i);
+    const names = uniq.map((x) => need[x]).join(" / ");
+    return "طريقة السداد مختارة «" + names + "» بس مش مسجّل عندك " + names + " في «إعدادات مؤسستك».\n\n" +
+      "سجّل " + (uniq.length > 1 ? "الأرقام" : "الرقم") + " من «إعدادات مؤسستك» أولًا (لو مسجّل رقم واحد هيظهر ويتختار لوحده، " +
+      "ولو أكتر هتختار من خانة السداد)، أو غيّر طريقة السداد لطريقة مسجّلة عندك.\n\n" +
+      "الفاتورة ما اتحفظتش.";
+  }
   function posRenderExtraPays(kind) {
     const listEl = $(kind === "sale" ? "#posPayExtraList" : "#ppPayExtraList");
     if (!listEl) return;
     const arr = posExtraArr(kind);
-    const methods = kind === "sale" ? POS_PAY_METHODS : PP_PAY_METHODS;
+    const methods = posExtraPayMethods(kind);
     listEl.innerHTML = "";
     arr.forEach((p, i) => {
+      // سطر قديم محفوظ بطريقة «نقداً» ⇒ يتحوّل لأول طريقة إضافية (المبلغ والنقدي فوقه ثابت)
+      if (posPayMode(p.method).isCash) p.method = methods[0];
       const mode = posPayMode(p.method);
       const row = document.createElement("div");
       row.className = "pay-line";
@@ -7471,7 +7505,7 @@
     const lines = posExtraArr(kind);
     const sumAll = round2(lines.reduce((m, p) => m + posExtraAmount(p), 0));
     const remain = round2(Math.max(grand - sumAll, 0));
-    lines.push({ method: "نقداً", amount: remain > 0 ? remain : "", treasuryId: null, bankName: "", checkNo: "", dueDate: todayISO() });
+    lines.push({ method: posExtraPayMethods(kind)[0], amount: remain > 0 ? remain : "", treasuryId: null, bankName: "", checkNo: "", dueDate: todayISO() });
     posRenderExtraPays(kind);
     if (kind === "sale") posRecalc(); else ppRecalc();
     posPayOverMsg(kind);
@@ -7604,6 +7638,14 @@
     el.className = cls || "";
   }
 
+  /* 🆕 بناء 205 (طلب المالك 19/10): مربع العميل/المورد انتقل لجزء السداد،
+     **يظهر بس لما يكون فيه جزء آجل** (على حسابه)، ويختفي لو الفاتورة كلها مدفوعة. */
+  function posAjalCustomerVisibility(kind, due) {
+    const box = $(kind === "sale" ? "#fldPosCust" : "#fldPPCust");
+    if (!box) return;
+    const d = Number(due);
+    box.hidden = !(d > 0.0001);
+  }
   function posUpdateSummary(kind, t) {
     const block = $(kind === "sale" ? "#posSummaryBlock" : "#ppSummaryBlock");
     if (!block) return;
@@ -7676,6 +7718,7 @@
     posPaymentFieldToggle("sale", posCashLineAmount(pd));
     posUpdatePartyBalance("sale");
     posUpdateSummary("sale", { grand: grand, paid: pd.paid, due: pd.due });
+    posAjalCustomerVisibility("sale", pd.due);
     return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments, overBy: pd.overBy };
   }
 
@@ -7688,7 +7731,7 @@
       tr.dataset.idx = i;
       tr.innerHTML =
         '<td>' + esc(it.code) + '</td>' +
-        '<td style="text-align:right">' + esc(it.nameAr) + '</td>' +
+        '<td>' + esc(it.nameAr) + '</td>' +
         '<td>' + esc(lineUnitText(it)) + '</td>' +
         '<td><input class="cell-input" data-f="qty" type="text" value="' + esc(it.qty) + '" /></td>' +
         '<td class="c-fixed">' + fmt(it.price) + '</td>' +
@@ -7753,6 +7796,9 @@
     payment = t.due > 0 ? "آجل" : (((t.payments || []).find((p) => !posPayMode(p.method).isAjal) || {}).method || "نقداً");
     const _overMsg = posPayOverError("sale", t.grand);
     if (_overMsg) { alert(_overMsg); return; }
+    // 🆕 بناء 205: ممنوع الحفظ بمحفظة/بنك/إنستا غير مسجّل في إعدادات مؤسستك
+    const _trMsg = posPayTreasuryError("sale", t);
+    if (_trMsg) { alert(_trMsg); return; }
     if (payment === "آجل" && cust.protected) {
       toast("الرجاء اختيار عميل حقيقي للبيع الآجل (لا يمكن ترحيلها للعميل النقدي).", "warning");
       return;
@@ -8375,6 +8421,7 @@
     posPaymentFieldToggle("purchase", posCashLineAmount(pd));
     ppUpdatePartyBalance("purchase");
     posUpdateSummary("purchase", { grand: grand, paid: pd.paid, due: pd.due });
+    posAjalCustomerVisibility("purchase", pd.due);
     return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments, overBy: pd.overBy };
   }
 
@@ -8387,7 +8434,7 @@
       tr.dataset.idx = i;
       tr.innerHTML =
         '<td>' + esc(it.code) + '</td>' +
-        '<td style="text-align:right">' + esc(it.nameAr) + '</td>' +
+        '<td>' + esc(it.nameAr) + '</td>' +
         '<td>' + esc(lineUnitText(it)) + '</td>' +
         '<td><input class="cell-input" data-f="qty" type="text" value="' + esc(it.qty) + '" /></td>' +
         '<td><input class="cell-input" data-f="price" type="text" value="' + fmt(it.price) + '" /></td>' +
@@ -8423,6 +8470,9 @@
     payment = t.due > 0 ? "آجل" : (((t.payments || []).find((p) => !posPayMode(p.method).isAjal) || {}).method || "نقداً");
     const _overMsg = posPayOverError("purchase", t.grand);
     if (_overMsg) { alert(_overMsg); return; }
+    // 🆕 بناء 205: ممنوع الحفظ بمحفظة/بنك/إنستا غير مسجّل في إعدادات مؤسستك
+    const _trMsg = posPayTreasuryError("purchase", t);
+    if (_trMsg) { alert(_trMsg); return; }
     if (payment === "آجل" && supplier.protected) {
       toast("الرجاء اختيار مورد حقيقي للشراء الآجل (لا يمكن ترحيلها للمورد النقدي).", "warning");
       return;
@@ -11481,6 +11531,7 @@ id: nextVoucherId(),
     add("btnVanSaleCancel", "click", () => hideModal("mVanSale"));
     add("btnVanSaleSave", "click", saveVanSale);
     const ssearch = $("#vanSaleSearch"); if (ssearch) ssearch.addEventListener("input", renderVanSaleProducts);
+    const spay = $("#vanSalePay"); if (spay) spay.addEventListener("change", vanSaleAjalVisibility);
     const scart = $("#vanSaleCart");
     if (scart) scart.addEventListener("click", (ev) => {
       const b = ev.target.closest("[data-cact]");
@@ -11652,6 +11703,7 @@ id: nextVoucherId(),
       if (cashCust) csel.value = String(cashCust.id);
     }
     const pay = $("#vanSalePay"); if (pay) pay.value = "نقدي";
+    vanSaleAjalVisibility();
     const s = $("#vanSaleSearch"); if (s) s.value = "";
     const m = $("#mVanSale"); if (m) m.dataset.tid = String(tid);
     renderVanSaleProducts();
@@ -11732,6 +11784,20 @@ id: nextVoucherId(),
     }
     renderVanSaleCart();
   }
+  // 🆕 بناء 205: نفس سلوك فاتورة البيع — خانة العميل تظهر بس لما البيع يكون «آجل»
+  // (النقدي بيتحسب على ذمة المندوب نفسه، فمش محتاج اختيار عميل).
+  function vanSaleAjalVisibility() {
+    const sel = $("#vanSalePay");
+    const fld = $("#vanSaleCustField");
+    if (!sel || !fld) return;
+    const ajal = String(sel.value || "") === "آجل";
+    fld.hidden = !ajal;
+    const csel = $("#vanSaleCustomer");
+    if (!ajal && csel) {
+      const cashCust = (customers || []).find((c) => c && c.protected);
+      if (cashCust) csel.value = String(cashCust.id);
+    }
+  }
   function vanSaleTotals() {
     let sub = 0;
     (vanSaleDraft ? vanSaleDraft.items : []).forEach((it) => { sub += (Number(it.qty) || 0) * (Number(it.price) || 0); });
@@ -11748,7 +11814,7 @@ id: nextVoucherId(),
       const tot = Math.round((Number(it.qty) || 0) * (Number(it.price) || 0) * 100) / 100;
       const tr = document.createElement("tr");
       tr.innerHTML =
-        '<td style="text-align:right">' + esc(it.nameAr) + '</td>' +
+        '<td>' + esc(it.nameAr) + '</td>' +
         '<td><input class="cell-input" type="text" inputmode="decimal" data-cf="qty" data-idx="' + idx + '" value="' + esc(it.qty) + '" /></td>' +
         '<td><input class="cell-input" type="text" inputmode="decimal" data-cf="price" data-idx="' + idx + '" value="' + esc(it.price) + '" /></td>' +
         '<td>' + fmt(tot) + '</td>' +

@@ -2610,3 +2610,201 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 @media (max-width: 640px) { .modal.m720, .modal.m900 { max-width:96vw; } }
 
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   🆕 بناء 205 — إعادة تنسيق شاشة الفاتورة (بيع/شراء/سيارات المناديب)
+   طلب المالك (19/10): هيدر أقصر يحتوي النص والأزرار · العميل ينتقل لجزء السداد
+   ويظهر عند «آجل» · دمج صف المستودع مع صف إدخال الصنف · «الصافي + السداد»
+   في العمود الشمال كامل الطول · جدول الأصناف يمين وباقي المساحة · أعمدة أضيق ·
+   خلفية الجدول بيج والسطر الفعّال أبيض · توسيط محتوى الخانات · خط واضح منسّق
+   باحتواء تلقائي (مافيش حرف يتقطع).
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --inv-bg: #EFF6FF;
+  --inv-bg-2: #DBEAFE;
+  --inv-line: #BFDBFE;
+  --inv-ink: #1E3A8A;
+}
+
+/* --- الخط والاحتواء التلقائي (بلا قصّ للحروف) --- */
+.view-sales, .view-purchases, #mVanSaleBox {
+  font-family: "Segoe UI", Tahoma, "Noto Naskh Arabic", "Cairo", "Dubai", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.view-sales label, .view-purchases label, #mVanSaleBox label,
+.view-sales .btn, .view-purchases .btn, #mVanSaleBox .btn {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+}
+.view-sales input, .view-purchases input, .view-sales select, .view-purchases select,
+#mVanSaleBox input, #mVanSaleBox select {
+  min-width: 0;
+  max-width: 100%;
+  font-family: inherit;
+  text-overflow: ellipsis;
+}
+
+/* --- الهيدر الأقصر --- */
+.view-sales .view-header, .view-purchases .view-header {
+  min-height: 0;
+  padding: 2px 0 4px;
+  gap: 8px;
+  align-items: center;
+}
+.view-sales .view-title, .view-purchases .view-title {
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 800;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.view-sales .view-actions .btn, .view-purchases .view-actions .btn {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+/* --- هيكل الشاشة: يمين (إدخال + جدول) / شمال (الصافي + السداد) --- */
+.view-sales, .view-purchases { overflow: hidden; }
+.pos-shell { display: flex; gap: 10px; flex: 1 1 auto; min-height: 0; align-items: stretch; }
+.pos-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.pos-side { flex: 0 0 320px; width: 320px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pos-side .inv-total-box {
+  flex: 0 0 auto;
+  width: 100%;
+  height: 150px;
+  min-height: 150px;
+  box-sizing: border-box;
+}
+.pos-side .pay-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.pos-side .pay-panel-body { flex: 1 1 auto; max-height: none; min-height: 0; overflow: auto; }
+
+.pos-main .pos-fields { padding: 7px 9px; gap: 6px; flex: 0 0 auto; }
+.pos-main .inv-items-wrap { flex: 1 1 auto; min-height: 0; margin-top: 0; }
+.pos-main .pos-footer { flex: 0 0 auto; padding: 6px 10px; gap: 6px; }
+.pos-main .pos-foot-row { gap: 10px; }
+
+/* صف إدخال واحد (بعد دمج صف المستودع) */
+.inv-entry-row { flex-wrap: wrap; align-items: flex-end; gap: 7px; }
+.inv-entry-row .fld-code { width: 132px; }
+.inv-entry-row .fld-qty { width: 68px; }
+.inv-entry-row .fld-price { width: 108px; }
+.inv-entry-row .fld-wh { width: 132px; }
+.inv-entry-row .fld.grow { flex: 1 1 200px; min-width: 140px; }
+.inv-entry-row .fld-btn { justify-content: flex-end; }
+.inv-entry-row .fld-btn .btn { padding: 6px 10px; }
+
+/* مربع العميل داخل لوحة السداد */
+.fld-cust-pay { width: 100%; background: #fff; border: 1px solid #BBF7D0; border-radius: 8px; padding: 5px 7px; }
+.pay-panel-buy .fld-cust-pay { border-color: #BFDBFE; }
+.fld-cust-pay label { font-size: 12px; font-weight: 800; color: #166534; }
+.pay-panel-buy .fld-cust-pay label { color: #1E40AF; }
+.fld-cust-pay select { width: 100%; font-size: 13px; padding: 4px 6px; }
+
+/* --- جدول الأصناف: لبني (سماوي فاتح) + سطر فعّال أبيض + توسيط + توزيع ثابت --- */
+.inv-dgv { table-layout: fixed; width: 100%; background: var(--inv-bg); }
+.inv-dgv thead th {
+  background: var(--inv-bg-2);
+  color: var(--inv-ink);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+  vertical-align: middle;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  padding: 6px 4px;
+  border-bottom: 2px solid var(--inv-line);
+}
+.inv-dgv tbody td {
+  background: var(--inv-bg);
+  color: #1F2937;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  vertical-align: middle;
+  padding: 5px 4px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.inv-dgv tbody tr:nth-child(even) td { background: var(--inv-bg); }
+.inv-dgv tbody tr:hover td, .inv-dgv tbody tr.selected td { background: #fff; }
+.inv-dgv tbody tr.selected td { font-weight: 700; }
+.inv-dgv tbody td .cell-input { text-align: center; width: 100%; box-sizing: border-box; }
+.inv-dgv tbody td .btn.small { padding: 3px 7px; font-size: 12px; }
+.inv-dgv .cell-actions { text-align: center; }
+
+/* --- سيارات المناديب: نفس اللغة البصرية --- */
+#mVanSaleBox .van-sale-cols .dgv { table-layout: fixed; background: var(--inv-bg); }
+#mVanSaleBox .van-sale-cols .dgv thead th {
+  background: var(--inv-bg-2); color: var(--inv-ink); text-align: center;
+  font-size: 12px; padding: 6px 4px;
+}
+#mVanSaleBox .van-sale-cols .dgv tbody td {
+  background: var(--inv-bg); text-align: center; font-size: 13px; line-height: 1.45;
+  padding: 5px 4px; overflow-wrap: anywhere;
+}
+#mVanSaleBox .van-sale-cols .dgv tbody tr:hover td,
+#mVanSaleBox .van-sale-cols .dgv tbody tr.selected td { background: #fff; }
+
+/* --- الشاشات الأضيق: العمود الشمال ينزل تحت بلا قصّ --- */
+@media (max-width: 1120px) {
+  .view-sales, .view-purchases { overflow: auto; }
+  .pos-shell { flex-direction: column; }
+  .pos-side { flex: 0 0 auto; width: 100%; }
+  .pos-side .inv-total-box { height: 120px; min-height: 120px; }
+  .pos-main .inv-items-wrap { min-height: 220px; }
+}
+@media (max-width: 760px) {
+  .inv-entry-row { flex-wrap: wrap; }
+  .inv-entry-row .fld-code, .inv-entry-row .fld-wh { width: 100%; }
+  .inv-entry-row .fld.grow { flex: 1 1 100%; }
+  .inv-dgv thead th, .inv-dgv tbody td { font-size: 11.5px; padding: 4px 3px; }
+}
+/* --- بناء 205: ضبط دقيق بعد المعاينة (صف الإدخال + سطور السداد) --- */
+.inv-entry-row .fld { gap: 2px; }
+.inv-entry-row .fld > label { font-size: 11.5px; font-weight: 700; color: #334155; }
+.inv-entry-row .fld-card { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.inv-entry-row .fld-card .lbl-accent { font-size: 11.5px; }
+.inv-entry-row .fld-card .stock-hint { font-size: 11px; padding: 1px 7px; border-radius: 999px; }
+.inv-entry-row .fld.grow { display: flex; flex-direction: column; }
+.inv-entry-row .fld.grow input { width: 100%; box-sizing: border-box; }
+.inv-entry-row input, .inv-entry-row select { height: 30px; font-size: 13px; padding: 3px 6px; box-sizing: border-box; }
+.inv-entry-row .fld-btn .btn { height: 30px; padding: 0 12px; }
+
+/* سطر السداد: الطريقة + المبلغ + الحذف في سطر، والخزينة/البنك في سطر تحته */
+.pay-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pay-line .pl-method { order: 1; flex: 1 1 120px; min-width: 0; }
+.pay-line .pl-amount { order: 2; flex: 0 0 92px; }
+.pay-line .btn { order: 3; flex: 0 0 auto; padding: 3px 8px; }
+.pay-line .pl-treasury { order: 4; flex: 1 1 100%; min-width: 0; }
+.pay-line .pl-bank { order: 5; flex: 1 1 120px; min-width: 0; }
+.pay-line .pl-no { order: 6; flex: 0 0 92px; }
+.pay-line .pl-due { order: 7; flex: 1 1 130px; min-width: 0; }
+.pay-line select, .pay-line input { height: 30px; box-sizing: border-box; font-size: 13px; padding: 3px 6px; }
+.pay-panel-body { gap: 7px; }
+.pay-panel-head { gap: 6px; }
+
+/* ملخّص الفوتر: أعمدة مرتبة بلا زحمة */
+.pos-summary-block { gap: 22px; }
+.pos-sum-col { display: flex; flex-direction: column; gap: 3px; min-width: 190px; }
+.pos-sum-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.pos-sum-line b { font-variant-numeric: tabular-nums; }
+/* --- بناء 205: حدود واضحة لكل خانات الإدخال (كانت خانة اسم الصنف بلا حدود فتبان فاضية) --- */
+.inv-entry-row input, .inv-entry-row select {
+  border: 1px solid #CBD5E1;
+  border-radius: 7px;
+  background: #fff;
+  color: #0F172A;
+}
+.inv-entry-row input:focus, .inv-entry-row select:focus {
+  border-color: var(--primary);
+  outline: 2px solid rgba(37, 99, 235, .18);
+}
+.inv-entry-row .fld.grow .fld-card { order: 0; }
+.inv-entry-row .fld.grow input { order: 1; }
+/* --- بناء 205: زر السكانر أول السطر (خطوة أولى في الإدخال) --- */
+.inv-entry-row .fld-scan { flex: 0 0 auto; }
+.inv-entry-row .fld-scan .btn { padding: 0 14px; font-weight: 800; }
