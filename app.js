@@ -3755,6 +3755,9 @@
     // 🆕 بناء 203 (بند #3): لو الحركة دي «تحصيل بشيك» ⇒ لازم نرجّع قيد الشيك (CHCUST:) ونفكّ الشيك،
     // ومعه سند التحصيل لو الشيك اتحصّل بعد كده (وإلا الخزينة تفضل زايدة بقيمة شيك اترجع).
     const chkRec0 = !isSup ? checkOfTx(tx.id) : null;
+    /* 🧱 بناء 216: شيك «محتفظ به» اتحصّل بعد حذف فاتورته — حركة التحصيل دي مربوطة بـcollectionTxId.
+       حذفها يرجّع الشيك معلّق/محتفظ (زي ما كان) ويشيل سند التحصيل، **بلا حذف الشيك**. */
+    const chkKept0 = (Array.isArray(checks) ? checks : []).find((c) => c && Number(c.collectionTxId) === Number(tx.id)) || null;
     const party = isSup
       ? suppliers.find((s) => Number(s.id) === Number(tx.supplierId))
       : customers.find((c) => Number(c.id) === Number(tx.customerId));
@@ -3803,12 +3806,24 @@
         String(v.date || "") === String(tx.date || "")).slice(0, 1);
     }
     // 🆕 بناء 203 (بند #3): الشيك المتحصّل — سند التحصيل (`CHC:` + معرّف الشيك) يتشال مع حركته
-    if (chkRec0 && (chkRec0.status || "") === "collected") {
-      const chcId = "CHC:" + chkRec0.id;
+    const chkCollected0 = chkRec0 || chkKept0;
+    if (chkCollected0 && (chkCollected0.status || "") === "collected") {
+      const chcId = "CHC:" + chkCollected0.id;
       vouchers.filter((v) => String(v.refId || "") === chcId && vList.indexOf(v) < 0).forEach((v) => vList.push(v));
     }
     const vDrop = dropVouchersWithJournal(vList);
     pool.splice(idx, 1);
+    /* الشيك المحتفظ به يرجع لحالته السابقة (معلّق + محتفظ) — بياناته ومبلغه وقيده CHKEEP كما هم. */
+    if (chkKept0) {
+      chkKept0.status = "pending";
+      chkKept0.unapplied = !!chkKept0.collectionWasUnapplied || !!checkAdvanceTxOf(chkKept0);
+      chkKept0.collectedAt = "";
+      chkKept0.treasuryId = null;
+      chkKept0.collectionTxId = null;
+      chkKept0.collectionVoucherId = null;
+      chkKept0.notes = (chkKept0.notes ? chkKept0.notes + " | " : "") + "رجعت حركة التحصيل — الشيك معلّق تاني";
+      try { saveChecks(); } catch (e) { }
+    }
     bumpIdFloor(isSup ? "stx" : "tx", tx.id);   // 🧱 بناء 199: ما نعيدش رقم الحركة المحذوفة (منع الكتابة فوق صف سحابي)
     // 🆕 بناء 149 (سطر ١): حذف الحركة بيرجع قيدها كمان — تراجع كامل بنفس عرف الفاتورة (بناء 134)
     const jRemoved = removePartyTxJournal(isSup ? "supp" : "cust", tx.id);
@@ -9635,13 +9650,22 @@
         return;
       }
     }
-    const linkedChecks = checksOfInvoice(inv);
+    const linkedChecks = checksOfInvoice(inv).filter((c) => isSales ? !checkIsOut(c) : checkIsOut(c));
     const num = String(inv.invoiceNumber || inv.invoiceNo || "-");
     const amt = Math.round((Number(inv.grandTotal) || 0) * 100) / 100;
     if (!confirm("متأكد إنك عايز تحذف فاتورة الـ" + kind + " رقم (" + num + ") الخاصة بـ " + who + " بمبلغ " + fmt(amt) + " ج.م؟\n\nالحذف بيتراجع عن كل أثرها: الأصناف للمخزن، وأثر الدفع (الخزينة أو الرصيد وقيده). الخطوة دي ما ينفعش الرجوع عليها بعد التنفيذ.")
     ) {
       toast("تم الإلغاء — الفاتورة كما هي.", "warning");
       return;
+    }
+    /* 🧱 بناء 216 (قرار المالك): الشيك المرتبط بالفاتورة مش بيتحذف. نسأل صريح:
+       «موافق» = تنزيل على حساب الطرف (رصيد/دفعة مقدمة + أصل الشيك)،
+       «إلغاء» = يفضل الشيك محفوظ معلّق بلا أثر، ويتنزّل لاحقًا من تبويب الشيكات. */
+    let checkKeepCredit = false;
+    if (linkedChecks.length) {
+      const party = isSales ? "العميل" : "المورد";
+      const keptWhat = isSales ? "كأصل" : "كالتزام";
+      checkKeepCredit = confirm("الفاتورة عليها " + linkedChecks.length + " شيك/شيكات مرتبطة.\n\nهل ترغب أن يكون الشيك المرتبط بالفاتورة تنزيلًا من حساب " + party + "؟\n\nموافق: يتسجّل رصيد لصالح " + party + " والشيك يفضل محفوظ " + keptWhat + ".\nإلغاء: الشيك يفضل محفوظ معلّق بدون أثر، وتقدر تنزّله لاحقًا من تبويب «الشيكات».");
     }
     // 1) المخزون: فاتورة بيع → الكميات ترجع، فاتورة شراء → الكميات تتنقص
     items.forEach((it) => {
@@ -9658,39 +9682,46 @@
        والمستند نفسه اتحذف ⇒ مافيش أي مخرج للعميل.
        المفتاح دلوقتي = رقم الفاتورة في الوصف بس، واللي كان داخل الخزينة وقت التسجيل بيرجع لها. */
     let goneDue = 0;
-    // المفتاح: نفس بادئة الوصف + « رقم <num>» في آخره (مقاس مقابل سطر أطول يبدأ بنفس الرقم)
+    // المفتاح: نفس بادئة الوصف + « رقم <num>» في آخره أو يحتويه
     const dueDescOk = (d, word) => {
       const s = String(d || "");
-      return s.startsWith(word) && s.endsWith(" رقم " + num);
+      const shortWord = word.replace(" آجلة", "");
+      if (!(s.startsWith(word) || s.startsWith(shortWord))) return false;
+      /* حدّ رقم صارم: «رقم 220…04» ما يطابقش «رقم 220…041» (كان بيشيل سطر فاتورة تانية لنفس العميل). */
+      if (s.endsWith(" رقم " + num)) return true;
+      const re = new RegExp(" رقم " + num.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?!\\d)");
+      return re.test(s);
     };
-    if (pm === "آجل") {
-      if (isSales) {
-        for (let i = txs.length - 1; i >= 0; i--) {
-          const t = txs[i];
-          if (t && Number(t.customerId) === Number(inv.customerId)
-            && dueDescOk(t.desc, "فاتورة مبيعات آجلة")) {
-            goneDue = Math.round((goneDue + (Number(t.debit) || 0)) * 100) / 100;
-            txs.splice(i, 1);
-            bumpIdFloor("tx", t.id);   // 🧱 بناء 199: ما نعيدش رقم الحركة المحذوفة
-          }
+    /* 🧱 بناء 216: إزالة سطر المتبقي/الآجل أيا كانت وسيلة الدفع (آجل، شيك، متعدد، أو نقدي مع جزء متبقي).
+       حذف الفاتورة يخلي كل حاجة ترجع لحسابها كأن الفاتورة متعملتش خالص. */
+    if (isSales) {
+      for (let i = txs.length - 1; i >= 0; i--) {
+        const t = txs[i];
+        if (t && Number(t.customerId) === Number(inv.customerId)
+          && dueDescOk(t.desc, "فاتورة مبيعات آجلة")) {
+          goneDue = Math.round((goneDue + (Number(t.debit) || 0)) * 100) / 100;
+          txs.splice(i, 1);
+          bumpIdFloor("tx", t.id);   // 🧱 بناء 199: ما نعيدش رقم الحركة المحذوفة
         }
-        recalculateCustomerBalances();
-        saveCustomers();
-        saveTxs();
-      } else {
-        for (let i = supplierTxs.length - 1; i >= 0; i--) {
-          const t = supplierTxs[i];
-          if (t && Number(t.supplierId) === Number(inv.supplierId)
-            && dueDescOk(t.desc, "فاتورة مشتريات آجلة")) {
-            goneDue = Math.round((goneDue + (Number(t.debit) || 0)) * 100) / 100;
-            supplierTxs.splice(i, 1);
-            bumpIdFloor("stx", t.id);   // 🧱 بناء 199: ما نعيدش رقم حركة المورد المحذوفة
-          }
-        }
-        recalculateSupplierBalances();
-        saveSuppliers();
-        saveSupplierTxs();
       }
+      /* إعادة الحساب دايمًا (زي آجل 196): كمان لو سطر الطرف ضايع/متشطّب على جهاز تاني
+         الرصيد الحالي بيتصحّح من الحركات بدل ما يفضل متورّم. */
+      recalculateCustomerBalances();
+      saveCustomers();
+      saveTxs();
+    } else {
+      for (let i = supplierTxs.length - 1; i >= 0; i--) {
+        const t = supplierTxs[i];
+        if (t && Number(t.supplierId) === Number(inv.supplierId)
+          && dueDescOk(t.desc, "فاتورة مشتريات آجلة")) {
+          goneDue = Math.round((goneDue + (Number(t.debit) || 0)) * 100) / 100;
+          supplierTxs.splice(i, 1);
+          bumpIdFloor("stx", t.id);   // 🧱 بناء 199: ما نعيدش رقم حركة المورد المحذوفة
+        }
+      }
+      recalculateSupplierBalances();
+      saveSuppliers();
+      saveSupplierTxs();
     }
     /* 🆕 بناء 196 (قاعدة المالك 18/10 بحرفه): «لو عملت حذف مش ارتجاع لفاتورة عميل دافع جزء وعليه جزء،
        الحذف يخلي كل حاجة ترجع لحسابها كأن الفاتورة متعملتش خالص: النقدي بنفس القيمة، حساب العميل
@@ -9836,7 +9867,7 @@
        والشيك المعلّق يبقى «غير مخصص» (unapplied) ⇒ عند تحصيله لاحقًا يُقيَّد على مديونية
        العميل مش حساب الشيكات. ولو الشيك كان اتحصّل فعليًا (الفلوس في الخزينة) بيتحوّل
        رصيدًا دائنًا للعميل مع قيد إعادة تصنيف. */
-    const chkSettle = settleChecksOnInvoiceDelete(isSales, inv, linkedChecks);
+    const chkSettle = settleChecksOnInvoiceDelete(isSales, inv, linkedChecks, checkKeepCredit);
     if (isSales) { sales = sales.filter((x) => x.id !== inv.id); saveSales(); }
     else { purchases = purchases.filter((x) => x.id !== inv.id); savePurchases(); }
     /* 🆕 بناء 196: السطر ده بقى يتبني من **الأرقام اللي رجعت فعلًا** (`gonePaid` للخزينة،
@@ -9851,6 +9882,8 @@
       else bits.push("وردّينا " + fmt(refundedCash) + " ج.م للخزائن اللي اتدفع منها");
     }
     if (costBack > 0) bits.push("ورجّعنا أسعار التكلفة لـ " + costBack + " صنف");
+    if (chkSettle && chkSettle.detached) bits.push("وفضل " + chkSettle.detached + " شيك محفوظ بلا أثر — تقدر تنزّله من تبويب الشيكات");
+    if (chkSettle && chkSettle.credited) bits.push("وتم تنزيل " + chkSettle.credited + " شيك على حساب الطرف");
     const backTxt = bits.length ? (" (" + bits.join("، ") + ")") : "";
     addActivity("حذف فاتورة", "حذف فاتورة " + kind + " رقم (" + num + ") - " + who + " - بمبلغ " + fmt(amt) +
       " ج.م (تراجع كامل للمخزون والأرصدة" + (goneJ ? " والقيد " + goneJ.number : "") + ")" + backTxt);
@@ -9960,13 +9993,15 @@
     if (!r) return "-";
     const cash = retCashOf(r);
     const bal = retBalOf(r);
-    const hasCash = cash > 0.0001;
-    const hasBal = bal > 0.0001;
-    const tr = treasury.find((x) => Number(x.id) === Number(r.treasuryId));
-    const cashTxt = "رد " + fmt(cash) + " " + (tr ? "من " + tr.name : "(خزينة)");
-    if (hasCash && hasBal) return cashTxt + " + خصم " + fmt(bal) + " من الرصيد";
-    if (hasCash) return cashTxt;
-    return "خصم من الرصيد";
+    const check = Math.max(0, Number(r.checkAmount) || 0);
+    const parts = [];
+    if (cash > 0.0001) {
+      const tr = treasury.find((x) => Number(x.id) === Number(r.treasuryId));
+      parts.push("رد " + fmt(cash) + " " + (tr ? "من " + tr.name : "(خزينة)"));
+    }
+    if (check > 0.0001) parts.push("خصم " + fmt(check) + " من الشيك");
+    if (bal > 0.0001) parts.push("خصم " + fmt(bal) + " من الرصيد");
+    return parts.length ? parts.join(" + ") : "بلا تسوية";
   }
   // إجمالي مرتجعات الفاتورة (عدد المستندات + قيمة + كمية) — للملاحظة أسفل الأصلية
   function retTotalsFor(isSales, inv) {
@@ -10124,7 +10159,7 @@
       isSales: !!isSales, inv: inv, isAjali: isAjali, lines: lines,
       total: 0, invTotal: invTotal,
       paidRatio: invTotal > 0 ? Math.min(1, Math.max(0, paidCashAmt / invTotal)) : (isAjali ? 0 : 1),
-      cashMode: "paid"
+      cashMode: "paid", fullReturn: false
     };
 
     hideModal("mRetPick");
@@ -10211,19 +10246,97 @@
     const total = round2((retDraft && retDraft.total) || 0);
     return Math.max(0, Math.min(round2(Number(v) || 0), total));
   }
-  // حصة الخزينة (الكاش) حسب الوضع المختار أو الكتابة اليدوية
+  /* 🧱 بناء 216: الشيك يدخل كطرف تسوية مستقل.
+     - المرتجع الكلي: أي شيك معلّق/محصّل مربوط بالفاتورة بيتلغي تلقائيًا (بلا رصيد محتفظ به).
+     - المرتجع الجزئي: المستخدم يختار «خصم من الشيك» (شيك معلّق فقط) أو كاش أو رصيد. */
+  function retCheckEligible(full) {
+    if (!retDraft || !retDraft.inv) return [];
+    return checksOfInvoice(retDraft.inv).filter((c) => {
+      if (!c || c.deleted || String(c.status || "") === "cancelled") return false;
+      if (retDraft.isSales ? checkIsOut(c) : !checkIsOut(c)) return false;
+      const st = String(c.status || "pending");
+      return full ? (st === "pending" || st === "collected") : (st === "pending" && !c.unapplied);
+    });
+  }
+  function retCheckAvailable(full) {
+    return round2(retCheckEligible(full).reduce((m, c) => m + (Number(c.amount) || 0), 0));
+  }
+  function retCheckPart() {
+    if (!retDraft) return 0;
+    const total = round2(retDraft.total || 0);
+    const full = !!retDraft.fullReturn;
+    if (!full && retDraft.cashMode !== "check") return 0;
+    return Math.min(total, retCheckAvailable(full));
+  }
+  /* تطبيق خصم المرتجع على الشيكات — الشيك مايتحذفش أبدًا، بنغيّر مبلغه/حالته بس.
+     لو المبلغ غطّى الشيك كله: الحالة cancelled (أحمر) والصف يفضل محفوظ للتدقيق. */
+  function applyCheckDeductions(inv, amount, includeCollected, isSales) {
+    let remain = round2(amount);
+    const applied = [];
+    if (!(remain > 0.0001)) return { applied, used: 0 };
+    const list = checksOfInvoice(inv).filter((c) => {
+      if (!c || c.deleted || String(c.status || "") === "cancelled") return false;
+      if (isSales != null && (isSales ? checkIsOut(c) : !checkIsOut(c))) return false;
+      const st = String(c.status || "pending");
+      if (includeCollected) return st === "pending" || st === "collected";
+      return st === "pending" && !c.unapplied;
+    });
+    for (const c of list) {
+      if (!(remain > 0.0001)) break;
+      const before = round2(c.amount);
+      if (!(before > 0.0001)) continue;
+      const take = Math.min(before, remain);
+      const wasCollected = String(c.status || "") === "collected";
+      const collection = wasCollected ? reverseCheckCollection(c) : null;
+      c.amount = round2(before - take);
+      const wasCancelled = !(c.amount > 0.0001);
+      if (wasCancelled) {
+        c.status = "cancelled";
+        c.cancelledAt = todayISO();
+        c.unapplied = false;
+        c.notes = (c.notes ? c.notes + " | " : "") + "اتغطّى بالكامل بمرتجع";
+      } else if (wasCollected) {
+        c.status = "pending";
+        c.collectedAt = "";
+        c.treasuryId = null;
+      }
+      applied.push({ id: c.id, amount: take, beforeAmount: before, wasCancelled, wasCollected, collection });
+      remain = round2(remain - take);
+    }
+    if (applied.length) saveChecks();
+    return { applied, used: round2(amount - remain) };
+  }
+  function restoreCheckDeductions(list) {
+    const arr = Array.isArray(list) ? list : [];
+    if (!arr.length) return;
+    arr.forEach((d) => {
+      const c = checks.find((x) => Number(x.id) === Number(d.id));
+      if (!c) return;
+      if (d.beforeAmount != null) c.amount = round2(d.beforeAmount);
+      if (d.wasCancelled) {
+        c.status = "pending";
+        c.cancelledAt = "";
+        c.unapplied = false;
+        c.notes = String(c.notes || "").replace(/\s*\|\s*اتغطّى بالكامل بمرتجع/g, "").trim();
+      }
+      if (d.wasCollected) restoreCheckCollection(c, d.collection);
+    });
+    saveChecks();
+  }
+  // حصة الخزينة (الكاش) حسب الوضع المختار أو الكتابة اليدوية — بعد استبعاد حصة الشيك
   function retCashPart() {
     if (!retDraft) return 0;
     const total = round2(retDraft.total || 0);
-    if (retDraft.cashMode === "balance") return 0;
-    if (retDraft.cashMode === "cash") return total;
-    if (retDraft.cashMode === "paid") return round2(total * (Number(retDraft.paidRatio) || 0));
+    const room = Math.max(0, round2(total - retCheckPart()));
+    if (retDraft.cashMode === "balance" || retDraft.cashMode === "check") return 0;
+    if (retDraft.cashMode === "cash") return room;
+    if (retDraft.cashMode === "paid") return Math.min(room, round2(total * (Number(retDraft.paidRatio) || 0)));
     const inp = $("#retCashAmount");
-    return retClampCash(inp ? inp.value : 0);
+    return Math.min(room, retClampCash(inp ? inp.value : 0));
   }
   function retBalancePart() {
     const total = round2((retDraft && retDraft.total) || 0);
-    return round2(total - retCashPart());
+    return round2(total - retCashPart() - retCheckPart());
   }
   function paintRetModes() {
     document.querySelectorAll("#mRetAddBox .ret-preset").forEach((b) => {
@@ -10236,14 +10349,23 @@
     const isSales = retDraft.isSales;
     const partyLbl = isSales ? "العميل" : "المورد";
     const cash = retCashPart();
-    const bal = round2(total - cash);
+    const check = retCheckPart();
+    const bal = round2(total - cash - check);
     const inp = $("#retCashAmount");
     if (inp && retDraft.cashMode !== "manual") inp.value = cash ? String(cash) : "0";
     const tIn = $("#retTotalInBox"); if (tIn) tIn.textContent = fmt(total);
     const balEl = $("#retBalanceAmount"); if (balEl) balEl.textContent = fmt(bal);
+    const chkEl = $("#retCheckAmount"); if (chkEl) chkEl.textContent = fmt(check);
+    const chkRow = $("#retCheckRow"); if (chkRow) chkRow.hidden = !(check > 0.0001);
+    const chkBtn = $("#retPresetCheck");
+    if (chkBtn) {
+      const can = retCheckAvailable(false) > 0.0001;
+      chkBtn.hidden = !can;
+      chkBtn.textContent = "خصم من الشيك (" + fmt(retCheckAvailable(false)) + ")";
+    }
     document.querySelectorAll("#mRetAddBox .ret-party-lbl").forEach((e) => { e.textContent = partyLbl; });
     const dir = $("#retCashDir"); if (dir) dir.textContent = isSales ? "(يُخصم)" : "(يُضاف)";
-    // رصيد الطرف الحالي وبعد التسوية (الكاش مش بيأثر على الرصيد — الباقي بس هو اللي بيتسوّى)
+    // رصيد الطرف الحالي وبعد التسوية (الكاش والشيك مش بيأثروا على الرصيد — الباقي بس هو اللي بيتسوّى)
     const p = retPartyRecord();
     const now = p ? (Number(p.currentBalance) || 0) : 0;
     const after = round2(now - bal);
@@ -10260,6 +10382,7 @@
     if (hint) {
       const parts = [];
       if (cash > 0.0001) parts.push(fmt(cash) + " ج.م " + (isSales ? "هتخرج من" : "هتدخل في") + " الحساب اللي هتختاره");
+      if (check > 0.0001) parts.push(fmt(check) + " ج.م هتتخصم من الشيك" + (retDraft.fullReturn ? " ويتلغي الشيك تلقائيًا" : ""));
       if (bal > 0.0001) parts.push(fmt(bal) + " ج.م هتتسوّى على حساب " + partyLbl);
       if (!parts.length) hint.textContent = "اكتب الكمية المرتجعة الأول عشان نحسب قيمة التسوية.";
       else hint.textContent = parts.join("  •  ") + ".";
@@ -10355,7 +10478,11 @@
     }
     const t = $("#retTotal");
     if (t) t.textContent = "قيمة المرتجع: " + fmt(total) + " ج.م";
-    if (retDraft) retDraft.total = Math.round(total * 100) / 100;
+    if (retDraft) {
+      retDraft.total = Math.round(total * 100) / 100;
+      const openLines = retDraft.lines.filter((l) => (Number(l.remaining) || 0) > 0.0001);
+      retDraft.fullReturn = openLines.length > 0 && openLines.every((l) => Math.abs((Number(l.qty) || 0) - (Number(l.remaining) || 0)) < 1e-9);
+    }
     paintRetOver();
     retUpdateSettleUI();
   }
@@ -10416,10 +10543,14 @@
     const amt = Math.round(items.reduce((s, x) => s + (Number(x.total) || 0), 0) * 100) / 100;
     if (amt <= 0) { toast("قيمة المرتجع طلعت صفر — راجع أسعار الأصناف.", "warning"); return; }
 
-    // 🆕 بناء 172: تقسيم التسوية — جزء من الخزينة/البنك/المحفظة + الباقي على حساب الطرف
+    /* 🧱 بناء 216: ثلاث حصص — كاش + شيك + رصيد الطرف.
+       المرتجع الكلي بيلغي أي شيك مربوط بالفاتورة تلقائيًا (معلّق/محصّل)، والمرتجع الجزئي
+       بيخلي المستخدم يختار «خصم من الشيك» لو فيه شيك معلّق. */
     if (retDraft) retDraft.total = amt;
-    const cashAmt = Math.max(0, Math.min(round2(retCashPart()), amt));
-    const balAmt = round2(amt - cashAmt);
+    const fullReturn = !!retDraft.fullReturn;
+    let checkAmt = Math.max(0, Math.min(round2(retCheckPart()), amt));
+    let cashAmt = Math.max(0, Math.min(round2(retCashPart()), round2(amt - checkAmt)));
+    let balAmt = round2(amt - cashAmt - checkAmt);
     let tr = null;
     if (cashAmt > 0.0001) {
       tr = treasury.find((x) => Number(x.id) === Number($("#retTreasury").value)) || null;
@@ -10429,11 +10560,25 @@
         if (!confirm(shortfallText(tr, cashAmt) + "\n\nهل تريد رد قيمة المرتجع من «" + tr.name + "» رغم ذلك؟")) return;
       }
     }
-    const settle = (cashAmt > 0.0001 && balAmt > 0.0001) ? "mixed" : (cashAmt > 0.0001 ? "refund" : "balance");
+    const settleParts = [cashAmt, checkAmt, balAmt].filter((x) => x > 0.0001).length;
+    const settle = settleParts > 1 ? "mixed" : (cashAmt > 0.0001 ? "refund" : checkAmt > 0.0001 ? "check" : "balance");
 
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
-    if (jrnBlocked("المرتجع", returnJrnPlan(isSales ? "sale" : "purchase", { grandTotal: amt, cashAmount: cashAmt, balanceAmount: balAmt }, inv, tr))) return;
+    if (jrnBlocked("المرتجع", returnJrnPlan(isSales ? "sale" : "purchase", { grandTotal: amt, cashAmount: cashAmt, balanceAmount: balAmt, checkAmount: checkAmt }, inv, tr))) return;
+
+    /* تطبيق الشيك بعد نجاح بوابة الحسابات — لو الشيك اتغطّى كله حالته cancelled
+       والصف يفضل محفوظ (قاعدة المالك: ممنوع حذف أي شيك). */
+    let checkDeductions = [];
+    if (checkAmt > 0.0001) {
+      const ded = applyCheckDeductions(inv, checkAmt, fullReturn, isSales);
+      checkDeductions = ded.applied;
+      checkAmt = ded.used;
+      balAmt = round2(amt - cashAmt - checkAmt);
+    }
+    const payTxt = checkAmt > 0.0001 && cashAmt > 0.0001 ? "مختلط (كاش + شيك)"
+      : checkAmt > 0.0001 ? "شيك"
+        : cashAmt > 0.0001 ? ($("#retMethod").value || "نقداً 💵") : "خصم من الرصيد";
 
     const no = nextReturnNumber(retKind(isSales));
     const id = nextReturnId(isSales);
@@ -10445,8 +10590,10 @@
       date: date,
       settlement: settle,
       cashAmount: cashAmt,
+      checkAmount: checkAmt,
       balanceAmount: balAmt,
-      paymentMethod: cashAmt > 0.0001 ? ($("#retMethod").value || "نقداً 💵") : "خصم من الرصيد",
+      checkDeductions: checkDeductions,
+      paymentMethod: payTxt,
       treasuryId: tr ? tr.id : null,
       warehouse: wh,
       store: wh,
@@ -10612,6 +10759,8 @@ id: nextVoucherId(),
     // 🆕 بناء 149 (سطر ٣): حذف المرتجع بيرجع قيده هو كمان (تراجع كامل — نفس عرف الفاتورة)
     const retJrnRemoved = removeReturnJournal(isSales ? "sale" : "purchase", r.id);
     if (retJrnRemoved) { renderJournal(); renderLedger(); }
+    /* 🧱 بناء 216: حذف المرتجع يرجّع الشيك لمبلغه/حالته قبل الخصم — الشيك نفسه محفوظ دايمًا. */
+    if (Array.isArray(r.checkDeductions) && r.checkDeductions.length) restoreCheckDeductions(r.checkDeductions);
 
     // 3) حذف السطر نفسه
     if (isSales) { saleReturns = saleReturns.filter((x) => x.id !== r.id); saveSaleReturns(); }
@@ -10784,7 +10933,7 @@ id: nextVoucherId(),
     return st === "collected" ? "اتحصّل ✅" : st === "returned" ? "مرتجع ⛔" : st === "cancelled" ? "ملغي" : "تحت التحصيل ⏳";
   }
   function checkStatusClass(st) {
-    return st === "collected" ? "balance-debit" : st === "returned" ? "balance-credit" : "";
+    return st === "collected" ? "chk-st-collected" : (st === "returned" || st === "cancelled") ? "chk-st-cancelled" : "chk-st-pending";
   }
   function checksQuery() {
     const q = normalizeAr(checksFilter.q);
@@ -10804,6 +10953,7 @@ id: nextVoucherId(),
     tb.innerHTML = "";
     checksQuery().forEach((c) => {
       const tr = document.createElement("tr");
+      tr.classList.add("chk-row-" + String(c.status || "pending"));
       const pend = (c.status || "pending") === "pending";
       const out = checkIsOut(c);
       tr.innerHTML =
@@ -10815,10 +10965,17 @@ id: nextVoucherId(),
         '<td class="' + checkStatusClass(c.status) + '">' + checkStatusLabel(c.status) + '</td>' +
         '<td class="cell-actions">' +
         (pend
-          ? '<button class="btn small green" type="button" data-act="collect">' + (out ? '💳 صرف' : '💰 تحصيل') + '</button> <button class="btn small red" type="button" data-act="return">⛔ ارتجاع</button>'
+          ? '<button class="btn small green" type="button" data-act="collect">' + (out ? '💳 صرف' : '💰 تحصيل') + '</button> <button class="btn small red" type="button" data-act="return">⛔ ارتجاع</button>' +
+            (checkAdvanceTxOf(c)
+              ? ' <button class="btn small dark" type="button" data-act="unkeep">↩️ إلغاء التنزيل</button>'
+              : (!checkInvoiceLinkedExists(c)
+                ? ' <button class="btn small sky" type="button" data-act="keep">⬇️ تنزيل من الحساب</button>'
+                : ''))
           : (String(c.status || "") === "cancelled"
             ? '<span class="login-sub">ملغي — محفوظ للتدقيق</span>'
-            : '<button class="btn small dark" type="button" data-act="del">🗑️ حذف</button>')) +
+            : (String(c.status || "") === "collected"
+              ? '<button class="btn small dark" type="button" data-act="uncollect">↩️ عكس التحصيل</button>'
+              : '<button class="btn small dark" type="button" data-act="del">🚫 إلغاء</button>'))) +
         (String(c.status || "") === "cancelled" ? "" :
           ' <button class="btn small sky" type="button" data-act="edit" title="تعديل بيانات الشيك (البنك/الرقم/الاستحقاق)">✏️ تعديل</button>') +
         '</td>';
@@ -10873,6 +11030,15 @@ id: nextVoucherId(),
     if (!no || !Array.isArray(checks)) return [];
     return checks.filter((c) => c && String(c.refType || "") === "invoice" && String(c.refId || "") === no);
   }
+  /* الشيك المرتبط بفاتورة **موجودة** مايتنزّلش على الحساب يدويًا (الفاتورة نفسها شايلاه).
+     التنزيل اليدوي مسموح للشيك المفصول بعد حذف فاتورته أو الشيك بلا فاتورة. */
+  function checkInvoiceLinkedExists(c) {
+    if (!c || String(c.refType || "") !== "invoice" || !c.refId) return false;
+    if (c.detachedFromInvoice) return false;
+    const no = String(c.refId);
+    return (Array.isArray(sales) && sales.some((x) => x && String(x.invoiceNumber || x.invoiceNo) === no)) ||
+      (Array.isArray(purchases) && purchases.some((x) => x && String(x.invoiceNumber || x.invoiceNo) === no));
+  }
   function checkReturnTxOf(c) {
     if (!c) return -1;
     const out = checkIsOut(c);
@@ -10912,66 +11078,127 @@ id: nextVoucherId(),
     c.returnTxId = null;
     return n;
   }
-  function settleChecksOnInvoiceDelete(isSales, inv, listArg) {
+  function reverseCheckCollection(c) {
+    if (!c) return null;
+    const ref = "CHC:" + c.id;
+    const v = vouchers.find((x) => x && String(x.refId || "") === ref &&
+      /^(تحصيل شيك|صرف شيك)$/.test(String(x.refType || "")));
+    if (!v) return null;
+    const info = { treasuryId: v.treasuryId, date: v.date || todayISO() };
+    dropVoucherWithJournal(v);
+    saveVouchers();
+    recalculateTreasuryBalances();
+    saveTreasury();
+    c.status = "pending";
+    c.collectedAt = "";
+    c.treasuryId = null;
+    /* تحصيل «بلا أثر» كان بيسجّل حركة رصيد (credit) على الطرف ⇒ عكس التحصيل لازم يشيلها،
+       وإلا الخزينة ترجع والرصيد يفضل مخصوم. الشيك المحتفظ به (CHKEEP) مالهوش حركة هنا. */
+    const txId = Number(c.collectionTxId) || 0;
+    if (txId) {
+      const out = checkIsOut(c);
+      const arr = out ? supplierTxs : txs;
+      const ti = arr.findIndex((t) => t && Number(t.id) === txId);
+      if (ti >= 0) {
+        arr.splice(ti, 1);
+        bumpIdFloor(out ? "stx" : "tx", txId);
+        try { out ? saveSupplierTxs() : saveTxs(); } catch (e) { }
+        try { out ? recalculateSupplierBalances() : recalculateCustomerBalances(); } catch (e) { }
+        try { out ? saveSuppliers() : saveCustomers(); } catch (e) { }
+      }
+    }
+    if (c.collectionWasUnapplied) c.unapplied = true;
+    c.collectionTxId = null;
+    c.collectionVoucherId = null;
+    c.collectionWasUnapplied = false;
+    saveChecks();
+    return info;
+  }
+  function restoreCheckCollection(c, info) {
+    if (!c || !info || !info.treasuryId) return false;
+    c.status = "pending";
+    c.unapplied = false;
+    saveChecks();
+    try {
+      const r = collectCheck(c.id, info.treasuryId, info.date || todayISO());
+      return !!r.ok;
+    } catch (e) { return false; }
+  }
+  /* 🧱 بناء 216: حذف الفاتورة = تراجع كامل، والشيك **مايتحذفش ولا يتلغي** — يتفكّ أثره المالي بس.
+     - محصّل: نعكس التحصيل الأول (يرجع أصل الشيك للفاتورة) ثم عكس الفاتورة يصفّره.
+     - مرتجع: نعكس الارتجاع وحركته ثم عكس الفاتورة يصفّر الشيك.
+     - بعد كده: إما «تنزيل على حساب الطرف» (CHKEEP + رصيد دائن/دفعة مقدمة)،
+       أو «بلا أثر» (unapplied) ويتنزّل لاحقًا من تبويب الشيكات. */
+  function settleChecksOnInvoiceDelete(isSales, inv, listArg, keepCredit) {
     const list = listArg || checksOfInvoice(inv);
-    if (!list.length) return { pending: 0, returned: 0, collected: 0 };
-    const out = { pending: 0, returned: 0, collected: 0 };
-    let txChanged = false;
+    const out = { pending: 0, returned: 0, collected: 0, detached: 0, credited: 0 };
+    if (!list.length) return out;
     list.forEach((c) => {
       const st = String(c.status || "pending");
-      if (st === "returned") {
-        reverseCheckReturn(c);
-        c.status = "pending"; c.returnedAt = ""; c.unapplied = true;
-        out.returned++;
-      } else if (st === "collected") {
-        out.collected++;
-        const amount = round2(c.amount);
-        const debt = accByCode(isSales ? "1.1.5" : "2.1.1", isSales ? "مديونيات العملاء" : "مستحقات الموردين");
-        const chk = isSales ? checksAcc() : checksPayableAcc();
-        if (amount > 0 && debt && chk) {
-          const j = { id: nextJournalId(), number: jrnNo(), date: todayISO(),
-            desc: "إعادة تصنيف شيك محصّل بعد حذف فاتورة " + (isSales ? "مبيعات" : "مشتريات") + " — " + (c.customerName || c.supplierName || "-"),
-            ref: "حذف فاتورة", refType: "تسوية شيك", refId: "CHADJ:" + c.id,
-            debit: amount, credit: amount,
-            lines: isSales
-              ? [{ accountId: Number(chk.id), debit: amount, credit: 0 }, { accountId: Number(debt.id), debit: 0, credit: amount }]
-              : [{ accountId: Number(debt.id), debit: amount, credit: 0 }, { accountId: Number(chk.id), debit: 0, credit: amount }] };
-          settleJrnLines(j.lines, 1); journalEntries.push(j);
-          persistJournal(); saveAccounts();
-          try { renderJournal(); } catch (e) { }
+      /* 🧱 بناء 216: الشيك مايتحذفش أبدًا. بنفكّ أثره المالي بس:
+         - مرتجع/محصّل ⇒ نعكس الحركة/السند ويرجع معلّق.
+         - «تنزيل من حساب الطرف» (اختيار المالك) ⇒ ننشئ CHKEEP + رصيد دائن/دفعة مقدمة.
+         - «بلا أثر» ⇒ يفضل معلّق ومفصول عن الفاتورة، ويتنزّل لاحقًا من تبويب الشيكات. */
+      if (st === "returned") { reverseCheckReturn(c); c.status = "pending"; c.returnedAt = ""; out.returned++; }
+      else if (st === "collected") { reverseCheckCollection(c); out.collected++; }
+      else out.pending++;
+      if (keepCredit) {
+        c.unapplied = false;
+        const tx = ensureCheckAdvance(c);
+        if (tx) { out.credited++; c.unapplied = true; }
+        else {
+          c.unapplied = true;
+          c.detachedFromInvoice = String((inv && (inv.invoiceNumber || inv.invoiceNo)) || "");
+          c.notes = (c.notes ? c.notes + " | " : "") + "فاتورته اتحذفت — تعذّر تنزيله على الحساب (راجع حساب الشيكات)";
+          out.detached++;
         }
-        if (isSales && c.customerId) {
-          txs.push({ id: nextTxId(), customerId: c.customerId, treasuryId: c.treasuryId || null, treasuryName: "",
-            paymentMethod: "شيك", date: todayISO(),
-            desc: "تحصيل شيك #" + (c.checkNo || c.id) + " — رصيد دائن بعد حذف الفاتورة", debit: 0, credit: amount });
-          txChanged = true;
-        } else if (!isSales && c.supplierId) {
-          supplierTxs.push({ id: nextSupplierTxId(), supplierId: c.supplierId, treasuryId: c.treasuryId || null, treasuryName: "",
-            paymentMethod: "شيك", date: todayISO(),
-            desc: "سداد شيك #" + (c.checkNo || c.id) + " — رصيد دائن بعد حذف الفاتورة", debit: 0, credit: amount });
-          txChanged = true;
-        }
-        c.unapplied = true;
       } else {
+        /* «بلا أثر» = الشيك محفوظ لكن غير مملوك ومش أصل: نعلّمه unapplied عشان:
+           - تحصيله بعد كده يقيّد على مديونية الطرف مش حساب الشيكات،
+           - ارتجاعه/إلغاؤه ما يعملش قيد أو حركة وهمية. */
         c.unapplied = true;
-        out.pending++;
-        /* 🆕 بناء 214 (بلاغ المالك 21/10 — «فاتورة دفعها بشيك واتحذفت: الشيك مش في كشفه
-           والمديونية ما نزلتش»): الشيك اللي فضل معانا بعد حذف فاتورته **حق للعميل**، فلازم
-           يتسجّل رصيدًا دائنًا في كشفه وقيدًا (مدين شيكات / دائن العميل) — بدل ما يفضل الشيك
-           معلّق بصفر أثر والمديونية زي ما هي. */
-        if (round2(c.amount) > 0) {
-          ensureCheckAdvance(c);
-          txChanged = true;
-        }
+        c.detachedFromInvoice = String((inv && (inv.invoiceNumber || inv.invoiceNo)) || "");
+        c.notes = (c.notes ? c.notes + " | " : "") + "فاتورته اتحذفت — بلا أثر مالي (تقدر تنزّله من تبويب الشيكات)";
+        out.detached++;
       }
+      if (String(c.status || "") !== "pending") c.status = "pending";
+      saveChecks();
     });
     saveChecks();
-    if (txChanged) {
-      try { saveTxs(); recalculateCustomerBalances(); saveCustomers(); } catch (e) { }
-      try { saveSupplierTxs(); recalculateSupplierBalances(); saveSuppliers(); } catch (e) { }
-    }
-    try { renderChecks(); } catch (e) { }
+    try { saveTxs(); recalculateCustomerBalances(); saveCustomers(); } catch (e) { }
+    try { saveSupplierTxs(); recalculateSupplierBalances(); saveSuppliers(); } catch (e) { }
+    try { renderChecks(); renderDashboard(); } catch (e) { }
     return out;
+  }
+  /* 🧱 بناء 216: تنزيل شيك محفوظ على حساب الطرف أو إلغاء التنزيل — من تبويب الشيكات. */
+  function applyCheckToParty(id) {
+    const c = checks.find((x) => Number(x.id) === Number(id));
+    if (!c) return;
+    if (String(c.status || "pending") !== "pending") { toast("الشيك مش معلّق — مينفعش يتنزّل على الحساب في حالته دي.", "warning"); return; }
+    if (checkAdvanceTxOf(c)) { toast("الشيك متنزّل على حساب الطرف بالفعل.", "warning"); return; }
+    if (checkInvoiceLinkedExists(c)) { toast("الشيك مرتبط بفاتورة موجودة — أثره محسوب بالفعل على الفاتورة.", "warning"); return; }
+    const out = checkIsOut(c);
+    const party = out ? "المورد" : "العميل";
+    if (!confirm("تنزيل الشيك رقم " + (c.checkNo || c.id) + " بمبلغ " + fmt(c.amount) + " ج.م على حساب " + party + "؟\n\nهيتسجّل " +
+      (out ? "دفعة مقدمة/رصيد لصالح المورد، والشيك يفضل محفوظ كالتزام." : "رصيد لصالح العميل، والشيك يفضل محفوظ كأصل للتدقيق."))) return;
+    const tx = ensureCheckAdvance(c);
+    if (!tx) { toast("مش قادر أنزّل الشيك — راجع بياناته أو حساباته.", "error"); return; }
+    c.unapplied = true;
+    c.detachedFromInvoice = "";
+    saveChecks();
+    renderChecks(); renderDashboard();
+    toast("تم تنزيل الشيك على حساب " + party + " — الشيك محفوظ.", "success");
+  }
+  function removeCheckFromParty(id) {
+    const c = checks.find((x) => Number(x.id) === Number(id));
+    if (!c) return;
+    if (!checkAdvanceTxOf(c)) { toast("الشيك مش متنزّل على الحساب.", "warning"); return; }
+    if (!confirm("إلغاء تنزيل الشيك رقم " + (c.checkNo || c.id) + " من حساب الطرف؟\n\nالحركة والقيد هيتعكسوا، والشيك يفضل محفوظ معلّق.")) return;
+    const had = reverseCheckKeepJrn(c);
+    c.unapplied = false;
+    saveChecks();
+    renderChecks(); renderDashboard();
+    toast(had ? "اتلغى تنزيل الشيك — رجع معلّق ومحفوظ." : "الشيك رجع معلّق (مافيش أثر مالي).", "success");
   }
   function deleteCheckRec(id) {
     const c = checks.find((x) => Number(x.id) === Number(id));
@@ -10981,7 +11208,7 @@ id: nextVoucherId(),
     if (st === "cancelled") { toast("الشيك ملغي بالفعل.", "warning"); return; }
     const amount = round2(c.amount);
     if (st === "returned") {
-      if (!confirm("حذف الشيك المرتجع رقم " + (c.checkNo || c.id) + "؟\n(هيتم إلغاء حركة الارتجاع وقيده — المديونية ترجع زي ما كانت قبل الارتجاع)")) return;
+      if (!confirm("إلغاء الشيك المرتجع رقم " + (c.checkNo || c.id) + "؟\n(هيتم إلغاء حركة الارتجاع وقيده — المديونية ترجع زي ما كانت قبل الارتجاع)")) return;
       reverseCheckReturn(c);
       c.status = "cancelled"; c.cancelledAt = todayISO();
       c.notes = (c.notes ? c.notes + " | " : "") + "حذف شيك مرتجع";
@@ -10992,8 +11219,12 @@ id: nextVoucherId(),
       toast("اتلغى الشيك ورجع أثر الارتجاع.", "success");
       return;
     }
-    if (!confirm("حذف الشيك رقم " + (c.checkNo || c.id) + " (" + checkPartyName(c) + ")؟\n\nالشيك هيتلغي، و" +
-      (checkIsOut(c) ? "هيرجع المستحق للمورد" : "هتزيد المديونية") + " بقيمته " + fmt(amount) + " ج.م.")) return;
+    const cancelTxt = checkAdvanceTxOf(c)
+      ? "هيتعكس قيد التنزيل وحركة الرصيد، والشيك يفضل محفوظ كملغي."
+      : (!checkInvoiceLinkedExists(c) && c.unapplied)
+        ? "الشيك غير مرتبط بفاتورة موجودة — هيتلغي بلا أي أثر مالي."
+        : "الشيك هيتلغي، و" + (checkIsOut(c) ? "هيرجع المستحق للمورد" : "هتزيد المديونية") + " بقيمته " + fmt(amount) + " ج.م.";
+    if (!confirm("إلغاء الشيك رقم " + (c.checkNo || c.id) + " (" + checkPartyName(c) + ")؟\n\n" + cancelTxt)) return;
     if (!c.unapplied && amount > 0) {
       /* شيك وارد ملغي: مدين 1.1.5 / دائن 1.1.7 (ترجع المديونية). شيك صادر ملغي:
          مدين 2.1.4 / دائن 2.1.1 (يرجع المستحق للمورد ويتشال الالتزام). */
@@ -11068,8 +11299,16 @@ id: nextVoucherId(),
       else if (btn.dataset.act === "return") {
         if (confirm("تأكيد ارتجاع شيك «" + (c.customerName || "-") + "» بمبلغ " + fmt(round2(c.amount)) +
           " ج.م؟\nالمديونية هترجع على حساب العميل تاني.")) { returnCheck(id); renderChecks(); renderDashboard(); }
-      } else if (btn.dataset.act === "del") deleteCheckRec(id);
-      else if (btn.dataset.act === "edit") openCheckEditDialog(c);
+    } else if (btn.dataset.act === "del") deleteCheckRec(id);
+    else if (btn.dataset.act === "uncollect") {
+      if (!confirm("عكس تحصيل الشيك رقم " + (c.checkNo || c.id) + "؟\n\nسند التحصيل هيتشال من الخزينة والشيك يرجع معلّق ومحفوظ زي ما كان.")) return;
+      const rr = reverseCheckCollection(c);
+      renderChecks(); renderDashboard();
+      toast(rr ? "اتعكس التحصيل — الشيك رجع معلّق ومحفوظ." : "مافيش سند تحصيل مرتبط بالشيك — ما اتغيّرش حاجة.", rr ? "success" : "warning");
+    }
+    else if (btn.dataset.act === "edit") openCheckEditDialog(c);
+      else if (btn.dataset.act === "keep") applyCheckToParty(id);
+      else if (btn.dataset.act === "unkeep") removeCheckFromParty(id);
     });
   }
 
@@ -11215,6 +11454,15 @@ id: nextVoucherId(),
     }, rec || {});
     c.amount = round2(c.amount);
     if (!c.dueDate) c.dueDate = String(c.createdAt).slice(0, 10);
+    /* 🧱 بناء 216: منع تكرار الشيك عند إعادة حفظ نفس الفاتورة — نفس الاتجاه/الفاتورة/رقم الشيك/المبلغ
+       ⇒ نرجّع السطر الموجود بدل إنشاء شيك تاني. ممنوع الحذف: السطر القديم بيفضل محفوظ. */
+    const dup = checks.find((x) => x && !x.deleted && String(x.status || "") !== "cancelled" &&
+      String(x.direction || "in") === String(c.direction || "in") &&
+      String(x.refType || "") === String(c.refType || "") &&
+      String(x.refId || "") === String(c.refId || "") &&
+      String(x.checkNo || "") === String(c.checkNo || "") &&
+      Math.abs(Number(x.amount) - Number(c.amount)) < 0.005);
+    if (dup) return dup;
     checks.push(c);
     saveChecks();
     return c;
@@ -11304,14 +11552,15 @@ id: nextVoucherId(),
     if (!c || String(c.status || "pending") !== "pending" || c.deleted) return null;
     const amount = round2(c.amount);
     if (!(amount > 0)) return null;
+    const out = checkIsOut(c);
+    const list = out ? supplierTxs : txs;
     let tx = checkAdvanceTxOf(c);
     if (!tx) {
-      const out = checkIsOut(c);
       if (out && c.supplierId) {
         tx = { id: nextSupplierTxId(), supplierId: c.supplierId, treasuryId: null, treasuryName: "",
           paymentMethod: "شيك", date: todayISO(),
           desc: "شيك #" + (c.checkNo || c.id) + (c.bankName ? " — " + c.bankName : "") + " (دفعة مقدمة بعد إلغاء الفاتورة)",
-          debit: amount, credit: 0, checkKeepId: c.id };
+          debit: 0, credit: amount, checkKeepId: c.id };
         supplierTxs.push(tx);
         try { saveSupplierTxs(); recalculateSupplierBalances(); saveSuppliers(); } catch (e) { }
       } else if (!out && c.customerId) {
@@ -11324,8 +11573,22 @@ id: nextVoucherId(),
       } else return null;
       c.advanceTxId = tx.id;
     }
+    const j = postCheckKeepJrn(c);
+    const hasJ = !!j || journalEntries.some((x) => x && String(x.refId || "") === "CHKEEP:" + c.id);
+    if (!hasJ) {
+      /* الحساب القياسي ناقص: ممنوع نسييب رصيد طرف بلا قيد. نرجّع الحركة ونرجّع الشيك لحالته. */
+      const idx = list.indexOf(tx);
+      if (idx >= 0) list.splice(idx, 1);
+      if (tx && tx.id) bumpIdFloor(out ? "stx" : "tx", tx.id);
+      c.advanceTxId = null;
+      try { out ? saveSupplierTxs() : saveTxs(); } catch (e) { }
+      try { out ? recalculateSupplierBalances() : recalculateCustomerBalances(); } catch (e) { }
+      try { out ? saveSuppliers() : saveCustomers(); } catch (e) { }
+      c.unapplied = true;
+      saveChecks();
+      return null;
+    }
     c.unapplied = true;
-    postCheckKeepJrn(c);
     saveChecks();
     return tx;
   }
@@ -11333,24 +11596,14 @@ id: nextVoucherId(),
   /* تصحيح تلقائي عند التحميل: أي شيك معلّق فاتورته مش موجودة على الجهاز (اتحذفت)
      ومش مسجّل كأصل/رصيد دائن ⇒ يتسجّل فورًا. آمن وقابل للتكرار. */
   function reconcileCheckAdvances() {
-    if (!Array.isArray(checks) || !checks.length) return 0;
-    let done = 0;
-    checks.forEach((c) => {
-      try {
-        if (!c || c.deleted || String(c.status || "pending") !== "pending") return;
-        const ref = String(c.refId || "");
-        const linked = ref && (sales.concat(purchases)).some((inv) => {
-          if (!inv) return false;
-          return String(inv.id) === ref || String(inv.invoiceNo || "") === ref ||
-            (typeof invEncodedOf === "function" && String(invEncodedOf(inv)) === ref);
-        });
-        /* لو الفاتورة موجودة فقيدها هو اللي شايل أصل الشيك — ما نضاعفوش.
-           لكن لو الشيك محتفظ به برصيد دائن بالفعل، لازم نتأكد من قيده CHKEEP. */
-        if (checkAdvanceTxOf(c)) { if (postCheckKeepJrn(c)) done++; return; }
-        if (!linked) { ensureCheckAdvance(c); done++; }
-      } catch (e) { }
-    });
-    return done;
+    /* 🧱 بناء 216: ممنوع التصحيح الذاتي يخترع «شيك محتفظ به» جديد.
+       السبب الجذري: الشيك اللي اتحصّل (refType = "transaction") كان بيتعامل كأن فاتورته
+       اتحذفت، فيتولّد له رصيد دائن + قيد CHKEEP مع كل دخول. دلوقتي:
+       - أي شيك مش مربوط بفاتورة (refType !== "invoice") مش داخل الحساب خالص.
+       - الشيك المربوط بفاتورة موجودة قيد الفاتورة شايل أصله.
+       - الشيك المربوط بفاتورة محذوفة بيتعالج وقت الحذف (إلغاء كامل) مش برصيد محتفظ به.
+       القيود القديمة CHKEEP بتتراجع بأمر تنظيف بيانات مستقل بعد مراجعة القراءة. */
+    return 0;
   }
 
   // ترتيب الشيكات: الأقرب استحقاقًا أولًا ثم الأبعد (طلب المالك) — الوضع الافتراضي في التبويب
@@ -11419,18 +11672,24 @@ id: nextVoucherId(),
     try { postVoucherJournal(v, t, counterAcc); } catch (e) { }
     if (unap && amount > 0) {
       if ((c.partyKind || "customer") === "supplier" && c.supplierId) {
-        supplierTxs.push({ id: nextSupplierTxId(), supplierId: c.supplierId, treasuryId: t.id, treasuryName: t.name,
+        const txKeepId = nextSupplierTxId();
+        supplierTxs.push({ id: txKeepId, supplierId: c.supplierId, treasuryId: t.id, treasuryName: t.name,
           paymentMethod: "شيك", date: when,
           desc: "تحصيل شيك #" + (c.checkNo || c.id) + " — سداد مستحق بعد حذف الفاتورة", debit: 0, credit: amount });
+        c.collectionTxId = txKeepId;
         try { saveSupplierTxs(); recalculateSupplierBalances(); } catch (e) { }
       } else if (c.customerId) {
-        txs.push({ id: nextTxId(), customerId: c.customerId, treasuryId: t.id, treasuryName: t.name,
+        const txKeepId = nextTxId();
+        txs.push({ id: txKeepId, customerId: c.customerId, treasuryId: t.id, treasuryName: t.name,
           paymentMethod: "شيك", date: when,
           desc: "تحصيل شيك #" + (c.checkNo || c.id) + " — سداد مديونية بعد حذف الفاتورة", debit: 0, credit: amount });
+        c.collectionTxId = txKeepId;
         try { saveTxs(); recalculateCustomerBalances(); } catch (e) { }
       }
+      c.collectionWasUnapplied = true;
+      c.collectionVoucherId = v.id;
     }
-    c.status = "collected"; c.treasuryId = t.id; c.collectedAt = when; c.unapplied = false;
+    c.status = "collected"; c.treasuryId = t.id; c.collectedAt = when; c.unapplied = (kept || unap);
     if (out) { c.paidAt = when; c.paidTreasuryId = t.id; c.paidTreasuryName = t.name; }
     saveVouchers(); saveTreasury(); saveChecks();
     addActivity(out ? "صرف شيك" : "تحصيل شيك", (out ? "صرف شيك " : "تحصيل شيك ") + checkPartyName(c) + " بمبلغ " + fmt(amount) + " ج.م " + (out ? "من" : "في") + " «" + t.name + "»");
@@ -14494,8 +14753,15 @@ id: nextVoucherId(),
 
   // 🧾 بناء 190: أطراف «المدفوع» — تدعم تعدّد طرق السداد + الشيكات (متوافق خلفيًا بالحرف)
   function invPaidAccount(kind, inv, tr, p) {
-    // 🧾 بناء 211: شيك العميل ⇒ أصل «شيكات لدى العملاء» · شيك المورد ⇒ التزام «شيكات مستحقة للموردين»
-    if (p && p.method === "check") return kind === "sale" ? checksAcc() : checksPayableAcc();
+    /* 🧾 بناء 211: شيك العميل ⇒ أصل «شيكات لدى العملاء» · شيك المورد ⇒ التزام «شيكات مستحقة للموردين».
+       🧱 بناء 216: لو الشيك بقى غير مخصص/ملغي (بعد حذف أو مرتجع) فالمبلغ يرجع لمديونية الطرف
+       مش لحساب الشيكات — منع ازدواج الأصل مع الرصيد. */
+    if (p && p.method === "check") {
+      const chk = checksOfInvoice(inv).find((c) => c && !c.deleted && !c.unapplied &&
+        ["pending", "collected"].indexOf(String(c.status || "pending")) !== -1);
+      if (!chk) return accByCode(kind === "sale" ? "1.1.5" : "2.1.1", kind === "sale" ? "مديونيات العملاء" : "مستحقات الموردين");
+      return kind === "sale" ? checksAcc() : checksPayableAcc();
+    }
     if (inv.vanRepAccountId) return accounts.find((a) => Number(a.id) === Number(inv.vanRepAccountId)) || null;
     const t = (p && p.treasuryId != null) ? treasury.find((x) => Number(x.id) === Number(p.treasuryId)) : null;
     return accForTreasuryAcc(t || tr);
@@ -14603,6 +14869,8 @@ id: nextVoucherId(),
     if (err === "1.1.4") return "حساب «المخزون» (1.1.4) مش موجود في دليل حساباتك";
     if (err === "1.1.5") return "حساب «مديونيات العملاء» (1.1.5) مش موجود في دليل حساباتك";
     if (err === "2.1.1") return "حساب «مستحقات الموردين» (2.1.1) مش موجود في دليل حساباتك";
+    if (err === "1.2.1") return "حساب «شيكات لدى العملاء» (1.2.1) مش موجود في دليل حساباتك";
+    if (err === "2.1.4") return "حساب «شيكات مستحقة للموردين» (2.1.4) مش موجود في دليل حساباتك";
     if (err === "2.1.2") return "حساب «ضريبة القيمة المضافة المحصلة» (2.1.2) مش موجود في دليل حساباتك";
     if (err === "2.1.3") return "حساب «ضريبة القيمة المضافة المدفوعة» (2.1.3) مش موجود في دليل حساباتك";
     if (err === "cash") return "حساب النقدية/البنك/المحفظة مش موجود في دليل حساباتك";
@@ -14959,34 +15227,39 @@ id: nextVoucherId(),
       cashPart = (String((rec && rec.settlement) || "") === "refund") ? total : 0;
     }
     cashPart = round2(cashPart);
-    const balancePart = round2(total - cashPart);
-    if (!(cashPart > 0) && !(balancePart > 0)) return { error: "amount" };
+    const checkPart = Math.max(0, Math.min(round2(rec && rec.checkAmount), round2(total - cashPart)));
+    const balancePart = round2(total - cashPart - checkPart);
+    if (!(cashPart > 0) && !(checkPart > 0) && !(balancePart > 0)) return { error: "amount" };
     const lineAcc = accByCode(cfg.lineCode, cfg.lineName);
     if (!lineAcc) return { error: cfg.lineCode };
     const cashAcc = cashPart > 0 ? accForTreasuryAcc(tr) : null;
     if (cashPart > 0 && !cashAcc) return { error: "cash" };
+    const checkAcc = checkPart > 0 ? (kind === "sale" ? checksAcc() : checksPayableAcc()) : null;
+    if (checkPart > 0 && !checkAcc) return { error: kind === "sale" ? "1.2.1" : "2.1.4" };
     const dueAcc = balancePart > 0 ? accByCode(cfg.dueCode, cfg.dueName) : null;
     if (balancePart > 0 && !dueAcc) return { error: cfg.dueCode };
     const taxAcc = part.tax > 0 ? (kind === "sale" ? accByCode("2.1.2", "المحصلة") : accByCode("2.1.3", "المدفوعة")) : null;
     if (part.tax > 0 && !taxAcc) return { error: kind === "sale" ? "2.1.2" : "2.1.3" };
     const lines = [];
     if (kind === "sale") {
-      // بيع: مردود المبيعات (صافي) + الضريبة مدينين، ودائن: حصة حساب العميل + حصة الخزينة
+      // بيع: مردود المبيعات (صافي) + الضريبة مدينين، ودائن: حساب العميل + الخزينة + الشيك
       lines.push({ accountId: Number(lineAcc.id), debit: part.net, credit: 0 });
       if (part.tax > 0) lines.push({ accountId: Number(taxAcc.id), debit: part.tax, credit: 0 });
       if (balancePart > 0) lines.push({ accountId: Number(dueAcc.id), debit: 0, credit: balancePart });
       if (cashPart > 0) lines.push({ accountId: Number(cashAcc.id), debit: 0, credit: cashPart });
+      if (checkPart > 0) lines.push({ accountId: Number(checkAcc.id), debit: 0, credit: checkPart });
     } else {
-      // شراء: مدين: حصة الخزينة + حصة حساب المورد، ودائن: المخزون (صافي) + الضريبة
+      // شراء: مدين: الخزينة + حساب المورد + الشيك، ودائن: المخزون (صافي) + الضريبة
       if (cashPart > 0) lines.push({ accountId: Number(cashAcc.id), debit: cashPart, credit: 0 });
       if (balancePart > 0) lines.push({ accountId: Number(dueAcc.id), debit: balancePart, credit: 0 });
+      if (checkPart > 0) lines.push({ accountId: Number(checkAcc.id), debit: checkPart, credit: 0 });
       lines.push({ accountId: Number(lineAcc.id), debit: 0, credit: part.net });
       if (part.tax > 0) lines.push({ accountId: Number(taxAcc.id), debit: 0, credit: part.tax });
     }
     const d = round2(lines.reduce((m, l) => m + (Number(l.debit) || 0), 0));
     const c = round2(lines.reduce((m, l) => m + (Number(l.credit) || 0), 0));
     if (Math.abs(d - c) > 0.01) return { error: "unbalanced" };
-    return { lines: lines, debit: d, credit: c, part: part, cashPart: cashPart, balancePart: balancePart, cashAcc: cashAcc, dueAcc: dueAcc, lineAcc: lineAcc, taxAcc: taxAcc };
+    return { lines: lines, debit: d, credit: c, part: part, cashPart: cashPart, checkPart: checkPart, balancePart: balancePart, cashAcc: cashAcc, checkAcc: checkAcc, dueAcc: dueAcc, lineAcc: lineAcc, taxAcc: taxAcc };
   }
   function postReturnJournal(kind, rec, inv, tr) {
     const cfg = RETURN_JRN[kind];
