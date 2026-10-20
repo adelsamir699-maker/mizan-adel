@@ -1635,6 +1635,71 @@
     return Number(p.weightedAvgCost) || Number(p.purchasePrice) || 0;
   }
 
+  /* 🆕 بناء 208 (قاعدة المالك 20/10): متوسط سعر الشراء = (سعر آخر فاتورة شراء + سعر الفاتورة
+   * اللي قبلها) ÷ 2 — متوسط بسيط بلا وزن بالكمية. والمتوسط ده يفضل هو تكلفة الصنف لحد ما
+   * الكمية اللي كانت في المخزن قبل آخر شراء تخلص؛ ساعتها المتوسط يبقى = آخر سعر شراء.
+   * «آخر سعر شراء» بيفضل سعر آخر فاتورة دايمًا وبيتغيّر مع الفاتورة اللي بعدها.
+   * avgOldQty = الباقي من كمية ما قبل آخر شراء (بتنقص مع كل بيع/صرف مخزون). */
+  function avgTrackedQty(p) { return !!p && Number.isFinite(Number(p.avgOldQty)); }
+  function consumeAvgOldQty(p, qty) {
+    if (!p) return;
+    const sold = Number(qty) || 0;
+    if (!(sold > 0)) return;
+    if (!avgTrackedQty(p)) return;
+    const left = Math.round((Number(p.avgOldQty) - sold) * 100) / 100;
+    if (left > 0) { p.avgOldQty = left; return; }
+    p.avgOldQty = 0;
+    const last = Number(p.lastPurchasePrice) || Number(p.purchasePrice) || 0;
+    if (last > 0) { p.avgPurchasePrice = last; p.weightedAvgCost = last; }
+  }
+  /* 🆕 بناء 208: تخصيص تكلفة سطر البيع على طبقتين — الكمية القديمة (اللي كانت قبل آخر شراء)
+   * بمتوسطها الحالي، وأي زيادة بعدها بسعر آخر شراء. بتتسجّل على السطر في costTotal وقت البيع
+   * فربح الفاتورة ما بيتغيّرش بعد كده حتى لو المتوسط اتحوّل. */
+  function purchaseCostUpdate(p, price, oldQty) {
+    if (!p) return;
+    const pr = Number(price) || 0;
+    const prev = lastPriceOf(p);
+    const q = Number(oldQty) || 0;
+    /* 🆕 بناء 208: المتوسط = (آخر سعر + سعر الفاتورة اللي قبلها) ÷ 2 بلا وزن بالكمية.
+       ولو مفيش مخزون قديم (أول شراء/المخزون صفر) المتوسط = سعر الفاتورة نفسها.
+       avgOldQty = الكمية اللي كانت موجودة قبل الشراء — بتنقص مع البيع لحد ما تخلص،
+       وبعدها المتوسط يبقى = آخر سعر شراء. */
+    const avg = (q > 0 && prev > 0) ? Math.round(((prev + pr) / 2) * 100) / 100 : pr;
+    p.prevPurchasePrice = prev;
+    p.avgPurchasePrice = avg;
+    p.weightedAvgCost = avg;
+    p.avgOldQty = q > 0 ? q : 0;
+  }
+  function saleCostAlloc(items) {
+    const st = {};
+    (items || []).forEach((it) => {
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
+      if (!p) return;
+      const k = String(p.id);
+      if (!st[k]) {
+        st[k] = {
+          avg: avgPriceOf(p),
+          last: Number(p.lastPurchasePrice) || avgPriceOf(p),
+          left: avgTrackedQty(p) ? Math.max(0, Number(p.avgOldQty) || 0) : -1
+        };
+      }
+      const qty = Number(it.qty) || 0;
+      const g = st[k];
+      if (g.left < 0) { it.costTotal = Math.round(qty * g.avg * 100) / 100; return; }
+      const oldPart = Math.min(qty, g.left);
+      const newPart = Math.round((qty - oldPart) * 100) / 100;
+      g.left = Math.round((g.left - oldPart) * 100) / 100;
+      it.costTotal = Math.round(((oldPart * g.avg) + (newPart * g.last)) * 100) / 100;
+    });
+  }
+  function consumeAvgForItems(items) {
+    (items || []).forEach((it) => {
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
+      if (p) consumeAvgOldQty(p, Number(it.qty) || 0);
+    });
+    saveProducts();
+  }
+
   /* ================== 🆕 بناء 123: قاعدة «الإيراد أخضر والمصروف أحمر» ==================
    * طلب المالك: «عايز قاعدة في البرنامج: أي إيراد المبلغ يكون لونه أخضر وأي مصروف
    * المبلغ يكون لونه أحمر». وقراره 02/10: القاعدة دي على **الشاشات المالية بس** —
@@ -2784,7 +2849,10 @@
       const pr = products.find((x) => Number(x.id) === Number(it.productId));
       const unitCost = pr ? avgPriceOf(pr) : 0;   // 🆕 179: الهامش على **متوسط سعر الشراء** (قرار المالك)
       revenue += qty * (Number(it.price) || 0) - (Number(it.discount) || 0);
-      cost += qty * unitCost;
+      // 🆕 بناء 208: لو السطر اتخصّص وقت البيع (طبقة قديمة + طبقة جديدة) نستخدم تكلفته المسجّلة
+      const lineCost = (it.costTotal != null && Number.isFinite(Number(it.costTotal)))
+        ? Number(it.costTotal) : qty * unitCost;
+      cost += lineCost;
     });
     revenue = Math.max(revenue - (Number(invoiceDiscount) || 0), 0);
     return Math.round((revenue - cost) * 100) / 100;
@@ -5517,8 +5585,10 @@
         defaultWarehouse: $("#fPWarehouse").value || WAREHOUSES[0],
         purchasePrice: purchase,
         lastPurchasePrice: purchase,
+        prevPurchasePrice: purchase,
         avgPurchasePrice: purchase,
         weightedAvgCost: purchase,
+        avgOldQty: 0,
         salePrice: sale,
         discountPercent: discount,
         discountStart: dStart,
@@ -5544,6 +5614,8 @@
       pr.defaultWarehouse = $("#fPWarehouse").value || pr.defaultWarehouse;
       pr.purchasePrice = purchase;
       pr.lastPurchasePrice = purchase;   // 🆕 179: المتوسط (weightedAvgCost) مش بيتلمس — ده محسوب من الفواتير
+      // 🆕 بناء 208: لو مفيش كمية قديمة باقية، المتوسط يبقى = آخر سعر (زي قاعدة الشراء)
+      if (Number(pr.avgOldQty) === 0 && purchase > 0) { pr.avgPurchasePrice = purchase; pr.weightedAvgCost = purchase; }
       pr.salePrice = sale;
       pr.discountPercent = discount;
       pr.discountStart = dStart;
@@ -7842,6 +7914,8 @@
     };
     try { stampShiftOn(invoice); } catch (e) {}
     // construct items and status after stamp
+    // 🆕 بناء 208: تكلفة الطبقات بتتحسب **قبل** أي خصم مخزون (الكمية القديمة بمتوسطها والباقي بآخر سعر)
+    saleCostAlloc(posItems);
     invoice.items = posItems.map((it, idx) => ({
       id: idx + 1,
       productId: it.productId,
@@ -7852,7 +7926,8 @@
       price: it.price,
       discount: it.discount,
       tax: it.tax,
-      total: it.total
+      total: it.total,
+      costTotal: (it.costTotal != null ? it.costTotal : undefined)
     }));
     invoice.status = "posted";
 
@@ -7946,6 +8021,8 @@
     commitInvoiceSeq("sale", invEncodedOf(invoice));
     // 🆕 بناء 134: الفاتورة تترحّل أوتوماتيك للقيود اليومية (قيد متزن، بلا سند — انظر رأس القسم)
     const postedJ = postInvoiceJournal("sale", invoice, paidTreasury);
+    // 🆕 بناء 208: بعد ترحيل الفاتورة (بتكلفتها المسجّلة) تنقص الكمية القديمة؛ لما تخلص المتوسط = آخر سعر
+    consumeAvgForItems(posItems);
     addActivity("فاتورة مبيعات", "فاتورة " + invoice.invoiceNumber + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")" +
       (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : ""));
 
@@ -8620,7 +8697,9 @@
         weightedAvgCost: Number(p.weightedAvgCost),
         avgPurchasePrice: Number(p.avgPurchasePrice),
         purchasePrice: Number(p.purchasePrice),
-        lastPurchasePrice: Number(p.lastPurchasePrice)
+        lastPurchasePrice: Number(p.lastPurchasePrice),
+        prevPurchasePrice: Number(p.prevPurchasePrice),
+        avgOldQty: Number(p.avgOldQty)
       };
       const anyNum = [snap.weightedAvgCost, snap.avgPurchasePrice, snap.purchasePrice, snap.lastPurchasePrice]
         .some((n) => Number.isFinite(n));
@@ -8631,13 +8710,11 @@
       const p = products.find((x) => Number(x.id) === Number(it.productId));
       if (!p) return;
       const oldQty = Number(p.qty) || 0;
-      const oldCost = avgPriceOf(p);
-      const newQty = oldQty + it.qty;
-      p.weightedAvgCost = Math.round(((oldCost * oldQty) + (it.price * it.qty)) / newQty * 100) / 100;
-      p.avgPurchasePrice = p.weightedAvgCost;   // 🆕 179: الحقل المعلَن = نفس المحسوب (ممنوع اتنين رقمين)
+      const price = Number(it.price) || 0;
+      purchaseCostUpdate(p, price, oldQty);
       addStockAt(p, warehouse, it.qty);
-      p.purchasePrice = it.price;
-      p.lastPurchasePrice = it.price;           // 🆕 179: «آخر سعر شراء» بيتاخد من آخر فاتورة شراء أوتوماتيك
+      p.purchasePrice = price;
+      p.lastPurchasePrice = price;           // «آخر سعر شراء» = سعر آخر فاتورة دايمًا
     });
     saveProducts();
 
@@ -9335,6 +9412,9 @@
         if (Number.isFinite(Number(c.avgPurchasePrice))) p.avgPurchasePrice = Number(c.avgPurchasePrice);
         if (Number.isFinite(Number(c.purchasePrice))) p.purchasePrice = Number(c.purchasePrice);
         if (Number.isFinite(Number(c.lastPurchasePrice))) p.lastPurchasePrice = Number(c.lastPurchasePrice);
+        // 🆕 بناء 208: رجوع طبقة الكمية القديمة كمان — وإلا المتوسط يتحوّل بدري بعد حذف الفاتورة
+        if (Number.isFinite(Number(c.prevPurchasePrice))) p.prevPurchasePrice = Number(c.prevPurchasePrice);
+        if (Number.isFinite(Number(c.avgOldQty))) p.avgOldQty = Number(c.avgOldQty);
         costBack++;
       });
       saveProducts();
@@ -10012,6 +10092,8 @@ id: nextVoucherId(),
 
     // 🆕 بناء 149 (سطر ٣): المرتجع يترحّل بقيد عكسي — نفس أطراف فاتورته ونسبة ضريبتها بالحرف
     postReturnJournal(isSales ? "sale" : "purchase", rec, inv, tr);
+    // 🆕 بناء 208: مرتجع المشتريات بيخرّج كمية من المخزن ⇒ بتنقص من كمية ما قبل آخر شراء
+    if (!isSales) consumeAvgForItems(items);
 
     // 3) الحفظ + التسلسل + سجل النشاط
     retList(isSales).push(rec);
@@ -11863,6 +11945,7 @@ id: nextVoucherId(),
     const invNo = nextInvoiceNumber();
     const paid = pay === "نقدي" ? t.grand : 0;
     const due = Math.round((t.grand - paid) * 100) / 100;
+    try { saleCostAlloc(vanSaleDraft.items); } catch (e) {}
     const invoice = {
       id: sales.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1,
       invoiceNumber: invNo, invoiceNo: invNo,
@@ -11879,7 +11962,8 @@ id: nextVoucherId(),
       items: vanSaleDraft.items.map((it, idx) => ({
         id: idx + 1, productId: it.productId, code: it.code, nameAr: it.nameAr, unit: it.unit,
         qty: it.qty, price: it.price, discount: 0, tax: Math.round((it.qty * it.price) * (TAX.enabled ? (TAX.rate || 0) : 0) * 100) / 100,
-        total: Math.round((it.qty * it.price) * (TAX.enabled ? (1 + (TAX.rate || 0)) : 1) * 100) / 100
+        total: Math.round((it.qty * it.price) * (TAX.enabled ? (1 + (TAX.rate || 0)) : 1) * 100) / 100,
+        costTotal: (it.costTotal != null ? it.costTotal : undefined)
       }))
     };
     invoice.status = "posted";
@@ -11902,6 +11986,7 @@ id: nextVoucherId(),
     saveSales();
     commitInvoiceSeq("sale", invEncodedOf(invoice));
     const postedJ = postInvoiceJournal("sale", invoice, null);
+    consumeAvgForItems(vanSaleDraft.items);
     try { addActivity("بيع من سيارة", "سيارة " + trip.carName + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + pay + ")" + (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : "")); } catch (e) {}
     toast("تم حفظ البيع (" + invNo + ")" + (postedJ && postedJ.j ? " وترحيله للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
     hideModal("mVanSale");
