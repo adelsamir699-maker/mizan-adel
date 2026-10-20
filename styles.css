@@ -2836,6 +2836,11 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 #mCheckPartyWarnBox p { font-size: 15px; font-weight: 800; line-height: 1.9; color: #111; margin-bottom: 16px; }
 #mCheckPartyWarnBox .modal-actions { justify-content: center; }
 
+/* --- بناء 213: العدد المتاح أول شارة الصنف وغامق (ما يتخبّاش تحت اسم طويل) --- */
+.stock-hint .sh-count { font-weight: 900; flex: 0 0 auto; }
+.stock-hint .sh-count b { font-weight: 900; color: #0B3D91; }
+.stock-hint .sh-sep { flex: 0 0 auto; opacity: .55; }
+
 /* --- بناء 212: نافذة حالة الشبكة/الاشتراك --- */
 #mStatusInfoBox h3 { margin-bottom: 12px; }
 .status-kv { display: flex; flex-direction: column; gap: 9px; margin: 4px 0 16px; }

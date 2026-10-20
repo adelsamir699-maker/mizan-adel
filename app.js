@@ -6966,19 +6966,30 @@
      Enter في RTL) — القائمة بقت لوحة `.prod-drop` تحت الخانة بنفس عرضها، أسماء فقط. */
   const PROD_DROP_FIELD = { sale: "txtPosSearch", purchase: "txtPPSearch" };
   const PROD_DROP_MAX = 8;
-  function productSuggestItems(raw) {
+  function productSuggestItems(raw, kind) {
     const all = productsByMostSold();
     const q = normalizeAr(String(raw || "").trim());
     // فاضي (ضغط على الخانة/السهم) ⇒ الأكثر مبيعًا زي ما هي
-    if (!q) return all.slice(0, PROD_DROP_MAX);
-    const hit = [];
-    all.forEach((p) => {
-      const name = normalizeAr(p.nameAr || "");
-      const code = normalizeAr(String(p.code == null ? "" : p.code));
-      const bc = normalizeAr(String(p.barcode == null ? "" : p.barcode));
-      if (name.indexOf(q) >= 0 || code.indexOf(q) >= 0 || bc.indexOf(q) >= 0) hit.push(p);
-    });
-    return hit.slice(0, PROD_DROP_MAX);
+    let hit = all;
+    if (q) {
+      hit = [];
+      all.forEach((p) => {
+        const name = normalizeAr(p.nameAr || "");
+        const code = normalizeAr(String(p.code == null ? "" : p.code));
+        const bc = normalizeAr(String(p.barcode == null ? "" : p.barcode));
+        if (name.indexOf(q) >= 0 || code.indexOf(q) >= 0 || bc.indexOf(q) >= 0) hit.push(p);
+      });
+    }
+    /* 🆕 بناء 213 (طلب المالك 21/10): «الحاجات اللى رصيدها صفر فى البحث على اسم الصنف
+       تكون اخر حاجه فى اقتراحات البحث» — الترتيب جوه المجموعتين زي ما هو (الأكثر مبيعًا
+       ثم أبجدي)، وبس بنزق الصفر لآخر القائمة. الرصيد من مخزن الشاشة الحالية. */
+    const wh = kind === "sale"
+      ? (($("#cmbPosWarehouse") || {}).value || "")
+      : (($("#cmbPPWarehouse") || {}).value || "");
+    const hasStock = (p) => Number(stockAt(p, wh)) > 0;
+    const inStock = hit.filter(hasStock);
+    const zero = hit.filter((p) => !hasStock(p));
+    return inStock.concat(zero).slice(0, PROD_DROP_MAX);
   }
   function productSuggestHide(kind) {
     const el = $(scanDropSel(PROD_DROP_FIELD[kind]));
@@ -6989,7 +7000,7 @@
     const el = $(scanDropSel(fieldId));
     const inp = $("#" + fieldId);
     if (!el || !inp) return;
-    const list = productSuggestItems(inp.value);
+    const list = productSuggestItems(inp.value, kind);
     if (!list.length) { productSuggestHide(kind); return; }
     el.className = "scan-drop prod-drop";
     el.innerHTML = list.map((p) =>
@@ -7048,10 +7059,16 @@
       return;
     }
     const wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
-    hint.textContent =
-      "🏷️ " + p.nameAr +
-      " | 📦 الرصيد في " + wh + ": " + Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit +
-      " | 💰 سعر البيع: " + fmt(p.salePrice) + " ج.م";
+    /* 🆕 بناء 213 (طلب المالك 21/10): «خلى الجزء اللى بيوضح العدد المتاح يكون عريض علشان
+       العدد المتاح غير ظاهر لما بيكون اسم الصنف كبير» — العدد بقى **أول الشارة وغامق**،
+       فالقصّ بييجي على الاسم الطويل مش على الرصيد. */
+    hint.innerHTML =
+      '<span class="sh-count">📦 ' + esc(wh) + ': <b>' +
+      esc(Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit) + '</b></span>' +
+      '<span class="sh-sep"> | </span>' +
+      '<span class="sh-name">🏷️ ' + esc(p.nameAr || "") + '</span>' +
+      '<span class="sh-sep"> | </span>' +
+      '<span class="sh-price">💰 سعر البيع: ' + esc(fmt(p.salePrice)) + ' ج.م</span>';
     /* بناء 206: الشارة بتتقصّ سطر واحد في الشاشة الضيقة، والنص الكامل يفضل في التلميح */
     hint.title = hint.textContent;
   }
@@ -8549,10 +8566,15 @@
       return;
     }
     const wh = $("#cmbPPWarehouse").value || WAREHOUSES[0];
-    hint.textContent =
-      "🏷️ " + p.nameAr +
-      " | 📦 الرصيد في " + wh + ": " + Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit +
-      " | 💰 آخر سعر شراء: " + fmt(lastPriceOf(p)) + " · المتوسط: " + fmt(avgPriceOf(p)) + " ج.م";
+    /* 🆕 بناء 213: الرصيد أول الشارة وغامق — ما يتخبّاش تحت اسم صنف طويل. */
+    hint.innerHTML =
+      '<span class="sh-count">📦 ' + esc(wh) + ': <b>' +
+      esc(Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit) + '</b></span>' +
+      '<span class="sh-sep"> | </span>' +
+      '<span class="sh-name">🏷️ ' + esc(p.nameAr || "") + '</span>' +
+      '<span class="sh-sep"> | </span>' +
+      '<span class="sh-price">💰 آخر سعر شراء: ' + esc(fmt(lastPriceOf(p))) +
+      " · المتوسط: " + esc(fmt(avgPriceOf(p))) + ' ج.م</span>';
     hint.title = hint.textContent;
   }
 
