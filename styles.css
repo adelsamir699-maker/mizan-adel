@@ -2769,10 +2769,25 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .inv-entry-row .fld-card { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 .inv-entry-row .fld-card .lbl-accent { font-size: 11.5px; }
 .inv-entry-row .fld-card .stock-hint { font-size: 11px; padding: 1px 7px; border-radius: 999px; }
-.inv-entry-row .fld.grow { display: flex; flex-direction: column; }
+.inv-entry-row .fld.grow { display: flex; flex-direction: column; min-width: 0; }
 .inv-entry-row .fld.grow input { width: 100%; box-sizing: border-box; }
 .inv-entry-row input, .inv-entry-row select { height: 30px; font-size: 13px; padding: 3px 6px; box-sizing: border-box; }
 .inv-entry-row .fld-btn .btn { height: 30px; padding: 0 12px; }
+
+/* --- بناء 206 (بلاغ المالك 20/10: «كلمة اسم الصنف بتتمدد لفوق وخانات الفاتورة بتنزل
+   لتحت لما بختار صنف»): السبب إن شارة الرصيد بعد اختيار الصنف بتطول (اسم + مخزن +
+   رصيد + سعر) فبتلتف سطرين ⇒ صف الإدخال يطول والخانات تنزل. الحل: الشارة **سطر واحد**
+   بقصّ ثلاث نقاط، والاسم ما يلتفش، وارتفاع الخانات ثابت ⇒ الصف ما يتغيّرش بالاختيار. */
+.inv-entry-row .fld-card { flex-wrap: nowrap; min-width: 0; min-height: 18px; }
+.inv-entry-row .fld-card .lbl-accent { white-space: nowrap; flex: 0 0 auto; }
+.inv-entry-row .fld-card .stock-hint {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 62%;
+  min-width: 0;
+  display: block;
+}
 
 /* سطر السداد: الطريقة + المبلغ + الحذف في سطر، والخزينة/البنك في سطر تحته */
 .pay-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

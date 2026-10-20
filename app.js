@@ -5194,16 +5194,23 @@
    * (طلب المالك 19/10: «و تكون بنفس ترتيب الاعمده»):
    *   كود الصنف · الباركود · اسم الصنف · التصنيف · الوحدة · الرصيد الحالي · آخر سعر شراء ·
    *   متوسط سعر الشراء · سعر البيع · الخصم · الحالة
-   * وبعدها باقي حقول الرفع (الاسم بالإنجليزية · سعر الشراء · حد التنبيه) ثم رصيد كل مخزن ثم
-   * قيمة المخزون. «الرصيد الحالي» على الشاشة بقت «الكمية الحالية» و«الحالة» بقت «حالة النشاط»
-   * لأن دول بس الاسماء اللي شاشة «رفع بيانات Excel» بتعرفها (مترادفات `stock_qty`
-   * و`is_active`) — فالملف ينزل يتعدّل ويرفع. الأعمدة للعرض بس («الخصم» / «قيمة المخزون» /
-   * «رصيد مخزن: …») أسماء مقصودها بره قائمة المترادفات ⇒ القارئ بيتجاهلها ببلاش.
+   * وبعدها الاسم بالإنجليزية · حد التنبيه. «الرصيد الحالي» على الشاشة بقت «الكمية الحالية»
+   * و«الحالة» بقت «حالة النشاط» لأن دول بس الاسماء اللي شاشة «رفع بيانات Excel» بتعرفها
+   * (مترادفات `stock_qty` و`is_active`) — فالملف ينزل يتعدّل ويرفع. عمود «الخصم» للعرض بس
+   * اسمه بره قائمة المترادفات ⇒ القارئ بيتجاهله ببلاش.
+   *
+   * 🆕 بناء 206 — طلب المالك 20/10 (حرفيًا): «عند تصدير الاصناف اكسيل يوجد خانات على اليسار
+   * ليس لها لزوم مثل قيمة المخزون فهى مكرره … احذف … رصيد مخزن : المخزن الرئيسى ليس لها لزوم
+   * و ايضا سعر الشراء اللى على يمين الاعمده المكتوبه ليس لها لزوم لاننا كتبنا اخر سعر شراء و
+   * متوسط سعر الشراء» ⇒ **شُالت ثلاثة أشياء من الملف:** عمود لكل مخزن («رصيد مخزن: …») ·
+   * عمود «قيمة المخزون» · عمود «سعر الشراء». الكمية الحالية + آخر/متوسط سعر الشراء كفاية،
+   * وقيمة المخزون لسه بتتحسب في ورقة «الإجمالي» (اللي المستورد بيتجاهلها أصلًا).
+   *
    * كل عمود ليه مفتاح `k` واحد ⇒ المجاميع وتنسيق الأرقام بيتحسبوا من نفس الجدول، فمستحيل
    * مؤشر غلط يطلع (درس البناء ده: المؤشرات المكتوبة يدويًا اتزحلقت خانات واحدة).
    */
-  function productsExportSpec(whs) {
-    const spec = [
+  function productsExportSpec() {
+    return [
       { h: "كود الصنف", k: "code" },
       { h: "الباركود", k: "barcode" },
       { h: "اسم الصنف", k: "nameAr" },
@@ -5216,12 +5223,8 @@
       { h: "الخصم", k: "disc" },
       { h: "حالة النشاط", k: "active" },
       { h: "اسم الصنف بالإنجليزية", k: "nameEn" },
-      { h: "سعر الشراء", k: "buy", num: "#,##0.00" },
       { h: "حد التنبيه", k: "reorder", num: "#,##0" },
     ];
-    whs.forEach((w) => { spec.push({ h: "رصيد مخزن: " + w, k: "wh:" + w, num: "#,##0" }); });
-    spec.push({ h: "قيمة المخزون", k: "value", num: "#,##0.00" });
-    return spec;
   }
 
   /* رقم عمود بالمفتاح — المصدر الوحيد للمؤشرات (`-1` معناه المفتاح مش موجود). */
@@ -5241,15 +5244,14 @@
   function productsExportData() {
     const list = productsFilteredList();
     const whs = warehouseList();
-    const spec = productsExportSpec(whs);
+    const spec = productsExportSpec();
     const heads = spec.map((s) => s.h);
     const numCols = productsExportNumericCols(spec);
 
     const rows = list.map((p) => {
       const avg = Number(avgPriceOf(p)) || 0;
       const qty = Number(p.qty) || 0;
-      const val = round2(qty * avg);
-      const cell = (k, w) => {
+      const cell = (k) => {
         if (k === "code") return String(p.code == null ? "" : p.code);
         if (k === "barcode") return String(bcDigits(p.barcode) || "");
         if (k === "nameAr") return String(p.nameAr || "");
@@ -5262,13 +5264,10 @@
         if (k === "last") return Number(lastPriceOf(p)) || 0;
         if (k === "avg") return avg;
         if (k === "sale") return Number(p.salePrice) || 0;
-        if (k === "buy") return Number(p.purchasePrice) || 0;
         if (k === "reorder") return Number(p.reorder) || 0;
-        if (k === "value") return val;
-        if (k.slice(0, 3) === "wh:") return Number(stockAt(p, k.slice(3))) || 0;
         return "";
       };
-      return spec.map((s) => cell(s.k, s.h));
+      return spec.map((s) => cell(s.k));
     });
 
     return { list, whs, spec, heads, rows, numCols };
@@ -5277,15 +5276,18 @@
   /* مجاميع ورقة «الإجمالي» — محسوبة من نفس `d.rows` اللي اتنزلت، ومن نفس المواصفات. */
   function productsExportTotals(d) {
     const i = (k) => productsExportCol(d.spec, k);
-    const IQ = i("qty"), IV = i("value"), IS = i("sale"), IB = i("barcode"), IA = i("active"), IM = i("reorder");
+    const IQ = i("qty"), IAV = i("avg"), IS = i("sale"), IB = i("barcode"), IA = i("active"), IM = i("reorder");
     let qty = 0, value = 0, saleValue = 0, noBarcode = 0, inactive = 0, lowStock = 0;
     d.rows.forEach((r) => {
-      qty = round2(qty + (Number(r[IQ]) || 0));
-      value = round2(value + (Number(r[IV]) || 0));
-      saleValue = round2(saleValue + (Number(r[IQ]) || 0) * (Number(r[IS]) || 0));
+      /* 🆕 206: عمود «قيمة المخزون» اتشال من ورقة الأصناف ⇒ القيمة بتتحسب هنا من
+         الكمية × متوسط سعر الشراء (نفس معادلة 197 بالحرف) — ورقة الإجمالي ما اتغيّرتش. */
+      const q = Number(r[IQ]) || 0;
+      qty = round2(qty + q);
+      value = round2(value + q * (Number(r[IAV]) || 0));
+      saleValue = round2(saleValue + q * (Number(r[IS]) || 0));
       if (!String(r[IB]).trim()) noBarcode++;
       if (r[IA] === "لا") inactive++;
-      if ((Number(r[IQ]) || 0) <= (Number(r[IM]) || 0)) lowStock++;
+      if (q <= (Number(r[IM]) || 0)) lowStock++;
     });
     return { count: d.rows.length, qty, value, saleValue, noBarcode, inactive, lowStock };
   }
@@ -6745,6 +6747,7 @@
     const hint = $("#posStockHint");
     if (!p) {
       hint.textContent = "📦 رصيد: -";
+      hint.title = "";
       return;
     }
     const wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
@@ -6752,6 +6755,8 @@
       "🏷️ " + p.nameAr +
       " | 📦 الرصيد في " + wh + ": " + Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit +
       " | 💰 سعر البيع: " + fmt(p.salePrice) + " ج.م";
+    /* بناء 206: الشارة بتتقصّ سطر واحد في الشاشة الضيقة، والنص الكامل يفضل في التلميح */
+    hint.title = hint.textContent;
   }
 
   /* 🔧 طلب المالك الحيّ 06/10 ≈23:20 — بحرفه: «اخر كمية … لسه موجودة معلقة في الفاتورة
@@ -8159,6 +8164,7 @@
     const hint = $("#ppStockHint");
     if (!p) {
       hint.textContent = "📦 رصيد: -";
+      hint.title = "";
       return;
     }
     const wh = $("#cmbPPWarehouse").value || WAREHOUSES[0];
@@ -8166,6 +8172,7 @@
       "🏷️ " + p.nameAr +
       " | 📦 الرصيد في " + wh + ": " + Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit +
       " | 💰 آخر سعر شراء: " + fmt(lastPriceOf(p)) + " · المتوسط: " + fmt(avgPriceOf(p)) + " ج.م";
+    hint.title = hint.textContent;
   }
 
   /* نفس مصدر التصفير الوحيد في فاتورة الشراء (انظر `posScanStateClear` فوق). */
@@ -21826,7 +21833,7 @@ const pwEye = document.getElementById("btnShowPass");
       lines.push('<p class="login-sub">أعمدة غير معروفة تم تجاهلها دون تغيير ترتيب البيانات: ' + esc(plan.ignoredHeaders.join("، ")) + "</p>");
     }
     if (plan.errors.length) {
-      lines.push('<p class="login-msg err">لن يتم رفع الملف لوجود ' + plan.errors.length + " صف غير صالح:</p><ul>");
+      lines.push('<p class="login-msg warn">صفوف ناقصة: ' + plan.errors.length + " — هيتنزّلوا ملف «" + adminExcelFailedFileName() + "» على سطح المكتب، وباقي الصفوف السليمة (" + plan.rows.length + ") هتتنزّل عادي:</p><ul>");
       plan.errors.slice(0, 8).forEach((error) => lines.push("<li>صف " + error.row + ": " + esc(error.message) + "</li>"));
       if (plan.errors.length > 8) lines.push("<li>وأخطاء أخرى…</li>");
       lines.push("</ul>");
@@ -21840,10 +21847,13 @@ const pwEye = document.getElementById("btnShowPass");
     });
     lines.push("</tbody></table></div>");
     if (plan.rows.length > 5) lines.push('<p class="login-sub">المعاينة تعرض أول ٥ صفوف فقط.</p>');
+    if (plan.errors.length) lines.push('<p><button id="btnAdminExcelFailed" class="btn orange" type="button">⬇️ تنزيل الصفوف الناقصة (Excel)</button></p>');
     box.innerHTML = lines.join("");
+    const failedBtn = box.querySelector("#btnAdminExcelFailed");
+    if (failedBtn) failedBtn.addEventListener("click", () => adminExcelDownloadFailedRows(plan));
     const backupAck = document.getElementById("adminExcelBackupAck");
-    upload.disabled = !plan.rows.length || plan.errors.length > 0 ||
-      (plan.mode === "replace" && (!adminExcelBackup || !backupAck || !backupAck.checked));
+    upload.disabled = !plan.rows.length ||
+      (plan.mode === "replace" && (plan.errors.length > 0 || !adminExcelBackup || !backupAck || !backupAck.checked));
   }
   function toggleAdminExcel() {
     if (!isSuperAcct()) {
@@ -21921,13 +21931,15 @@ const pwEye = document.getElementById("btnShowPass");
         rows: parsed.rows,
         mappedHeaders: parsed.mappedHeaders,
         ignoredHeaders: parsed.ignoredHeaders,
-        errors: parsed.errors
+        errors: parsed.errors,
+        failed: parsed.failed || [],
+        sourceHeaders: parsed.headers || []
       };
       adminExcelRenderPreview(adminExcelPlan);
       const msg = parsed.errors.length
-        ? "صحّح الصفوف غير الصالحة في الملف ثم أعد اختياره."
+        ? ("جاهز: " + parsed.rows.length + " صف سليم هيتنزّل، و" + parsed.errors.length + " صف ناقص هيتحفظ في ملف على سطح المكتب.")
         : ("المعاينة جاهزة — " + parsed.rows.length + " صف.");
-      adminExcelSetStatus(msg, parsed.errors.length > 0);
+      adminExcelSetStatus(msg, false);
     } catch (error) {
       adminExcelSetStatus(error.message || String(error), true);
     } finally {
@@ -21972,13 +21984,61 @@ const pwEye = document.getElementById("btnShowPass");
       if (button) button.disabled = false;
     }
   }
+  function adminExcelFailedFileName() { return "بيانات لم يتم تنزيلها على البرنامج.xlsx"; }
+  async function adminExcelFailedBuffer(plan) {
+    const wb = new window.ExcelJS.Workbook();
+    wb.creator = "Mizan";
+    const ws = wb.addWorksheet("بيانات لم يتم تنزيلها");
+    const heads = ["رقم الصف في الملف", "سبب الخطأ"].concat(plan.sourceHeaders || []);
+    ws.addRow(heads);
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDE68A" } };
+    (plan.failed || []).forEach((f) => ws.addRow([f.row, f.message].concat(f.cells || [])));
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+    heads.forEach((h, i) => { ws.getColumn(i + 1).width = i === 1 ? 46 : Math.max(12, Math.min(32, String(h).length + 4)); });
+    return wb.xlsx.writeBuffer();
+  }
+  async function adminExcelDownloadFailedRows(plan) {
+    const name = adminExcelFailedFileName();
+    let buffer;
+    try { buffer = await adminExcelFailedBuffer(plan); }
+    catch (e) { adminExcelSetStatus("تعذّر تجهيز ملف الصفوف الناقصة: " + (e.message || e), true); return "failed"; }
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    try {
+      if (window.showSaveFilePicker) {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: name,
+          startIn: "desktop",
+          types: [{ description: "Excel", accept: { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"] } }]
+        });
+        const w = await handle.createWritable();
+        await w.write(blob);
+        await w.close();
+        return "picker";
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return "abort";
+    }
+    try {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = name;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return "download";
+    } catch (e) { return "failed"; }
+  }
   async function adminExcelUpload() {
     if (!isSuperAcct()) { toast("رفع Excel متاح لمالك البرنامج فقط", "error"); return; }
     const plan = adminExcelPlan;
     const button = document.getElementById("btnAdminExcelUpload");
     const mode = document.getElementById("adminExcelMode");
-    if (!plan || !plan.rows.length || plan.errors.length) {
+    if (!plan || (!plan.rows.length && !plan.errors.length)) {
       adminExcelSetStatus("عاين ملفًا صالحًا قبل الرفع.", true);
+      return;
+    }
+    if (plan.errors.length && plan.mode === "replace") {
+      adminExcelSetStatus("وضع الاستبدال لا يقبل صفوفًا ناقصة (كان هيتمسح الجدول بناقص). اختار «إضافة» أو صلّح الصفوف الأول.", true);
       return;
     }
     if (plan.orgId !== document.getElementById("adminExcelOrg").value ||
@@ -22016,6 +22076,17 @@ const pwEye = document.getElementById("btnShowPass");
         return;
       }
     }
+    let failedNote = "";
+    if (plan.errors.length) {
+      const how = await adminExcelDownloadFailedRows(plan);
+      failedNote = how === "picker" || how === "download"
+        ? " — وملف الصفوف الناقصة (" + plan.errors.length + ") اتحفظ باسم «" + adminExcelFailedFileName() + "»."
+        : " — لكن ملف الصفوف الناقصة ما اتحفظش؛ اضغط «تنزيل الصفوف الناقصة» في المعاينة.";
+      if (!plan.rows.length) {
+        adminExcelSetStatus("مفيش صفوف سليمة للرفع." + failedNote, how === "failed" || how === "abort");
+        return;
+      }
+    }
     if (!DATA.adminImportExcel) {
       adminExcelSetStatus("خدمة الرفع غير جاهزة؛ لم يتم تغيير أي بيانات.", true);
       return;
@@ -22027,7 +22098,7 @@ const pwEye = document.getElementById("btnShowPass");
       const removed = Number(result && result.removed) || 0;
       const inserted = Number(result && result.inserted) || 0;
       adminExcelSetStatus("تمت العملية: أُضيف " + inserted + " سجلًا" +
-        (plan.mode === "replace" ? " بعد تفريغ " + removed + " سجل قديم." : " دون تعديل أو حذف السجلات الموجودة."));
+        (plan.mode === "replace" ? " بعد تفريغ " + removed + " سجل قديم." : " دون تعديل أو حذف السجلات الموجودة.") + failedNote);
       toast("اكتمل رفع بيانات Excel", "success");
       adminExcelPlan = null;
       adminExcelBackup = null;

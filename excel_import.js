@@ -159,6 +159,7 @@
     if (!mapped.length) throw new Error("لم أتعرف على أسماء أعمدة الملف لهذا الجدول.");
     const rows = [];
     const errors = [];
+    const failed = [];
     for (let rowIndex = 1; rowIndex < matrix.length; rowIndex++) {
       const source = matrix[rowIndex] || [];
       const row = {};
@@ -176,7 +177,9 @@
         });
         rows.push(row);
       } catch (error) {
-        errors.push({ row: rowIndex + 1, message: error.message || String(error) });
+        const message = error.message || String(error);
+        errors.push({ row: rowIndex + 1, message: message });
+        failed.push({ row: rowIndex + 1, message: message, cells: source.slice(0) });
       }
     }
     return {
@@ -184,6 +187,8 @@
       mappedHeaders: mapped.map((column) => column.label),
       ignoredHeaders: ignored,
       errors: errors,
+      failed: failed,
+      headers: headers.map((header) => (header == null ? "" : String(header))),
       table: config
     };
   }
