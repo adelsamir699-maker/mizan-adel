@@ -2042,8 +2042,10 @@
       if (!_pl.length && Number(inv.paidAmount) > 0) _pl = [{ method: inv.paymentMethod || "نقداً", amount: Number(inv.paidAmount) }];
       return _pl.map((p) => {
         const isAjal = payMethodLabelOf(p.method) === "آجل";
+        const _isChk = posPayMode(p.method).isCheck;
+        const _chkInfo = _isChk ? ([p.bankName, p.checkNo].filter(Boolean).join(" #")) : "";
         return {
-          label: "    • " + payMethodLabelOf(p.method) + (isAjal ? " (على الحساب)" : ""),
+          label: "    • " + payMethodLabelOf(p.method) + (_isChk && _chkInfo ? " — " + _chkInfo : "") + (isAjal ? " (على الحساب)" : ""),
           value: fmt(p.amount) + " ج.م",
           sum: true,
           cls: isAjal ? "amount-neg" : "amount-pos"
@@ -5496,6 +5498,7 @@
       $("#fPSale").value = moneyStr(product.salePrice);
       $("#fPStock").value = Number(product.qty).toLocaleString("en-US");
       $("#fPStock").disabled = true;
+      $("#fPReorder").value = String(product.reorder != null ? product.reorder : 50);
       $("#fPDiscount").value = moneyStr(product.discountPercent || 0);
       $("#fPDiscStart").value = product.discountStart || "";
       $("#fPDiscEnd").value = product.discountEnd || "";
@@ -5513,6 +5516,7 @@
       $("#fPSale").value = "0";
       $("#fPStock").value = "0";
       $("#fPStock").disabled = false;
+      $("#fPReorder").value = "50";
       $("#fPDiscount").value = "0";
       $("#fPDiscStart").value = "";
       $("#fPDiscEnd").value = "";
@@ -5551,6 +5555,8 @@
     const purchase = moneyVal("#fPPurchase") || 0;
     const sale = moneyVal("#fPSale") || 0;
     const opening = parseFloat(String($("#fPStock").value).replace(/,/g, "")) || 0;
+    const reorderRaw = parseFloat(String($("#fPReorder").value).replace(/,/g, ""));
+    const reorder = isFinite(reorderRaw) && reorderRaw >= 0 ? round2(reorderRaw) : 50;
     const discount = moneyVal("#fPDiscount") || 0;
     const status = $("#fPStatus").value === "1";
 
@@ -5595,7 +5601,7 @@
         discountEnd: dEnd,
         stock: { [($("#fPWarehouse").value || WAREHOUSES[0])]: opening },
         qty: opening,
-        reorder: 50,
+        reorder: reorder,
         isActive: status
       };
       // 🔳 بناء 139: الصنف الجديد بياخد رقم باركود «ميزان» من أول ثانية (الخانة الفاضية بس)
@@ -5621,6 +5627,7 @@
       pr.discountStart = dStart;
       pr.discountEnd = dEnd;
       pr.isActive = status;
+      pr.reorder = reorder;
       saveProducts();
       addActivity("تعديل صنف", "تعديل بيانات الصنف: " + pr.nameAr + " (" + pr.code + ")");
       toast("تم حفظ تعديلات الصنف بنجاح.", "success");
@@ -6801,10 +6808,44 @@
     posUpdatePartyBalance("sale");
   }
 
+  /* 🧾 بناء 210 (طلب المالك 20/10): اقتراحات الأصناف في الفاتورة مرتّبة **بالأكثر مبيعًا**
+     (عدد الفواتير اللي ظهر فيها الصنف، تنازليًا) ثم أبجديًا — مع الحفاظ على البحث بالكود
+     والباركود زي ما هو. الترتيب في قائمة الاقتراحات فقط، والبحث/الإضافة ما اتغيّرش. */
+  function productSalesRank() {
+    const rank = new Map();
+    (Array.isArray(sales) ? sales : []).forEach((s) => {
+      const seen = new Set();
+      ((s && s.items) || []).forEach((it) => {
+        if (!it) return;
+        let key = it.productId != null && it.productId !== "" ? String(it.productId) : "";
+        if (!key && it.code) key = "c:" + String(it.code);
+        if (!key && it.nameAr) key = "n:" + String(it.nameAr);
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        rank.set(key, (rank.get(key) || 0) + 1);
+      });
+    });
+    return rank;
+  }
+  function productRankKeyOf(p) {
+    if (!p) return "";
+    if (p.id != null && p.id !== "") return String(p.id);
+    return p.code ? "c:" + String(p.code) : "";
+  }
+  function productsByMostSold() {
+    const rank = productSalesRank();
+    return products.filter((p) => p.isActive).sort((a, b) => {
+      const ra = rank.get(productRankKeyOf(a)) || 0;
+      const rb = rank.get(productRankKeyOf(b)) || 0;
+      if (rb !== ra) return rb - ra;
+      return String(a.nameAr || "").localeCompare(String(b.nameAr || ""), "ar");
+    });
+  }
+
   function fillPosDatalist() {
     const dl = $("#posProductsList");
     dl.innerHTML = "";
-    products.filter((p) => p.isActive).forEach((p) => {
+    productsByMostSold().forEach((p) => {
       [p.nameAr, p.code, p.barcode].forEach((v) => {
         if (!v) return;
         const o = document.createElement("option");
@@ -6923,6 +6964,7 @@
   }
 
   let posAddSource = "search";
+  let posLastAddAt = 0;   // 🧾 بناء 210: كتم رسالة «لم يتم العثور» الكاذبة بعد إضافة ناجحة
 
   function posAddItem(onDone) {
     let q = $("#txtPosSearch").value.trim();
@@ -6932,6 +6974,11 @@
       if (code) prod = findProductFlexible(code);
     }
     if (!prod) {
+      /* 🧾 بناء 210 (بلاغ المالك): بعد إضافة الصنف بنجاح الخانات بتتفضّى، وأي Enter/Numpad
+         تاني كان بيطلّع «لم يتم العثور» رغم إن الصنف اتضاف فعلًا. الكتم هنا للنقرات السريعة
+         اللي بعد نجاح مباشر، وللخانات الفاضية تمامًا (مافيش حاجة أصلًا تتضاف). */
+      if (Date.now() - posLastAddAt < 1500) return;
+      if (!q && !$("#txtPosCode").value.trim()) { $("#txtPosSearch").focus(); return; }
       toast("لم يتم العثور على صنف يطابق الاسم أو الكود المكتوب.\nيمكنك استخدام زر (➕ إضافة صنف جديد للمخزن).", "warning");
       return;
     }
@@ -6989,6 +7036,7 @@
 
   /* إدخال السطر فعليًا (مصدر واحد للإضافة — اليدوي والمسح والـ«بعد إضافة رصيد»). */
   function posCommitLine(prod, qty, price) {
+    posLastAddAt = Date.now();
     const pct = activeDiscountPct(prod);
     const existing = posItems.find((it) => it.productId === prod.id);
     if (existing) {
@@ -7743,6 +7791,21 @@
     setSummaryVal("#" + p + "Due", t.due, t.due > 0 ? "amount-neg" : "");
     setSummaryVal("#" + p + "Prev", prev, prev > 0 ? "amount-neg" : prev < 0 ? "amount-pos" : "");
     setSummaryVal("#" + p + "Curr", curr, curr > 0 ? "amount-neg" : curr < 0 ? "amount-pos" : "");
+    /* 🧾 بناء 210 (بلاغ المالك: «الشيك مش ظاهر في الإجمالي») — سطر تفصيل لكل وسيلة دفع
+       (نقداً/بنك/محفظة/إنستا/شيك/آجل) بمبلغها، والشيك برقمه وبنكه. بيتخفي لو مافيش تفصيل. */
+    const line = $("#" + (kind === "sale" ? "sPosPayDetail" : "sPpPayDetail"));
+    if (line) {
+      const parts = (Array.isArray(t.payments) ? t.payments : []).filter((x) => round2(x.amount) > 0.0001).map((x) => {
+        const mode = posPayMode(x.method);
+        const amt = fmt(round2(x.amount));
+        if (mode.isAjal) return "آجل " + amt;
+        if (mode.isCheck) return "شيك " + amt + (x.bankName ? " (" + x.bankName : " (") + (x.checkNo ? " #" + x.checkNo : "") + ")";
+        const nm = mode.isCash ? "نقداً" : (x.method || "سداد");
+        return nm + " " + amt;
+      });
+      line.textContent = parts.join("  +  ");
+      line.hidden = !parts.length;
+    }
   }
 
   function posPaymentFieldToggle(kind, cashAmt) {
@@ -7799,7 +7862,7 @@
     // (وتختفي لو المبلغ كله راح لسطر سداد تاني، وترجع بالفرق لو السطور التانية قلّت).
     posPaymentFieldToggle("sale", posCashLineAmount(pd));
     posUpdatePartyBalance("sale");
-    posUpdateSummary("sale", { grand: grand, paid: pd.paid, due: pd.due });
+    posUpdateSummary("sale", { grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments });
     posAjalCustomerVisibility("sale", pd.due);
     return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments, overBy: pd.overBy };
   }
@@ -8226,7 +8289,7 @@
   function fillPPDatalist() {
     const dl = $("#ppProductsList");
     dl.innerHTML = "";
-    products.filter((p) => p.isActive).forEach((p) => {
+    productsByMostSold().forEach((p) => {
       [p.nameAr, p.code, p.barcode].forEach((v) => {
         if (!v) return;
         const o = document.createElement("option");
@@ -8326,6 +8389,7 @@
   }
 
   let ppAddSource = "search";
+  let ppLastAddAt = 0;   // 🧾 بناء 210: نفس كتم رسالة «لم يتم العثور» الكاذبة في الشراء
 
   function ppAddItem() {
     let q = $("#txtPPSearch").value.trim();
@@ -8335,6 +8399,8 @@
       if (code) prod = findProductFlexible(code);
     }
     if (!prod) {
+      if (Date.now() - ppLastAddAt < 1500) return;
+      if (!q && !$("#txtPPCode").value.trim()) { $("#txtPPSearch").focus(); return; }
       toast("لم يتم العثور على صنف يطابق الاسم أو الكود المكتوب.\nيمكنك استخدام زر (➕ إضافة صنف جديد للمخزن).", "warning");
       return;
     }
@@ -8369,6 +8435,7 @@
         total: 0
       });
     }
+    ppLastAddAt = Date.now();
     $("#txtPPSearch").value = "";
     $("#txtPPCode").value = "";
     $("#numPPQty").value = "1";
@@ -8509,7 +8576,7 @@
     // 🆕 بناء 199: خانة «نقداً» مقفولة وبيكتبها البرنامج = الإجمالي − سطور السداد (تختفي لو المبلغ كله راح لسطر تاني).
     posPaymentFieldToggle("purchase", posCashLineAmount(pd));
     ppUpdatePartyBalance("purchase");
-    posUpdateSummary("purchase", { grand: grand, paid: pd.paid, due: pd.due });
+    posUpdateSummary("purchase", { grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments });
     posAjalCustomerVisibility("purchase", pd.due);
     return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments, overBy: pd.overBy };
   }
@@ -9268,6 +9335,7 @@
         return;
       }
     }
+    const linkedChecks = checksOfInvoice(inv);
     const num = String(inv.invoiceNumber || inv.invoiceNo || "-");
     const amt = Math.round((Number(inv.grandTotal) || 0) * 100) / 100;
     if (!confirm("متأكد إنك عايز تحذف فاتورة الـ" + kind + " رقم (" + num + ") الخاصة بـ " + who + " بمبلغ " + fmt(amt) + " ج.م؟\n\nالحذف بيتراجع عن كل أثرها: الأصناف للمخزن، وأثر الدفع (الخزينة أو الرصيد وقيده). الخطوة دي ما ينفعش الرجوع عليها بعد التنفيذ.")
@@ -9383,7 +9451,36 @@
     if (gonePaid < 0) gonePaid = 0;
     if (gonePaid > r2n(amt)) gonePaid = r2n(amt);
     let ptr = null, ptrNotTreasury = false;
-    if (gonePaid > 0.0001) {
+    /* 🧾 بناء 210 (مراجعة المالك 20/10): «راجع حذف/رد باقي وسائل الدفع» — الفاتورة متعددة
+       السداد كانت بترد **كل** المدفوع لخزينة واحدة (أول خزينة)، فتطلع فلوس من صندوق غلط
+       وتفضل فلوس في صندوق غلط. دلوقتي كل سطر سداد بيرجع لخزينته هو؛ والشيك/الآجل مايدخلوش
+       أي خزينة. الفواتير القديمة اللي مالهاش `payments` بتمشي على المسار القديم زي ما هو. */
+    let refundedCash = 0;
+    const refundByPayments = (inv2, sales2) => {
+      let sum = 0;
+      (inv2.payments || []).forEach((p) => {
+        const code = String(p.method || "").toLowerCase();
+        if (code === "ajal" || code === "check") return;
+        const a = r2n(p.amount);
+        if (!(a > 0.0001)) return;
+        let tr2 = (p.treasuryId != null && p.treasuryId !== "")
+          ? treasury.find((x) => Number(x.id) === Number(p.treasuryId)) : null;
+        if (!tr2) tr2 = treasury.find((x) => Number(x.id) === Number(inv2.treasuryId)) || null;
+        if (!tr2) {
+          const want = code === "bank" ? "bank" : code === "wallet" ? "wallet" : code === "instapay" ? "instapay" : "cash";
+          tr2 = treasury.find((x) => x.type === want) || treasury.find((x) => x.type === "cash") || treasury[0] || null;
+        }
+        if (!tr2) return;
+        tr2.balance = r2n((Number(tr2.balance) || 0) + (sales2 ? -a : a));
+        syncTreasuryItemToSett(tr2);
+        sum = r2n(sum + a);
+      });
+      return sum;
+    };
+    if (Array.isArray(inv.payments) && inv.payments.length) {
+      refundedCash = refundByPayments(inv, isSales);
+      saveTreasury();
+    } else if (gonePaid > 0.0001) {
       if (inv.treasuryId != null && inv.treasuryId !== "") {
         ptr = treasury.find((x) => Number(x.id) === Number(inv.treasuryId)) || null;
       }
@@ -9400,6 +9497,7 @@
         ptr.balance = r2n((Number(ptr.balance) || 0) + (isSales ? -gonePaid : gonePaid));
         saveTreasury();
         syncTreasuryItemToSett(ptr);
+        refundedCash = gonePaid;
       }
     }
     // 🆕 193: تكلفة الشراء ترجع زي ما كانت قبل الفاتورة (متوسطة/آخر شراء) — لو اللقطة محفوظة
@@ -9421,7 +9519,12 @@
     }
     // 🆕 بناء 134: القيد اللي اتترحّل مع الفاتورة بيرجع معاه (تسوية الأرصدة بتلغى سطر-سطر)
     const goneJ = removeInvoiceJournal(isSales ? "sale" : "purchase", inv);
-    // 3) حذف الفاتورة نفسها + سجل النشاط + تحديث الاستعلام
+    /* 🧾 بناء 210 (قرار المالك 20/10): حذف الفاتورة **مايشيلش الشيك** — الشيك ورقة مستقلة
+       يمكن تفضل قابلة للتحصيل على المديونية السابقة. اللي بيتشال هو **أثر الارتجاع** بس،
+       والشيك المعلّق يبقى «غير مخصص» (unapplied) ⇒ عند تحصيله لاحقًا يُقيَّد على مديونية
+       العميل مش حساب الشيكات. ولو الشيك كان اتحصّل فعليًا (الفلوس في الخزينة) بيتحوّل
+       رصيدًا دائنًا للعميل مع قيد إعادة تصنيف. */
+    const chkSettle = settleChecksOnInvoiceDelete(isSales, inv, linkedChecks);
     if (isSales) { sales = sales.filter((x) => x.id !== inv.id); saveSales(); }
     else { purchases = purchases.filter((x) => x.id !== inv.id); savePurchases(); }
     /* 🆕 بناء 196: السطر ده بقى يتبني من **الأرقام اللي رجعت فعلًا** (`gonePaid` للخزينة،
@@ -9430,10 +9533,10 @@
        ممنوع أي اصطلاح تقني للعميل — بصيغة ودّية فيها الاسم والمبلغ بس. */
     const bits = [];
     if (goneDue > 0.0001) bits.push("شيلنا من حساب " + who + " " + fmt(goneDue) + " ج.م");
-    if (gonePaid > 0.0001) {
-      if (ptr) bits.push((isSales ? "وطلعنا " : "وردّينا ") + fmt(gonePaid) + " ج.م " + (isSales ? "من" : "لـ") + " «" + ptr.name + "»");
-      else if (ptrNotTreasury) bits.push("ورجّعنا دفعة " + fmt(gonePaid) + " ج.م على حسابها اللي اتدفعت منه (مش صندوق)");
-      else bits.push("وردّينا " + fmt(gonePaid) + " ج.م للحساب اللي اتدفعت منه");
+    if (refundedCash > 0.0001) {
+      if (ptr) bits.push((isSales ? "وطلعنا " : "وردّينا ") + fmt(refundedCash) + " ج.م " + (isSales ? "من" : "لـ") + " «" + ptr.name + "»");
+      else if (ptrNotTreasury) bits.push("ورجّعنا دفعة " + fmt(refundedCash) + " ج.م على حسابها اللي اتدفعت منه (مش صندوق)");
+      else bits.push("وردّينا " + fmt(refundedCash) + " ج.م للخزائن اللي اتدفع منها");
     }
     if (costBack > 0) bits.push("ورجّعنا أسعار التكلفة لـ " + costBack + " صنف");
     const backTxt = bits.length ? (" (" + bits.join("، ") + ")") : "";
@@ -10389,8 +10492,11 @@ id: nextVoucherId(),
         '<td class="cell-actions">' +
         (pend
           ? '<button class="btn small green" type="button" data-act="collect">💰 تحصيل</button> <button class="btn small red" type="button" data-act="return">⛔ ارتجاع</button>'
-          : '<button class="btn small dark" type="button" data-act="del">🗑️ حذف</button>') +
-        ' <button class="btn small sky" type="button" data-act="edit" title="تعديل بيانات الشيك (البنك/الرقم/الاستحقاق)">✏️ تعديل</button>' +
+          : (String(c.status || "") === "cancelled"
+            ? '<span class="login-sub">ملغي — محفوظ للتدقيق</span>'
+            : '<button class="btn small dark" type="button" data-act="del">🗑️ حذف</button>')) +
+        (String(c.status || "") === "cancelled" ? "" :
+          ' <button class="btn small sky" type="button" data-act="edit" title="تعديل بيانات الشيك (البنك/الرقم/الاستحقاق)">✏️ تعديل</button>') +
         '</td>';
       tr.dataset.cid = c.id;
       tb.appendChild(tr);
@@ -10418,11 +10524,30 @@ id: nextVoucherId(),
     renderDashboard();
     toast("تم تحصيل الشيك ودخل الخزينة ✅", "success");
   }
-  function deleteCheckRec(id) {
-    const c = checks.find((x) => Number(x.id) === Number(id));
-    if (!c) return;
-    if ((c.status || "pending") === "pending") { toast("الشيك لسه تحت التحصيل — اعمل «ارتجاع» أو «تحصيل» بدل الحذف.", "warning"); return; }
-    if (!confirm("حذف الشيك رقم " + (c.checkNo || c.id) + " (" + (c.customerName || "") + ") من القائمة نهائيًا؟\n(القيد المرتبط بيتشال برضه)")) return;
+  /* ===== 🧾 بناء 210 — دورة حياة الشيك مع حذف الفواتير (قرار المالك 20/10) =====
+     القاعدة: حذف الفاتورة **مايشيلش الشيك** — الشيك ورقة مستقلة تفضل قابلة للتحصيل على
+     المديونية السابقة. اللي يتشال هو أثر الارتجاع بس، والشيك يبقى «غير مخصص» (unapplied)
+     ⇒ عند تحصيله يتقيّد على مديونية الطرف مش حساب الشيكات. وده بيتطبق على المبيعات
+     والمشتريات بنفس المبدأ (بمقابل موردين 2.1.1). */
+  function checksOfInvoice(inv) {
+    const no = String((inv && (inv.invoiceNumber || inv.invoiceNo)) || "");
+    if (!no || !Array.isArray(checks)) return [];
+    return checks.filter((c) => c && String(c.refType || "") === "invoice" && String(c.refId || "") === no);
+  }
+  function checkReturnTxOf(c) {
+    if (!c || !Array.isArray(txs)) return -1;
+    if (c.returnTxId != null) {
+      const i = txs.findIndex((t) => t && Number(t.id) === Number(c.returnTxId));
+      if (i >= 0) return i;
+    }
+    if ((c.partyKind || "customer") !== "customer") return -1;
+    return txs.findIndex((t) => t && Number(t.customerId) === Number(c.customerId) &&
+      Math.abs(Number(t.debit || 0) - round2(c.amount)) < 0.005 &&
+      String(t.desc || "").startsWith("ارتجاع شيك"));
+  }
+  function reverseCheckReturn(c) {
+    if (!c) return 0;
+    let n = 0;
     const k = checkJrnKey(c.id);
     if (k) {
       const j = journalEntries.find((x) => x && String(x.refId || "") === k);
@@ -10431,12 +10556,126 @@ id: nextVoucherId(),
         journalEntries = journalEntries.filter((x) => x !== j);
         persistJournal(); saveAccounts();
         try { renderJournal(); } catch (e) { }
+        n++;
       }
     }
-    checks = checks.filter((x) => Number(x.id) !== Number(id));
+    const i = checkReturnTxOf(c);
+    if (i >= 0) { const t = txs[i]; txs.splice(i, 1); bumpIdFloor("tx", t.id); n++; }
+    c.returnTxId = null;
+    return n;
+  }
+  function settleChecksOnInvoiceDelete(isSales, inv, listArg) {
+    const list = listArg || checksOfInvoice(inv);
+    if (!list.length) return { pending: 0, returned: 0, collected: 0 };
+    const out = { pending: 0, returned: 0, collected: 0 };
+    let txChanged = false;
+    list.forEach((c) => {
+      const st = String(c.status || "pending");
+      if (st === "returned") {
+        reverseCheckReturn(c);
+        c.status = "pending"; c.returnedAt = ""; c.unapplied = true;
+        out.returned++;
+      } else if (st === "collected") {
+        out.collected++;
+        const amount = round2(c.amount);
+        const debt = accByCode(isSales ? "1.1.5" : "2.1.1", isSales ? "مديونيات العملاء" : "مستحقات الموردين");
+        const chk = checksAcc();
+        if (amount > 0 && debt && chk) {
+          const j = { id: nextJournalId(), number: jrnNo(), date: todayISO(),
+            desc: "إعادة تصنيف شيك محصّل بعد حذف فاتورة " + (isSales ? "مبيعات" : "مشتريات") + " — " + (c.customerName || c.supplierName || "-"),
+            ref: "حذف فاتورة", refType: "تسوية شيك", refId: "CHADJ:" + c.id,
+            debit: amount, credit: amount,
+            lines: isSales
+              ? [{ accountId: Number(chk.id), debit: amount, credit: 0 }, { accountId: Number(debt.id), debit: 0, credit: amount }]
+              : [{ accountId: Number(debt.id), debit: amount, credit: 0 }, { accountId: Number(chk.id), debit: 0, credit: amount }] };
+          settleJrnLines(j.lines, 1); journalEntries.push(j);
+          persistJournal(); saveAccounts();
+          try { renderJournal(); } catch (e) { }
+        }
+        if (isSales && c.customerId) {
+          txs.push({ id: nextTxId(), customerId: c.customerId, treasuryId: c.treasuryId || null, treasuryName: "",
+            paymentMethod: "شيك", date: todayISO(),
+            desc: "تحصيل شيك #" + (c.checkNo || c.id) + " — رصيد دائن بعد حذف الفاتورة", debit: 0, credit: amount });
+          txChanged = true;
+        } else if (!isSales && c.supplierId) {
+          supplierTxs.push({ id: nextSupplierTxId(), supplierId: c.supplierId, treasuryId: c.treasuryId || null, treasuryName: "",
+            paymentMethod: "شيك", date: todayISO(),
+            desc: "سداد شيك #" + (c.checkNo || c.id) + " — رصيد دائن بعد حذف الفاتورة", debit: 0, credit: amount });
+          txChanged = true;
+        }
+        c.unapplied = true;
+      } else {
+        c.unapplied = true;
+        out.pending++;
+      }
+    });
     saveChecks();
-    renderChecks();
-    toast("اتحذف الشيك.", "success");
+    if (txChanged) {
+      try { saveTxs(); recalculateCustomerBalances(); saveCustomers(); } catch (e) { }
+      try { saveSupplierTxs(); recalculateSupplierBalances(); saveSuppliers(); } catch (e) { }
+    }
+    try { renderChecks(); } catch (e) { }
+    return out;
+  }
+  function deleteCheckRec(id) {
+    const c = checks.find((x) => Number(x.id) === Number(id));
+    if (!c) return;
+    const st = String(c.status || "pending");
+    if (st === "collected") { toast("الشيك اتحصّل والفلوس دخلت الخزينة — لازم تعكس التحصيل الأول وبعدها تقدر تلغيه.", "warning"); return; }
+    if (st === "cancelled") { toast("الشيك ملغي بالفعل.", "warning"); return; }
+    const amount = round2(c.amount);
+    if (st === "returned") {
+      if (!confirm("حذف الشيك المرتجع رقم " + (c.checkNo || c.id) + "؟\n(هيتم إلغاء حركة الارتجاع وقيده — المديونية ترجع زي ما كانت قبل الارتجاع)")) return;
+      reverseCheckReturn(c);
+      c.status = "cancelled"; c.cancelledAt = todayISO();
+      c.notes = (c.notes ? c.notes + " | " : "") + "حذف شيك مرتجع";
+      saveChecks();
+      try { saveTxs(); recalculateCustomerBalances(); saveCustomers(); } catch (e) { }
+      renderChecks(); renderDashboard();
+      toast("اتلغى الشيك ورجع أثر الارتجاع.", "success");
+      return;
+    }
+    if (!confirm("حذف الشيك رقم " + (c.checkNo || c.id) + " (" + (c.customerName || c.supplierName || "") + ")؟\n\nالشيك هيتلغي، وهتزيد المديونية بقيمته " + fmt(amount) + " ج.م.")) return;
+    if (!c.unapplied && amount > 0) {
+      const debt = accByCode("1.1.5", "مديونيات العملاء");
+      const chk = checksAcc();
+      if (debt && chk) {
+        const j = { id: nextJournalId(), number: jrnNo(), date: todayISO(),
+          desc: "إلغاء شيك — " + (c.customerName || "-") + (c.checkNo ? " (#" + c.checkNo + ")" : "") + " — " + fmt(amount) + " ج.م",
+          ref: "إلغاء شيك", refType: "إلغاء شيك", refId: "CHDEL:" + c.id,
+          debit: amount, credit: amount,
+          lines: [{ accountId: Number(debt.id), debit: amount, credit: 0 }, { accountId: Number(chk.id), debit: 0, credit: amount }] };
+        settleJrnLines(j.lines, 1); journalEntries.push(j);
+        persistJournal(); saveAccounts();
+        try { renderJournal(); } catch (e) { }
+      }
+    }
+    /* لو الشيك «غير مخصص» (فاتورته اتحذفت) فالمديونية أصلًا رجعت مع حذف الفاتورة —
+       فإلغاء الشيك هنا مايزوّدهاش تاني (كان هيبقى ازدواج). */
+    if (c.unapplied) {
+      c.status = "cancelled"; c.cancelledAt = todayISO();
+      c.notes = (c.notes ? c.notes + " | " : "") + "إلغاء شيك غير مخصص (فاتورته محذوفة)";
+      saveChecks(); renderChecks(); renderDashboard();
+      toast("اتلغى الشيك (مديونيته كانت رجعت مع حذف الفاتورة — مافيش أثر جديد).", "success");
+      return;
+    }
+    if ((c.partyKind || "customer") === "supplier") {
+      if (c.supplierId && amount > 0) {
+        supplierTxs.push({ id: nextSupplierTxId(), supplierId: c.supplierId, treasuryId: null, treasuryName: "",
+          paymentMethod: "شيك", date: todayISO(),
+          desc: "إلغاء شيك #" + (c.checkNo || c.id) + " (زيادة المستحق)", debit: amount, credit: 0 });
+        try { saveSupplierTxs(); recalculateSupplierBalances(); saveSuppliers(); } catch (e) { }
+      }
+    } else if (c.customerId && amount > 0) {
+      txs.push({ id: nextTxId(), customerId: c.customerId, treasuryId: null, treasuryName: "",
+        paymentMethod: "شيك", date: todayISO(),
+        desc: "إلغاء شيك #" + (c.checkNo || c.id) + " (زيادة مديونية)", debit: amount, credit: 0 });
+      try { saveTxs(); recalculateCustomerBalances(); saveCustomers(); } catch (e) { }
+    }
+    c.status = "cancelled"; c.cancelledAt = todayISO();
+    c.notes = (c.notes ? c.notes + " | " : "") + "حذف شيك";
+    saveChecks(); renderChecks(); renderDashboard();
+    toast("اتلغى الشيك وزادت المديونية بقيمته.", "success");
   }
   function checksBindOnce() {
     if (checksBound) return;
@@ -10594,8 +10833,27 @@ id: nextVoucherId(),
     vouchers.push(v);
     t.balance = round2((Number(t.balance) || 0) + amount);
     syncTreasuryItemToSett(t);
-    try { postVoucherJournal(v, t, checksAcc()); } catch (e) { }
-    c.status = "collected"; c.treasuryId = t.id; c.collectedAt = when;
+    /* 🧾 بناء 210: الشيك غير المخصص (اتفكّت فاتورته) عند تحصيله يقفل **مديونية الطرف**
+       مش حساب الشيكات (الشيك مش أصل عندنا أصلًا)، ولازم حركة طرف دائنة عشان إعادة الحساب. */
+    const unap = !!c.unapplied;
+    const counterAcc = unap
+      ? accByCode((c.partyKind === "supplier") ? "2.1.1" : "1.1.5", (c.partyKind === "supplier") ? "مستحقات الموردين" : "مديونيات العملاء")
+      : checksAcc();
+    try { postVoucherJournal(v, t, counterAcc); } catch (e) { }
+    if (unap && amount > 0) {
+      if ((c.partyKind || "customer") === "supplier" && c.supplierId) {
+        supplierTxs.push({ id: nextSupplierTxId(), supplierId: c.supplierId, treasuryId: t.id, treasuryName: t.name,
+          paymentMethod: "شيك", date: when,
+          desc: "تحصيل شيك #" + (c.checkNo || c.id) + " — سداد مستحق بعد حذف الفاتورة", debit: 0, credit: amount });
+        try { saveSupplierTxs(); recalculateSupplierBalances(); } catch (e) { }
+      } else if (c.customerId) {
+        txs.push({ id: nextTxId(), customerId: c.customerId, treasuryId: t.id, treasuryName: t.name,
+          paymentMethod: "شيك", date: when,
+          desc: "تحصيل شيك #" + (c.checkNo || c.id) + " — سداد مديونية بعد حذف الفاتورة", debit: 0, credit: amount });
+        try { saveTxs(); recalculateCustomerBalances(); } catch (e) { }
+      }
+    }
+    c.status = "collected"; c.treasuryId = t.id; c.collectedAt = when; c.unapplied = false;
     saveVouchers(); saveTreasury(); saveChecks();
     addActivity("تحصيل شيك", "تحصيل شيك " + (c.customerName || "") + " بمبلغ " + fmt(amount) + " ج.م في «" + t.name + "»");
     return { ok: true, voucher: v };
@@ -10604,6 +10862,13 @@ id: nextVoucherId(),
     const c = checks.find((x) => Number(x.id) === Number(id));
     if (!c) return { ok: false, msg: "الشيك مش موجود" };
     if (c.status !== "pending") return { ok: false, msg: "الشيك ده اتحصّل أو اترجع قبل كده" };
+    if (c.unapplied) {
+      c.status = "returned"; c.returnedAt = todayISO();
+      if (notes) c.notes = (c.notes ? c.notes + " | " : "") + notes;
+      saveChecks(); renderChecks();
+      toast("الشيك اترجع (ومافيش قيد — فاتورته كانت محذوفة والمديونية أصلًا مسجّلة).", "success");
+      return { ok: true };
+    }
     try { postCheckReturnJrn(c); } catch (e) { }
     // 🆕 بناء 203 (بند #19): رجوع المديونية يتسجّل **بحركة حقيقية** (مدين) مش بزيادة يدوية على
     // الرصيد — الزيادة اليدوية كانت بتتمسح من أول إعادة حساب (الرصيد في النظام = مجموع الحركات)
@@ -10616,6 +10881,7 @@ id: nextVoucherId(),
         desc: "ارتجاع شيك #" + (c.checkNo || c.id) + (c.bankName ? " — " + c.bankName : "") + " (رجعت المديونية)",
         debit: round2(c.amount), credit: 0
       });
+      c.returnTxId = txId3;
       try { saveTxs(); } catch (e) { }
       try { recalculateCustomerBalances(); } catch (e) { }
     }
@@ -17676,6 +17942,7 @@ id: nextVoucherId(),
     "db/supabase-upgrade-63-party-tx-receipt.sql",
     "db/supabase-upgrade-64-org-settings.sql",
     "db/supabase-upgrade-65-invoice-paid.sql",
+    "db/supabase-upgrade-66-backup-checks.sql",
     // 🔐 ترقية ٥٨ (بند المراجعة #17 — إخفاء كلمات المرور الصريحة): تعيد تعريف ٧ دوال بلا حفظ
     // الصريح، وتحذف mizan_admin_get_password، وتحذف عمودَي plain_password/password_plain.
     "db/supabase-upgrade-58-hide-plain-passwords.sql"];
@@ -18443,6 +18710,19 @@ id: nextVoucherId(),
     $("#actPay").addEventListener("click", () => {
       hideModal("mActions");
       openPayDebt(actionsCust);
+    });
+    /* 🧾 بناء 210 (طلب المالك): زرار «شيكات هذا العميل» — يفتح تبويب الشيكات مفلترًا باسمه
+       (كل الحالات) عشان يشوف شيكاته المعلّقة/المحصّلة/المرتجعة من نفس شاشة العميل. */
+    $("#actCustomerChecks").addEventListener("click", () => {
+      const cust = actionsCust;
+      hideModal("mActions");
+      if (!cust) return;
+      checksFilter.q = cust.nameAr || "";
+      checksFilter.status = "all";
+      const qEl = $("#txtChkSearch"); if (qEl) qEl.value = checksFilter.q;
+      const stEl = $("#chkStatusFilter"); if (stEl) stEl.value = "all";
+      showView("checks");
+      renderChecks();
     });
     $("#actInvoice").addEventListener("click", () => {
       hideModal("mActions");

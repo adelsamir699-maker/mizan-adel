@@ -2553,6 +2553,9 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .pos-sum-line { display:flex; gap:10px; font-size:13px; color:#1e293b; }
 .pos-sum-line b { font-weight:700; }
 .pos-sum-line-big { font-weight:800; font-size:14px; }
+/* بناء 210: سطر تفصيل وسائل الدفع (نقداً/بنك/محفظة/إنستا/شيك/آجل) تحت «المدفوع» */
+.pos-sum-line.pos-sum-pay { display:block; font-size:12px; font-weight:600; color:#0f766e;
+  background:#ecfdf5; border:1px dashed #99f6e4; border-radius:8px; padding:4px 8px; line-height:1.7; }
 .pos-sum-line-big b { font-size:15px; }
 .ft-total-big { font-size:19px !important; font-weight:800 !important; }
 .amount-neg { color:#b91c1c; }

@@ -965,6 +965,15 @@
   //  ١) مفتاح السطر السحابي (id) بيتقرأ من السحابة وميتكتبش من جديد — إعادة كتابة id
   //     كانت بتيتّم أسطر الأصناف وبنقلت سطور لفواتير تانية.
   //  ٢) الحذف بيتم بس للسطور اللي الجهاز ده شافها في آخر تنزيل، وبكمية محدودة.
+  // 🆕 بناء 209 (بند 16): فلتر الشركة صريحًا على كل قراءة/مسح — حتى لو سياسة
+  // السحابة اتغيّرت أو الدور بقى واسعًا، الجهاز ما يلمسش صفوف شركة تانية.
+  function orgScoped(q) {
+    var o = DATA.orgId ? DATA.orgId() : null;
+    var w = window.MIZAN_STATE || {};
+    if (!o && w.org && w.org.id) o = w.org.id;
+    return o ? q.eq("org_id", o) : q;
+  }
+
   function syncOne(name) {
     var meta = META[name];
     if (!meta || !DATA.isOnline() || !DATA.client()) return Promise.resolve(null);
@@ -979,7 +988,7 @@
     function fail(what, err) { failed = true; syncFailed(what, err); }
     var local = meta.local() || [];
     var client = DATA.client();
-    return client.from(name).select("id, local_id").then(function (res) {
+    return orgScoped(client.from(name).select("id, local_id")).then(function (res) {
       if (res.error) { fail(name, res.error); return false; }
       var have = res.data || [];
       var cloudId = {};                                  // local_id -> uuid الموجود على السحابة
@@ -1065,7 +1074,7 @@
         items.push(row);
       });
     });
-    return client.from(itemsTable).select("id, local_id, " + parentField).then(function (res) {
+    return orgScoped(client.from(itemsTable).select("id, local_id, " + parentField)).then(function (res) {
       if (res.error) { fail(itemsTable, res.error); return false; }
       var have = res.data || [];
       // لو السطر ده موجود على السحابة في نفس الأب وبنفس ترتيبه → نستخدم رقمه القديم
@@ -1137,7 +1146,7 @@
       "fixed_assets", "cashier_shifts", "car_trips"];
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
     var eagerFallback = eagerLoad ? null : function (n) {
-      return DATA.client().from(n).select("*").order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });
+      return orgScoped(DATA.client().from(n).select("*")).order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });
     };
     return (eagerLoad || Promise.all(names.map(eagerFallback))).then(function (all) {
       var arr = {};

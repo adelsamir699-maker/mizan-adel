@@ -255,9 +255,16 @@
   }
 
   // ---------- الجداول الصغيرة (تحميل فورًا + كاش) ----------
+  // 🆕 بناء 209 (بند 16): كل قراءة مقصورة على شركة الحساب — ولو السحابة سمحت
+  // بقراءة شركة تانية لأي سبب (سياسة/دور)، الجهاز ما يسحبهاش أصلًا.
+  function scoped(q) {
+    var o = orgId();
+    return o ? q.eq("org_id", o) : q;
+  }
+
   function loadEager() {
     var tasks = EAGER.map(function (t) {
-      return sb.from(t).select("*").order("created_at", { ascending: true }).then(function (res) {
+      return scoped(sb.from(t).select("*")).order("created_at", { ascending: true }).then(function (res) {
         if (res.error) {
           // 🆕 مهمة 98: جدول اختياري مالوش وجود على السحابة لسه = فاضي، مش فشل تحميل
           if (isOptionalEager(t)) return [];
@@ -279,7 +286,7 @@
 
   function loadEagerAll() {
     var tasks = EAGER.map(function (t) {
-      return sb.from(t).select("*").order("created_at", { ascending: true }).then(function (res) {
+      return scoped(sb.from(t).select("*")).order("created_at", { ascending: true }).then(function (res) {
         if (res.error) {
           // 🆕 مهمة 98: لو الجدول الاختياري مالوش وجود على السحابة لسه، نرجعه فاضي —
           // Promise.all كله ما يقعش، وإلا العميل ما بشوفش عملاء ولا أصناف ولا خزائن.

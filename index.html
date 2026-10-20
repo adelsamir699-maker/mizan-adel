@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4.1"; // رقم المنتج (داخلي — قرار المالك ما بيتغيرش كل نشر)
-    window.MIZAN_BUILD = 208;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
+    window.MIZAN_BUILD = 210;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
 
     /* 🆕 بناء 185: تنظيف الكاش القديم تلقائيًا أول ما البرنامج يفتح — بلا مسّ الجلسة
        (مهم: ما نلمسش mizan_session_v1 ولا مفاتيح بيانات المستخدم). لما رقم البناء يتغيّر
@@ -81,7 +81,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=208" />
+  <link rel="stylesheet" href="styles.css?v=210" />
 </head>
 <body>
 
@@ -304,7 +304,7 @@
                     <label class="lbl-accent">🔍 اسم الصنف ثم Enter:</label>
                     <div class="stock-hint" id="posStockHint">📦 رصيد: -</div>
                   </div>
-                  <input id="txtPosSearch" autocomplete="off" list="posProductsList" />
+                  <input id="txtPosSearch" list="posProductsList" />
                   <datalist id="posProductsList"></datalist>
                 </div>
                 <div class="fld fld-qty"><label>الكمية:</label><input id="numPosQty" type="text" value="1" /></div>
@@ -366,6 +366,7 @@
                 <div class="pos-sum-col">
                   <div class="pos-sum-line"><span>الإجمالي</span><b id="sPosGrand">0.00 ج.م</b></div>
                   <div class="pos-sum-line"><span>المدفوع</span><b id="sPosPaid">0.00 ج.م</b></div>
+                  <div class="pos-sum-line pos-sum-pay" id="sPosPayDetail" hidden></div>
                   <div class="pos-sum-line"><span>الآجل</span><b id="sPosDue">0.00 ج.م</b></div>
                 </div>
                 <div class="pos-sum-col">
@@ -433,7 +434,7 @@
                     <label class="lbl-accent">🔍 اسم الصنف ثم Enter:</label>
                     <div class="stock-hint" id="ppStockHint">📦 رصيد: -</div>
                   </div>
-                  <input id="txtPPSearch" autocomplete="off" list="ppProductsList" />
+                  <input id="txtPPSearch" list="ppProductsList" />
                   <datalist id="ppProductsList"></datalist>
                 </div>
                 <div class="fld fld-qty"><label>الكمية:</label><input id="numPPQty" type="text" value="1" /></div>
@@ -486,6 +487,7 @@
                 <div class="pos-sum-col">
                   <div class="pos-sum-line"><span>الإجمالي</span><b id="sPpGrand">0.00 ج.م</b></div>
                   <div class="pos-sum-line"><span>المدفوع</span><b id="sPpPaid">0.00 ج.م</b></div>
+                  <div class="pos-sum-line pos-sum-pay" id="sPpPayDetail" hidden></div>
                   <div class="pos-sum-line"><span>الآجل</span><b id="sPpDue">0.00 ج.م</b></div>
                 </div>
                 <div class="pos-sum-col">
@@ -1412,6 +1414,7 @@
               <option value="pending">تحت التحصيل</option>
               <option value="collected">اتحصّل</option>
               <option value="returned">مرتجع</option>
+              <option value="cancelled">ملغي</option>
               <option value="all">الكل</option>
             </select>
             <span class="filter-label">ترتيب:</span>
@@ -2653,6 +2656,7 @@
         <button class="btn blue act-row1" id="actEdit" type="button">✏️ تعديل بيانات العميل</button>
         <button class="btn sky act-row2" id="actInvoice" type="button">🧾 فاتورة مبيعات جديدة باسم هذا العميل</button>
         <button class="btn green act-row2" id="actPay" type="button">💵 تحصيل مديونية / تسجيل دفعة</button>
+        <button class="btn teal act-row2" id="actCustomerChecks" type="button">🧾 شيكات هذا العميل</button>
         <button class="btn orange act-row3" id="actDocScan" type="button">📷 مسح ضوئي لمستند</button>
         <button class="btn teal act-row3" id="actDocPick" type="button">📄 حفظ مستند من الجهاز</button>
         <button class="btn sky act-row3" id="actDocList" type="button">📂 استدعاء مستندات العميل</button>
@@ -2697,6 +2701,8 @@
         <input type="text" id="fPSale" value="0.00" autocomplete="off" />
         <label for="fPStock">الرصيد الافتتاحي (الكمية):</label>
         <input type="text" id="fPStock" value="0" autocomplete="off" />
+        <label for="fPReorder">حد الطلب (تنبيه عند وصول الرصيد له):</label>
+        <input type="text" id="fPReorder" value="50" autocomplete="off" inputmode="numeric" />
         <label for="fPDiscount">نسبة خصم العرض على الصنف (%):</label>
         <input type="text" id="fPDiscount" value="0" autocomplete="off" />
         <label for="fPDiscStart">بداية فترة الخصم (اختياري):</label>
@@ -3830,14 +3836,14 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=208"></script>
-  <script src="supabase.config.js?v=208"></script>
-  <script src="data.js?v=208"></script>
-  <script src="cloud.js?v=208"></script>
-  <script src="install.js?v=208"></script>
-  <script src="vendor/exceljs.min.js?v=208"></script>
-  <script src="excel_import.js?v=208"></script>
-  <script src="app.js?v=208"></script>
+  <script src="lib_supabase.js?v=210"></script>
+  <script src="supabase.config.js?v=210"></script>
+  <script src="data.js?v=210"></script>
+  <script src="cloud.js?v=210"></script>
+  <script src="install.js?v=210"></script>
+  <script src="vendor/exceljs.min.js?v=210"></script>
+  <script src="excel_import.js?v=210"></script>
+  <script src="app.js?v=210"></script>
   <script>
     /* كاشف أخطاء على الشاشة — بقى **للمالك بس** (طلب المالك الحرفي 07/10: رسالة إنجليزية
        حمراء `TypeError …` ظهرت للبائع وهو بيكتب صنف في الفاتورة، وقاعدته السارية
