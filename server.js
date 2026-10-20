@@ -372,8 +372,8 @@ ports.forEach((p) => {
       console.log("منفذ " + p + " مستخدم — فيه سيرفر ميزان تاني شغال عليه، تمام.");
     }
   });
-  srv.listen(p, "0.0.0.0", () => {
-    console.log(`Server running on network at http://0.0.0.0:${p}/`);
+  srv.listen(p, "127.0.0.1", () => {
+    console.log(`Server running locally at http://127.0.0.1:${p}/`);
   });
 });
 

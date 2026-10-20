@@ -3013,6 +3013,11 @@
       });
   }
 
+  // 🆕 بناء 207: نص آمن جوّه onclick (JSON + HTML) — يمنع كسر الاقتباس/الحقن
+  function jsArg(v) {
+    return esc(JSON.stringify(String(v == null ? "" : v)));
+  }
+
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;")
@@ -16216,7 +16221,7 @@ id: nextVoucherId(),
       lastOrgMembers = rows || [];
       paintOrgMembers(wrap, info, lastOrgMembers, q, canManage);
     }).catch((e) => {
-      wrap.innerHTML = '<p class="login-msg err">' + (e.message || e) + "</p>";
+      wrap.innerHTML = '<p class="login-msg err">' + esc(e.message || e) + "</p>";
     });
   }
 
@@ -19662,7 +19667,7 @@ const pwEye = document.getElementById("btnShowPass");
     }).then(([o, members, canManage]) => {
       renderMemberList(members, canManage);
     }).catch((e) => {
-      lst.innerHTML = "<p class=\"login-msg err\">" + (e.message || e) + "</p>";
+      lst.innerHTML = "<p class=\"login-msg err\">" + esc(e.message || e) + "</p>";
     });
   }
   // بعد أي تعديل على حسابات الشركة: حدّث الشاشة المعروضة حاليًا
@@ -19690,15 +19695,15 @@ const pwEye = document.getElementById("btnShowPass");
    actions += "<button class=\"btn small red\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberDel('" + u.user_id + "')\">🗑️ حذف</button>";
    }
    // 🔑 تغيير الرقم السري — لكل حسابات الشركة بما فيها حساب صاحبها
-   actions += "<button class=\"btn small orange\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberResetPw('" + u.user_id + "','" + (u.username || "") + "')\">🔑 تغيير الرقم السري</button>";
+   actions += "<button class=\"btn small orange\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberResetPw('" + u.user_id + "','" + jsArg(u.username || "") + "')\">🔑 تغيير الرقم السري</button>";
    actions += "<button class=\"btn small sky\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberFeats('" + u.user_id + "')\">⚙️ الصلاحيات</button>";
         // زرار دخول البرنامج — يظهر قدام حساب صاحب الشركة هو فقط
         if (isMe) {
           actions += "<button class=\"btn small green\" style=\"margin:2px\" type=\"button\" onclick=\"window.__memberEnterProgram()\">▶ دخول البرنامج</button>";
         }
         h += "<tr>" +
-          "<td><code>" + (u.username || "—") + "</code>" + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
-          "<td>" + (u.full_name || "—") + "</td>" +
+          "<td><code>" + esc(u.username || "—") + "</code>" + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
+          "<td>" + esc(u.full_name || "—") + "</td>" +
           "<td>" + feats + "</td>" +
           "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
           "<td>" + actions + "</td></tr>";
@@ -19751,7 +19756,7 @@ const pwEye = document.getElementById("btnShowPass");
     const dlg = document.createElement("div");
     dlg.className = "modal-overlay";
     dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🔑 تغيير الرقم السري — ' +
-      (username || "") + "</div>" +
+      esc(username || "") + "</div>" +
       '<label class="feat-line" style="margin:6px 0">الرقم السري الجديد ' +
       '<input id="mrNew" class="inp" type="text" placeholder="اكتب الرقم السري الجديد" style="flex:1" /></label>' +
       '<label class="feat-line" style="margin:6px 0">تأكيد الرقم السري ' +
@@ -19828,7 +19833,7 @@ const pwEye = document.getElementById("btnShowPass");
         "<button class=\"btn gray\" type=\"button\" id=\"memberFeatCancel\">إلغاء</button></div>";
       const dlg = document.createElement("div");
       dlg.className = "modal-overlay";
-      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">صلاحيات — ' + (u.full_name || u.username) + "</div>" + body + "</div>";
+      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">صلاحيات — ' + esc(u.full_name || u.username) + "</div>" + body + "</div>";
       document.body.appendChild(dlg);
       dlg.querySelector("#memberFeatCancel").onclick = () => dlg.remove();
       dlg.querySelector("#memberFeatSave").onclick = () => {
@@ -19871,7 +19876,7 @@ const pwEye = document.getElementById("btnShowPass");
         "<button class=\"btn gray\" type=\"button\" id=\"memberAddCancel\">إلغاء</button></div>";
       const dlg = document.createElement("div");
       dlg.className = "modal-overlay";
-      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">➕ حساب جديد — ' + (o.org_name || "") + " (" + used + "/" + max + ")" + "</div>" + body + "</div>";
+      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">➕ حساب جديد — ' + esc(o.org_name || "") + " (" + used + "/" + max + ")" + "</div>" + body + "</div>";
       document.body.appendChild(dlg);
       dlg.querySelector("#memberAddCancel").onclick = () => dlg.remove();
       dlg.querySelector("#memberAddSave").onclick = () => {
@@ -21110,7 +21115,7 @@ const pwEye = document.getElementById("btnShowPass");
       rows = '<tr><td colspan="2" style="text-align:center"><span class="login-sub">كل الشركات متصلة الآن — لا توجد شركات منقطعة.</span></td></tr>';
     }
     list.forEach((o) => {
-      rows += "<tr><td><b>" + (o.org_name || "بدون اسم") + "</b> <span class=\"login-sub\">(" + (o.members || 0) + " عضو)</span></td>" +
+      rows += "<tr><td><b>" + esc(o.org_name || "بدون اسم") + "</b> <span class=\"login-sub\">(" + (o.members || 0) + " عضو)</span></td>" +
         '<td style="color:#ff5b5b;font-weight:800">' + (o.last_seen ? fmtDateTime(o.last_seen) : "لم يتصل بعد") + "</td></tr>";
     });
     seenModal.innerHTML = '<div class="modal-box">' +
@@ -21158,7 +21163,7 @@ const pwEye = document.getElementById("btnShowPass");
         names.forEach((n) => {
           const list = byOrg[n];
           rows += "<tr><td rowspan=\"" + list.length + "\"><b>" + n + "</b></td>" +
-            list.map((u) => "<td><code>" + (u.username || "—") + "</code> " + (isCompanyOwnerRow(u) ? "🧑‍💼" : "👤") + " <span class=\"login-sub\">" + (u.full_name || "") + "</span></td></tr>").join("");
+            list.map((u) => "<td><code>" + esc(u.username || "—") + "</code> " + (isCompanyOwnerRow(u) ? "🧑‍💼" : "👤") + " <span class=\"login-sub\">" + esc(u.full_name || "") + "</span></td></tr>").join("");
         });
         onlineModal.innerHTML = '<div class="modal-box">' +
           '<div class="panel-title">🟢 المتصلون الآن — ' + (onlineUsers ? onlineUsers.length : 0) + " مستخدم</div>" +
@@ -21227,8 +21232,8 @@ const pwEye = document.getElementById("btnShowPass");
         else if (o.plan_end && until >= 0 && until <= 7) st = '<span class="badge-warn">🟠 تنتهي خلال ' + until + " يوم</span>";
         else st = '<span class="badge-ok">🟢 نشطة</span>';
         h += '<tr data-cat="' + o.org_id + '" style="cursor:pointer" title="اضغط لفتح بيانات الشركة وتعديلها">' +
-          "<td><b>" + (o.org_name || "بدون اسم") + "</b></td>" +
-          "<td><code>" + (o.admin_username || "—") + "</code></td>" +
+          "<td><b>" + esc(o.org_name || "بدون اسم") + "</b></td>" +
+          "<td><code>" + esc(o.admin_username || "—") + "</code></td>" +
           "<td>" + (o.members || 0) + "</td>" +
           "<td>" + subDateCell(o, o.plan_end) + "</td>" +
           "<td>" + st + "</td></tr>";
@@ -21268,10 +21273,10 @@ const pwEye = document.getElementById("btnShowPass");
       // 🛡 بند 17: شركة المالك ما ليهاش تاريخ انتهاء أصلاً ⇒ مافيش تنبيه انتهاء عليها
       if (isProtectedOrg(o)) return;
       if ((o.plan_status === "expired" || (until !== null && until < 0)) && o.plan_end) {
-        urgent.push("<div class=\"adm-alert red\">🔴 شركة <code>" + (o.org_name || "بدون اسم") + "</code> اشتراكها انتهى بتاريخ <b>" + fmtDate(o.plan_end) + "</b> — تحدّثه أو قفّلها.</div>");
+        urgent.push("<div class=\"adm-alert red\">🔴 شركة <code>" + esc(o.org_name || "بدون اسم") + "</code> اشتراكها انتهى بتاريخ <b>" + fmtDate(o.plan_end) + "</b> — تحدّثه أو قفّلها.</div>");
       } else if (until !== null && until >= 0 && until <= 7 && o.plan_end) {
         const tag = until === 0 ? "اليوم" : "خلال " + until + " يوم";
-        soon.push("<div class=\"adm-alert orange\">🟠 شركة <code>" + (o.org_name || "بدون اسم") + "</code> اشتراكها ينتهي <b>" + tag + "</b> بتاريخ <b>" + fmtDate(o.plan_end) + "</b>.</div>");
+        soon.push("<div class=\"adm-alert orange\">🟠 شركة <code>" + esc(o.org_name || "بدون اسم") + "</code> اشتراكها ينتهي <b>" + tag + "</b> بتاريخ <b>" + fmtDate(o.plan_end) + "</b>.</div>");
       }
     });
     if (urgent.length || soon.length) {
@@ -21338,10 +21343,10 @@ const pwEye = document.getElementById("btnShowPass");
       // 🛡 بند 17: حالة الصف من مصدر التصنيف الواحد (شركة المالك = نشطة بلا تاريخ)
       const status = subStatusBadge(o);
       h += "<tr data-org=\"" + o.org_id + "\" onclick=\"window.__admDbl('" + o.org_id + "')\" style=\"cursor:pointer\" title=\"اضغط ضغطتين لتعديل بيانات الشركة\">" +
-        "<td><b>" + (o.org_name || "بدون اسم") + (o.protected ? ' <span class="badge-ok" title="شركة المالك — محمية من الحذف">🔒</span>' : "") + "</b></td>" +
-        "<td><code>" + (o.admin_username || "—") + "</code></td>" +
+        "<td><b>" + esc(o.org_name || "بدون اسم") + (o.protected ? ' <span class="badge-ok" title="شركة المالك — محمية من الحذف">🔒</span>' : "") + "</b></td>" +
+        "<td><code>" + esc(o.admin_username || "—") + "</code></td>" +
         "<td>" + (o.org_phone || "—") + "</td>" +
-        "<td>" + (o.owner_name || "—") + "</td>" +
+        "<td>" + esc(o.owner_name || "—") + "</td>" +
         "<td>" + (o.members || 0) + " / " + (o.max_members || 5) + "</td>" +
         "<td>" + subDateCell(o, o.plan_start) + "</td>" +
         "<td>" + subDateCell(o, o.plan_end) + "</td>" +
@@ -21376,7 +21381,7 @@ const pwEye = document.getElementById("btnShowPass");
       renderAdminAlerts(list);
       paintAdminOrgTable(list);
     }).catch((e) => {
-      box.innerHTML = '<p class="login-msg err">تعذّر تحميل الشركات: ' + (e.message || e) + "</p>";
+      box.innerHTML = '<p class="login-msg err">تعذّر تحميل الشركات: ' + esc(e.message || e) + "</p>";
     });
   }
 
@@ -21535,8 +21540,8 @@ const pwEye = document.getElementById("btnShowPass");
       users.forEach((u) => {
         const isMe = myUid && u.user_id === myUid;
         const canDel = !isMe && !u.is_superadmin;
-        h += "<tr><td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
-          "<td><code>" + (u.username || "—") + "</code></td>" +
+        h += "<tr><td>" + esc(u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
+          "<td><code>" + esc(u.username || "—") + "</code></td>" +
           "<td>" + roleLabel(u) + (u.is_superadmin ? " 🔑" : "") + "</td>" +
           "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
           "<td style=\"white-space:nowrap\">" +
@@ -21547,7 +21552,7 @@ const pwEye = document.getElementById("btnShowPass");
       });
       h += "</tbody></table>";
       cont.innerHTML = h;
-    }).catch((e) => { cont.innerHTML = '<p class="login-msg err">' + (e.message || e) + "</p>"; });
+    }).catch((e) => { cont.innerHTML = '<p class="login-msg err">' + esc(e.message || e) + "</p>"; });
   };
 
   window.__admUser = function (userId, blocked) {
@@ -21586,7 +21591,7 @@ const pwEye = document.getElementById("btnShowPass");
       const dlg = document.createElement("div");
       dlg.className = "modal-overlay";
       dlg.id = "delOrgModal";
-      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🗑 حذف شركة: <b>' + name + "</b></div>" +
+      dlg.innerHTML = '<div class="modal-box"><div class="panel-title">🗑 حذف شركة: <b>' + esc(name) + "</b></div>" +
         '<p class="login-sub" style="margin-bottom:10px">اختر نوع الحذف:</p>' +
         '<div class="feat-btns" style="flex-direction:column;gap:8px;align-items:stretch">' +
         '<button class="btn orange" type="button" id="delUsersBtn">👤 حذف يوزرات الشركة فقط (تبقى البيانات محفوظة)</button>' +
@@ -21733,7 +21738,7 @@ const pwEye = document.getElementById("btnShowPass");
         const dlg = document.createElement("div");
         dlg.className = "modal-overlay";
         dlg.id = "featModal";
-        dlg.innerHTML = '<div class="modal-box"><div class="panel-title">المزايا المفتوحة — ' + (o.org_name || "") + "</div>" + body + "</div>";
+        dlg.innerHTML = '<div class="modal-box"><div class="panel-title">المزايا المفتوحة — ' + esc(o.org_name || "") + "</div>" + body + "</div>";
         document.body.appendChild(dlg);
         dlg.querySelector("#admFeatCancel").onclick = () => dlg.remove();
         dlg.querySelector("#admFeatSave").onclick = () => {
@@ -22164,8 +22169,8 @@ const pwEye = document.getElementById("btnShowPass");
         // 🛡 حساب المالك (سوبر أدمن) أو حسابي: بلا زرار حذف نهائيًا
         const canDel = !isMe && !u.is_superadmin;
         h += "<tr>" +
-          "<td>" + (u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
-          "<td><code>" + (u.username || "—") + "</code></td>" +
+          "<td>" + esc(u.full_name || "—") + (isMe ? " <b>(أنت)</b>" : "") + "</td>" +
+          "<td><code>" + esc(u.username || "—") + "</code></td>" +
           "<td>" + roleLabel(u) + (u.is_superadmin ? " 🔑" : "") + "</td>" +
           "<td>" + featsSummary(u.features, chooserFeatures()) + "</td>" +
           "<td>" + (u.blocked ? "🔴 محظور" : "🟢 نشط") + "</td>" +
@@ -22179,7 +22184,7 @@ const pwEye = document.getElementById("btnShowPass");
       });
       h += "</tbody></table>";
       box.innerHTML = h;
-    }).catch((e) => { box.innerHTML = '<p class="login-msg err">' + (e.message || e) + "</p>"; });
+    }).catch((e) => { box.innerHTML = '<p class="login-msg err">' + esc(e.message || e) + "</p>"; });
   }
 
   /* ================== شاشة بيانات الشركة (ضغط مزدوج) ================== */
@@ -22476,11 +22481,11 @@ const pwEye = document.getElementById("btnShowPass");
       if (!rows || !rows.length) { body.innerHTML = '<p class="login-sub">لا توجد تغييرات حتى الآن.</p>'; return; }
       let h = '<table class="data-table"><thead><tr><th>اليوزر نيم</th><th>الشركة</th><th>وقت التغيير</th></tr></thead><tbody>';
       rows.forEach((r) => {
-        h += "<tr><td><code>" + (r.username || "—") + "</code></td><td>" + (r.org_name || "—") + "</td><td>" + (r.changed_at || "") + "</td></tr>";
+        h += "<tr><td><code>" + esc(r.username || "—") + "</code></td><td>" + esc(r.org_name || "—") + "</td><td>" + (r.changed_at || "") + "</td></tr>";
       });
       h += "</tbody></table>";
       body.innerHTML = h;
-    }).catch((e) => { body.innerHTML = '<p class="login-msg err">' + (e.message || e) + "</p>"; });
+    }).catch((e) => { body.innerHTML = '<p class="login-msg err">' + esc(e.message || e) + "</p>"; });
   }
 
   /* ================== تغيير الرقم السري للحساب الحالي ================== */
@@ -22509,8 +22514,8 @@ const pwEye = document.getElementById("btnShowPass");
       rows.forEach((r) => {
         const d = r.updated_at ? new Date(r.updated_at).toLocaleString("ar-EG") : "—";
         h += "<tr>" +
-          "<td>" + (r.org_name || "—") + "</td>" +
-          "<td><code>" + (r.username || "—") + "</code></td>" +
+          "<td>" + esc(r.org_name || "—") + "</td>" +
+          "<td><code>" + esc(r.username || "—") + "</code></td>" +
           "<td>" + d + "</td>" +
           "<td><button class=\"btn small orange\" type=\"button\" onclick=\"window.__admResetPw('" +
             r.user_id + "')\">🔑 إعادة تعيين</button></td>" +
@@ -22519,7 +22524,7 @@ const pwEye = document.getElementById("btnShowPass");
       h += "</tbody></table>";
       lst.innerHTML = h;
     }).catch((e) => {
-      lst.innerHTML = "<p class=\"login-msg err\">" + (e.message || e) + "</p>";
+      lst.innerHTML = "<p class=\"login-msg err\">" + esc(e.message || e) + "</p>";
     });
   }
 
@@ -22559,9 +22564,9 @@ const pwEye = document.getElementById("btnShowPass");
           : '<span class="badge-none">سابقة</span>';
         h += "<tr" + style + ">" +
           "<td>" + tag + "</td>" +
-          "<td>" + (r.org_name || "—") + "</td>" +
-          "<td><code>" + (r.username || "—") + "</code></td>" +
-          "<td>" + (r.full_name || "—") + "</td>" +
+          "<td>" + esc(r.org_name || "—") + "</td>" +
+          "<td><code>" + esc(r.username || "—") + "</code></td>" +
+          "<td>" + esc(r.full_name || "—") + "</td>" +
           "<td>" + d + "</td>" +
           "<td><button class=\"btn small red\" type=\"button\" onclick=\"window.__delCreatedAccount(" + r.id + ")\">🗑️</button></td>" +
           "</tr>";
@@ -22569,7 +22574,7 @@ const pwEye = document.getElementById("btnShowPass");
       h += "</tbody></table>";
       lst.innerHTML = h;
     }).catch((e) => {
-      lst.innerHTML = "<p class=\"login-msg err\">" + (e.message || e) + "</p>";
+      lst.innerHTML = "<p class=\"login-msg err\">" + esc(e.message || e) + "</p>";
     });
   }
   window.__delCreatedAccount = function (id) {
@@ -22733,7 +22738,7 @@ const pwEye = document.getElementById("btnShowPass");
         // 🛡 بند 17: شركة المالك ما ليهاش خانة تاريخ ولا زرار تجديد — سطر ودّي واحد
         if (isProtectedOrg(o)) {
           h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '" data-protected="1" data-srch="' + subsSrchText(o) + '">' +
-            '<td><b>' + (o.org_name || "بدون اسم") + '</b> <span class="badge-ok">🔒</span></td>' +
+            '<td><b>' + esc(o.org_name || "بدون اسم") + '</b> <span class="badge-ok">🔒</span></td>' +
             '<td colspan="5"><span class="login-sub">شركة المالك — بلا تاريخ اشتراك ومحمية من أي قفل بالتاريخ، فمافيش حاجة تتجدد هنا.</span></td>' +
             '<td><span class="badge-ok">🟢 مفتوحة دايمًا</span></td>' +
             '</tr>';
@@ -22748,7 +22753,7 @@ const pwEye = document.getElementById("btnShowPass");
           ? (subsStoredStart(o) ? fmtDate(subsStoredStart(o)) + " ← " : "") + fmtDate(subsStoredEnd(o))
           : (subsStoredStart(o) ? "من " + fmtDate(subsStoredStart(o)) + " (من غير نهاية)" : "لا يوجد");
         h += '<tr data-subs="' + oid + '" data-locked="' + (o.locked ? 1 : 0) + '" data-stored-end="' + subsStoredEnd(o) + '" data-srch="' + subsSrchText(o) + '">' +
-          '<td><b>' + (o.org_name || "بدون اسم") + '</b></td>' +
+          '<td><b>' + esc(o.org_name || "بدون اسم") + '</b></td>' +
           '<td><select class="inp subs-plan">' +
             '<option value="f">🎁 تجربة مجانية</option>' +
             '<option value="m">شهري</option>' +
@@ -22780,7 +22785,7 @@ const pwEye = document.getElementById("btnShowPass");
       subsWireFilter();
       box.scrollIntoView({ behavior: "smooth", block: "start" });
     }).catch((e) => {
-      lst.innerHTML = '<p class="login-msg err">تعذّر التحميل: ' + (e.message || e) + "</p>";
+      lst.innerHTML = '<p class="login-msg err">تعذّر التحميل: ' + esc(e.message || e) + "</p>";
     });
   }
   /* 🔎 بحث جدول الاشتراكات بالاسم وبرقم التليفون — أمر المالك الحرفي (08/10):

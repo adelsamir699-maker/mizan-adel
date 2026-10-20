@@ -19,6 +19,10 @@
   <div class="box">
     <h2 style="margin-top:0">🔍 فحص اتصال البرنامج بالسحابة</h2>
     <div id="out"></div>
+    <div style="margin:10px 0;display:flex;gap:8px;flex-wrap:wrap">
+      <input id="diagEmail" type="email" placeholder="بريد الحساب" autocomplete="username" style="flex:1;min-width:200px;padding:8px;border-radius:8px;border:1px solid #ccc" />
+      <input id="diagPass" type="password" placeholder="كلمة المرور" autocomplete="current-password" style="flex:1;min-width:160px;padding:8px;border-radius:8px;border:1px solid #ccc" />
+    </div>
   </div>
   <script src="lib_supabase.js?v=19"></script>
   <script src="supabase.config.js?v=19"></script>
@@ -27,7 +31,14 @@
     function step(kind, label, extra) {
       var d = document.createElement("div");
       d.className = "step " + kind;
-      d.innerHTML = (kind === "ok" ? "✅ " : kind === "fail" ? "❌ " : "⏳ ") + label + (extra ? "<pre>" + extra + "</pre>" : "");
+      var head = document.createElement("span");
+      head.textContent = (kind === "ok" ? "✅ " : kind === "fail" ? "❌ " : "⏳ ") + label;
+      d.appendChild(head);
+      if (extra) {
+        var pre = document.createElement("pre");
+        pre.textContent = String(extra);
+        d.appendChild(pre);
+      }
       out.appendChild(d);
       return d;
     }
@@ -64,9 +75,15 @@
       }
       catch (e) { step("fail", "2/4 خطأ في إنشاء عميل الاتصال: " + e.message); return; }
 
+      var em = (document.getElementById("diagEmail") || {}).value || "";
+      var pw = (document.getElementById("diagPass") || {}).value || "";
+      if (!em || !pw) {
+        step("wait", "3/4 اكتب بريدك وكلمة مرورك فوق الأول — الصفحة دي ما بتحفظش أي كلمة.");
+        return;
+      }
       log("3/4 محاولة تسجيل دخول حقيقي على السحابة...");
       try {
-        var r = await sb.auth.signInWithPassword({ email: "adel@mizan.app", password: "Ashsm@198778" });
+        var r = await sb.auth.signInWithPassword({ email: em, password: pw });
         if (r.error) { step("fail", "3/4 السحابة ردّت بخطأ دخول:", r.error.message); }
         else {
           step("ok", "3/4 تسجيل الدخول نجح من متصفحك! المستخدم: " + (r.data.user && r.data.user.email));
