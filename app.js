@@ -3415,10 +3415,27 @@
           debit: 0, credit: 0
         };
       });
+    /* 🧾 بناء 211 (طلب المالك 20/10): الفاتورة الكاش باسم عميل مسجّل تظهر في كشفه كسطر
+       «فاتورة مدفوعة» — مدين ودائن صفر ⇒ صفر أثر على الرصيد (سجل تعاملات كامل). */
+    const cashInvRows = sales
+      .filter((s) => Number(s.customerId) === Number(cust.id) && !s.isReturn)
+      .map((s) => {
+        const total = round2(Number(s.grandTotal) || 0);
+        const paid = (s.paidAmount != null) ? round2(Number(s.paidAmount) || 0)
+          : (String(s.paymentMethod || "") === "آجل" ? 0 : total);
+        const due = round2(Number(s.dueAmount != null ? s.dueAmount : (total - paid)) || 0);
+        if (!(paid > 0) || due > 0.0001) return null;
+        return {
+          date: s.invoiceDate || s.date,
+          desc: "💵 فاتورة مبيعات رقم " + (s.invoiceNumber || s.invoiceNo || s.id) + " — مدفوعة بالكامل " + fmt(paid) + " ج.م (بلا مديونية)",
+          debit: 0, credit: 0
+        };
+      })
+      .filter(Boolean);
     const partyTxs = txs
       .filter((t) => Number(t.customerId) === Number(cust.id));
     const hasOpeningTx = partyTxs.some(isPartyOpeningTx);
-    const rows = partyTxs.concat(memoRows).sort((a, b) => new Date(a.date) - new Date(b.date));
+    const rows = partyTxs.concat(memoRows, cashInvRows).sort((a, b) => new Date(a.date) - new Date(b.date));
     let run = hasOpeningTx ? 0 : (Number(cust.openingBalance) || 0);
     return rows.map((t) => {
       run = Math.round((run + t.debit - t.credit) * 100) / 100;
@@ -6842,17 +6859,72 @@
     });
   }
 
-  function fillPosDatalist() {
-    const dl = $("#posProductsList");
-    dl.innerHTML = "";
-    productsByMostSold().forEach((p) => {
-      [p.nameAr, p.code, p.barcode].forEach((v) => {
-        if (!v) return;
-        const o = document.createElement("option");
-        o.value = v;
-        dl.appendChild(o);
-      });
+  /* 🧾 بناء 211: الـ`datalist` اتشال من الشاشتين (كان بيعرض الأكواد/الباركود «أرقام» وبيخطف
+     Enter في RTL) — القائمة بقت لوحة `.prod-drop` تحت الخانة بنفس عرضها، أسماء فقط. */
+  const PROD_DROP_FIELD = { sale: "txtPosSearch", purchase: "txtPPSearch" };
+  const PROD_DROP_MAX = 8;
+  function productSuggestItems(raw) {
+    const all = productsByMostSold();
+    const q = normalizeAr(String(raw || "").trim());
+    // فاضي (ضغط على الخانة/السهم) ⇒ الأكثر مبيعًا زي ما هي
+    if (!q) return all.slice(0, PROD_DROP_MAX);
+    const hit = [];
+    all.forEach((p) => {
+      const name = normalizeAr(p.nameAr || "");
+      const code = normalizeAr(String(p.code == null ? "" : p.code));
+      const bc = normalizeAr(String(p.barcode == null ? "" : p.barcode));
+      if (name.indexOf(q) >= 0 || code.indexOf(q) >= 0 || bc.indexOf(q) >= 0) hit.push(p);
     });
+    return hit.slice(0, PROD_DROP_MAX);
+  }
+  function productSuggestHide(kind) {
+    const el = $(scanDropSel(PROD_DROP_FIELD[kind]));
+    if (el) { el.hidden = true; el.innerHTML = ""; }
+  }
+  function productSuggestShow(kind) {
+    const fieldId = PROD_DROP_FIELD[kind];
+    const el = $(scanDropSel(fieldId));
+    const inp = $("#" + fieldId);
+    if (!el || !inp) return;
+    const list = productSuggestItems(inp.value);
+    if (!list.length) { productSuggestHide(kind); return; }
+    el.className = "scan-drop prod-drop";
+    el.innerHTML = list.map((p) =>
+      "<button type='button' class='scan-act' data-prod-pick='" + esc(p.id) + "'>" + esc(p.nameAr || "") + "</button>"
+    ).join("");
+    el.hidden = false;
+  }
+  function productSuggestPick(kind, id) {
+    const p = products.find((x) => Number(x.id) === Number(id));
+    if (!p) return;
+    $("#" + PROD_DROP_FIELD[kind]).value = p.nameAr || "";
+    if (kind === "sale") posOnSearch(); else ppOnSearch();
+    $("#" + PROD_DROP_FIELD[kind]).focus();
+    productSuggestHide(kind);
+  }
+  function productSuggestBind() {
+    if (document.__prodDropBound) return;
+    document.__prodDropBound = true;
+    document.addEventListener("mousedown", (ev) => {
+      const b = ev.target && ev.target.closest ? ev.target.closest("[data-prod-pick]") : null;
+      if (!b) return;
+      ev.preventDefault();
+      const host = b.closest(".prod-drop");
+      const kind = host && host.id === scanDropSel("txtPosSearch") ? "sale" : "purchase";
+      productSuggestPick(kind, b.getAttribute("data-prod-pick"));
+    });
+    document.addEventListener("click", (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest(".prod-drop")) return;
+      if (ev.target && ev.target.id === "txtPosSearch") return;
+      if (ev.target && ev.target.id === "txtPPSearch") return;
+      productSuggestHide("sale");
+      productSuggestHide("purchase");
+    });
+  }
+
+  function fillPosDatalist() {
+    // القائمة بقت لوحة اقتراح حيّة مع كل حرف (`productSuggestShow`) — مافيش datalist.
+    productSuggestBind();
   }
 
   function posSelectDefaultCustomer() {
@@ -6894,6 +6966,7 @@
 
   function posNewInvoice() {
     posItems = [];
+    productSuggestHide("sale");
     $("#txtInvoiceNo").value = nextInvoiceNumber();
     $("#dtpDate").value = todayISO();
     $("#cmbPaymentMethod").value = "نقداً";
@@ -6935,6 +7008,8 @@
   }
 
   function posOnSearch() {
+    // 🧾 بناء 211: لوحة الاقتراحات (أسماء فقط) مع كل حرف — وقائمة الأكثر مبيعًا لو الخانة فاضية
+    productSuggestShow("sale");
     // مثل ديسك توب: بمجرد مطابقة المنتج يُملأ سعر البيع تلقائيًا من بياناته في المخزن
     const q = $("#txtPosSearch").value.trim();
     if (!q) return;
@@ -7059,6 +7134,7 @@
 
   /* تنظيف خانات الإدخال وإعادة الرسم بعد نجاح الإضافة (نفس سلوك بناء 143 حرفيًا). */
   function posResetEntry() {
+    productSuggestHide("sale");
     $("#txtPosSearch").value = "";
     $("#txtPosCode").value = "";
     $("#numPosQty").value = "1";
@@ -7482,7 +7558,8 @@
   }
   // 🆕 بناء 199 (مواصفة المالك): سطور السداد تشمل «آجل» (المبلغ كله/جزء يروح على حساب الطرف).
   const POS_PAY_METHODS = ["نقداً", "تحويل بنكي", "محافظ إلكترونية", "إنستا باي", "شيك", "آجل"];
-  const PP_PAY_METHODS = ["نقداً", "تحويل بنكي", "محافظ إلكترونية", "إنستا باي", "آجل"];
+  // 🧾 بناء 211 (طلب المالك 20/10): «شيك» بقى متاح في المشتريات كذلك (شيك صادر باسم المورد)
+  const PP_PAY_METHODS = ["نقداً", "تحويل بنكي", "محافظ إلكترونية", "إنستا باي", "شيك", "آجل"];
   function posExtraAmount(p) {
     const n = parseFloat(String(p && p.amount != null ? p.amount : "").replace(/,/g, ""));
     return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
@@ -7599,6 +7676,56 @@
       "سجّل " + (uniq.length > 1 ? "الأرقام" : "الرقم") + " من «إعدادات مؤسستك» أولًا (لو مسجّل رقم واحد هيظهر ويتختار لوحده، " +
       "ولو أكتر هتختار من خانة السداد)، أو غيّر طريقة السداد لطريقة مسجّلة عندك.\n\n" +
       "الفاتورة ما اتحفظتش.";
+  }
+  /* 🧾 بناء 211 (طلب المالك 20/10): **الشيك مش بيتقبل من غير بياناته ومن غير طرف مسجّل**:
+     • اسم البنك + رقم الشيك + تاريخ الاستحقاق — إجباريين (شيك ناقص مايتسجلش).
+     • العميل (بيع) / المورد (شراء) لازم يكون **مسجّلًا في شركته** ومش «الكيان النقدي» المحمي،
+       عشان الشيك يتسجّل باسمه في تبويب الشيكات ويترحّل على حسابه.
+     الرسالة **ثابتة في منتصف الشاشة بخط بولد لحد ما يدوس «موافق»** (مش توست بيختفي). */
+  function payCheckLinesOf(t) {
+    return (((t && t.payments) || [])).filter((p) => p && posPayMode(p.method).isCheck && posExtraAmount(p) > 0.0001);
+  }
+  function payCheckFieldsError(t) {
+    const lines = payCheckLinesOf(t);
+    for (const p of lines) {
+      if (!String(p.bankName || "").trim()) return "اكتب اسم البنك اللي الشيك عليه.";
+      if (!String(p.checkNo || "").trim()) return "اكتب رقم الشيك.";
+      if (!String(p.dueDate || "").trim()) return "اختار تاريخ استحقاق الشيك.";
+    }
+    return "";
+  }
+  function checkPartyWarnShow(kind, detail) {
+    const ttl = $("#checkPartyWarnTitle");
+    const msg = $("#checkPartyWarnMsg");
+    /* بيانات الشيك الناقصة (بنك/رقم/استحقاق) مش «اختار الطرف» — رسالة مستقلة أوضح للمستخدم. */
+    const isFields = /^(اكتب|اختار تاريخ)/.test(String(detail || ""));
+    if (ttl) ttl.textContent = isFields ? "⚠️ بيانات الشيك ناقصة — الفاتورة لم تُسجّل" : "⚠️ تنبيه — الفاتورة لم تُسجّل";
+    if (msg) {
+      /* 🧾 بناء 211 (قرار المالك 20/10): نفس الرسالة للشيك والآجل — «الرجاء اختيار العميل أو
+         المورد» من القائمة اللي فوق «الصافي»، وبزر «موافق»، والفاتورة ما تتحفظش قبلها. */
+      msg.innerHTML = isFields
+        ? ("الفاتورة لم يتم تسجيلها حتى الآن.<br />" +
+           "<span style='font-size:13px;font-weight:700;color:#7C2D12'>" + esc(detail) + "</span>")
+        : ("الرجاء اختيار اسم " + (kind === "sale" ? "العميل" : "المورد") +
+           " من القائمة اللي فوق «الصافي».<br />" +
+           "الفاتورة لم يتم تسجيلها حتى الآن — لازم تختار " + (kind === "sale" ? "عميلًا" : "موردًا") +
+           " مسجّلًا " + (hasCheckEntry(kind) ? "لقبول الشيك" : "لتسجيل الفاتورة الآجلة") + "." +
+           (detail ? "<br /><span style='font-size:13px;font-weight:700;color:#7C2D12'>" + esc(detail) + "</span>" : ""));
+    }
+    const ok = $("#checkPartyWarnOk");
+    if (ok && !ok.__bound) { ok.__bound = true; ok.addEventListener("click", () => hideModal("mCheckPartyWarn")); }
+    showModal("mCheckPartyWarn");
+  }
+  function hasCheckEntry(kind) {
+    return posExtraArr(kind).some((p) => p && posPayMode(p.method).isCheck && posExtraAmount(p) > 0.0001);
+  }
+  function payCheckPartyError(kind, t, party) {
+    /* 🧾 بناء 211: الطرف المسجّل مطلوب للشيك **وللآجل** (مش للمحفظة/الإنستا/الكاش). */
+    const needsParty = payCheckLinesOf(t).length > 0 || Number(t && t.due) > 0.0001;
+    if (!needsParty) return "";
+    if (!party) return kind === "sale" ? "اسم العميل مش موجود في قائمة عملاء شركتك." : "اسم المورد مش موجود في قائمة موردي شركتك.";
+    if (party.protected || String(party.code || "") === "1") return kind === "sale" ? "«العميل النقدي» مش عميل مسجّل — اختار عميلًا حقيقيًا." : "«المورد النقدي» مش مورد مسجّل — اختار موردًا حقيقيًا.";
+    return "";
   }
   function posRenderExtraPays(kind) {
     const listEl = $(kind === "sale" ? "#posPayExtraList" : "#ppPayExtraList");
@@ -7770,11 +7897,13 @@
 
   /* 🆕 بناء 205 (طلب المالك 19/10): مربع العميل/المورد انتقل لجزء السداد،
      **يظهر بس لما يكون فيه جزء آجل** (على حسابه)، ويختفي لو الفاتورة كلها مدفوعة. */
-  function posAjalCustomerVisibility(kind, due) {
+  function posAjalCustomerVisibility(kind, due, t) {
     const box = $(kind === "sale" ? "#fldPosCust" : "#fldPPCust");
     if (!box) return;
-    const d = Number(due);
-    box.hidden = !(d > 0.0001);
+    /* 🧾 بناء 211 (قرار المالك النهائي 20/10): خانة العميل/المورد **فوق كلمة الصافي وظاهرة
+       دايمًا** (افتراضيًا الكيان النقدي) — الاختيار منها يسري على الفاتورة كلها (كاش/آجل/شيك)
+       ويتسجّل على كشف حسابه. فالخانة مالهاش علاقة بـ«آجل» بس. */
+    box.hidden = false;
   }
   function posUpdateSummary(kind, t) {
     const block = $(kind === "sale" ? "#posSummaryBlock" : "#ppSummaryBlock");
@@ -7863,7 +7992,7 @@
     posPaymentFieldToggle("sale", posCashLineAmount(pd));
     posUpdatePartyBalance("sale");
     posUpdateSummary("sale", { grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments });
-    posAjalCustomerVisibility("sale", pd.due);
+    posAjalCustomerVisibility("sale", pd.due, pd);
     return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments, overBy: pd.overBy };
   }
 
@@ -7914,7 +8043,8 @@
     const custId = posCustId();
     const cust = customers.find((c) => c.id === custId);
     if (!cust) {
-      toast("العميل مش موجود في قائمة العملاء — اكتب اسمه أو اختره من القائمة.", "warning");
+      if (hasCheckEntry("sale")) checkPartyWarnShow("sale");
+      else toast("العميل مش موجود في قائمة العملاء — اكتب اسمه أو اختره من القائمة.", "warning");
       return;
     }
     const warehouse = $("#cmbPosWarehouse").value;
@@ -7944,8 +8074,15 @@
     // 🆕 بناء 205: ممنوع الحفظ بمحفظة/بنك/إنستا غير مسجّل في إعدادات مؤسستك
     const _trMsg = posPayTreasuryError("sale", t);
     if (_trMsg) { alert(_trMsg); return; }
-    if (payment === "آجل" && cust.protected) {
-      toast("الرجاء اختيار عميل حقيقي للبيع الآجل (لا يمكن ترحيلها للعميل النقدي).", "warning");
+    /* 🧾 بناء 211: الشيك لازم بياناته (بنك/رقم/استحقاق) + عميل مسجّل — رسالة ثابتة لحد «موافق» */
+    const _chkFields = payCheckFieldsError(t);
+    if (_chkFields) { checkPartyWarnShow("sale", _chkFields); return; }
+    const _chkParty = payCheckPartyError("sale", t, cust);
+    if (_chkParty) { checkPartyWarnShow("sale", _chkParty); return; }
+    /* 🧾 بناء 211 (طلب المالك 20/10): نفس رسالة الشيك بالحرف لو اختار «آجل» والاسم فوق لسه
+       «العميل النقدي» — «الرجاء اختيار العميل» + تنبيه إن الفاتورة لم تُسجّل، بزر موافق. */
+    if (t.due > 0.0001 && cust.protected) {
+      checkPartyWarnShow("sale", "");
       return;
     }
     // 🆕 بناء 191: آجل + «مدفوع» = سؤال صريح قبل أي أثر (بلاغ شركة محمد رافت)
@@ -8287,16 +8424,8 @@
   }
 
   function fillPPDatalist() {
-    const dl = $("#ppProductsList");
-    dl.innerHTML = "";
-    productsByMostSold().forEach((p) => {
-      [p.nameAr, p.code, p.barcode].forEach((v) => {
-        if (!v) return;
-        const o = document.createElement("option");
-        o.value = v;
-        dl.appendChild(o);
-      });
-    });
+    // 🧾 بناء 211: نفس البيع — لوحة اقتراح أسماء فقط، بلا datalist وبلا أرقام.
+    productSuggestBind();
   }
 
   function ppSelectDefaultSupplier() {
@@ -8330,6 +8459,7 @@
 
   function ppNewInvoice() {
     ppItems = [];
+    productSuggestHide("purchase");
     $("#txtPInvNo").value = nextPurchaseInvoiceNumber();
     $("#dtpPDate").value = todayISO();
     $("#cmbPPaymentMethod").value = "نقداً";
@@ -8367,6 +8497,7 @@
   }
 
   function ppOnSearch() {
+    productSuggestShow("purchase");
     const q = $("#txtPPSearch").value.trim();
     if (!q) return;
     const p = findProductFlexible(q);
@@ -8577,7 +8708,7 @@
     posPaymentFieldToggle("purchase", posCashLineAmount(pd));
     ppUpdatePartyBalance("purchase");
     posUpdateSummary("purchase", { grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments });
-    posAjalCustomerVisibility("purchase", pd.due);
+    posAjalCustomerVisibility("purchase", pd.due, pd);
     return { sub: sub, tax: tax, extra: extra, grand: grand, paid: pd.paid, due: pd.due, payments: pd.payments, overBy: pd.overBy };
   }
 
@@ -8612,7 +8743,8 @@
     const supId = posSupId();
     const supplier = suppliers.find((s) => s.id === supId);
     if (!supplier) {
-      toast("المورد مش موجود في قائمة الموردين — اكتب اسمه أو اختره من القائمة.", "warning");
+      if (hasCheckEntry("purchase")) checkPartyWarnShow("purchase");
+      else toast("المورد مش موجود في قائمة الموردين — اكتب اسمه أو اختره من القائمة.", "warning");
       return;
     }
     const warehouse = $("#cmbPPWarehouse").value;
@@ -8629,8 +8761,13 @@
     // 🆕 بناء 205: ممنوع الحفظ بمحفظة/بنك/إنستا غير مسجّل في إعدادات مؤسستك
     const _trMsg = posPayTreasuryError("purchase", t);
     if (_trMsg) { alert(_trMsg); return; }
-    if (payment === "آجل" && supplier.protected) {
-      toast("الرجاء اختيار مورد حقيقي للشراء الآجل (لا يمكن ترحيلها للمورد النقدي).", "warning");
+    /* 🧾 بناء 211: نفس قاعدة البيع — شيك المورد ببياناته وباسمه المسجّل (رسالة ثابتة) */
+    const _chkFieldsP = payCheckFieldsError(t);
+    if (_chkFieldsP) { checkPartyWarnShow("purchase", _chkFieldsP); return; }
+    const _chkPartyP = payCheckPartyError("purchase", t, supplier);
+    if (_chkPartyP) { checkPartyWarnShow("purchase", _chkPartyP); return; }
+    if (t.due > 0.0001 && supplier.protected) {
+      checkPartyWarnShow("purchase", "");
       return;
     }
     // 🆕 بناء 191: آجل + «مدفوع» = سؤال صريح قبل أي أثر (نفس البيع)
@@ -8686,8 +8823,9 @@
       invoice.payments = _ppPayLines.map((p) => {
         const md = posPayMode(p.method);
         return {
-          method: md.isAjal ? "ajal" : md.isBank ? "bank" : md.isInsta ? "instapay" : md.isWallet ? "wallet" : "cash",
-          amount: round2(p.amount), treasuryId: (p.treasuryId != null ? p.treasuryId : null)
+          method: md.isAjal ? "ajal" : md.isCheck ? "check" : md.isBank ? "bank" : md.isInsta ? "instapay" : md.isWallet ? "wallet" : "cash",
+          amount: round2(p.amount), treasuryId: (p.treasuryId != null ? p.treasuryId : null),
+          bankName: p.bankName || "", checkNo: p.checkNo || "", dueDate: p.dueDate || ""
         };
       });
       if (jrnBlocked("الفاتورة", invoiceJrnPlan("purchase", invoice, null))) return;
@@ -8702,6 +8840,14 @@
       for (let _i = 0; _i < _ppPayLines.length; _i++) {
         const p = _ppPayLines[_i];
         if (posPayMode(p.method).isAjal) continue; // 🆕 199: الآجل مايدخلش خزينة — على حساب المورد (t.due)
+        /* 🧾 بناء 211: شيك المورد **صادر** ⇒ يتسجّل في تبويب الشيكات باسم المورد على حساب
+           «شيكات مستحقة للموردين» (2.1.4) — مافيش خروج نقدية دلوقتي؛ الخصم بيحصل عند الصرف. */
+        if (posPayMode(p.method).isCheck) {
+          addCheck({ direction: "out", partyKind: "supplier", supplierId: supplier.id, supplierName: supplier.nameAr,
+            bankName: p.bankName || "", checkNo: p.checkNo || "", dueDate: p.dueDate || todayISO(),
+            amount: round2(p.amount), refType: "invoice", refId: String(invoice.invoiceNumber || invNo) });
+          continue;
+        }
         const _tr = posTreasuryForPay("purchase", p);
         if (_tr) {
           _tr.balance = round2((_tr.balance || 0) - round2(p.amount));
@@ -9032,10 +9178,27 @@
         desc: "↩️ مرتجع مشتريات رقم " + retNo(r) + " — استلام نقدية بقيمة " + fmt(retCashOf(r)) + " ج.م",
         debit: 0, credit: 0
       }));
+    /* 🧾 بناء 211: نفس قاعدة العميل — فاتورة شراء مدفوعة بالكامل باسم مورد مسجّل تظهر كسطر
+       «مدفوعة» بصفر أثر على الرصيد. */
+    const cashInvRows = purchases
+      .filter((s) => Number(s.supplierId) === Number(sup.id) && !s.isReturn)
+      .map((s) => {
+        const total = round2(Number(s.grandTotal) || 0);
+        const paid = (s.paidAmount != null) ? round2(Number(s.paidAmount) || 0)
+          : (String(s.paymentMethod || "") === "آجل" ? 0 : total);
+        const due = round2(Number(s.dueAmount != null ? s.dueAmount : (total - paid)) || 0);
+        if (!(paid > 0) || due > 0.0001) return null;
+        return {
+          date: s.invoiceDate || s.date,
+          desc: "🧾 فاتورة مشتريات رقم " + (s.invoiceNumber || s.invoiceNo || s.id) + " — مدفوعة بالكامل " + fmt(paid) + " ج.م (بلا مستحق)",
+          debit: 0, credit: 0
+        };
+      })
+      .filter(Boolean);
     const partyTxs = supplierTxs
       .filter((t) => Number(t.supplierId) === Number(sup.id));
     const hasOpeningTx = partyTxs.some(isPartyOpeningTx);
-    const rows = partyTxs.concat(memoRows).sort((a, b) => new Date(a.date) - new Date(b.date));
+    const rows = partyTxs.concat(memoRows, cashInvRows).sort((a, b) => new Date(a.date) - new Date(b.date));
     let run = hasOpeningTx ? 0 : (parseFloat(sup.openingBalance) || 0);
     return rows.map((t) => {
       run = Math.round((run + t.debit - t.credit) * 100) / 100;
@@ -10467,10 +10630,10 @@ id: nextVoucherId(),
     const q = normalizeAr(checksFilter.q);
     let list = checks.filter((c) => c);
     if (checksFilter.status !== "all") list = list.filter((c) => (c.status || "pending") === checksFilter.status);
-    if (q) list = list.filter((c) => normalizeAr(c.customerName).includes(q) || normalizeAr(c.bankName).includes(q) ||
+    if (q) list = list.filter((c) => normalizeAr(checkPartyName(c)).includes(q) || normalizeAr(c.bankName).includes(q) ||
       normalizeAr(c.checkNo).includes(q) || normalizeAr(c.dueDate).includes(q));
     if (checksFilter.sort === "dueDesc") return checkDueSort(list).reverse();
-    if (checksFilter.sort === "name") return list.slice().sort((a, b) => normalizeAr(a.customerName).localeCompare(normalizeAr(b.customerName), "ar"));
+    if (checksFilter.sort === "name") return list.slice().sort((a, b) => normalizeAr(checkPartyName(a)).localeCompare(normalizeAr(checkPartyName(b)), "ar"));
     if (checksFilter.sort === "bank") return list.slice().sort((a, b) => normalizeAr(a.bankName).localeCompare(normalizeAr(b.bankName), "ar"));
     if (checksFilter.sort === "amount") return list.slice().sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0));
     return checkDueSort(list); // الافتراضي: الأقرب استحقاقًا أولًا
@@ -10482,16 +10645,17 @@ id: nextVoucherId(),
     checksQuery().forEach((c) => {
       const tr = document.createElement("tr");
       const pend = (c.status || "pending") === "pending";
+      const out = checkIsOut(c);
       tr.innerHTML =
         '<td>' + esc(c.dueDate || "—") + '</td>' +
-        '<td>' + esc(c.customerName || "—") + '</td>' +
+        '<td>' + esc(checkPartyName(c)) + (out ? ' <span class="login-sub">(مورد)</span>' : '') + '</td>' +
         '<td>' + esc(c.bankName || "—") + '</td>' +
         '<td>' + esc(c.checkNo || "—") + '</td>' +
         '<td>' + fmt(round2(c.amount)) + ' ج.م</td>' +
         '<td class="' + checkStatusClass(c.status) + '">' + checkStatusLabel(c.status) + '</td>' +
         '<td class="cell-actions">' +
         (pend
-          ? '<button class="btn small green" type="button" data-act="collect">💰 تحصيل</button> <button class="btn small red" type="button" data-act="return">⛔ ارتجاع</button>'
+          ? '<button class="btn small green" type="button" data-act="collect">' + (out ? '💳 صرف' : '💰 تحصيل') + '</button> <button class="btn small red" type="button" data-act="return">⛔ ارتجاع</button>'
           : (String(c.status || "") === "cancelled"
             ? '<span class="login-sub">ملغي — محفوظ للتدقيق</span>'
             : '<button class="btn small dark" type="button" data-act="del">🗑️ حذف</button>')) +
@@ -10508,21 +10672,36 @@ id: nextVoucherId(),
   }
   function openCheckCollectDialog(c) {
     checkCollectId = c.id;
+    const out = checkIsOut(c);
     fillTreasurySelect("#chkCollectTreasury");
+    /* 🧾 بناء 211: شيك المورد الصادر الافتراضي = أول حساب بنكي (طلب المالك: «يتخصم من البنك
+       مش من الخزينة»)، والمستخدم يقدر يختار خزينة نقدية لو ده اللي حصل فعلًا. */
+    if (out) {
+      const bank = treasury.find((t) => t.type === "bank");
+      if (bank) $("#chkCollectTreasury").value = String(bank.id);
+    }
     const d = $("#chkCollectDate");
     if (d) d.value = todayISO();
+    const ttl = $("#checkCollectTitle");
+    if (ttl) ttl.textContent = out ? "💳 صرف الشيك (تسوية)" : "💰 تحصيل الشيك";
+    const lbl = $("#checkCollectTreasuryLabel");
+    if (lbl) lbl.textContent = out ? "يُصرف من (بنك / خزينة)" : "يدخل خزينة";
+    const saveBtn = $("#btnChkCollectSave");
+    if (saveBtn) saveBtn.textContent = out ? "💳 صرف الشيك" : "💰 تحصيل الشيك";
     const info = $("#chkCollectInfo");
-    if (info) info.textContent = "شيك «" + (c.customerName || "-") + "» — " + fmt(round2(c.amount)) +
+    if (info) info.textContent = (out ? "شيك صادر للمورد «" : "شيك «") + checkPartyName(c) + "» — " + fmt(round2(c.amount)) +
       " ج.م" + (c.checkNo ? " (#" + c.checkNo + ")" : "") + (c.dueDate ? " — استحقاق " + c.dueDate : "");
     showModal("mCheckCollect");
   }
   function saveCheckCollect() {
+    const c = checks.find((x) => Number(x.id) === Number(checkCollectId));
+    const wasOut = checkIsOut(c);
     const r = collectCheck(checkCollectId, $("#chkCollectTreasury").value, $("#chkCollectDate").value || todayISO());
     if (!r.ok) { toast(r.msg, "warning"); return; }
     hideModal("mCheckCollect");
     renderChecks();
     renderDashboard();
-    toast("تم تحصيل الشيك ودخل الخزينة ✅", "success");
+    toast(wasOut ? "تم تسوية الشيك وخصمه من الحساب المختار ✅" : "تم تحصيل الشيك ودخل الخزينة ✅", "success");
   }
   /* ===== 🧾 بناء 210 — دورة حياة الشيك مع حذف الفواتير (قرار المالك 20/10) =====
      القاعدة: حذف الفاتورة **مايشيلش الشيك** — الشيك ورقة مستقلة تفضل قابلة للتحصيل على
@@ -10535,13 +10714,16 @@ id: nextVoucherId(),
     return checks.filter((c) => c && String(c.refType || "") === "invoice" && String(c.refId || "") === no);
   }
   function checkReturnTxOf(c) {
-    if (!c || !Array.isArray(txs)) return -1;
+    if (!c) return -1;
+    const out = checkIsOut(c);
+    const arr = out ? (Array.isArray(supplierTxs) ? supplierTxs : []) : (Array.isArray(txs) ? txs : []);
     if (c.returnTxId != null) {
-      const i = txs.findIndex((t) => t && Number(t.id) === Number(c.returnTxId));
+      const i = arr.findIndex((t) => t && Number(t.id) === Number(c.returnTxId));
       if (i >= 0) return i;
     }
-    if ((c.partyKind || "customer") !== "customer") return -1;
-    return txs.findIndex((t) => t && Number(t.customerId) === Number(c.customerId) &&
+    return arr.findIndex((t) => t && (out
+      ? Number(t.supplierId) === Number(c.supplierId)
+      : Number(t.customerId) === Number(c.customerId)) &&
       Math.abs(Number(t.debit || 0) - round2(c.amount)) < 0.005 &&
       String(t.desc || "").startsWith("ارتجاع شيك"));
   }
@@ -10560,7 +10742,13 @@ id: nextVoucherId(),
       }
     }
     const i = checkReturnTxOf(c);
-    if (i >= 0) { const t = txs[i]; txs.splice(i, 1); bumpIdFloor("tx", t.id); n++; }
+    if (i >= 0) {
+      const out = checkIsOut(c);
+      const t = out ? supplierTxs[i] : txs[i];
+      if (out) supplierTxs.splice(i, 1); else txs.splice(i, 1);
+      bumpIdFloor(out ? "stx" : "tx", t.id);
+      n++;
+    }
     c.returnTxId = null;
     return n;
   }
@@ -10579,7 +10767,7 @@ id: nextVoucherId(),
         out.collected++;
         const amount = round2(c.amount);
         const debt = accByCode(isSales ? "1.1.5" : "2.1.1", isSales ? "مديونيات العملاء" : "مستحقات الموردين");
-        const chk = checksAcc();
+        const chk = isSales ? checksAcc() : checksPayableAcc();
         if (amount > 0 && debt && chk) {
           const j = { id: nextJournalId(), number: jrnNo(), date: todayISO(),
             desc: "إعادة تصنيف شيك محصّل بعد حذف فاتورة " + (isSales ? "مبيعات" : "مشتريات") + " — " + (c.customerName || c.supplierName || "-"),
@@ -10631,20 +10819,27 @@ id: nextVoucherId(),
       c.notes = (c.notes ? c.notes + " | " : "") + "حذف شيك مرتجع";
       saveChecks();
       try { saveTxs(); recalculateCustomerBalances(); saveCustomers(); } catch (e) { }
+      try { saveSupplierTxs(); recalculateSupplierBalances(); saveSuppliers(); } catch (e) { }
       renderChecks(); renderDashboard();
       toast("اتلغى الشيك ورجع أثر الارتجاع.", "success");
       return;
     }
-    if (!confirm("حذف الشيك رقم " + (c.checkNo || c.id) + " (" + (c.customerName || c.supplierName || "") + ")؟\n\nالشيك هيتلغي، وهتزيد المديونية بقيمته " + fmt(amount) + " ج.م.")) return;
+    if (!confirm("حذف الشيك رقم " + (c.checkNo || c.id) + " (" + checkPartyName(c) + ")؟\n\nالشيك هيتلغي، و" +
+      (checkIsOut(c) ? "هيرجع المستحق للمورد" : "هتزيد المديونية") + " بقيمته " + fmt(amount) + " ج.م.")) return;
     if (!c.unapplied && amount > 0) {
-      const debt = accByCode("1.1.5", "مديونيات العملاء");
-      const chk = checksAcc();
+      /* شيك وارد ملغي: مدين 1.1.5 / دائن 1.1.7 (ترجع المديونية). شيك صادر ملغي:
+         مدين 2.1.4 / دائن 2.1.1 (يرجع المستحق للمورد ويتشال الالتزام). */
+      const out = checkIsOut(c);
+      const debt = accByCode(out ? "2.1.1" : "1.1.5", out ? "مستحقات الموردين" : "مديونيات العملاء");
+      const chk = out ? checksPayableAcc() : checksAcc();
       if (debt && chk) {
+        const lines = out
+          ? [{ accountId: Number(chk.id), debit: amount, credit: 0 }, { accountId: Number(debt.id), debit: 0, credit: amount }]
+          : [{ accountId: Number(debt.id), debit: amount, credit: 0 }, { accountId: Number(chk.id), debit: 0, credit: amount }];
         const j = { id: nextJournalId(), number: jrnNo(), date: todayISO(),
-          desc: "إلغاء شيك — " + (c.customerName || "-") + (c.checkNo ? " (#" + c.checkNo + ")" : "") + " — " + fmt(amount) + " ج.م",
+          desc: "إلغاء شيك — " + checkPartyName(c) + (c.checkNo ? " (#" + c.checkNo + ")" : "") + " — " + fmt(amount) + " ج.م",
           ref: "إلغاء شيك", refType: "إلغاء شيك", refId: "CHDEL:" + c.id,
-          debit: amount, credit: amount,
-          lines: [{ accountId: Number(debt.id), debit: amount, credit: 0 }, { accountId: Number(chk.id), debit: 0, credit: amount }] };
+          debit: amount, credit: amount, lines: lines };
         settleJrnLines(j.lines, 1); journalEntries.push(j);
         persistJournal(); saveAccounts();
         try { renderJournal(); } catch (e) { }
@@ -10758,6 +10953,28 @@ id: nextVoucherId(),
     }
     return ensureJrnAccount(CHECKS_ACC_CODE) || accByCode(CHECKS_ACC_CODE, "شيكات");
   }
+  /* 🧾 بناء 211 (طلب المالك 20/10): شيكات الموردين — شيك **صادر** بيتسجّل باسم المورد على
+     حساب التزام «2.1.4 شيكات مستحقة للموردين» (دليل منقّط) أو «214» تحت «الخصوم المتداولة»
+     (دليل مجرّد) — بنفس نمط `checksAcc` بلا أي كود منقّط في الدليل المجرّد. */
+  const CHECKS_PAY_ACC_CODE = "2.1.4";
+  function checksPayableAcc() {
+    const a = accByCode(CHECKS_PAY_ACC_CODE, "شيكات مستحقة");
+    if (a) return a;
+    if (acsIsDotFreeChart()) {
+      const parent = accByCode("2.1", "الخصوم المتداولة") || accByCode("2", "الخصوم");
+      const ch = { id: nextAccountId(), code: "214", nameAr: "شيكات مستحقة للموردين", type: "liability", parentId: parent ? parent.id : 0, openingBalance: 0, isActive: true };
+      accounts.push(ch);
+      try { saveAccounts(); } catch (e) { }
+      return ch;
+    }
+    return ensureJrnAccount(CHECKS_PAY_ACC_CODE) || accByCode(CHECKS_PAY_ACC_CODE, "شيكات مستحقة");
+  }
+  function checkPartyName(c) {
+    return (c && (c.customerName || c.supplierName)) || "-";
+  }
+  function checkIsOut(c) {
+    return String((c && c.direction) || "in") === "out" || String((c && c.partyKind) || "customer") === "supplier";
+  }
   function nextCheckId() { return checks.reduce((m, c) => Math.max(m, Number(c && c.id) || 0), 0) + 1; }
   function checkJrnKey(id) { const n = Number(id); return n > 0 ? "CH:" + n : ""; }
   /* 🆕 بناء 203 (بند #1 + #3): حركة التحصيل الجاية من «تحصيل بشيك» قيدها **مختلف** (CHCUST: + معرّف
@@ -10803,15 +11020,20 @@ id: nextVoucherId(),
     const k = checkJrnKey(c.id);
     if (k && journalEntries.find((j) => j && String(j.refId || "") === k)) return null;
     ensureJrnStd();
-    const debt = accByCode("1.1.5", "مديونيات العملاء");
-    const chk = checksAcc();
+    const out = checkIsOut(c);
+    const debt = accByCode(out ? "2.1.1" : "1.1.5", out ? "مستحقات الموردين" : "مديونيات العملاء");
+    const chk = out ? checksPayableAcc() : checksAcc();
     const amount = round2(c.amount);
     if (!debt || !chk || !(amount > 0)) return null;
+    /* شيك وارد مرتجع: ترجع مديونية العميل (مدين 1.1.5 / دائن 1.1.7).
+       شيك صادر مرتجع: يرجع المستحق للمورد (مدين 2.1.4 / دائن 2.1.1). */
+    const lines = out
+      ? [{ accountId: Number(chk.id), debit: amount, credit: 0 }, { accountId: Number(debt.id), debit: 0, credit: amount }]
+      : [{ accountId: Number(debt.id), debit: amount, credit: 0 }, { accountId: Number(chk.id), debit: 0, credit: amount }];
     const j = { id: nextJournalId(), number: jrnNo(), date: todayISO(),
-      desc: "ارتجاع شيك — " + (c.customerName || "-") + (c.checkNo ? " (#" + c.checkNo + ")" : "") + " — " + fmt(amount) + " ج.م",
+      desc: "ارتجاع شيك — " + checkPartyName(c) + (c.checkNo ? " (#" + c.checkNo + ")" : "") + " — " + fmt(amount) + " ج.م",
       ref: "ارتجاع شيك", refType: "ارتجاع شيك", refId: k,
-      debit: amount, credit: amount,
-      lines: [{ accountId: Number(debt.id), debit: amount, credit: 0 }, { accountId: Number(chk.id), debit: 0, credit: amount }] };
+      debit: amount, credit: amount, lines: lines };
     settleJrnLines(j.lines, 1);
     journalEntries.push(j);
     persistJournal(); saveAccounts();
@@ -10823,22 +11045,28 @@ id: nextVoucherId(),
     if (!c) return { ok: false, msg: "الشيك مش موجود" };
     if (c.status !== "pending") return { ok: false, msg: "الشيك ده اتحصّل أو اترجع قبل كده" };
     const t = treasury.find((x) => Number(x.id) === Number(treasuryId));
-    if (!t) return { ok: false, msg: "اختار الخزينة اللي الشيك يدخلها" };
+    if (!t) {
+      return { ok: false, msg: checkIsOut(c) ? "اختار الحساب اللي الشيك هيتصرف منه (بنك أو خزينة)" : "اختار الخزينة اللي الشيك يدخلها" };
+    }
     const amount = round2(c.amount);
     if (!(amount > 0)) return { ok: false, msg: "مبلغ الشيك مش صالح" };
     const when = dateISO || todayISO();
-    const v = { id: nextVoucherId(), type: "in", date: when, amount: amount,
-      treasuryId: t.id, desc: "تحصيل شيك — " + (c.customerName || "-") + (c.checkNo ? " (#" + c.checkNo + ")" : ""),
-      refType: "تحصيل شيك", refId: "CHC:" + c.id };
+    const out = checkIsOut(c);
+    /* 🧾 بناء 211 (طلب المالك 20/10): شيك المورد **صادر** ⇒ وقت التسوية يختار الحساب اللي
+       بيتخصم منه (بنك أو خزينة)، والترحيل يمشي على نفس الاختيار: مدين 2.1.4 / دائن حساب
+       الحساب المختار. (الافتراضي في النافذة = أول حساب بنكي عند وجوده.) */
+    const v = { id: nextVoucherId(), type: out ? "out" : "in", date: when, amount: amount,
+      treasuryId: t.id, desc: (out ? "صرف شيك — " : "تحصيل شيك — ") + checkPartyName(c) + (c.checkNo ? " (#" + c.checkNo + ")" : ""),
+      refType: out ? "صرف شيك" : "تحصيل شيك", refId: "CHC:" + c.id };
     vouchers.push(v);
-    t.balance = round2((Number(t.balance) || 0) + amount);
+    t.balance = round2((Number(t.balance) || 0) + (out ? -amount : amount));
     syncTreasuryItemToSett(t);
     /* 🧾 بناء 210: الشيك غير المخصص (اتفكّت فاتورته) عند تحصيله يقفل **مديونية الطرف**
        مش حساب الشيكات (الشيك مش أصل عندنا أصلًا)، ولازم حركة طرف دائنة عشان إعادة الحساب. */
     const unap = !!c.unapplied;
     const counterAcc = unap
-      ? accByCode((c.partyKind === "supplier") ? "2.1.1" : "1.1.5", (c.partyKind === "supplier") ? "مستحقات الموردين" : "مديونيات العملاء")
-      : checksAcc();
+      ? accByCode(out ? "2.1.1" : "1.1.5", out ? "مستحقات الموردين" : "مديونيات العملاء")
+      : (out ? checksPayableAcc() : checksAcc());
     try { postVoucherJournal(v, t, counterAcc); } catch (e) { }
     if (unap && amount > 0) {
       if ((c.partyKind || "customer") === "supplier" && c.supplierId) {
@@ -10854,8 +11082,9 @@ id: nextVoucherId(),
       }
     }
     c.status = "collected"; c.treasuryId = t.id; c.collectedAt = when; c.unapplied = false;
+    if (out) { c.paidAt = when; c.paidTreasuryId = t.id; c.paidTreasuryName = t.name; }
     saveVouchers(); saveTreasury(); saveChecks();
-    addActivity("تحصيل شيك", "تحصيل شيك " + (c.customerName || "") + " بمبلغ " + fmt(amount) + " ج.م في «" + t.name + "»");
+    addActivity(out ? "صرف شيك" : "تحصيل شيك", (out ? "صرف شيك " : "تحصيل شيك ") + checkPartyName(c) + " بمبلغ " + fmt(amount) + " ج.م " + (out ? "من" : "في") + " «" + t.name + "»");
     return { ok: true, voucher: v };
   }
   function returnCheck(id, notes) {
@@ -10884,6 +11113,19 @@ id: nextVoucherId(),
       c.returnTxId = txId3;
       try { saveTxs(); } catch (e) { }
       try { recalculateCustomerBalances(); } catch (e) { }
+    } else if (c.partyKind === "supplier" && c.supplierId) {
+      /* 🧾 بناء 211: شيك المورد الصادر لو اترجع ⇒ الفلوس ما اتصرفتش والمستحق رجع للمورد
+         (حركة مدينة على المورد + قيد مدين 2.1.4 / دائن 2.1.1 من `postCheckReturnJrn`). */
+      const txId3 = nextSupplierTxId();
+      supplierTxs.push({
+        id: txId3, supplierId: c.supplierId, treasuryId: null, treasuryName: "",
+        paymentMethod: "شيك", date: todayISO(),
+        desc: "ارتجاع شيك صادر #" + (c.checkNo || c.id) + (c.bankName ? " — " + c.bankName : "") + " (رجع المستحق)",
+        debit: round2(c.amount), credit: 0
+      });
+      c.returnTxId = txId3;
+      try { saveSupplierTxs(); } catch (e) { }
+      try { recalculateSupplierBalances(); } catch (e) { }
     }
     c.status = "returned"; c.returnedAt = todayISO();
     if (notes) c.notes = (c.notes ? c.notes + " | " : "") + notes;
@@ -13898,7 +14140,8 @@ id: nextVoucherId(),
 
   // 🧾 بناء 190: أطراف «المدفوع» — تدعم تعدّد طرق السداد + الشيكات (متوافق خلفيًا بالحرف)
   function invPaidAccount(kind, inv, tr, p) {
-    if (p && p.method === "check" && kind === "sale") return checksAcc();
+    // 🧾 بناء 211: شيك العميل ⇒ أصل «شيكات لدى العملاء» · شيك المورد ⇒ التزام «شيكات مستحقة للموردين»
+    if (p && p.method === "check") return kind === "sale" ? checksAcc() : checksPayableAcc();
     if (inv.vanRepAccountId) return accounts.find((a) => Number(a.id) === Number(inv.vanRepAccountId)) || null;
     const t = (p && p.treasuryId != null) ? treasury.find((x) => Number(x.id) === Number(p.treasuryId)) : null;
     return accForTreasuryAcc(t || tr);
@@ -18860,8 +19103,12 @@ id: nextVoucherId(),
     $("#txtPosCode").addEventListener("paste", () => scanPasteRun("txtPosCode", posCodeEnter));
     $("#txtPosSearch").addEventListener("input", (e) => { scanKey("txtPosSearch", e); posOnSearch(); });
     $("#txtPosSearch").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); posSearchEnter(); }
+      if (e.key === "Enter") { e.preventDefault(); productSuggestHide("sale"); posSearchEnter(); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); productSuggestShow("sale"); }
+      else if (e.key === "Escape") { productSuggestHide("sale"); }
     });
+    $("#txtPosSearch").addEventListener("focus", () => { productSuggestShow("sale"); });
+    $("#txtPosSearch").addEventListener("click", () => { productSuggestShow("sale"); });
     $("#txtPosSearch").addEventListener("paste", () => scanPasteRun("txtPosSearch", posSearchEnter));
     // 🧮 الكمية اللي «لازم تتكتب» (05/10 ≈18:05): `input` بيجي من الصابع بس — الكتابة
     // بالـ JS (posAddItem / posNewInvoice) ما بيشعلوش ⇒ النشيط يعني المالك لمس الخانة فعلًا.
@@ -19055,8 +19302,12 @@ id: nextVoucherId(),
     $("#txtPPCode").addEventListener("paste", () => scanPasteRun("txtPPCode", ppCodeEnter));
     $("#txtPPSearch").addEventListener("input", (e) => { scanKey("txtPPSearch", e); ppOnSearch(); });
     $("#txtPPSearch").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); ppSearchEnter(); }
+      if (e.key === "Enter") { e.preventDefault(); productSuggestHide("purchase"); ppSearchEnter(); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); productSuggestShow("purchase"); }
+      else if (e.key === "Escape") { productSuggestHide("purchase"); }
     });
+    $("#txtPPSearch").addEventListener("focus", () => { productSuggestShow("purchase"); });
+    $("#txtPPSearch").addEventListener("click", () => { productSuggestShow("purchase"); });
     $("#txtPPSearch").addEventListener("paste", () => scanPasteRun("txtPPSearch", ppSearchEnter));
     // 🧮 نفس قاعدة البيع: الكمية تتكتب من الصابع، والمسح ما يخترعش 1
     $("#numPPQty").addEventListener("input", () => { ppQtyTyped = true; });

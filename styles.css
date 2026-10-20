@@ -2826,3 +2826,12 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 /* --- بناء 205: زر السكانر أول السطر (خطوة أولى في الإدخال) --- */
 .inv-entry-row .fld-scan { flex: 0 0 auto; }
 .inv-entry-row .fld-scan .btn { padding: 0 14px; font-weight: 800; }
+/* --- بناء 211: قائمة اقتراح الأصناف بعرض الخانة نفسها (بلا أرقام) + رسالة الشيك الثابتة --- */
+.fld.grow { position: relative; }
+.prod-drop { max-height: 240px; }
+.prod-drop .scan-act { font-size: 12.5px; font-weight: 800; padding: 6px 10px; text-align: right; }
+.prod-drop .scan-act .prod-code { display: none; }
+#mCheckPartyWarnBox { max-width: 560px; text-align: center; }
+#mCheckPartyWarnBox h3 { font-size: 18px; font-weight: 900; color: #B91C1C; margin-bottom: 10px; }
+#mCheckPartyWarnBox p { font-size: 15px; font-weight: 800; line-height: 1.9; color: #111; margin-bottom: 16px; }
+#mCheckPartyWarnBox .modal-actions { justify-content: center; }
