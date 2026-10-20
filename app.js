@@ -295,8 +295,10 @@
     { id: 5, code: "1.1.3", nameAr: "المحافظ الإلكترونية", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
     { id: 6, code: "1.1.4", nameAr: "المخزون (بضاعة)", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
     { id: 7, code: "1.1.5", nameAr: "مديونيات العملاء", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
+    // 🧾 بناء 215: «شيكات تحت التحصيل» فرع مستقل بره الأصول المتداولة (طلب المالك 21/10)
+    { id: 26, code: "1.2", nameAr: "شيكات تحت التحصيل", type: "asset", parentId: 1, openingBalance: 0, isActive: true },
     // 🧾 بناء 190 (ترقية ٦٢): أوراق القبض — الشيك الوارد يقف هنا (أصل) لحد التحصيل
-    { id: 24, code: "1.1.7", nameAr: "شيكات لدى العملاء", type: "asset", parentId: 2, openingBalance: 0, isActive: true },
+    { id: 24, code: "1.2.1", nameAr: "شيكات لدى العملاء", type: "asset", parentId: 26, openingBalance: 0, isActive: true },
     { id: 8, code: "1.3", nameAr: "الأصول الثابتة", type: "asset", parentId: 1, openingBalance: 0, isActive: true },
     { id: 9, code: "1.3.1", nameAr: "المباني والمعدات", type: "asset", parentId: 8, openingBalance: 0, isActive: true },
     { id: 10, code: "2", nameAr: "الالتزامات", type: "liability", parentId: 0, openingBalance: 0, isActive: true },
@@ -3049,7 +3051,9 @@
     const kChecks = Math.round((Array.isArray(checks) ? checks : [])
       .filter((c) => c && c.status === "pending" && c.direction !== "out")
       .reduce((m, c) => m + (Number(c.amount) || 0), 0) * 100) / 100;
-    const kMoney = Math.round((kCash + kBank + kWallet + kInsta + kChecks) * 100) / 100;
+    // 🧾 بناء 215: الشيك تحت التحصيل **مش نقدية متاحة** — مايتجمعش في إجمالي الأموال
+    // (كان بيتحسب مرتين: مرة في kCheckBal ومرة جوّه الإجمالي ⇒ بلاغ المالك «مكرر»).
+    const kMoney = Math.round((kCash + kBank + kWallet + kInsta) * 100) / 100;
 
     $("#kSales").textContent = fmt(salesToday) + " ج.م";
     $("#kPurchases").textContent = fmt(purToday) + " ج.م";
@@ -9777,23 +9781,35 @@
       refundedCash = refundByPayments(inv, isSales);
       saveTreasury();
     } else if (gonePaid > 0.0001) {
-      if (inv.treasuryId != null && inv.treasuryId !== "") {
-        ptr = treasury.find((x) => Number(x.id) === Number(inv.treasuryId)) || null;
-      }
-      if (!ptr) {
-        const jType = paidAccId != null ? typeOfAccId(paidAccId) : "";
-        // 🚚 بيع المندوب (بناء 178): القبض راح لحساب «ذمم المناديب» وصندوقه = null بالذات
-        ptrNotTreasury = !!inv.isVan || (paidFromJrn != null && paidAccId != null && jType === "");
-        if (!ptrNotTreasury) {
-          const want = jType || pmType;
-          ptr = treasury.find((x) => x.type === want) || treasury.find((x) => x.type === "cash") || treasury[0] || null;
+      /* 🧾 بناء 215 (بلاغ المالك 21/10: «الشيك اتحذف من تحت التحصيل وحطيتوه في البنك وأنا ما حصّلتوش»):
+         الشيك المربوط بالفاتورة **مش نقدية في الخزينة** — قيمته اتخصمت من مديونية العميل ووقفت
+         على حساب الشيكات لحد التحصيل. المسار القديم (فاتورة بلا payments[]) كان بيحسب المدفوع
+         كله نقديًا ويردّه للخزينة، فيتضاعف: رصيد دائن للعميل + شيك تحت التحصيل + فلوس في البنك.
+         الحل: نستبعد قيمة الشيكات المربوطة من المبلغ اللي بيرجع للخزينة؛ أثرها بيتعالج في
+         `settleChecksOnInvoiceDelete` (رصيد دائن + أصل الشيك) مش برد نقدي. */
+      const linkedCheckPaid = r2n((Array.isArray(linkedChecks) ? linkedChecks : [])
+        .filter((c) => c && String(c.status || "pending") !== "cancelled")
+        .reduce((m, c) => m + (Number(c.amount) || 0), 0));
+      const cashPaid = r2n(Math.max(0, gonePaid - linkedCheckPaid));
+      if (cashPaid > 0.0001) {
+        if (inv.treasuryId != null && inv.treasuryId !== "") {
+          ptr = treasury.find((x) => Number(x.id) === Number(inv.treasuryId)) || null;
         }
-      }
-      if (ptr) {
-        ptr.balance = r2n((Number(ptr.balance) || 0) + (isSales ? -gonePaid : gonePaid));
-        saveTreasury();
-        syncTreasuryItemToSett(ptr);
-        refundedCash = gonePaid;
+        if (!ptr) {
+          const jType = paidAccId != null ? typeOfAccId(paidAccId) : "";
+          // 🚚 بيع المندوب (بناء 178): القبض راح لحساب «ذمم المناديب» وصندوقه = null بالذات
+          ptrNotTreasury = !!inv.isVan || (paidFromJrn != null && paidAccId != null && jType === "");
+          if (!ptrNotTreasury) {
+            const want = jType || pmType;
+            ptr = treasury.find((x) => x.type === want) || treasury.find((x) => x.type === "cash") || treasury[0] || null;
+          }
+        }
+        if (ptr) {
+          ptr.balance = r2n((Number(ptr.balance) || 0) + (isSales ? -cashPaid : cashPaid));
+          saveTreasury();
+          syncTreasuryItemToSett(ptr);
+          refundedCash = cashPaid;
+        }
       }
     }
     // 🆕 193: تكلفة الشراء ترجع زي ما كانت قبل الفاتورة (متوسطة/آخر شراء) — لو اللقطة محفوظة
@@ -11095,20 +11111,51 @@ id: nextVoucherId(),
        • التحصيل ⇒ سند قبض (مدين خزينة / دائن 1.1.7) — `collectCheck`
        • الارتجاع ⇒ قيد (مدين 1.1.5 / دائن 1.1.7) ⇒ المديونية ترجع — `returnCheck`
      مفتاح قيد الشيك: «CH:» + id (حماية من التكرار). */
-  const CHECKS_ACC_CODE = "1.1.7";
+  const CHECKS_ACC_CODE = "1.2.1";
+  /* 🧾 بناء 215 (طلب المالك 21/10): «الشيك تحت التحصيل مش أصل متداول — يتحط في بابه
+     شيكات تحت التحصيل، ولما يتحصل يتحوّل لتحصيلات العملاء». فروع مستقلة:
+     دليل منقّط: 1.2 «شيكات تحت التحصيل» (أب 1) ← 1.2.1 · دليل مجرّد: 12 (أب 1) ← 117. */
+  const CHECKS_GROUP_CODE = "1.2", CHECKS_GROUP_CODE_BARE = "12";
+  function checksGroupAcc() {
+    const dot = !acsIsDotFreeChart();
+    const code = dot ? CHECKS_GROUP_CODE : CHECKS_GROUP_CODE_BARE;
+    let g = accounts.find((x) => x && String(x.code) === code) ||
+      accounts.find((x) => x && String(x.nameAr || "").trim() === "شيكات تحت التحصيل");
+    if (g) return g;
+    const root = accounts.find((x) => x && Number(x.parentId) === 0 && String(x.code || "") === "1");
+    g = { id: nextAccountId(), code: code, nameAr: "شيكات تحت التحصيل", type: "asset", parentId: root ? root.id : 0, openingBalance: 0, isActive: true };
+    accounts.push(g);
+    try { saveAccounts(); } catch (e) { }
+    return g;
+  }
   function checksAcc() {
-    const a = accByCode(CHECKS_ACC_CODE, "شيكات");
-    if (a) return a;
-    // 🧾 دليل بلا نقاط (الشركات السبع): ننشئ الكود المجرّد 117 تحت «الأصول المتداولة» —
+    // كود قديم 1.1.7 (قبل بناء 215) أو مجرّد 117 — نلاقيه ونعيد تسميته/تنسيبه بلا تكرار
+    let a = accounts.find((x) => x && x.isActive !== false &&
+      (String(x.code) === CHECKS_ACC_CODE || String(x.code) === "1.1.7" ||
+        (acsIsDotFreeChart() && String(x.code) === "117")));
+    if (a) {
+      let dirty = false;
+      if (String(a.code) === "1.1.7" && !acsIsDotFreeChart()) { a.code = CHECKS_ACC_CODE; dirty = true; }
+      const g = checksGroupAcc();
+      if (g && Number(a.parentId) !== Number(g.id)) { a.parentId = g.id; dirty = true; }
+      if (dirty) { try { saveAccounts(); } catch (e) { } }
+      return a;
+    }
+    // 🧾 دليل بلا نقاط (الشركات السبع): ننشئ الكود المجرّد 117 تحت «شيكات تحت التحصيل» —
     // من غير ما نحقن كودًا منقّطًا يخلط الدليل ويكسر تجميع الفروع (acsIsDotFreeChart).
     if (acsIsDotFreeChart()) {
-      const parent = accByCode("1.1", "الأصول المتداولة");
+      const parent = checksGroupAcc();
       const ch = { id: nextAccountId(), code: "117", nameAr: "شيكات لدى العملاء", type: "asset", parentId: parent ? parent.id : 0, openingBalance: 0, isActive: true };
       accounts.push(ch);
       try { saveAccounts(); } catch (e) { }
       return ch;
     }
-    return ensureJrnAccount(CHECKS_ACC_CODE) || accByCode(CHECKS_ACC_CODE, "شيكات");
+    const ch = ensureJrnAccount(CHECKS_ACC_CODE);
+    if (ch) {
+      const g = checksGroupAcc();
+      if (g && Number(ch.parentId) !== Number(g.id)) { ch.parentId = g.id; try { saveAccounts(); } catch (e) { } }
+    }
+    return ch;
   }
   /* 🧾 بناء 211 (طلب المالك 20/10): شيكات الموردين — شيك **صادر** بيتسجّل باسم المورد على
      حساب التزام «2.1.4 شيكات مستحقة للموردين» (دليل منقّط) أو «214» تحت «الخصوم المتداولة»
@@ -15300,8 +15347,8 @@ id: nextVoucherId(),
      • الحسابات الأساسية/النظامية (الدليل القياسي + حسابات الشركاء + أي حساب أب) **محمية** — ماينفعش تتحذف.
      • أي حساب تاني (بند فرعي أو حساب من إنشائك) يتحذف نهائيًا بشرطين: **رصيده صفر** و**مش مستخدم في أي قيد**. */
   const STD_ACC_CODES = {
-    "1": 1, "1.1": 1, "1.1.1": 1, "1.1.2": 1, "1.1.3": 1, "1.1.4": 1, "1.1.5": 1, "1.3": 1, "1.3.1": 1,
-    "2": 1, "2.1": 1, "2.1.1": 1, "2.1.2": 1, "2.1.3": 1,
+    "1": 1, "1.1": 1, "1.1.1": 1, "1.1.2": 1, "1.1.3": 1, "1.1.4": 1, "1.1.5": 1, "1.2": 1, "1.2.1": 1, "1.3": 1, "1.3.1": 1,
+    "2": 1, "2.1": 1, "2.1.1": 1, "2.1.2": 1, "2.1.3": 1, "2.1.4": 1,
     "3": 1, "3.1": 1, "3.2": 1, "3.3": 1, "4": 1, "4.1": 1, "5": 1, "5.1": 1, "5.2": 1
   };
   const STD_ACC_NAMES = {
