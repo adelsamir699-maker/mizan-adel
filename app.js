@@ -530,6 +530,53 @@
   const A = { online: false, uid: null, adopting: false, cleaning: false };
   let planWatchTimer = null;
   let presenceTimer = null;
+  let lastPlanCheckedAt = 0;
+  let lastPlanAttemptAt = 0;
+
+  /* ================== 🧭 بناء 212: تاب واحد يقود نداءات المتابعة ==================
+   * الهدف: تقليل استهلاك Supabase. لو المستخدم فاتح البرنامج في أكتر من تاب، تاب واحد
+   * بس هو اللي يسأل عن الاشتراك/الحضور/لوحة المالك. باقي التابات بتشتغل من الحالة
+   * المحلية، وأول ما التاب القائد يتقفل أو يقدم، واحد تاني ياخد القيادة أوتوماتيك.
+   * الكتابة/الحفظ **مش** مقفولة: أي تاب يقدر يحفظ عادي. */
+  const LS_NET_LEADER = "mizan_net_leader_v1";
+  const NET_LEADER_TTL_MS = 12000;
+  const NET_TAB_ID = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  let netLeaderTimer = null;
+
+  function netLeaderRead() {
+    try { return JSON.parse(localStorage.getItem(LS_NET_LEADER) || "null"); } catch (e) { return null; }
+  }
+  function netLeaderBeat() {
+    try { localStorage.setItem(LS_NET_LEADER, JSON.stringify({ id: NET_TAB_ID, at: Date.now() })); } catch (e) { }
+  }
+  function netLeader() {
+    const cur = netLeaderRead();
+    if (!cur || cur.id === NET_TAB_ID) return true;
+    return (Date.now() - Number(cur.at || 0)) > NET_LEADER_TTL_MS;
+  }
+  function netLeaderInit() {
+    if (netLeaderTimer !== null) return;
+    netLeaderBeat();
+    netLeaderTimer = setInterval(() => {
+      if (netLeader()) netLeaderBeat();
+    }, 4000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      netLeaderBeat();
+      if (DATA.isOnline()) checkPlanNow(true).catch(() => { });
+    });
+    window.addEventListener("storage", (ev) => {
+      if (ev.key !== LS_NET_LEADER) return;
+      if (!netLeader()) return;
+      netLeaderBeat();
+      if (DATA.isOnline()) checkPlanNow(true).catch(() => { });
+    });
+  }
+  try {
+    if (/(^|[?&])nettest=1(&|$)/.test(String(location.search || ""))) {
+      window.__mizanNetLeader = { id: NET_TAB_ID, leader: netLeader, beat: netLeaderBeat, init: netLeaderInit };
+    }
+  } catch (e) { }
 
   
   function ensureCashEntities() {
@@ -1092,10 +1139,86 @@
     el.hidden = false;
   }
 
-  // مراقبة الاشتراك لحظيًا: لو غيّر المالك التاريخ أو قفل الشركة يظهر فورًا للعميل
-  function checkPlanNow() {
-    if (planWatchTimer === null) return Promise.resolve();
+  /* ================== 🪪 بناء 212: زرّا حالة الشبكة/الاشتراك ================== */
+  function statusTime(ts) {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    const p = (x) => String(x).padStart(2, "0");
+    return p(d.getDate()) + "/" + p(d.getMonth() + 1) + "/" + d.getFullYear() + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function statusRow(label, value, ok) {
+    const cls = ok === true ? " status-ok" : (ok === false ? " status-bad" : "");
+    return '<div class="status-row"><b>' + esc(label) + '</b><span class="' + cls.trim() + '">' + esc(value) + '</span></div>';
+  }
+  function statusOpen(kind) {
+    const box = $("#mStatusInfo");
+    if (!box) return;
+    $("#statusInfoTitle").textContent = kind === "sub" ? "🪪 حالة الاشتراك" : "🌐 حالة الشبكة";
+    box.hidden = false;
+    if (kind === "sub") {
+      $("#statusInfoBody").innerHTML = '<div class="status-note">جارٍ التحقق من السحابة…</div>';
+      checkPlanNow(true).then(paintSubStatus).catch(paintSubStatus);
+    } else {
+      paintNetStatus();
+    }
+  }
+  function paintNetStatus() {
+    const body = $("#statusInfoBody");
+    if (!body) return;
+    const online = !!navigator.onLine;
+    const dbState = !!(window.DATA && DATA.isOnline && DATA.isOnline());
+    const lastSync = DB && DB.lastSyncAt ? statusTime(DB.lastSyncAt) : "—";
+    const lastSyncTable = DB && DB.lastSyncTable ? String(DB.lastSyncTable) : "—";
+    body.innerHTML = '<div class="status-kv">' +
+      statusRow("اتصال الجهاز بالإنترنت", online ? "متصل" : "غير متصل", online) +
+      statusRow("الاتصال بقاعدة البيانات", dbState ? "متصل" : "غير متصل", dbState) +
+      statusRow("هذا التاب", netLeader() ? "يقود المتابعة" : "متابع (تاب آخر يقود)") +
+      statusRow("آخر فحص للاشتراك", statusTime(lastPlanCheckedAt)) +
+      statusRow("آخر رفع ناجح", lastSync) +
+      statusRow("آخر جدول تم رفعه", lastSyncTable) +
+      '<div class="status-note">المتابعة الدورية بقت مرة كل ساعة بدل كل ٣٠ ثانية، والفحص بيتم كمان عند فتح البرنامج أو الرجوع له. زر «الاشتراك» بيسأل السحابة عند الضغط بس.</div>' +
+      '</div>';
+  }
+  function paintSubStatus() {
+    const body = $("#statusInfoBody");
+    if (!body) return;
+    const acc = window.DATA && DATA.accessInfo ? DATA.accessInfo() : null;
+    if (!acc) {
+      body.innerHTML = '<div class="status-note">مش قادر أقرأ حالة الاشتراك دلوقتي. جرّب تتأكد من الإنترنت أو اضغط «الاشتراك» تاني.</div>';
+      return;
+    }
+    let days = "—";
+    if (acc.plan_end) {
+      const end = new Date(acc.plan_end + "T00:00:00");
+      const now = new Date(); now.setHours(0, 0, 0, 0);
+      days = String(Math.round((end - now) / 86400000)) + " يوم";
+    }
+    const allowed = !!(acc.allowed || acc.is_superadmin);
+    body.innerHTML = '<div class="status-kv">' +
+      statusRow("الشركة", acc.org_name || "—") +
+      statusRow("نوع الحساب", acc.is_superadmin ? "مالك البرنامج" : (acc.role || "—")) +
+      statusRow("الاشتراك", allowed ? "مفتوح" : "موقوف", allowed) +
+      statusRow("نهاية الاشتراك", acc.plan_end || "—") +
+      statusRow("الباقي", days) +
+      statusRow("آخر تحقق", statusTime(lastPlanCheckedAt)) +
+      (acc.reason && acc.reason !== "ok" ? '<div class="status-note">سبب الإيقاف: ' + esc(acc.reason) + '</div>' : "") +
+      '</div>';
+  }
+  function bindStatusButtons() {
+    const bn = $("#btnNetStatus"), bs = $("#btnSubStatus"), bc = $("#btnStatusClose"), ov = $("#mStatusInfo");
+    if (bn && !bn.dataset.bound) { bn.dataset.bound = "1"; bn.addEventListener("click", () => statusOpen("net")); }
+    if (bs && !bs.dataset.bound) { bs.dataset.bound = "1"; bs.addEventListener("click", () => statusOpen("sub")); }
+    if (bc && !bc.dataset.bound) { bc.dataset.bound = "1"; bc.addEventListener("click", () => { if (ov) ov.hidden = true; }); }
+    if (ov && !ov.dataset.bound) { ov.dataset.bound = "1"; ov.addEventListener("click", (e) => { if (e.target === ov) ov.hidden = true; }); }
+  }
+
+  // مراقبة الاشتراك: نداء واحد عند الفتح + كل ساعة (بدل 30 ثانية) + زر الحالة عند الضغط.
+  function checkPlanNow(force) {
+    if (!force && !netLeader()) return Promise.resolve();
+    if (!force && planWatchTimer === null) return Promise.resolve();
+    lastPlanAttemptAt = Date.now();
     return DATA.requestAccess().then((acc) => {
+      lastPlanCheckedAt = Date.now();
       setSubInfo(acc);
       setDbStatus("🟢 متصل بالسحابة");
       if (!acc) return;
@@ -1114,7 +1237,7 @@
   }
   function startPlanWatch() {
     stopPlanWatch();
-    planWatchTimer = setInterval(checkPlanNow, 30000);
+    planWatchTimer = setInterval(checkPlanNow, 3600000);
     checkPlanNow();
   }
   function stopPlanWatch() {
@@ -1134,9 +1257,10 @@
       // 🆕 بناء 119: الشركة تتقفل أو اشتراكها ينتهي ⇒ النبض يقطع في نفس اللحظة،
       // فبطاقة «متصلون الآن» ما تضلش خضرا على حساب شركة مامشيهاش.
       if (!isPresenceEligible()) { stopPresence(); return; }
+      if (!netLeader()) return;
       DATA.presenceHeartbeat().catch(() => {});
-    }, 15000);
-    DATA.presenceHeartbeat().catch(() => {});
+    }, 60000);
+    if (netLeader()) DATA.presenceHeartbeat().catch(() => {});
   }
   function stopPresence() {
     if (presenceTimer !== null) {
@@ -1154,8 +1278,9 @@
     presenceViewTimer = setInterval(() => {
       const av = document.getElementById("viewAdmin");
       if (!av || av.hidden) return;
+      if (!netLeader()) return;
       refreshAdminLive();
-    }, 5000);
+    }, 30000);
   }
   // جلب جديد للشركات ورسمه مكان القديم (صناديق البحث بره الجدول، فالكتابة ما تتكسرش)
   function refreshAdminLive() {
@@ -1198,9 +1323,6 @@
     try { dataGateWas.plan = (planWatchTimer !== null); stopPlanWatch(); } catch (e) { }
     try { dataGateWas.pres = (presenceTimer !== null); stopPresence(); } catch (e) { }
     try { dataGateWas.presView = (presenceViewTimer !== null); stopPresenceView(); } catch (e) { }
-    try { dataGateWas.badge = (CHAT_badgeTimer !== null); chatStopBadgeTicker(); } catch (e) { }
-    try { dataGateWas.chat = dataGateAlive(CHAT, "timer"); chatStopPoll(); } catch (e) { }
-    try { dataGateWas.rt = dataGateAlive(CHAT_RT, "status") && CHAT_RT.status !== "off"; chatRtStop(); } catch (e) { }
   }
   function dataGateResume() {
     if (!dataGatePaused) return;
@@ -1209,9 +1331,6 @@
     try { if (dataGateWas.plan) startPlanWatch(); else checkPlanNow(); } catch (e) { }
     try { if (dataGateWas.pres) startPresence(); } catch (e) { }
     try { if (dataGateWas.presView) startPresenceView(); } catch (e) { }
-    try { if (dataGateWas.badge) chatStartBadgeTicker(); } catch (e) { }
-    try { if (dataGateWas.chat) chatStartPoll(); } catch (e) { }
-    try { if (dataGateWas.rt) chatRtStart(); } catch (e) { }
     try {
       const av = document.getElementById("viewAdmin");
       if (av && !av.hidden) refreshAdminLive();
@@ -2201,8 +2320,6 @@
     // (build 117) وزرار «الأصول الثابتة» (build 117) كانوا بيرموا «قيد التطوير»
     // بدل ما يفتحوا الشاشة — باگ حيّ على 124، اتصلّح هنا وبالحارس الثابت.
     "accStatement", "fixedAssets", "stockCount",
-    // 💬 الدردشة الداخلية (بند 16)
-    "chat",
     // 🌳 بناء 156: تبويب «شجرة الحسابات» — كان ناقصًا من القائمة فكان الزرار يرمي
     // «قيد التطوير» ولا يفتح الشاشة إطلاقًا (نفس صنف باگ بناء 125). الحارس الثابت بايتش.
     // 🌳 بناء 156: تبويب «شجرة الحسابات» — كان ناقصًا من القائمة فكان الزرار يرمي
@@ -2397,11 +2514,6 @@
   // المالك العام وصاحب الشركة مسموح لهما دائمًا لأن البيانات شركتهما.
   function canUseView(name) {
     var DE = window.DATA || {};
-    // 💬 الدردشة (بناء 125): الاستثناء الوحيد من «المالك يفتح أي شاشة» هنا — ومش
-    // قفل على المالك، دي حالة إن جدول الرسايل نفسه لسه مش على السحابة (ترقية ٤٥
-    // مستنية أمره الصريح). إظهار تبويب فاضي = أمان كاذب، فالتبويب بيظهر لوحده
-    // أول ما الفحص السحابي يلاقي الجدول — لأي حساب بما فيهم المالك نفسه.
-    if (name === "chat") return chatAvailable();
     // 🔓 المالك (عادل) يفتح أي شاشة بلا استثناء — قرار المالك build 119
     if (ownerHasAllAccess()) return true;
     // 🔑 بناء 133: «إعدادات المالك» خارج التداول — قرارها مش من قوائم المزايا ولا من
@@ -2699,6 +2811,8 @@
     // 📷 بناء 144: البائع يسيب الفاتورة ويروح شاشة تانية ⇒ الكاميرا تقفل والمسدس ياخد
     // عادي. القفل هنا مش في الزرار بس — أي خروج من الشاشة (شريط/قائمة/برمجي) بيقفلها.
     if (scanCam.on) scanCamClose();
+    // ⚡ بناء 212: الدردشة اتشالت من الواجهة — أي نداء قديم يرجّع للوحة.
+    if (name === "chat") name = "dashboard";
     // حماية: تبويب «إعدادات ونسخ احتياطي المالك» لحسابات شركة المالك (بناء 133)
     // أي حساب تاني — حتى لو حاول فتحه برمجيًا — يتحوّل لـ«إعدادات مؤسستك».
     const isOwner = ownerHasAllAccess() || !!window.__isOwner;
@@ -2736,12 +2850,6 @@
     // 🆕 بناء 115: «القيود اليومية» لصاحب الشركة والمالك فقط (طلب المالك: مش أي حد يسجل قيود)
     if (name === "journal" && !canUseView("journal")) {
       toast("شاشة «القيود اليومية» متاحة لصاحب الشركة والمالك فقط", "error");
-      name = "dashboard";
-    }
-    // 🆕 بناء 125: «الدردشة الداخلية» — لأي حساب غير سحابي، أو قبل ما ترقية ٤٥
-    // تتنفّذ على السحابة، الشاشة مش بتفتح أصلًا (حتى لو حد ناداها من الكونسول).
-    if (name === "chat" && !chatAvailable()) {
-      toast("الدردشة الداخلية مش متاحة على هذا الحساب دلوقتي", "error");
       name = "dashboard";
     }
     // 🛡 بناء 131 (طلب المالك: «بحدد لهم صلاحيات بترجع تانى كل الصلاحيات لهم»):
@@ -2822,11 +2930,6 @@
     if (name === "audit") renderAudit();
     if (name === "settings") loadSettingsForm();
     if (name === "clientSettings") loadClientSettingsForm();
-    // 🆕 بناء 125: الدردشة — الـ polling بيبدأ مع فتح الشاشة وبيرجع أول ما تتقفل
-    // (مافيش Realtime على السحابة، وبنرفض نفضل نخبط على قاعدة كل ١٢ ثانية وإحنا
-    // واقفين على شاشة تانية).
-    if (name === "chat") renderChat();
-    if (name !== "chat") chatStopPoll();
     // 🆕 بناء 119: كان الشرط بيقرأ window.refreshPresenceCard (محدّتش معروفة) ⇒ السطر
     // ده كان ما ينفّذش حاجة. الدالتين في نفس النطاق، فنناديهم على طول.
     if (name === "admin") { startPresenceView(); refreshPresenceCard(); }
@@ -6896,10 +6999,11 @@
   }
   function productSuggestPick(kind, id) {
     const p = products.find((x) => Number(x.id) === Number(id));
-    if (!p) return;
-    $("#" + PROD_DROP_FIELD[kind]).value = p.nameAr || "";
+    const field = $("#" + PROD_DROP_FIELD[kind]);
+    if (!p || !field) return;
+    field.value = p.nameAr || "";
     if (kind === "sale") posOnSearch(); else ppOnSearch();
-    $("#" + PROD_DROP_FIELD[kind]).focus();
+    field.focus();
     productSuggestHide(kind);
   }
   function productSuggestBind() {
@@ -6910,7 +7014,10 @@
       if (!b) return;
       ev.preventDefault();
       const host = b.closest(".prod-drop");
-      const kind = host && host.id === scanDropSel("txtPosSearch") ? "sale" : "purchase";
+      /* 🔧 بناء 212: `scanDropSel()` بترجّع **محدِّد CSS** فيه `#`، و`host.id` بلا `#`
+         ⇒ المقارنة القديمة كانت دايمًا false، فالكليك في فاتورة المبيعات كان بياخد
+         فرع «purchase» ويكتب اسم الصنف في خانة المشتريات وتسيب خانة البيع فاضية. */
+      const kind = (host && host.id === "scanDrop-" + PROD_DROP_FIELD.sale) ? "sale" : "purchase";
       productSuggestPick(kind, b.getAttribute("data-prod-pick"));
     });
     document.addEventListener("click", (ev) => {
@@ -18909,12 +19016,9 @@ id: nextVoucherId(),
   /* ================== الربط ================== */
   function initApp() {
     applyFeatureGating();
-    // 🧱 بناء 132: عدّاد الواردة على زرار الدردشة المستقل في الشريط العلوي
-    chatStartBadgeTicker();
-    // 🟢 بناء 136: الاشتراك اللحظي يعيش برضه والشاشة مقفولة — عشان الرسالة **تعمل صوت**
-    // وتعدّ في الزرار لحظة ما تجي، من غير ما المستخدم يفتح الدردشة. (زرار الدردشة نفسه
-    // في مكانه وبشكله — قرار المالك 04/10: «زرار الدردشة فى المكان ده كويس متغيرهوش».)
-    chatRtStart();
+    // 🧭 بناء 212: تاب واحد بس يقود نداءات المتابعة (اشتراك/حضور/لوحة المالك)
+    netLeaderInit();
+    bindStatusButtons();
     updatePosTaxUI();
     tickClock();
     setInterval(tickClock, 1000);

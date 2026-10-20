@@ -1043,6 +1043,10 @@
         rows.forEach(function (r) { if (cloudId[Number(r.local_id)] == null) cloudId[Number(r.local_id)] = r.id; });
         return syncItems(name, meta, cloudId);
       }).then(function (itemsSynced) {
+        if (!failed && itemsSynced !== false) {
+          W.lastSyncAt = Date.now();
+          W.lastSyncTable = name;
+        }
         return !failed && itemsSynced !== false;
       }).catch(function (e) { fail(name, e); return false; });
     });
@@ -1141,7 +1145,6 @@
     // EAGER/LAZY/لقطة الديسك/النسخة الاحتياطية — قرار المالك: «الدردشة لا تدخل النسخ الاحتياطي».)
     // بنلفّه جوه الوعد اللي تحت (مش fire-and-forget) عشان `applyFeatureGating` اللي
     // بعد loadAll يلاقي العلامة متظبطة فعلًا، فالتبويب يطلع من أول رسم.
-    var chatProbe = probeChatTable();
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
       "fixed_assets", "cashier_shifts", "car_trips"];
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
@@ -1168,10 +1171,9 @@
         assignLocalIds(n, pairs.map(function (p) { return p.loc; }));
         W[n] = pairs.map(function (p) { return p.loc; });
       });
-      // 🆕 بناء 125: ما نخلصش قبل ما فحص جدول الرسايل يرد — الدخول بيرسم
-      // التبويبات بعد loadAll مباشرة، والفحص لو لسه في الجوّل التبويب يفوت الجولة.
-      // الفحص نفسه بيمسك أخطاءه برجوع false، فممنوع يقعّ الدخول كله.
-      return loadLazyAll().then(function () { return chatProbe; }).then(function () { return true; });
+      // ⚡ بناء 212: الدردشة اتشالت من الواجهة والكود التشغيلي — مفيش فحص لجدول
+      // الرسايل عند الدخول (كان نداء شبكة إضافي في كل فتح بلا استخدام).
+      return loadLazyAll().then(function () { return true; });
     });
   }
 
