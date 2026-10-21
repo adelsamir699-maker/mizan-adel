@@ -103,6 +103,13 @@
     return String(value).trim();
   }
 
+  const NUMERIC_KEYS = new Set([
+    "opening_balance", "current_balance", "credit_limit", "purchase_price",
+    "last_purchase_price", "avg_purchase_price", "sale_price", "stock_qty",
+    "min_stock", "balance", "parent_id", "opening_debit", "opening_credit",
+    "capital", "withdrawals"
+  ]);
+
   function normalizeValue(key, value) {
     if (value === "" || value == null) return "";
     if (key === "is_active") {
@@ -112,12 +119,7 @@
       if (["لا", "غير نشط", "موقوف", "false", "0", "no"].includes(v)) return false;
       throw new Error("قيمة النشاط يجب أن تكون نعم أو لا.");
     }
-    if ([
-      "opening_balance", "current_balance", "credit_limit", "purchase_price",
-      "last_purchase_price", "avg_purchase_price", "sale_price", "stock_qty",
-      "min_stock", "balance", "parent_id", "opening_debit", "opening_credit",
-      "capital", "withdrawals"
-    ].includes(key)) {
+    if (NUMERIC_KEYS.has(key)) {
       const normalized = String(value)
         .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
         .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
@@ -168,8 +170,12 @@
         mapped.forEach((column) => {
           const value = scalar(source[column.index]);
           if (value === "") return;
+          const normalized = normalizeValue(column.key, value);
+          row[column.key] = normalized;
+          /* صفوف Excel الممتدة لآخر الورقة (1,048,576) بتبان كأنها بيانات لأن
+             خلية معادلة بترجّع صفر. الصفر لوحده مش بيانات ⇒ مايتحسبش صف ناقص. */
+          if (NUMERIC_KEYS.has(column.key) && Number(normalized) === 0) return;
           hasValue = true;
-          row[column.key] = normalizeValue(column.key, value);
         });
         if (!hasValue) continue;
         config.required.forEach((key) => {
@@ -206,7 +212,7 @@
       const sheet = workbook.worksheets.find((ws) => ws.actualRowCount > 0);
       if (!sheet) throw new Error("ورقة Excel الأولى فارغة.");
       matrix = [];
-      sheet.eachRow({ includeEmpty: true }, (row) => {
+      sheet.eachRow({ includeEmpty: false }, (row) => {
         matrix[row.number - 1] = row.values.slice(1);
       });
     } else {
