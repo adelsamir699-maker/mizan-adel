@@ -23085,7 +23085,10 @@ const pwEye = document.getElementById("btnShowPass");
       lines.push('<p class="login-sub">أعمدة غير معروفة تم تجاهلها دون تغيير ترتيب البيانات: ' + esc(plan.ignoredHeaders.join("، ")) + "</p>");
     }
     if (plan.errors.length) {
-      lines.push('<p class="login-msg warn">صفوف ناقصة: ' + plan.errors.length + " — هيتنزّلوا ملف «" + adminExcelFailedFileName() + "» على سطح المكتب، وباقي الصفوف السليمة (" + plan.rows.length + ") هتتنزّل عادي:</p><ul>");
+      const healthyNote = plan.rows.length
+        ? "وباقي الصفوف السليمة (" + plan.rows.length + ") هتترفع عادي:"
+        : "ومفيش صفوف سليمة تترفع — هيتنزّل ملف الصفوف الناقصة بس:";
+      lines.push('<p class="login-msg warn">صفوف ناقصة: ' + plan.errors.length + " — مش هتترفع على البرنامج، وهيتنزّلوا ملف «" + adminExcelFailedFileName() + "» على سطح المكتب، " + healthyNote + "</p><ul>");
       plan.errors.slice(0, 8).forEach((error) => lines.push("<li>صف " + error.row + ": " + esc(error.message) + "</li>"));
       if (plan.errors.length > 8) lines.push("<li>وأخطاء أخرى…</li>");
       lines.push("</ul>");
@@ -23104,7 +23107,7 @@ const pwEye = document.getElementById("btnShowPass");
     const failedBtn = box.querySelector("#btnAdminExcelFailed");
     if (failedBtn) failedBtn.addEventListener("click", () => adminExcelDownloadFailedRows(plan));
     const backupAck = document.getElementById("adminExcelBackupAck");
-    upload.disabled = !plan.rows.length ||
+    upload.disabled = (!plan.rows.length && !plan.errors.length) ||
       (plan.mode === "replace" && (plan.errors.length > 0 || !adminExcelBackup || !backupAck || !backupAck.checked));
   }
   function toggleAdminExcel() {
