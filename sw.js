@@ -1,4 +1,4 @@
-/* sw.js — Service Worker بسيط جدًا، غرضه الوحيد تمكين تثبيت التطبيق (PWA).
+﻿/* sw.js — Service Worker بسيط جدًا، غرضه الوحيد تمكين تثبيت التطبيق (PWA).
  *
  * مهم جدًا: مفيش أي كاش للبيانات هنا.
  * كل الطلبات بتتمرّر للشبكة مباشرة (network-only passthrough)،
@@ -9,7 +9,7 @@
  */
 "use strict";
 
-const SW_VERSION = "226";
+const SW_VERSION = "227";
 
 self.addEventListener("install", (event) => {
   // من غير انتظار: فعّل النسخة الجديدة فورًا

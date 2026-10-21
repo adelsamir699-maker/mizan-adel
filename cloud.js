@@ -27,8 +27,8 @@
     var parts = id.split("-");
     var tail = parts[parts.length - 1];
     if (!/^[0-9a-f]{12}$/.test(tail)) return null;
-    var n = parseInt(tail, 16);
-    if (!isFinite(n) || n <= 0 || n > 1000000) return null;      // الأرقام العشوائية بتبقى ضخمة
+    var n = Number.parseInt(tail, 16);
+    if (!Number.isFinite(n) || n <= 0 || n > 1000000) return null;      // الأرقام العشوائية بتبقى ضخمة
     return detUuid(table, n) === id.toLowerCase() ? n : null;     // إثبات إن الرقم ده مصدر الـ id
   }
 
@@ -45,12 +45,12 @@
   function localIdStr(v) {
     if (v === null || v === undefined || v === "") return "";
     var n = Number(v);
-    return isNaN(n) ? String(v) : String(n);
+    return Number.isNaN(n) ? String(v) : String(n);
   }
   function localIdNum(v) {
     if (v === null || v === undefined || v === "") return null;
     var n = Number(v);
-    return isNaN(n) ? null : n;
+    return Number.isNaN(n) ? null : n;
   }
 
   // 🧾 رقم سطر الصنف جوه الفاتورة: على السحابة بيخزن مركّب (رقم الأب × 1000 + ترتيب السطر)
@@ -595,7 +595,7 @@
           customerName: r.customer || "",
           customerId: localIdNum(r.customer_id),
           paymentMethod: r.payment_method || "",
-          treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
+          treasuryId: (r.treasury_id && !Number.isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
           store: r.store || "",
           warehouse: r.store || "",
           notes: r.notes || "",
@@ -679,7 +679,7 @@
           supplierName: r.supplier || "",
           supplierId: localIdNum(r.supplier_id),
           paymentMethod: r.payment_method || "",
-          treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
+          treasuryId: (r.treasury_id && !Number.isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
           store: r.store || "",
           warehouse: r.store || "",
           notes: r.notes || "",
@@ -740,7 +740,7 @@
           id: detUuid("sale_returns", r.id), org_id: DATA.orgId(), local_id: r.id,
           return_no: r.returnNumber || r.returnNo || String(r.id),
           doc_date: docDate(r),
-          sale_local_id: (r.saleId != null && !isNaN(Number(r.saleId))) ? Number(r.saleId) : null,
+          sale_local_id: (r.saleId != null && !Number.isNaN(Number(r.saleId))) ? Number(r.saleId) : null,
           customer: r.customerName || r.customer || "",
           customer_id: localIdStr(r.customerId),
           settlement: r.settlement || "",
@@ -761,7 +761,7 @@
           customer: r.customer || "", customerName: r.customer || "",
           settlement: r.settlement || "",
           paymentMethod: r.payment_method || "",
-          treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
+          treasuryId: (r.treasury_id && !Number.isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
           store: r.store || "", warehouse: r.store || "",
           notes: r.notes || "",
           grandTotal: Number(r.grand_total || 0),
@@ -804,7 +804,7 @@
           id: detUuid("purchase_returns", r.id), org_id: DATA.orgId(), local_id: r.id,
           return_no: r.returnNumber || r.returnNo || String(r.id),
           doc_date: docDate(r),
-          purchase_local_id: (r.purchaseId != null && !isNaN(Number(r.purchaseId))) ? Number(r.purchaseId) : null,
+          purchase_local_id: (r.purchaseId != null && !Number.isNaN(Number(r.purchaseId))) ? Number(r.purchaseId) : null,
           supplier: r.supplierName || r.supplier || "",
           supplier_id: localIdStr(r.supplierId),
           settlement: r.settlement || "",
@@ -825,7 +825,7 @@
           supplier: r.supplier || "", supplierName: r.supplier || "",
           settlement: r.settlement || "",
           paymentMethod: r.payment_method || "",
-          treasuryId: (r.treasury_id && !isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
+          treasuryId: (r.treasury_id && !Number.isNaN(Number(r.treasury_id))) ? Number(r.treasury_id) : (r.treasury_id || null),
           store: r.store || "", warehouse: r.store || "",
           notes: r.notes || "",
           grandTotal: Number(r.grand_total || 0),
@@ -1130,15 +1130,19 @@
     // أي إعادة حساب لرصيد آجل قبل ما جدول الحركة يوصل بتصفّر رصيدًا حقيقيًا
     // (فاتورة مشتريات آجلة تختفي من مستحقات الموردين في المركز المالي) — فبتتمنع.
     W.loadedTables = {};
-    probeProductUnit(); // 🆕 نعرف هل عمود unit موجود على السحابة قبل أول رفع أصناف
-    probeProductPrices(); // 🆕 بناء 179: هل عمودان «آخر سعر شراء/المتوسط» موجودين قبل أول رفع أصناف
-    probeFixedAssetsTable(); // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
-    probeCashierShiftsTable(); // 🧾 بناء 176: هل جدول cashier_shifts اتعمل (ترحيل ٥٤) ولا لسه
-    probeCarTripsTable(); // 🚚 بناء 178: هل جدول car_trips اتعمل (ترحيل ٥٥) ولا لسه
-    probeChecksTable(); // 🧾 بناء 190: هل جدول checks اتعمل (ترحيل ٦٢) ولا لسه
-    probeVoucherRefs(); // 🆕 بناء 184: هل عمودا وسم السند (ref_type/ref_id) على vouchers موجودان (ترحيل ٥٦) ولا لسه
-    probePartyTxReceipt(); // 🆕 بناء 199 (بند #15ب): هل أعمدة مصدر السداد على حركات الأطراف موجودة (ترحيل ٦٣) ولا لسه
-    probeInvPaid(); // 🆕 بناء 204 (بند #2): هل أعمدة المدفوع/الآجل/السطور على الفواتير موجودة (ترحيل ٦٥) ولا لسه
+    // 🧪 بناء 227: الفحوص كانت fire-and-forget ⇒ سباق محتمل مع أول رفع، وسونار
+    // كان بيعتبرها Promises غير معالَجة. بننتظرها كلها قبل أي استخدام لعلامات HAS_*.
+    var probes = Promise.all([
+      probeProductUnit(), // 🆕 نعرف هل عمود unit موجود على السحابة قبل أول رفع أصناف
+      probeProductPrices(), // 🆕 بناء 179: هل عمودان «آخر سعر شراء/المتوسط» موجودين قبل أول رفع أصناف
+      probeFixedAssetsTable(), // 🆕 مهمة 98: هل جدول fixed_assets اتعمل على السحابة ولا الترحيل لسه ما اتنفّذش
+      probeCashierShiftsTable(), // 🧾 بناء 176: هل جدول cashier_shifts اتعمل (ترحيل ٥٤) ولا لسه
+      probeCarTripsTable(), // 🚚 بناء 178: هل جدول car_trips اتعمل (ترحيل ٥٥) ولا لسه
+      probeChecksTable(), // 🧾 بناء 190: هل جدول checks اتعمل (ترحيل ٦٢) ولا لسه
+      probeVoucherRefs(), // 🆕 بناء 184: هل عمودا وسم السند (ref_type/ref_id) على vouchers موجودان (ترحيل ٥٦) ولا لسه
+      probePartyTxReceipt(), // 🆕 بناء 199 (بند #15ب): هل أعمدة مصدر السداد على حركات الأطراف موجودة (ترحيل ٦٣) ولا لسه
+      probeInvPaid() // 🆕 بناء 204 (بند #2): هل أعمدة المدفوع/الآجل/السطور على الفواتير موجودة (ترحيل ٦٥) ولا لسه
+    ]);
     // 🆕 بناء 125 (بند 16): هل جدول messages اتعمل (ترقية ٤٥) ولا لسه على القرص بس.
     // الفحص ده بيحدد وحده ظهور تبويب «الدردشة» — فالترحيل لما يتنفّذ بأمر المالك
     // التبويب يطلع لوحده من نفس اللحظة، وبلا أي تغيير كود. (الجدول **ممنوع** يدخل
@@ -1151,7 +1155,9 @@
     var eagerFallback = eagerLoad ? null : function (n) {
       return orgScoped(DATA.client().from(n).select("*")).order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });
     };
-    return (eagerLoad || Promise.all(names.map(eagerFallback))).then(function (all) {
+    return probes.then(function () {
+      return eagerLoad || Promise.all(names.map(eagerFallback));
+    }).then(function (all) {
       var arr = {};
       if (eagerLoad && all) { names.forEach(function (n) { arr[n] = all[n] || []; }); }
       if (!eagerLoad && all) { all.forEach(function (pair) { arr[pair[0]] = pair[1]; }); }
@@ -1222,10 +1228,10 @@
 
   function assignLocalIds(table, arr) {
     // السطور بدون رقم محلي (فقط إن وجدت) تُرقّم وتحفظ ترقيمها
-    var ids = arr.map(function (r) { return Number(r.id); }).filter(function (x) { return !isNaN(x) && x > 0; });
+    var ids = arr.map(function (r) { return Number(r.id); }).filter(function (x) { return !Number.isNaN(x) && x > 0; });
     var max = ids.length ? Math.max.apply(null, ids) : 0;
     arr.forEach(function (r) {
-      if (r.id == null || isNaN(Number(r.id)) || Number(r.id) <= 0) {
+      if (r.id == null || Number.isNaN(Number(r.id)) || Number(r.id) <= 0) {
         max++;
         r.id = max;
         W.pendingLocalIds = W.pendingLocalIds || {};
@@ -1498,7 +1504,7 @@
     if (!chatReady()) return Promise.resolve({ ok: false, missing: true, error: "الدردشة لسه مش متاحة" });
     var me = chatMeId();
     if (!isUuid(me) || !isUuid(peerId)) return Promise.resolve({ ok: false, error: "حساب غير مكتمل" });
-    var txt = String(body == null ? "" : body).replace(/\s+$/g, "");
+    var txt = String(body == null ? "" : body).trimEnd();
     if (!txt.trim()) return Promise.resolve({ ok: false, error: "اكتب الرسالة الأول" });
     if (txt.length > 4000) return Promise.resolve({ ok: false, error: "الرسالة أطول من المسموح" });
     return Promise.resolve(_sb().from("messages").insert([{

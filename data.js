@@ -66,14 +66,27 @@
   function ensureLib() {
     if (window.supabase) return Promise.resolve();
     var local = (window.location.origin || "") + "/lib_supabase.js";
-    var to = setTimeout(function () { fallback(); }, 15000);
+    var to = null, cdnPromise = null;
     function fallback() {
-      clearTimeout(to);
-      return loadScript("https://unpkg.com/@supabase/supabase-js@2").catch(function () {
-        throw new Error("تعذّر تحميل مكتبة السحابة. تحقق من الإنترنت.");
-      });
+      if (!cdnPromise) {
+        cdnPromise = loadScript("https://unpkg.com/@supabase/supabase-js@2").catch(function () {
+          throw new Error("تعذّر تحميل مكتبة السحابة. تحقق من الإنترنت.");
+        });
+      }
+      return cdnPromise;
     }
-    return loadScript(local).then(clearTimeout.bind(null, to), fallback);
+    // 🧪 بناء 227: البلوك كان بيرمي وعد `fallback` جوه setTimeout (unhandled rejection).
+    // سباق صريح: المحلي أولًا، والـCDN بعد 15 ثانية أو فور فشل المحلي — بلا تحميل مكرر.
+    var timeout = new Promise(function (res, rej) {
+      to = setTimeout(function () { fallback().then(res, rej); }, 15000);
+    });
+    var localLoad = loadScript(local).then(function () {
+      clearTimeout(to);
+    }, function () {
+      clearTimeout(to);
+      return fallback();
+    });
+    return Promise.race([localLoad, timeout]);
   }
 
   function client() { return sb; }

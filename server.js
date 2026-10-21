@@ -1,4 +1,4 @@
-const http = require("http");
+﻿const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -18,7 +18,7 @@ const types = {
 
 const isLocalRequest = (req) => {
   const ip = req.socket.remoteAddress || "";
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1" || ip.endsWith("127.0.0.1");
+  return ip === "127.0.0.1" || ip === "::1" || ip.endsWith("127.0.0.1");
 };
 
 /* ================================================================
@@ -31,9 +31,12 @@ const isLocalRequest = (req) => {
    ================================================================ */
 const os = require("os");
 const { execFile } = require("child_process");
+const WINDIR = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+const CMD_EXE = process.env.ComSpec || path.join(WINDIR, "System32", "cmd.exe");
+const PS_EXE = path.join(WINDIR, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 const DOC_CFG_FILE = path.join(__dirname, "db", "mizan_doc_root.json");
 const DOC_BASE_NAME = "MizanDocuments";
-const C_DRIVE = /^[cC]:/;
+const C_DRIVE = { test: (p) => { const v = String(p || ""); return v.length > 1 && v[1] === ":" && (v[0] === "c" || v[0] === "C"); } };
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -133,7 +136,9 @@ function docRoutes(req, res, urlPath) {
       if (!root) { const r = resolveDocRoot(true); return done(200, r.ok ? { ok: true, root: r.root } : { ok: false, needPick: true }); }
       if (!/^[a-zA-Z]:[\\/]/.test(root)) return done(200, { ok: false, error: "لازم يكون مسارًا مطلقًا مثل D:\\MizanDocuments" });
       if (C_DRIVE.test(root)) return done(200, { ok: false, error: "ممنوع التخزين على القرص C — اختار Partition تاني (D أو E أو F)" });
-      if (!/MizanDocuments$/i.test(root.replace(/[\\]+$/, ""))) root = path.join(root, DOC_BASE_NAME);
+      let base = root;
+      while (base.endsWith("\\")) base = base.slice(0, -1);
+      if (base.slice(-DOC_BASE_NAME.length).toLowerCase() !== DOC_BASE_NAME.toLowerCase()) root = path.join(root, DOC_BASE_NAME);
       try {
         fs.mkdirSync(root, { recursive: true });
         const probe = path.join(root, ".write_test");
@@ -186,7 +191,7 @@ function docRoutes(req, res, urlPath) {
         return true;
       }
       // open: برنامج الجهاز الافتراضي (detached حتى ميوقفش السيرفر)
-      execFile("cmd", ["/c", "start", "", full], { detached: true, windowsHide: true, cwd: path.dirname(full) }, (err) => {
+      execFile(CMD_EXE, ["/c", "start", "", full], { detached: true, windowsHide: true, cwd: path.dirname(full) }, (err) => {
         if (err) return done(200, { ok: false, error: "تعذّر فتح الملف: " + err.message });
         done(200, { ok: true });
       });
@@ -202,7 +207,7 @@ function docRoutes(req, res, urlPath) {
     if (scansDir) { try { fs.mkdirSync(scansDir, { recursive: true }); } catch (e) {} }
     const respond = (payload) => sendJson(res, 200, payload, DOC_CORS);
     const tryWinScan = (payload) => {
-      execFile("cmd", ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, () => respond(payload));
+      execFile(CMD_EXE, ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, () => respond(payload));
     };
     if (scansDir) {
       // سكربت WIA: يعدّ أجهزة WIA، فلو مفيش يرجّع needWia؛ وإلا يفتح نافذة المسح ويحفظ الملف
@@ -220,19 +225,19 @@ function docRoutes(req, res, urlPath) {
         "Write-Output ('{\"ok\":true,\"file\":\"' + (Split-Path $p -Leaf) + '\"}')",
         "} catch { Write-Output ('{\"ok\":false,\"error\":\"' + ($_.Exception.Message -replace '\"','') + '\"}') }",
       ].join("; ");
-      execFile("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+      execFile(PS_EXE, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
         { env: Object.assign({}, process.env, { MIZAN_SCAN_DIR: scansDir }), windowsHide: true, timeout: 300000 },
         (err, stdout) => {
           let out = null;
           try { out = JSON.parse(String(stdout || "").trim().split(/\r?\n/).pop()); } catch (e) {}
           if (out && out.ok) return respond({ ok: true, scansDir: scansDir, file: out.file || null, via: "wia" });
           // مفيش WIA أو اتلغى أو خطأ — خطة بديلة: تطبيق Windows Scan (لو متاح)
-          execFile("cmd", ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, () =>
+          execFile(CMD_EXE, ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, () =>
             respond({ ok: false, scansDir: scansDir, needWia: !!(out && out.needWia), error: (out && out.error) || null, via: "windowsscan" }));
         });
       return true;
     }
-    execFile("cmd", ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, (err) => {
+    execFile(CMD_EXE, ["/c", "start", "windowsscan:"], { detached: true, windowsHide: true }, (err) => {
       if (err) return respond({ ok: false, error: "تطبيق المسح الضوئي مش متاح على الجهاز — استخدم «حفظ مستند من الجهاز» بعد المسح من برنامج الماسح" });
       respond({ ok: true, scansDir: null, via: "windowsscan" });
     });

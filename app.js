@@ -1307,7 +1307,7 @@
    * الشاشة/التبويب **مخفي** ⇦ نوقف كل مؤقت و▶tراك شبكة ⇒ صفر نداء وقت المخفي،
    * ونداء catch-up واحد وقت الرجوع. الهدف: ميزانية Supabase المجانية (٥GB egress).
    *
-   * اللي بيوقف (كله شبكة): مراقبة الخطة ٣٠ث · نبض الحضور ١٥ث · لوحة الإدارة ٥ث ·
+   * اللي بيوقف (كله شبكة): مراقبة الخطة ٣٠ث · نبض الحضور ٦٠ث · لوحة الإدارة ٣٠ث ·
    * متابعة الدردشة ١٢ث · عدّاد الواردة ٣٠ث · الاشتراك اللحظي (realtime).
    *
    * اللي بيكمل (صفر شبكة): الساعة ١ث · مراقب فولدر المسح الضوئي ٢.٥ث —
@@ -1327,6 +1327,11 @@
     try { dataGateWas.plan = (planWatchTimer !== null); stopPlanWatch(); } catch (e) { }
     try { dataGateWas.pres = (presenceTimer !== null); stopPresence(); } catch (e) { }
     try { dataGateWas.presView = (presenceViewTimer !== null); stopPresenceView(); } catch (e) { }
+    // 💬 الدردشة كانت ناقصة في بناء 173: المؤقت والعدّاد والاشتراك اللحظي كانوا
+    // بيفضلوا شغالين والشاشة مخفية ⇒ نداءات Supabase كل 12/30 ثانية بلا داعي.
+    try { dataGateWas.chat = !!(CHAT && CHAT.timer !== null); chatStopPoll(); } catch (e) { }
+    try { dataGateWas.badge = (CHAT_badgeTimer !== null); chatStopBadgeTicker(); } catch (e) { }
+    try { dataGateWas.rt = !!(CHAT_RT && CHAT_RT.status !== "off"); chatRtStop(); } catch (e) { }
   }
   function dataGateResume() {
     if (!dataGatePaused) return;
@@ -1335,6 +1340,9 @@
     try { if (dataGateWas.plan) startPlanWatch(); else checkPlanNow(); } catch (e) { }
     try { if (dataGateWas.pres) startPresence(); } catch (e) { }
     try { if (dataGateWas.presView) startPresenceView(); } catch (e) { }
+    try { if (dataGateWas.chat) chatStartPoll(); } catch (e) { }
+    try { if (dataGateWas.badge) chatStartBadgeTicker(); } catch (e) { }
+    try { if (dataGateWas.rt) chatRtStart(); } catch (e) { }
     try {
       const av = document.getElementById("viewAdmin");
       if (av && !av.hidden) refreshAdminLive();
