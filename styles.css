@@ -2861,3 +2861,17 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .status-kv .status-ok { color: #15803D !important; }
 .status-kv .status-bad { color: #B91C1C !important; }
 .status-kv .status-note { font-size: 12.5px; font-weight: 700; color: var(--text-secondary); line-height: 1.8; }
+
+/* --- بناء 226: منع الرصيد السالب + تنبيه الأرصدة السالبة القديمة --- */
+.neg-warn { background: #FEF2F2; border: 1.5px solid #FCA5A5; color: #991B1B; border-radius: 10px; padding: 11px 14px; margin: 0 0 12px; font-size: 13.5px; font-weight: 800; line-height: 1.9; }
+.neg-warn b { font-weight: 900; color: #7F1D1D; }
+.neg-warn .neg-list { margin: 6px 14px 0 0; padding: 0; list-style: disc; }
+.neg-warn .neg-list li { margin: 2px 0; }
+.funds-short-body { text-align: right; }
+.funds-short-lead { font-size: 14.5px; font-weight: 800; line-height: 2; color: #111; margin-bottom: 10px; }
+.funds-short-lead b { font-weight: 900; color: #B91C1C; }
+.funds-short-sub { font-size: 13px; font-weight: 800; color: #334155; margin: 8px 0 6px; }
+.funds-short-list { margin: 0 16px 8px 0; padding: 0; list-style: disc; font-size: 13px; line-height: 1.9; color: #0F172A; }
+.funds-short-list .funds-type { color: #64748B; font-weight: 700; }
+.funds-short-total { font-size: 13px; font-weight: 800; color: #0F172A; margin-top: 4px; }
+.funds-short-actions-note { font-size: 12.5px; font-weight: 700; color: #475569; line-height: 1.9; margin-top: 10px; }

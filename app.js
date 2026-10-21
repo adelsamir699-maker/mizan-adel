@@ -8998,9 +8998,7 @@
       for (const p of _ppPayLines) {
         if (posPayMode(p.method).isAjal) continue;
         const _tr = posTreasuryForPay("purchase", p);
-        if (_tr && round2(_tr.balance) < round2(p.amount)) {
-          if (!confirm(shortfallText(_tr, p.amount) + "\n\nهل تريد تسجيل فاتورة المشتريات من «" + _tr.name + "» رغم ذلك؟")) return;
-        }
+        if (_tr && fundsBlocked(_tr, p.amount, { focusSel: "#ppPayExtraList" })) return;
       }
       for (let _i = 0; _i < _ppPayLines.length; _i++) {
         const p = _ppPayLines[_i];
@@ -9034,10 +9032,8 @@
       if (jrnBlocked("الفاتورة", invoiceJrnPlan("purchase", { grandTotal: t.grand, taxAmount: t.tax, paymentMethod: payment, paidAmount: t.paid, dueAmount: t.due }, ppTr))) return;
 
       if (t.paid > 0 && ppTr) {
-        // 🆕 بناء 174: تحذير نقص الرصيد قبل الصرف (نفس باقي الشاشات — بلا قصّ صامت)
-        if (round2(ppTr.balance) < round2(t.paid)) {
-          if (!confirm(shortfallText(ppTr, t.paid) + "\n\nهل تريد تسجيل فاتورة المشتريات من «" + ppTr.name + "» رغم ذلك؟")) return;
-        }
+        // 🚫 بناء 226: ممنوع الصرف من رصيد غير كافٍ — منع نهائي (كان تحذير + موافقة)
+        if (fundsBlocked(ppTr, t.paid, { focusSel: "#cmbPPBank" })) return;
         ppTr.balance = Math.round(((ppTr.balance || 0) - t.paid) * 100) / 100;
         invoice.treasuryId = ppTr.id;
         paidTreasury = ppTr;                 // 🆕 بناء 134: الطرف المقابل في القيد = نفس حساب الصرف
@@ -9468,10 +9464,8 @@
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، وغير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
     if (jrnBlocked("السداد", partyJrnPlan("supp", tr, amount))) return;
-    // 🆕 بناء 174: تحذير نقص الرصيد قبل الصرف (نفس باقي الشاشات — بلا قصّ صامت)
-    if (tr && round2(tr.balance) < round2(amount)) {
-      if (!confirm(shortfallText(tr, amount) + "\n\nهل تريد تسجيل سداد المورد من «" + tr.name + "» رغم ذلك؟")) return;
-    }
+    // 🚫 بناء 226: ممنوع سداد مورد من رصيد غير كافٍ — منع نهائي
+    if (tr && fundsBlocked(tr, amount, { focusSel: "#psTreasury" })) return;
     supp.currentBalance = Math.round((supp.currentBalance - amount) * 100) / 100;
     if (tr) {
       tr.balance = Math.round((tr.balance - amount) * 100) / 100;
@@ -9670,6 +9664,14 @@
     ) {
       toast("تم الإلغاء — الفاتورة كما هي.", "warning");
       return;
+    }
+    // 🚫 بناء 226: حذف فاتورة بيع بيرد فلوس لعميل — ممنوع لو أي خزينة هتطلع بالسالب.
+    // الفحص قراءة-فقط **قبل** أي تعديل على المخزون أو حساب العميل.
+    if (isSales) {
+      const plan = invoiceDeleteCashPlan(inv, true);
+      for (const p of plan) {
+        if (fundsBlocked(p.tr, p.amount)) return;
+      }
     }
     /* 🧱 بناء 218: حذف الفاتورة يلغي أي شيك معلّق/مرتجع مربوط بها بالكامل نظيفًا
        بلا رسائل تأكيد مربكة وبلا اختلاق أرصدة دائنة وهمية أو قيود CHKEEP معلّقة. */
@@ -10550,12 +10552,13 @@
     let balAmt = round2(amt - cashAmt - checkAmt);
     let tr = null;
     if (cashAmt > 0.0001) {
+      // 🔄 بناء 226: نعيد حساب الأرصدة **قبل** البوابة — التحذير القديم كان ممكن يقرأ رقمًا قديمًا.
+      try { recalculateTreasuryBalances(); } catch (e) { }
       tr = treasury.find((x) => Number(x.id) === Number($("#retTreasury").value)) || null;
       if (!tr) { toast("اختار الخزينة أو الحساب اللي هيتم التسوية منه.", "warning"); return; }
-      // 🆕 بناء 174: رد قيمة مرتجع البيع = صرف من الخزينة — تحذير نقص الرصيد قبل التنفيذ
-      if (isSales && round2(tr.balance) < round2(cashAmt)) {
-        if (!confirm(shortfallText(tr, cashAmt) + "\n\nهل تريد رد قيمة المرتجع من «" + tr.name + "» رغم ذلك؟")) return;
-      }
+      // 🚫 بناء 226: رد قيمة مرتجع البيع = صرف من الخزينة — ممنوع لو الرصيد مش كافي.
+      // البدائل: حساب تاني من القائمة، أو الجزء الزائد على حساب العميل.
+      if (isSales && fundsBlocked(tr, cashAmt, { focusSel: "#retTreasury", partyLabel: "العميل" })) return;
     }
     const settleParts = [cashAmt, checkAmt, balAmt].filter((x) => x > 0.0001).length;
     const settle = settleParts > 1 ? "mixed" : (cashAmt > 0.0001 ? "refund" : checkAmt > 0.0001 ? "check" : "balance");
@@ -10715,6 +10718,15 @@ id: nextVoucherId(),
     if (!confirm("متأكد إنك عايز تحذف مرتجع الـ" + retWord(isSales) + " رقم (" + no + ") الخاص بـ " + retParty(r, isSales) + " بقيمة " + fmt(amt) + " ج.م؟\n\nالحذف بيتراجع عن كل أثره: الأصناف للمخزن، والتسوية (الرصيد أو الخزينة).")) {
       toast("تم الإلغاء — المرتجع كما هو.", "warning");
       return;
+    }
+    // 🚫 بناء 226: حذف مرتجع مشتريات استلمنا نقديته = سحب نقدية من الخزينة — ممنوع لو الرصيد مش كافي.
+    if (!isSales && retCashOf(r) > 0.0001) {
+      const cash = round2(retCashOf(r));
+      const vRet = vouchers.find((v) =>
+        (String(v.refType || "") === "purchase_return" && Number(v.refId) === Number(r.id)) ||
+        String(v.desc || "").includes("رجع مشتريات رقم " + no));
+      const trRet = vRet ? treasury.find((x) => Number(x.id) === Number(vRet.treasuryId)) : null;
+      if (trRet && fundsBlocked(trRet, cash)) return;
     }
     // 1) عكس المخزون
     items.forEach((it) => {
@@ -10897,6 +10909,17 @@ id: nextVoucherId(),
   function renderTreasury() {
     const tbody = $("#dgvTreasury tbody");
     tbody.innerHTML = "";
+    // 🚫 بناء 226: الأرصدة السالبة القديمة **تُترك كما هي** (قرار المالك) — تنبيه واضح بس.
+    const negWarn = $("#treNegWarn");
+    if (negWarn) {
+      const negs = treasury.filter((t) => round2(t.balance) < 0);
+      negWarn.hidden = !negs.length;
+      negWarn.innerHTML = negs.length
+        ? '<b>⚠️ تنبيه: فيه ' + negs.length + ' حساب أموال رصيده سالب من قبل التعديل — البيانات ما اتغيّرتش.</b>' +
+          '<ul class="neg-list">' + negs.map((t) => '<li><b>' + esc(t.name) + '</b> (' + esc(treasuryTypeLabel(t)) + ') — ' + fmt(t.balance) + ' ج.م</li>').join("") + '</ul>' +
+          '<div>الممنوع من الآن: أي عملية جديدة تخلّي أي حساب بالسالب. ظبّط الأرصدة السالبة يدويًا (تحويل/إيداع/تصحيح) لحد ما ترجع صفر أو موجب.</div>'
+        : "";
+    }
     const q = normalizeAr($("#txtTreSearch").value);
     const totals = treasuryAmounts();
     treasury
@@ -11715,6 +11738,10 @@ id: nextVoucherId(),
     if (!(amount > 0)) return { ok: false, msg: "مبلغ الشيك مش صالح" };
     const when = dateISO || todayISO();
     const out = checkIsOut(c);
+    // 🚫 بناء 226: صرف شيك المورد = خروج نقدية — ممنوع من رصيد غير كافٍ
+    if (out && fundsBlocked(t, amount, { focusSel: "#chkCollectTreasury" })) {
+      return { ok: false, msg: "رصيد الحساب لا يكفي لصرف الشيك — اختر حسابًا آخر أو موّله أولًا." };
+    }
     /* 🧾 بناء 211 (طلب المالك 20/10): شيك المورد **صادر** ⇒ وقت التسوية يختار الحساب اللي
        بيتخصم منه (بنك أو خزينة)، والترحيل يمشي على نفس الاختيار: مدين 2.1.4 / دائن حساب
        الحساب المختار. (الافتراضي في النافذة = أول حساب بنكي عند وجوده.) */
@@ -13510,13 +13537,8 @@ id: nextVoucherId(),
     // 🆕 بناء 158: حارس «لا ترحيل بلا حساب» — القياسي يتأمّن، والحساب المقابل غير القياسي لو ناقص يمنع الحفظ
     ensureJrnStd();
     if (jrnBlocked("السند", voucherJrnPlan(voucherMode, accForTreasuryAcc(t), chosenVoucherAcc(), amount))) return;
-    // 🆕 بناء 118: سند الصرف كباقي الشاشات — تحذير بالأرقام قبل ما الرصيد يروح بالسالب
-    if (voucherMode !== "in") {
-      const bal = round2(t.balance);
-      if (amount > bal) {
-        if (!confirm(shortfallText(t, amount) + "\n\nهل تريد تسجيل سند الصرف من «" + t.name + "» رغم ذلك؟")) return;
-      }
-    }
+    // 🚫 بناء 226: سند الصرف ممنوع لو الرصيد مش كافي — منع نهائي بدل التحذير
+    if (voucherMode !== "in" && fundsBlocked(t, amount, { focusSel: "#vTreasury" })) return;
     const sign = voucherMode === "in" ? 1 : -1;
     t.balance = round2(t.balance + sign * amount);
     const vDesc = $("#vDesc").value.trim() || (voucherMode === "in" ? "إيراد" : "مصروف");
@@ -14219,6 +14241,108 @@ id: nextVoucherId(),
     return out.join("\n");
   }
 
+  /* 🚫 بناء 226 — «ممنوع رصيد أي حساب أموال يبقى بالسالب» (قرار المالك 21/10):
+     البوابة دي **منع نهائي** مش تحذير. بترجع true لو العملية اتمنعت، والمستخدم
+     بيشوف الرصيد الحالي والمطلوب والناقص + الحسابات اللي فيها فلوس.
+     البدائل: يختار حساب تاني من نفس الشاشة، أو يحوّل بين الحسابات الأول،
+     أو (في المرتجع) يحوّل الباقي على حساب العميل/المورد. */
+  function fundsBlocked(t, amount, opts) {
+    if (!t) return false;
+    const need = round2(amount);
+    const bal = round2(t.balance);
+    if (!(need > 0) || bal >= need) return false;
+    const o = opts || {};
+    const short = round2(need - bal);
+    const f = fundedAccounts(t.id, 6);
+    const rows = f.list.map((x) =>
+      '<li><b>' + esc(x.name) + '</b> <span class="funds-type">(' + esc(treasuryTypeLabel(x)) + ')</span> — ' +
+      fmt(round2(x.balance)) + ' ج.م</li>').join("");
+    const body = $("#fundsShortBody");
+    if (body) {
+      body.innerHTML =
+        '<p class="funds-short-lead">🚫 <b>الحفظ متوقف</b> — رصيد «' + esc(t.name) + '» (' + esc(treasuryTypeLabel(t)) + ') حاليًا <b>' +
+        fmt(bal) + ' ج.م</b>، والمطلوب <b>' + fmt(need) + ' ج.م</b>، الناقص <b>' + fmt(short) + ' ج.م</b>.</p>' +
+        (rows
+          ? '<p class="funds-short-sub">حسابات تانية فيها فلوس:</p><ul class="funds-short-list">' + rows + '</ul><p class="funds-short-total">مجموع أرصدة كل الحسابات: <b>' + fmt(f.total) + ' ج.م</b></p>'
+          : '<p class="funds-short-sub">مافيش حساب تاني فيه رصيد حاليًا — مجموع أرصدة كل الحسابات <b>' + fmt(f.total) + ' ج.م</b>.</p>') +
+        '<p class="funds-short-actions-note">' +
+        (o.partyLabel ? 'اختر حسابًا تاني من القائمة، أو حوّل الجزء الزائد على حساب ' + esc(o.partyLabel) + '، أو قلّل المبلغ. ' : 'اختر حسابًا تاني من القائمة أو اعمل تحويل بين الحسابات الأول. ') +
+        'ممنوع الحفظ برصيد سالب.</p>';
+    }
+    const pick = $("#fundsShortPick");
+    if (pick) {
+      pick.hidden = !o.focusSel;
+      pick.onclick = function () {
+        hideModal("mFundsShort");
+        const el = o.focusSel ? $(o.focusSel) : null;
+        if (el) setTimeout(function () { try { el.focus(); } catch (e) { } }, 60);
+      };
+    }
+    const cancel = $("#fundsShortCancel");
+    if (cancel) cancel.onclick = function () { hideModal("mFundsShort"); };
+    showModal("mFundsShort");
+    return true;
+  }
+
+  /* تقدير قراءة-فقط للنقد اللي هيخرج من الخزائن لو فاتورة بيع اتحذفت
+     (نفس ترتيب مصادر saveReturn/deleteInvoiceQuery: payments ← القيد ← paidAmount ← الإجمالي). */
+  function invoiceDeleteCashPlan(inv, isSales) {
+    const plan = [];
+    const add = (tr, amt) => {
+      const a = round2(amt);
+      if (!tr || !(a > 0)) return;
+      const hit = plan.find((x) => Number(x.tr.id) === Number(tr.id));
+      if (hit) hit.amount = round2(hit.amount + a);
+      else plan.push({ tr: tr, amount: a });
+    };
+    const trOfType = (type) => treasury.find((x) => x.type === type) || treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    const pm = String(inv.paymentMethod || "");
+    if (Array.isArray(inv.payments) && inv.payments.length) {
+      inv.payments.forEach((p) => {
+        const code = String((p && p.method) || "").toLowerCase();
+        if (code === "ajal" || code === "check") return;
+        const a = round2(p.amount);
+        if (!(a > 0)) return;
+        let tr = (p.treasuryId != null && p.treasuryId !== "") ? treasury.find((x) => Number(x.id) === Number(p.treasuryId)) : null;
+        if (!tr) tr = treasury.find((x) => Number(x.id) === Number(inv.treasuryId)) || null;
+        if (!tr) tr = trOfType(code === "bank" ? "bank" : code === "wallet" ? "wallet" : code === "instapay" ? "instapay" : "cash");
+        add(tr, a);
+      });
+      return plan;
+    }
+    let paid = null;
+    if (Object.prototype.hasOwnProperty.call(inv, "paidAmount") && Number.isFinite(Number(inv.paidAmount))) paid = round2(inv.paidAmount);
+    if (paid == null) {
+      const j = invoiceJrnOf(isSales ? "sale" : "purchase", inv);
+      const dueAcc = accByCode(isSales ? "1.1.5" : "2.1.1", isSales ? "مديونيات العملاء" : "مستحقات الموردين");
+      if (j && Array.isArray(j.lines) && j.lines.length) {
+        let side = 0, dueSide = 0, paidAcc = null;
+        j.lines.forEach((l) => {
+          const v = round2(isSales ? (l && l.debit) : (l && l.credit));
+          if (!(v > 0)) return;
+          side = round2(side + v);
+          if (dueAcc && Number(l.accountId) === Number(dueAcc.id)) dueSide = round2(dueSide + v);
+          else if (paidAcc == null) paidAcc = Number(l.accountId);
+        });
+        const cand = round2(side - dueSide);
+        if (cand >= 0 && cand <= round2(inv.grandTotal)) paid = cand;
+      }
+    }
+    if (paid == null) paid = pm === "آجل" ? 0 : round2(inv.grandTotal);
+    const linkedChecks = (typeof checksOfInvoice === "function" ? checksOfInvoice(inv) : [])
+      .filter((c) => c && String(c.status || "pending") !== "cancelled");
+    const linked = round2(linkedChecks.reduce((m, c) => m + (Number(c.amount) || 0), 0));
+    const cash = round2(Math.max(0, paid - linked));
+    let tr = null;
+    if (inv.treasuryId != null && inv.treasuryId !== "") tr = treasury.find((x) => Number(x.id) === Number(inv.treasuryId)) || null;
+    if (!tr) {
+      const want = pm.includes("بنك") || pm.includes("تحويل") ? "bank" : pm.includes("محفظ") ? "wallet" : "cash";
+      tr = trOfType(want);
+    }
+    add(tr, cash);
+    return plan;
+  }
+
   // اللايف hint: يتحدّث وهو بيكتب — والنص الأصلي للنافذة بيرجع لما مافيش سبب للتحذير
   function rememberHintBase(hintSelId) {
     const h = $(hintSelId);
@@ -14376,14 +14500,8 @@ id: nextVoucherId(),
     const cashAcc = accForTreasuryAcc(t);
     if (!cashAcc) { toast("لا يوجد حساب خزينة مطابق في دليل الحسابات.", "error"); return; }
 
-    // تحذير الرصيد: بالأرقام الكاملة (رصيد الحساب + الحسابات اللي فيها فلوس + الإجمالي)
-    // والمالك قرر الحفظ يتم بعد موافقته (يروح بالسالب) — بلا أي قصّ صامت
-    if (!income) {
-      const bal = round2(t.balance);
-      if (amount > bal) {
-        if (!confirm(shortfallText(t, amount) + "\n\nهل تريد المتابعة من «" + t.name + "» رغم ذلك؟")) return;
-      }
-    }
+    // 🚫 بناء 226: المصروف ممنوع لو الرصيد مش كافي — منع نهائي (كان موافقة على السالب)
+    if (!income && fundsBlocked(t, amount, { focusSel: "#simpleTreasury" })) return;
 
     const note = $("#simpleNotes").value.trim();
     const vDesc = (income ? "إيراد: " : "مصروف: ") + itemAcc.nameAr + (note ? " — " + note : "");
@@ -14499,14 +14617,28 @@ id: nextVoucherId(),
     if (!t) { toast("اختار الحساب: خزينة نقدية أو بنك أو محفظة.", "warning"); return; }
     try { ensurePartnerAccounts(); } catch (e) { }
     const wantName = (dep ? OWN_CAP_PREFIX : OWN_WD_PREFIX) + ownerName;
-    const itemAcc = accounts.find((a) => a.type === "equity" && a.nameAr === wantName && a.isActive !== false);
-    if (!itemAcc) { toast("مافيش حساب للشريك ده — افتح «إعدادات مؤسستك» ← «أصحاب المنشأة» واحفظ القائمة مرة، وبعدها جرّب تاني.", "error"); return; }
-    if (!dep) {
-      const bal = round2(t.balance);
-      if (amount > bal) {
-        if (!confirm(shortfallText(t, amount) + "\n\nهل تريد المتابعة من «" + t.name + "» رغم ذلك؟")) return;
-      }
+    let itemAcc = accounts.find((a) => isEquityAcc(a) && a.nameAr === wantName && a.isActive !== false);
+    // 🩹 بناء 226: شبكة أمان أخيرة — لو الحساب لسه ناقص (دليل قديم/جذر مفقود) ننشئه هنا
+    // بدل ما نرمي رسالة توقف الإيداع. نفس نمط ensurePartnerAccounts بالظبط.
+    if (!itemAcc) {
+      try {
+        let root = equityRootAcc();
+        if (!root) {
+          root = { id: nextAccountId(), code: "3", nameAr: "حقوق الملكية", type: "equity", parentId: 0, openingBalance: 0, isActive: true };
+          accounts.push(root);
+        }
+        let parent = dep ? equityAccountByCode("3.1", "رأس المال") : equityAccountByCode("3.3", "مسحوبات الشركاء");
+        if (!parent) {
+          parent = { id: nextAccountId(), code: nextChildCode(root, "3"), nameAr: dep ? "رأس المال" : "مسحوبات الشركاء", type: "equity", parentId: root.id, openingBalance: 0, isActive: true };
+          accounts.push(parent);
+        }
+        itemAcc = ensurePartnerLeaf(parent, wantName, 0);
+        saveAccounts();
+      } catch (e) { }
     }
+    if (!itemAcc) { toast("مافيش حساب للشريك ده — افتح «إعدادات مؤسستك» ← «أصحاب المنشأة» واحفظ القائمة مرة، وبعدها جرّب تاني.", "error"); return; }
+    // 🚫 بناء 226: سحب أصحاب المؤسسة ممنوع لو الرصيد مش كافي
+    if (!dep && fundsBlocked(t, amount, { focusSel: "#ownerTreasury" })) return;
     const note = $("#ownerNotes").value.trim();
     const vDesc = (dep ? "إيداع أصحاب المؤسسة: " : "سحب أصحاب المؤسسة: ") + ownerName + (note ? " — " + note : "");
     const v = { id: nextVoucherId(), type: dep ? "in" : "out", treasuryId: Number(t.id), date: date, amount: amount, desc: vDesc };
@@ -14563,10 +14695,8 @@ id: nextVoucherId(),
       return;
     }
     if (jrnBlocked("التحويل", voucherJrnPlan("out", aFrom, aTo, amount))) return;
-    const bal = round2(from.balance);
-    if (amount > bal) {
-      if (!confirm(shortfallText(from, amount, "transfer") + "\n\nهل تريد تنفيذ التحويل من «" + from.name + "» رغم ذلك؟")) return;
-    }
+    // 🚫 بناء 226: التحويل ممنوع لو رصيد الحساب المصدر مش كافي
+    if (fundsBlocked(from, amount, { focusSel: "#trAccFrom" })) return;
     const note = $("#trNotes").value.trim();
     const tag = "تحويل من «" + from.name + "» إلى «" + to.name + "»" + (note ? " — " + note : "");
     const baseId = nextVoucherId() - 1;   // 🧱 186: سند الصرف = baseId+1، القبض = baseId+2 (أرقام فريدة عبر الأرضية)
@@ -15587,10 +15717,11 @@ id: nextVoucherId(),
   const OWN_WD_PREFIX = "مسحوبات - ";
   function cacheOwners(list) { try { localStorage.setItem(LS_OWNERS, JSON.stringify(list || [])); } catch (e) {} }
   function cachedOwners() { try { return JSON.parse(localStorage.getItem(LS_OWNERS) || "[]") || []; } catch (e) { return []; } }
-  function equityRootAcc() { return accounts.find((a) => a && a.type === "equity" && Number(a.parentId) === 0) || null; }
+  function isEquityAcc(a) { return !!a && String(a.type || "").toLowerCase() === "equity"; }
+  function equityRootAcc() { return accounts.find((a) => isEquityAcc(a) && Number(a.parentId) === 0) || null; }
   function equityAccountByCode(code, name) {
-    return accounts.find((a) => a && a.type === "equity" && String(a.code) === String(code)) ||
-      accounts.find((a) => a && a.type === "equity" && name && a.nameAr === name && Number(a.parentId) !== 0) || null;
+    return accounts.find((a) => isEquityAcc(a) && String(a.code) === String(code)) ||
+      accounts.find((a) => isEquityAcc(a) && name && a.nameAr === name && Number(a.parentId) !== 0) || null;
   }
   function nextChildCode(parent, fallbackBase) {
     const base = String((parent && parent.code) || fallbackBase);
@@ -15610,8 +15741,14 @@ id: nextVoucherId(),
   // إنشاء/تحديث حسابات الشركاء من قائمة «أصحاب المنشأة» — غير هدّامة (بتنشئ مرة، وبتحفظ الرصيد الحيّ)
   function ensurePartnerAccounts(list) {
     const owners = Array.isArray(list) ? list : cachedOwners();
-    const root = equityRootAcc();
-    if (!root) return;
+    // 🩹 بناء 226: شركة «الأمانة» التجريبية كان دليلها بلا جذر «حقوق ملكية» (parentId=0)
+    // ⇒ الدالة كانت بترجع صامتة وحساب الشريك مايتولّدش، فيرفض الإيداع/السحب.
+    // الحل: ننشئ الجذر القياسي لو ناقص قبل أي حاجة.
+    let root = equityRootAcc();
+    if (!root) {
+      root = { id: nextAccountId(), code: "3", nameAr: "حقوق الملكية", type: "equity", parentId: 0, openingBalance: 0, isActive: true };
+      accounts.push(root);
+    }
     let capital = equityAccountByCode("3.1", "رأس المال");
     if (!capital) {
       capital = { id: nextAccountId(), code: nextChildCode(root, "3"), nameAr: "رأس المال", type: "equity", parentId: root.id, openingBalance: 0, isActive: true };
@@ -15634,8 +15771,10 @@ id: nextVoucherId(),
       cap.isActive = active; wd.isActive = active;
     });
     // شركاء اتشالوا: حساباتهم تتوقف (مش تتشال — الحركة التاريخية تفضل وتظهر في المركز المالي)
+    // 🛡 بناء 226: لو الكاش المحلي فاضي (بعد تبديل شركة/قبل تحميل الإعدادات) مانوقفش حسابات شغل قائم.
+    if (!owners.length) { saveAccounts(); return; }
     accounts.forEach((a) => {
-      if (!a || a.type !== "equity") return;
+      if (!isEquityAcc(a)) return;
       if (Number(a.parentId) !== Number(capital.id) && Number(a.parentId) !== Number(drawings.id)) return;
       const n = String(a.nameAr || "");
       if ((n.indexOf(OWN_CAP_PREFIX) === 0 || n.indexOf(OWN_WD_PREFIX) === 0) && !keep[n]) a.isActive = false;
@@ -15643,7 +15782,7 @@ id: nextVoucherId(),
     saveAccounts();
   }
   function ensurePartnerLeaf(parent, name, opening) {
-    let a = accounts.find((x) => x && x.type === "equity" && Number(x.parentId) === Number(parent.id) && x.nameAr === name);
+    let a = accounts.find((x) => isEquityAcc(x) && Number(x.parentId) === Number(parent.id) && x.nameAr === name);
     if (!a) {
       a = { id: nextAccountId(), code: nextChildCode(parent, "3"), nameAr: name, type: "equity", parentId: parent.id, openingBalance: 0, isActive: true };
       accounts.push(a);
@@ -16574,9 +16713,8 @@ id: nextVoucherId(),
     const o = vatOutAcc(), cashAcc = accForTreasuryAcc(t);
     if (!o) { toast("حساب «ض.ق.م المحصّلة» (2.1.2) مش موجود في دليل حساباتك.", "warning"); return; }
     if (!cashAcc) { toast("حساب الخزينة مش موجود في الدليل.", "warning"); return; }
-    if (amount > (Number(t.balance) || 0)) {
-      if (!confirm("رصيد «" + t.name + "» " + fmt(t.balance) + " ج.م والمبلغ " + fmt(amount) + " ج.م — يُسجّل بالسالب؟")) return;
-    }
+    // 🚫 بناء 226: سداد الضريبة ممنوع لو رصيد الحساب مش كافي
+    if (fundsBlocked(t, amount, { focusSel: "#vatPayTreasury" })) return;
     const date = (vatEl("vatPayDate") || {}).value || todayISO();
     const note = ((vatEl("vatPayNote") || {}).value || "").trim();
     const amt = round2(amount);
