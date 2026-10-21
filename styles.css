@@ -1382,6 +1382,8 @@ body {
 .login-msg{margin-top:10px;font-size:13px;min-height:18px;color:#6b7a8a}
 .login-msg.err{color:#c0392b;font-weight:600}
 .login-msg.ok{color:#1d7a46;font-weight:600}
+/* بناء 224: «تحذير» كان بيوصل بـ class login-msg warn من غير أي قاعدة = نص عادي */
+.login-msg.warn{color:var(--warning);font-weight:600}
 .btn.small{padding:5px 10px;font-size:12px;margin-right:8px}
 .btn.red{background:#c0392b}
 .btn.red:hover{background:#a93226}

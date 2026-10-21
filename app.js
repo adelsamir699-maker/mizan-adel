@@ -23262,6 +23262,29 @@ const pwEye = document.getElementById("btnShowPass");
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+  function adminExcelNumber(value) {
+    return (Number(value) || 0).toLocaleString("ar-EG");
+  }
+  /* سبب واحد لـ«الزرار مقفول ليه» — الشاشة توريه، مش يسكت. */
+  function adminExcelBlockedReason(plan) {
+    if (!plan) return "غيّرت الشركة أو الجدول أو الملف؛ أعد المعاينة قبل الرفع.";
+    const backupAck = document.getElementById("adminExcelBackupAck");
+    if (!plan.rows.length && !plan.errors.length) {
+      return "الملف ما فيهوش صفوف صالحة — اتأكد إن صف العناوين مكتوب بالأسماء المعروفة.";
+    }
+    if (plan.mode === "replace" && plan.errors.length) {
+      return "اخترت «تفريغ واستبدال» وفيه صفوف ناقصة — الاستبدال بيمسح الجدول كله، فالرفع مقفول. صلّح الصفوف أو اختار «إضافة».";
+    }
+    const backupReady = !!adminExcelBackup &&
+      adminExcelBackup.orgId === plan.orgId &&
+      adminExcelBackup.table === plan.table.key;
+    if (plan.mode === "replace" && (!backupReady || !backupAck || !backupAck.checked)) {
+      return backupReady
+        ? "في «تفريغ واستبدال» لازم تأكّد أن نسخة الأمان اتحفظت فعلًا قبل الاستبدال."
+        : "في «تفريغ واستبدال» لازم تنزّل نسخة أمان لنفس الشركة والجدول أولًا، وبعدها تؤكّد أنك حفظتها.";
+    }
+    return "";
+  }
   function adminExcelRenderPreview(plan) {
     const box = document.getElementById("adminExcelPreview");
     const upload = document.getElementById("btnAdminExcelUpload");
@@ -23272,14 +23295,24 @@ const pwEye = document.getElementById("btnShowPass");
     if (plan.ignoredHeaders.length) {
       lines.push('<p class="login-sub">أعمدة غير معروفة تم تجاهلها دون تغيير ترتيب البيانات: ' + esc(plan.ignoredHeaders.join("، ")) + "</p>");
     }
+    if (plan.tailIgnored) {
+      lines.push('<p class="login-sub">تجاهلنا ' + adminExcelNumber(plan.tailIgnored) +
+        " سطر تحت آخر بيانات حقيقية في الملف — مافيش فيهم كود ولا اسم (فاضيين ممتدين لآخر الورقة أو سطر إجمالي)، فمش بيانات ومش هيظهروا في ملف الصفوف الناقصة.</p>");
+    }
     if (plan.errors.length) {
+      const total = plan.errorTotal > plan.errors.length
+        ? " (إجمالي " + adminExcelNumber(plan.errorTotal) + " سطر فيه نفس المشكلة)" : "";
       const healthyNote = plan.rows.length
         ? "وباقي الصفوف السليمة (" + plan.rows.length + ") هتترفع عادي:"
         : "ومفيش صفوف سليمة تترفع — هيتنزّل ملف الصفوف الناقصة بس:";
-      lines.push('<p class="login-msg warn">صفوف ناقصة: ' + plan.errors.length + " — مش هتترفع على البرنامج، وهيتنزّلوا ملف «" + adminExcelFailedFileName() + "» على سطح المكتب، " + healthyNote + "</p><ul>");
+      lines.push('<p class="login-msg warn">⚠️ صفوف ناقصة: ' + adminExcelNumber(plan.errors.length) + total + " — مش هتترفع على البرنامج، " + healthyNote + "</p><ul>");
       plan.errors.slice(0, 8).forEach((error) => lines.push("<li>صف " + error.row + ": " + esc(error.message) + "</li>"));
       if (plan.errors.length > 8) lines.push("<li>وأخطاء أخرى…</li>");
       lines.push("</ul>");
+      if (plan.errorsTruncated) {
+        lines.push('<p class="login-sub">الملف بيتجهّز لما تضغط الزرار (مش دلوقتي) عشان الشاشة ما تقفش، ' +
+          "وبيشمل أول " + adminExcelNumber((plan.failed || []).length) + " سطرًا موضحًا سبب كل واحد.</p>");
+      }
     }
     const columns = plan.table.fields.filter((field) => plan.rows.some((row) => Object.prototype.hasOwnProperty.call(row, field[0])));
     lines.push('<div class="tbl-wrap"><table class="data-table"><thead><tr>' +
@@ -23291,12 +23324,12 @@ const pwEye = document.getElementById("btnShowPass");
     lines.push("</tbody></table></div>");
     if (plan.rows.length > 5) lines.push('<p class="login-sub">المعاينة تعرض أول ٥ صفوف فقط.</p>');
     if (plan.errors.length) lines.push('<p><button id="btnAdminExcelFailed" class="btn orange" type="button">⬇️ تنزيل الصفوف الناقصة (Excel)</button></p>');
+    const blocked = adminExcelBlockedReason(plan);
+    if (blocked) lines.push('<p class="login-msg err">🔒 الرفع مقفول: ' + esc(blocked) + "</p>");
     box.innerHTML = lines.join("");
     const failedBtn = box.querySelector("#btnAdminExcelFailed");
     if (failedBtn) failedBtn.addEventListener("click", () => adminExcelDownloadFailedRows(plan));
-    const backupAck = document.getElementById("adminExcelBackupAck");
-    upload.disabled = (!plan.rows.length && !plan.errors.length) ||
-      (plan.mode === "replace" && (plan.errors.length > 0 || !adminExcelBackup || !backupAck || !backupAck.checked));
+    upload.disabled = !!blocked;
   }
   function toggleAdminExcel() {
     if (!isSuperAcct()) {
@@ -23376,14 +23409,26 @@ const pwEye = document.getElementById("btnShowPass");
         ignoredHeaders: parsed.ignoredHeaders,
         errors: parsed.errors,
         failed: parsed.failed || [],
+        tailIgnored: parsed.tailIgnored || 0,
+        errorTotal: typeof parsed.errorTotal === "number" ? parsed.errorTotal : (parsed.errors || []).length,
+        errorsTruncated: !!parsed.errorsTruncated,
+        scannedRows: parsed.scannedRows || 0,
         sourceHeaders: parsed.headers || []
       };
       adminExcelRenderPreview(adminExcelPlan);
-      adminExcelFailedWarm(adminExcelPlan);
-      const msg = parsed.errors.length
-        ? ("جاهز: " + parsed.rows.length + " صف سليم هيتنزّل، و" + parsed.errors.length + " صف ناقص هيتحفظ في ملف على سطح المكتب.")
-        : ("المعاينة جاهزة — " + parsed.rows.length + " صف.");
-      adminExcelSetStatus(msg, false);
+      /* بناء 224: مافيش بناء متعجّل لملف بمليون سطر — كان بيجّمّد الشاشة قبل
+         ما التحذير يطلع. الملف بيتبني بس لما الصفوف المعيبة تبقى معقولة. */
+      if ((adminExcelPlan.failed || []).length <= 2000) adminExcelFailedWarm(adminExcelPlan);
+      const blocked = adminExcelBlockedReason(adminExcelPlan);
+      const tailNote = adminExcelPlan.tailIgnored
+        ? " (و" + adminExcelNumber(adminExcelPlan.tailIgnored) + " سطر تحت آخر بيانات مافيش فيهم كود ولا اسم ⇒ اتتجاهل)" : "";
+      const slowNote = adminExcelPlan.scannedRows > 50000
+        ? " الملف كان ممتد لـ" + adminExcelNumber(adminExcelPlan.scannedRows) + " سطر، والقراءة أخدت وقت أطول من المعتاد." : "";
+      const msg = blocked
+        ? ("⛔ ماينفعش نرفع دلوقتي: " + adminExcelPlan.rows.length + " صف سليم" + tailNote + " — " + blocked)
+        : ("جاهز للرفع: " + adminExcelPlan.rows.length + " صف" + tailNote +
+          (adminExcelPlan.errors.length ? "، و" + adminExcelNumber(adminExcelPlan.errors.length) + " صف ناقص هيتنزّل في ملف على سطح المكتب." : "."));
+      adminExcelSetStatus(msg + slowNote, !!blocked);
     } catch (error) {
       adminExcelSetStatus(error.message || String(error), true);
     } finally {
@@ -23421,6 +23466,8 @@ const pwEye = document.getElementById("btnShowPass");
       if (info) info.textContent = "تم تجهيز نسخة من " + backupRows.length + " سجلًا قبل الاستبدال. احتفظ بالملف الذي نُزّل.";
       if (ack) ack.checked = false;
       adminExcelSetStatus("نسخة الأمان جاهزة. أكّد أنك حفظتها قبل الاستبدال.");
+      /* السطر اللي بيقول «ليه الرفع مقفول» بيتحدّث من نفس المصدر. */
+      if (adminExcelPlan) adminExcelRenderPreview(adminExcelPlan);
     } catch (error) {
       adminExcelBackup = null;
       adminExcelSetStatus(error.message || String(error), true);
@@ -23430,13 +23477,20 @@ const pwEye = document.getElementById("btnShowPass");
   }
   function adminExcelFailedFileName() { return "بيانات لم يتم تنزيلها على البرنامج.xlsx"; }
   function adminExcelFailedCacheKey(plan) {
+    /* مفتاح الكاش لازم يبقى صغير: مليون سطر = نص بمئات الميجا وده كان جزء من التجمّد. */
     return [
       adminExcelFailedFileName(),
       plan && plan.fileName,
       plan && plan.table && plan.table.key,
       (plan && plan.errors || []).length,
-      (plan && plan.failed || []).map((f) => f.row + "|" + f.message).join("~")
+      (plan && plan.failed || []).length,
+      (plan && plan.errorTotal || 0),
+      (plan && plan.tailIgnored || 0),
+      (plan && plan.failed || []).slice(0, 50).map((f) => f.row + "|" + f.message).join("~")
     ].join("::");
+  }
+  function adminExcelYield() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
   }
   async function adminExcelFailedBuffer(plan) {
     const wb = new window.ExcelJS.Workbook();
@@ -23446,7 +23500,13 @@ const pwEye = document.getElementById("btnShowPass");
     ws.addRow(heads);
     ws.getRow(1).font = { bold: true };
     ws.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDE68A" } };
-    (plan.failed || []).forEach((f) => ws.addRow([f.row, f.message].concat(f.cells || [])));
+    const failed = plan.failed || [];
+    /* بناء على دفعات: ١٠٠٠ سطر في الشوفة، وبين كل واحدة والشوية المتصفح
+         ياخد نفسه — الشاشة ما تقفش والرسالة التحذيرية تفضل ظاهرة. */
+    for (let i = 0; i < failed.length; i++) {
+      ws.addRow([failed[i].row, failed[i].message].concat(failed[i].cells || []));
+      if (i % 1000 === 999) await adminExcelYield();
+    }
     ws.views = [{ state: "frozen", ySplit: 1 }];
     heads.forEach((h, i) => { ws.getColumn(i + 1).width = i === 1 ? 46 : Math.max(12, Math.min(32, String(h).length + 4)); });
     return wb.xlsx.writeBuffer();
@@ -23520,6 +23580,13 @@ const pwEye = document.getElementById("btnShowPass");
         plan.table.key !== document.getElementById("adminExcelTable").value ||
         plan.mode !== mode.value) {
       adminExcelResetPreview("تغير الاختيار؛ أعد معاينة الملف.");
+      return;
+    }
+    /* بوابة أخيرة من نفس مصدر الحقيقة: حتى لو الزرار اتفعّل غلط، السبب يظهر. */
+    const blockedNow = adminExcelBlockedReason(plan);
+    if (blockedNow) {
+      adminExcelSetStatus("الرفع مقفول: " + blockedNow, true);
+      adminExcelRenderPreview(plan);
       return;
     }
     if (plan.mode === "replace") {
@@ -23616,10 +23683,9 @@ const pwEye = document.getElementById("btnShowPass");
     });
     if (file) file.addEventListener("change", () => adminExcelResetPreview("تم اختيار ملف جديد؛ عاينه قبل الرفع."));
     if (ack) ack.addEventListener("change", () => {
-      if (upload && adminExcelPlan && adminExcelPlan.mode === "replace") {
-        upload.disabled = !ack.checked || !adminExcelBackup ||
-          adminExcelBackup.orgId !== adminExcelPlan.orgId || adminExcelBackup.table !== adminExcelPlan.table.key;
-      }
+      /* المصدر الوحيد للحالة = adminExcelBlockedReason؛ الرسم من تاني يحدّث
+         الزرار والسطر اللي بيقول «ليه مقفول» سوا (مافيش باب تاني يفتح الزرار). */
+      if (adminExcelPlan) adminExcelRenderPreview(adminExcelPlan);
     });
   }
 

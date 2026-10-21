@@ -134,6 +134,53 @@
     return String(value);
   }
 
+  /* ذيل الورقة: Excel بيخلي حدود الورقة توصل لآخر سطر (1,048,576) ولو الخانات
+     تحت البيانات فاضية — صيغة أو تنسيق بيخلي كل سطر بعد آخر بيانات فيه قيمة.
+     قبل كده كان بيرمي «1,047,306 صف ناقص» وبيقفّل زرار الرفع.
+     القاعدة (مقاسة على ملفاته): السطر اللي تحت آخر سطر مكتمل، و**مافيش فيه أي
+     علامة تعريف** (كود/اسم/باركود)، و**كل خانة مملوحة فيه عمود رقمي**،
+     وفيه قيمتين أو أقل = ذيل ورقة ⇒ يتجاهل.
+     ليه الشروط دي سوا؟ سطر الإجمالي بتاعه فيه رقم أو اتنين بلا اسم ⇒ ذيل ✓،
+     وسطر «C3 / الرصيد 50» فيه كود ⇒ بيانات ناقصة الاسم ولازم تبان غلط زي الأول،
+     وسطر فيه ٨ أرقام بلا اسم ⇒ كمان يبان عشان يقدر يصلحه،
+     وسطر فيه **أي كلمة** (تليفون/وحدة/ملاحظة) تحت البيانات ⇒ مش متأكدين إنه ذيل،
+     فيبان غلط ولا يختفي صامت — «ماتفقدش أي بيانات» أحسن من ذيل سكوت.
+     (الرقم صفر أو "0" في عمود رقمي مش قيمة — نفس قرار بناء 222.) */
+  const IDENTITY_KEYS = new Set(["code", "name_ar", "name_en", "name", "barcode"]);
+  const TAIL_MAX_CELLS = 2;
+  /* ملف «اللي ما نزّلش» مينفعش يبقى مليون سطر: بيجمّد الشاشة وبيمنع التحذير يظهر. */
+  const MAX_FAILED_REPORT = 5000;
+
+  function cellFilled(key, value) {
+    if (value === "" || value == null) return false;
+    if (typeof value === "boolean") return value;
+    if (String(value).trim() === "") return false;
+    if (NUMERIC_KEYS.has(key)) {
+      let n = NaN;
+      /* قيمة رقمية مرفوضة = وجود فعلًا؛ الخطأ ده هيتقال في الدورة التانية. */
+      try { n = Number(normalizeValue(key, value)); } catch (e) { return true; }
+      return Number.isFinite(n) && n !== 0;
+    }
+    return true;
+  }
+
+  /* الحكم على «ذيل الورقة»: علامة تعريف (كود/اسم/باركود) = سطر حقيقي.
+     ولو أي خانة مملوحة مش من الأعمدة الرقمية (كلمة/تليفون/وحدة) = سطر حقيقي.
+     غير كده وقيمته أو قيمتين أو أقل = ذيل ورقة؛ ولو أكتر من كده = بيانات
+     ناقصة الاسم ولازم تظهر غلط عشان يصلحها. */
+  function isPhantomTailRow(mapped, source) {
+    let filled = 0;
+    for (let column = 0; column < mapped.length; column++) {
+      const key = mapped[column].key;
+      if (!cellFilled(key, scalar(source[mapped[column].index]))) continue;
+      if (IDENTITY_KEYS.has(key)) return false;
+      if (!NUMERIC_KEYS.has(key)) return false;
+      filled++;
+      if (filled > TAIL_MAX_CELLS) return false;
+    }
+    return true;
+  }
+
   function mapRows(tableKey, matrix) {
     const config = TABLES.find((table) => table.key === tableKey);
     if (!config) throw new Error("الجدول المختار غير متاح للاستيراد.");
@@ -159,11 +206,47 @@
       mapped.push({ index: index, key: key, label: String(header) });
     });
     if (!mapped.length) throw new Error("لم أتعرف على أسماء أعمدة الملف لهذا الجدول.");
+
+    /* آخر سطر فيه كل الأعمدة المطلوبة — كل اللي بعده مرشّح يبقى ذيل ورقة.
+       لو عمود مطلوب مش موجود في العناوين أصلًا، مافيش «آخر سطر سليم» ⇒ نسيب
+       كل سطر يتحسب زي الأول عشان الأخطاء الحقيقية كلها تظهر. */
+    const requiredColumns = config.required.map((key) => mapped.find((column) => column.key === key) || null);
+    const requiredAllMapped = requiredColumns.every((column) => column !== null);
+    let lastGood = 0;
+    if (requiredAllMapped) {
+      for (let rowIndex = matrix.length - 1; rowIndex >= 1; rowIndex--) {
+        const source = matrix[rowIndex] || [];
+        let complete = true;
+        for (let r = 0; r < requiredColumns.length; r++) {
+          if (!cellFilled(requiredColumns[r].key, scalar(source[requiredColumns[r].index]))) { complete = false; break; }
+        }
+        if (complete) { lastGood = rowIndex; break; }
+      }
+    }
+
     const rows = [];
     const errors = [];
     const failed = [];
+    let tailIgnored = 0;
+    let errorTotal = 0;
+    let errorsTruncated = false;
+
+    function noteFailure(rowIndex, message, source) {
+      errorTotal++;
+      if (errors.length < MAX_FAILED_REPORT) {
+        errors.push({ row: rowIndex + 1, message: message });
+        failed.push({ row: rowIndex + 1, message: message, cells: source.slice(0) });
+      } else {
+        errorsTruncated = true;
+      }
+    }
+
     for (let rowIndex = 1; rowIndex < matrix.length; rowIndex++) {
       const source = matrix[rowIndex] || [];
+      if (requiredAllMapped && rowIndex > lastGood && isPhantomTailRow(mapped, source)) {
+        tailIgnored++;
+        continue;
+      }
       const row = {};
       let hasValue = false;
       try {
@@ -183,9 +266,7 @@
         });
         rows.push(row);
       } catch (error) {
-        const message = error.message || String(error);
-        errors.push({ row: rowIndex + 1, message: message });
-        failed.push({ row: rowIndex + 1, message: message, cells: source.slice(0) });
+        noteFailure(rowIndex, error.message || String(error), source);
       }
     }
     return {
@@ -194,6 +275,11 @@
       ignoredHeaders: ignored,
       errors: errors,
       failed: failed,
+      tailIgnored: tailIgnored,
+      errorTotal: errorTotal,
+      errorsTruncated: errorsTruncated,
+      scannedRows: Math.max(0, matrix.length - 1),
+      lastGoodRow: lastGood + 1,
       headers: headers.map((header) => (header == null ? "" : String(header))),
       table: config
     };
