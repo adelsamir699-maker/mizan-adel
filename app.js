@@ -2992,11 +2992,12 @@
     if (rt === "customer_tx" || rt === "supplier_tx") return true;
     if (rt.indexOf("ضريبة القيمة المضافة للمصلحة") !== -1) return true;
     if (refId.indexOf("VATPAY:") === 0 || refId.indexOf("CT:") === 0 || refId.indexOf("ST:") === 0) return true;
-    // 🧾 بناء 190: «تحصيل شيك»/«ارتجاع شيك» نقل داخلي (1.1.7 ⇄ خزينة/مديونية) مش إيراد/مصروف
-    if (rt.indexOf("تحصيل شيك") !== -1 || rt.indexOf("ارتجاع شيك") !== -1) return true;
-    if (refId.indexOf("TF") === 0 || refId.indexOf("TFV") === 0) return true;
+    // 🧾 بناء 190 + 223: «تحصيل شيك»/«صرف شيك»/«ارتجاع شيك» نقل داخلي (1.2.1/2.1.4 ⇄ خزينة/مديونية) مش إيراد/مصروف
+    if (rt.indexOf("تحصيل شيك") !== -1 || rt.indexOf("صرف شيك") !== -1 || rt.indexOf("ارتجاع شيك") !== -1) return true;
+    if (refId.indexOf("TF") === 0 || refId.indexOf("TFV") === 0 || refId.indexOf("CHC:") === 0) return true;
 
     // 2. الكلمات الدالة في الوصف والبيان
+    if (desc.indexOf("تحصيل شيك") !== -1 || desc.indexOf("صرف شيك") !== -1 || desc.indexOf("ارتجاع شيك") !== -1) return true;
     if (desc.indexOf("تحويل") !== -1 || desc.indexOf("نقل نقدية") !== -1 || desc.indexOf("نقل نقديه") !== -1) return true;
     if (desc.indexOf("تغذية خزينة") !== -1 || desc.indexOf("تغذية الصندوق") !== -1 || desc.indexOf("توريد للخزينة") !== -1 || desc.indexOf("إيداع بالخزينة") !== -1) return true;
 
@@ -11485,10 +11486,28 @@ id: nextVoucherId(),
     const c = checkOfTx(txId);
     return c ? ("CHCUST:" + c.id) : "";
   }
+  function checkOfSupplierTx(txId) {
+    if (!Array.isArray(checks)) return null;
+    return checks.find((c) => c && String(c.refId || "") === String(txId) &&
+      String(c.refType) === "supplier_tx") || null;
+  }
+  function checkJrnKeyOfSupplierTx(txId) {
+    const c = checkOfSupplierTx(txId);
+    return c ? ("CHSUPP:" + c.id) : "";
+  }
   function checksPendingOf(partyId, partyKind) {
     const kind = partyKind || "customer";
-    return checks.filter((c) => c && c.status === "pending" && (c.partyKind || "customer") === kind &&
-      String(c.customerId) === String(partyId) && (c.direction || "in") !== "out");
+    const isSupp = kind === "supplier";
+    return checks.filter((c) => {
+      if (!c || c.deleted || c.status !== "pending") return false;
+      const cKind = c.partyKind || ((c.direction || "in") === "out" ? "supplier" : "customer");
+      if (cKind !== kind) return false;
+      if (partyId != null) {
+        const pId = isSupp ? (c.supplierId || c.partyId) : (c.customerId || c.partyId);
+        if (String(pId) !== String(partyId)) return false;
+      }
+      return true;
+    });
   }
   function checksPendingTotalOf(partyId, partyKind) {
     return round2(checksPendingOf(partyId, partyKind).reduce((m, c) => m + (Number(c.amount) || 0), 0));
@@ -15499,14 +15518,16 @@ id: nextVoucherId(),
       const d = String(t.desc || "");
       if (t.checkKeepId || /(رصيد دائن بعد إلغاء الفاتورة|دفعة مقدمة بعد إلغاء الفاتورة)/.test(d)) return;
       if (d.includes("افتتاحي") || d.includes("أول المدة") || d.includes("مرتجع")) return;
+      // 🆕 بناء 223: أي حركة شيك (سداد بشيك أو تحصيل بشيك أو صرف شيك) لا يجوز إنشاء قيد نقدي CT/ST لها
+      if (String(t.paymentMethod || "") === "شيك" || d.includes("شيك") || d.startsWith("سداد شيك") || d.startsWith("تحصيل شيك") || d.startsWith("صرف شيك")) return;
       const key = partyJrnKey(kind, t.id);
       if (!key || partyJrnOf(kind, t.id)) return;
-      // 🆕 بناء 203 (بند #1 — قيد مكرر كل دخول): حركة «تحصيل بشيك» قيدها على 1.1.7 بمفتاح
+      // 🆕 بناء 203 (بند #1 — قيد مكرر كل دخول): حركة «تحصيل بشيك» قيدها على 1.1.7/1.2.1 بمفتاح
       // CHCUST: (مش CT:) — و`partyJrnOf` ما بتشوفهوش، فالتصحيح الذاتي كان بيعمل قيد «تحصيل»
       // تاني لنفس الحركة (نقد + دين مرتين). نتخطّاها لو قيد شيكها موجود.
       const chkKey = (kind === "cust")
         ? (String(t.checkJrnKey || "") || checkJrnKeyOfTx(t.id))
-        : "";
+        : (String(t.checkJrnKey || "") || checkJrnKeyOfSupplierTx(t.id));
       if (chkKey && journalEntries.some((j) => j && String(j.refId || "") === chkKey)) return;
       const plan = partyJrnPlan(kind, jrnHealTreasury(t), partyTxAmountOf(t));
       if (!plan || plan.error) return;
@@ -16305,20 +16326,19 @@ id: nextVoucherId(),
    * البنود اللي ليها مصدر حركي (خزائن/عملاء/موردون/مخزون/ضريبة) بتتحسب من الحركة نفسها، وحسابات الدليل
    * المقابلة ليها (BS_OPERATIONAL) بتتاستنى من المجموع عشان العد مرتين ما يحصلش.
    */
-  const BS_OPERATIONAL = ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "2.1.1", "2.1.2", "2.1.3"];
-  // 🆕 بناء 149 (سطر ٤): الاستبعاد يبقى **بالدور** مش بالنص الحرفي — أدلة 6 شركات بلا نقاط خالص
-  // (111 صناديق / 115 مديونيات العملاء / 132 مستحقات الموردين / 133 ضريبة…) كانت بتتحسب
-  // **مرتين** في المركز المالي: مرة من الحركة (خزائن/عملاء/موردين/أصناف) ومرة من الدليل،
-  // وده بالظبط «رصيد الحساب في كشف حساب الحسابات ≠ رصيده في قائمة المركز المالي».
+  const BS_OPERATIONAL = ["1.1.1", "1.1.2", "1.1.3", "1.1.4", "1.1.5", "1.2.1", "1.1.7", "2.1.1", "2.1.2", "2.1.3", "2.1.4"];
+  // 🆕 بناء 149 + 223: الاستبعاد بالدور — يشمل حسابات الشيكات (1.2.1 و 2.1.4) لمنع التكرار مع الحركة
   const BS_OP_ROLES = [
     { codes: ["1.1.1", "111"], names: ["الصناديق النقدية"] },
     { codes: ["1.1.2", "112"], names: ["البنوك والحسابات البنكية", "البنوك"] },
     { codes: ["1.1.3", "113"], names: ["المحافظ الإلكترونية"] },
     { codes: ["1.1.4", "114"], names: ["المخزون (بضاعة)", "المخزون"] },
     { codes: ["1.1.5", "115"], names: ["مديونيات العملاء"] },
+    { codes: ["1.2.1", "1.1.7", "121", "117"], names: ["شيكات لدى العملاء", "شيكات تحت التحصيل", "أوراق القبض"] },
     { codes: ["2.1.1", "132"], names: ["مستحقات الموردين"] },
     { codes: ["2.1.2", "133"], names: ["ضريبة القيمة المضافة المحصلة", "ضريبة المبيعات المستحقة"] },
-    { codes: ["2.1.3"], names: ["ضريبة القيمة المضافة المدفوعة"] }
+    { codes: ["2.1.3"], names: ["ضريبة القيمة المضافة المدفوعة"] },
+    { codes: ["2.1.4", "214"], names: ["شيكات مستحقة للموردين", "شيكات صادرة للموردين", "أوراق الدفع"] }
   ];
   function bsIsOperational(a) {
     const c = String((a && a.code) || "");
@@ -16664,6 +16684,9 @@ id: nextVoucherId(),
     const custDebts = bsRound(customers.reduce((m, c) => m + Math.max(c.currentBalance || 0, 0), 0));
     const invValue = bsRound(products.reduce((m, pr) => m + (pr.qty || 0) * avgPriceOf(pr), 0));
     const suppDebts = bsRound(suppliers.reduce((m, s) => m + Math.max(s.currentBalance || 0, 0), 0));
+    // 🧾 بناء 223: حساب إجمالي أوراق القبض (شيكات العملاء المعلقة) وأوراق الدفع (شيكات الموردين المعلقة)
+    const kChecks = bsRound(checksPendingTotalOf(null, "customer"));
+    const suppChecks = bsRound(checksPendingTotalOf(null, "supplier"));
     // 🧾 بناء 163: ض.ق.م من القيود مباشرة (تشمل المرتجعات والمدفوعات والرصيد الافتتاحي) ⇒ نفس رقم التبويبة بالقرش
     let taxLiability;
     try {
@@ -16690,11 +16713,12 @@ id: nextVoucherId(),
           key: "cur", title: "💵 أصول متداولة", short: "الأصول المتداولة",
           rows: [["الصناديق النقدية", cash], ["البنوك والحسابات البنكية", bank], ["المحافظ الإلكترونية", wallet],
             ["المخزون (بالتكلفة المرجحة)", invValue], ["مديونيات العملاء", custDebts],
-            ["ضريبة القيمة المضافة المستحقة لك عند مصلحة الضرائب", Math.max(-(taxLiability || 0), 0)]].concat(bsLeaves("asset", ["1.1"], ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]))
+            ["شيكات تحت التحصيل (أوراق قبض)", kChecks],
+            ["ضريبة القيمة المضافة المستحقة لك عند مصلحة الضرائب", Math.max(-(taxLiability || 0), 0)]].concat(bsLeaves("asset", ["1.1", "1.2"], ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]))
         },
         {
           key: "fix", title: "🏗️ أصول غير متداولة (أراضٍ ومباني ومعدات وسيارات)" + (faFix.length ? " — من سجل الأصول" : ""), short: "الأصول غير المتداولة",
-          rows: faFix.length ? faFix : bsLeaves("asset", ["1.2", "1.3"], null), empty: "لم تُسجَّل أصول غير متداولة بعد"
+          rows: faFix.length ? faFix : bsLeaves("asset", ["1.3"], null), empty: "لم تُسجَّل أصول غير متداولة بعد"
         },
         {
           key: "int", title: "🧠 أصول غير ملموسة (علامة تجارية / براءة اختراع / امتياز)" + (faInt.length ? " — من سجل الأصول" : ""), short: "الأصول غير الملموسة",
@@ -16704,7 +16728,9 @@ id: nextVoucherId(),
       liabs: [
         {
           key: "cur", title: "📉 التزامات متداولة", short: "الالتزامات المتداولة",
-          rows: [["مستحقات الموردين", suppDebts], ["ضريبة القيمة المضافة المستحقة عليك (للمصلحة)", Math.max(taxLiability, 0)]].concat(bsLeaves("liability", ["2.1"], ["2.1", "2.2", "2.3", "2.4"]))
+          rows: [["مستحقات الموردين", suppDebts],
+            ["شيكات صادرة للموردين (أوراق دفع)", suppChecks],
+            ["ضريبة القيمة المضافة المستحقة عليك (للمصلحة)", Math.max(taxLiability, 0)]].concat(bsLeaves("liability", ["2.1"], ["2.1", "2.2", "2.3", "2.4"]))
         },
         {
           key: "non", title: "🏦 التزامات غير متداولة (قروض طويلة الأجل)", short: "الالتزامات غير المتداولة",
