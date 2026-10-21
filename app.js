@@ -23191,6 +23191,7 @@ const pwEye = document.getElementById("btnShowPass");
 
   let adminExcelPlan = null;
   let adminExcelBackup = null;
+  let adminExcelFailedCache = null;
   function adminExcelSetStatus(message, isError) {
     const status = document.getElementById("adminExcelStatus");
     if (!status) return;
@@ -23200,6 +23201,7 @@ const pwEye = document.getElementById("btnShowPass");
   function adminExcelResetPreview(message) {
     adminExcelPlan = null;
     adminExcelBackup = null;
+    adminExcelFailedCache = null;
     const preview = document.getElementById("adminExcelPreview");
     const backupBox = document.getElementById("adminExcelBackupBox");
     const backupAck = document.getElementById("adminExcelBackupAck");
@@ -23351,6 +23353,7 @@ const pwEye = document.getElementById("btnShowPass");
         sourceHeaders: parsed.headers || []
       };
       adminExcelRenderPreview(adminExcelPlan);
+      adminExcelFailedWarm(adminExcelPlan);
       const msg = parsed.errors.length
         ? ("جاهز: " + parsed.rows.length + " صف سليم هيتنزّل، و" + parsed.errors.length + " صف ناقص هيتحفظ في ملف على سطح المكتب.")
         : ("المعاينة جاهزة — " + parsed.rows.length + " صف.");
@@ -23400,6 +23403,15 @@ const pwEye = document.getElementById("btnShowPass");
     }
   }
   function adminExcelFailedFileName() { return "بيانات لم يتم تنزيلها على البرنامج.xlsx"; }
+  function adminExcelFailedCacheKey(plan) {
+    return [
+      adminExcelFailedFileName(),
+      plan && plan.fileName,
+      plan && plan.table && plan.table.key,
+      (plan && plan.errors || []).length,
+      (plan && plan.failed || []).map((f) => f.row + "|" + f.message).join("~")
+    ].join("::");
+  }
   async function adminExcelFailedBuffer(plan) {
     const wb = new window.ExcelJS.Workbook();
     wb.creator = "Mizan";
@@ -23413,14 +23425,29 @@ const pwEye = document.getElementById("btnShowPass");
     heads.forEach((h, i) => { ws.getColumn(i + 1).width = i === 1 ? 46 : Math.max(12, Math.min(32, String(h).length + 4)); });
     return wb.xlsx.writeBuffer();
   }
+  async function adminExcelFailedBlob(plan) {
+    const key = adminExcelFailedCacheKey(plan);
+    if (adminExcelFailedCache && adminExcelFailedCache.key === key) return adminExcelFailedCache.blob;
+    const buffer = await adminExcelFailedBuffer(plan);
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    adminExcelFailedCache = { key: key, blob: blob };
+    return blob;
+  }
+  function adminExcelFailedWarm(plan) {
+    if (!plan || !plan.errors || !plan.errors.length) return;
+    try { adminExcelFailedBlob(plan).catch(() => { }); } catch (e) { }
+  }
   async function adminExcelDownloadFailedRows(plan) {
     const name = adminExcelFailedFileName();
-    let buffer;
-    try { buffer = await adminExcelFailedBuffer(plan); }
+    const key = adminExcelFailedCacheKey(plan);
+    const ready = !!(adminExcelFailedCache && adminExcelFailedCache.key === key);
+    let blob;
+    try { blob = ready ? adminExcelFailedCache.blob : await adminExcelFailedBlob(plan); }
     catch (e) { adminExcelSetStatus("تعذّر تجهيز ملف الصفوف الناقصة: " + (e.message || e), true); return "failed"; }
-    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    /* متصفحات كروم بتشترط تفاعل مباشر لفتح نافذة الحفظ. لو الملف اتجهّز وقت المعاينة
+       (ready) بنفتحها فورًا قبل أي انتظار؛ ولو لسه بيتبني بننزّل مباشرةً بدل ما نفقد التفاعل. */
     try {
-      if (window.showSaveFilePicker) {
+      if (ready && window.showSaveFilePicker) {
         const handle = await window.showSaveFilePicker({
           suggestedName: name,
           startIn: "desktop",
@@ -23453,7 +23480,14 @@ const pwEye = document.getElementById("btnShowPass");
       return;
     }
     if (plan.errors.length && plan.mode === "replace") {
-      adminExcelSetStatus("وضع الاستبدال لا يقبل صفوفًا ناقصة (كان هيتمسح الجدول بناقص). اختار «إضافة» أو صلّح الصفوف الأول.", true);
+      /* بناء 221: تنزيل الصفوف الناقصة قبل رفض الاستبدال — كانت الرسالة بتظهر
+         والملف ما بيتنزّلش خالص في وضع «الاستبدال» (بلاغ المالك). */
+      const how = await adminExcelDownloadFailedRows(plan);
+      const saved = how === "picker" || how === "download";
+      adminExcelSetStatus("وضع الاستبدال لا يقبل صفوفًا ناقصة (كان هيتمسح الجدول بناقص). اختار «إضافة» أو صلّح الصفوف الأول." +
+        (saved
+          ? " — وتم تنزيل ملف الصفوف الناقصة («" + adminExcelFailedFileName() + "»)."
+          : " — وتعذّر تنزيل ملف الصفوف الناقصة؛ اضغط «⬇️ تنزيل الصفوف الناقصة» في المعاينة."), true);
       return;
     }
     if (plan.orgId !== document.getElementById("adminExcelOrg").value ||
@@ -23517,6 +23551,7 @@ const pwEye = document.getElementById("btnShowPass");
       toast("اكتمل رفع بيانات Excel", "success");
       adminExcelPlan = null;
       adminExcelBackup = null;
+      adminExcelFailedCache = null;
       const preview = document.getElementById("adminExcelPreview");
       if (preview) preview.textContent = "";
       const file = document.getElementById("adminExcelFile");
