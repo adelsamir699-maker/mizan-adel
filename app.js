@@ -9803,6 +9803,7 @@
        وتفضل فلوس في صندوق غلط. دلوقتي كل سطر سداد بيرجع لخزينته هو؛ والشيك/الآجل مايدخلوش
        أي خزينة. الفواتير القديمة اللي مالهاش `payments` بتمشي على المسار القديم زي ما هو. */
     let refundedCash = 0;
+    let refundedAccount = 0;
     const refundByPayments = (inv2, sales2) => {
       let sum = 0;
       (inv2.payments || []).forEach((p) => {
@@ -9856,6 +9857,8 @@
           saveTreasury();
           syncTreasuryItemToSett(ptr);
           refundedCash = cashPaid;
+        } else if (ptrNotTreasury && cashPaid > 0.0001) {
+          refundedAccount = cashPaid;
         }
       }
     }
@@ -9892,6 +9895,7 @@
        ممنوع أي اصطلاح تقني للعميل — بصيغة ودّية فيها الاسم والمبلغ بس. */
     const bits = [];
     if (goneDue > 0.0001) bits.push("شيلنا من حساب " + who + " " + fmt(goneDue) + " ج.م");
+    if (refundedAccount > 0.0001) bits.push("ورجّعنا دفعة " + fmt(refundedAccount) + " ج.م على حسابها اللي اتدفعت منه (مش صندوق)");
     if (refundedCash > 0.0001) {
       if (ptr) bits.push((isSales ? "وطلعنا " : "وردّينا ") + fmt(refundedCash) + " ج.م " + (isSales ? "من" : "لـ") + " «" + ptr.name + "»");
       else if (ptrNotTreasury) bits.push("ورجّعنا دفعة " + fmt(refundedCash) + " ج.م على حسابها اللي اتدفعت منه (مش صندوق)");
