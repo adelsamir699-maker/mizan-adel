@@ -6951,9 +6951,10 @@
     posUpdatePartyBalance("sale");
   }
 
-  /* 🧾 بناء 210 (طلب المالك 20/10): اقتراحات الأصناف في الفاتورة مرتّبة **بالأكثر مبيعًا**
-     (عدد الفواتير اللي ظهر فيها الصنف، تنازليًا) ثم أبجديًا — مع الحفاظ على البحث بالكود
-     والباركود زي ما هو. الترتيب في قائمة الاقتراحات فقط، والبحث/الإضافة ما اتغيّرش. */
+  /* 🧾 بناء 218 (طلب المالك 21/10): اقتراحات الأصناف في الفاتورة مرتّبة بـ**أكبر كمية
+     في المخازن** (مجموع أرصدة الصنف في كل المخازن) تنازليًا، ثم الأكثر مبيعًا، ثم أبجديًا.
+     كل الأصناف الفعّالة بتظهر في القائمة (بلا حد أقصى) — القائمة نفسها عليها `max-height`
+     وتمرير في CSS. البحث بالاسم/الكود/الباركود كما هو. */
   function productSalesRank() {
     const rank = new Map();
     (Array.isArray(sales) ? sales : []).forEach((s) => {
@@ -6975,44 +6976,47 @@
     if (p.id != null && p.id !== "") return String(p.id);
     return p.code ? "c:" + String(p.code) : "";
   }
-  function productsByMostSold() {
+  function productStockQty(p) {
+    if (!p) return 0;
+    if (p.stock && typeof p.stock === "object") {
+      const keys = Object.keys(p.stock);
+      if (keys.length) {
+        return keys.reduce((sum, k) => sum + (Number(p.stock[k]) || 0), 0);
+      }
+    }
+    return Number(p.qty) || 0;
+  }
+  function productsByStockQty() {
     const rank = productSalesRank();
     return products.filter((p) => p.isActive).sort((a, b) => {
+      const sa = productStockQty(a);
+      const sb = productStockQty(b);
+      if (sb !== sa) return sb - sa;
       const ra = rank.get(productRankKeyOf(a)) || 0;
       const rb = rank.get(productRankKeyOf(b)) || 0;
       if (rb !== ra) return rb - ra;
       return String(a.nameAr || "").localeCompare(String(b.nameAr || ""), "ar");
     });
   }
+  /* اسم قديم محفوظ للتوافق مع الحرّاس والنداءات السابقة — الترتيب بقى بالمخزون. */
+  function productsByMostSold() { return productsByStockQty(); }
 
   /* 🧾 بناء 211: الـ`datalist` اتشال من الشاشتين (كان بيعرض الأكواد/الباركود «أرقام» وبيخطف
      Enter في RTL) — القائمة بقت لوحة `.prod-drop` تحت الخانة بنفس عرضها، أسماء فقط. */
   const PROD_DROP_FIELD = { sale: "txtPosSearch", purchase: "txtPPSearch" };
-  const PROD_DROP_MAX = 8;
   function productSuggestItems(raw, kind) {
-    const all = productsByMostSold();
+    const all = productsByStockQty();
     const q = normalizeAr(String(raw || "").trim());
-    // فاضي (ضغط على الخانة/السهم) ⇒ الأكثر مبيعًا زي ما هي
-    let hit = all;
-    if (q) {
-      hit = [];
-      all.forEach((p) => {
-        const name = normalizeAr(p.nameAr || "");
-        const code = normalizeAr(String(p.code == null ? "" : p.code));
-        const bc = normalizeAr(String(p.barcode == null ? "" : p.barcode));
-        if (name.indexOf(q) >= 0 || code.indexOf(q) >= 0 || bc.indexOf(q) >= 0) hit.push(p);
-      });
-    }
-    /* 🆕 بناء 213 (طلب المالك 21/10): «الحاجات اللى رصيدها صفر فى البحث على اسم الصنف
-       تكون اخر حاجه فى اقتراحات البحث» — الترتيب جوه المجموعتين زي ما هو (الأكثر مبيعًا
-       ثم أبجدي)، وبس بنزق الصفر لآخر القائمة. الرصيد من مخزن الشاشة الحالية. */
-    const wh = kind === "sale"
-      ? (($("#cmbPosWarehouse") || {}).value || "")
-      : (($("#cmbPPWarehouse") || {}).value || "");
-    const hasStock = (p) => Number(stockAt(p, wh)) > 0;
-    const inStock = hit.filter(hasStock);
-    const zero = hit.filter((p) => !hasStock(p));
-    return inStock.concat(zero).slice(0, PROD_DROP_MAX);
+    // فاضي (ضغط على الخانة/السهم) ⇒ كل الأصناف مرتّبة بالأكبر كمية في المخازن
+    if (!q) return all;
+    const hit = [];
+    all.forEach((p) => {
+      const name = normalizeAr(p.nameAr || "");
+      const code = normalizeAr(String(p.code == null ? "" : p.code));
+      const bc = normalizeAr(String(p.barcode == null ? "" : p.barcode));
+      if (name.indexOf(q) >= 0 || code.indexOf(q) >= 0 || bc.indexOf(q) >= 0) hit.push(p);
+    });
+    return hit;
   }
   function productSuggestHide(kind) {
     const el = $(scanDropSel(PROD_DROP_FIELD[kind]));
