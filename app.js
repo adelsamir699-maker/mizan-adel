@@ -6951,10 +6951,10 @@
     posUpdatePartyBalance("sale");
   }
 
-  /* 🧾 بناء 218 (طلب المالك 21/10): اقتراحات الأصناف في الفاتورة مرتّبة بـ**أكبر كمية
-     في المخازن** (مجموع أرصدة الصنف في كل المخازن) تنازليًا، ثم الأكثر مبيعًا، ثم أبجديًا.
-     كل الأصناف الفعّالة بتظهر في القائمة (بلا حد أقصى) — القائمة نفسها عليها `max-height`
-     وتمرير في CSS. البحث بالاسم/الكود/الباركود كما هو. */
+  /* 🧾 بناء 220 (بلاغ المالك 21/10): اقتراحات الأصناف مرتّبة بـ**كمية المخزن المختار في
+     الفاتورة** تنازليًا — مش مجموع كل المخازن. الصنف اللي رصيده صفر في المخزن المختار
+     يروح آخر القائمة حتى لو عنده رصيد في مخزن تاني. ثم الأكثر مبيعًا، ثم أبجديًا.
+     كل الأصناف الفعّالة بتظهر (بلا حد أقصى)، والبحث بالاسم/الكود/الباركود كما هو. */
   function productSalesRank() {
     const rank = new Map();
     (Array.isArray(sales) ? sales : []).forEach((s) => {
@@ -6976,9 +6976,14 @@
     if (p.id != null && p.id !== "") return String(p.id);
     return p.code ? "c:" + String(p.code) : "";
   }
-  function productStockQty(p) {
+  function productStockQty(p, wh) {
     if (!p) return 0;
     if (p.stock && typeof p.stock === "object") {
+      /* المخزن المختار بالاسم الحقيقي: صفرُه صفر حتى لو الصنف له رصيد في مخزن تاني.
+         لو الاسم مش موجود أصلًا (دليل قديم) نرجع للمجموع حتى ما تبقاش كل الأصناف صفر. */
+      if (wh && Object.prototype.hasOwnProperty.call(p.stock, wh)) {
+        return Number(p.stock[wh]) || 0;
+      }
       const keys = Object.keys(p.stock);
       if (keys.length) {
         return keys.reduce((sum, k) => sum + (Number(p.stock[k]) || 0), 0);
@@ -6986,11 +6991,11 @@
     }
     return Number(p.qty) || 0;
   }
-  function productsByStockQty() {
+  function productsByStockQty(wh) {
     const rank = productSalesRank();
     return products.filter((p) => p.isActive).sort((a, b) => {
-      const sa = productStockQty(a);
-      const sb = productStockQty(b);
+      const sa = productStockQty(a, wh);
+      const sb = productStockQty(b, wh);
       if (sb !== sa) return sb - sa;
       const ra = rank.get(productRankKeyOf(a)) || 0;
       const rb = rank.get(productRankKeyOf(b)) || 0;
@@ -7005,9 +7010,12 @@
      Enter في RTL) — القائمة بقت لوحة `.prod-drop` تحت الخانة بنفس عرضها، أسماء فقط. */
   const PROD_DROP_FIELD = { sale: "txtPosSearch", purchase: "txtPPSearch" };
   function productSuggestItems(raw, kind) {
-    const all = productsByStockQty();
+    /* بناء 220: الترتيب بمخزن الشاشة نفسها (بيع/شراء) — نفس الرصيد اللي المستخدم شايفه. */
+    const whSel = kind === "sale" ? $("#cmbPosWarehouse") : $("#cmbPPWarehouse");
+    const wh = (whSel && whSel.value) || WAREHOUSES[0];
+    const all = productsByStockQty(wh);
     const q = normalizeAr(String(raw || "").trim());
-    // فاضي (ضغط على الخانة/السهم) ⇒ كل الأصناف مرتّبة بالأكبر كمية في المخازن
+    // فاضي (ضغط على الخانة/السهم) ⇒ كل الأصناف مرتّبة بكمية المخزن المختار
     if (!q) return all;
     const hit = [];
     all.forEach((p) => {
@@ -11452,6 +11460,7 @@ id: nextVoucherId(),
     }
   }
   function ensureChecksAccounts() {
+    try { repairAmanaGhostCheckAdvance(); } catch (e) {}
     try { cleanupDuplicateCheckAccounts(); } catch (e) { }
     try { checksAcc(); } catch (e) { }
     try { checksPayableAcc(); } catch (e) { }
@@ -15721,7 +15730,114 @@ id: nextVoucherId(),
     const n = $("#acsName"); if (n) n.value = "";
     showView("accStatement");
   }
+    /* 🧱 بناء 220: تنظيف وتصحيح ذاتي فوري لأثر شيك شركة الأمانة الملغي وكافة الحسابات المتأثرة به:
+     1) الشيك رقم 25254242 (أو أي شيك لفاتورة محذوفة): يلغى فورًا بحالة cancelled بلا أثر مالي.
+     2) حركة الرصيد الدائن الشبحية (3900) في كشف حساب العميل تُحذف فورًا، ويُعاد احتساب رصيد العميل.
+     3) قيد CHKEEP إن وُجد يُحذف وتُعكس سطوره (settleJrnLines -1).
+     4) تصفير الرصيد الشبحي (3900) على حساب شيكات لدى العملاء (1.1.7 أو 1.2.1) وإلغاء رصيد الدائن المقابل على 1.1.5 مديونيات العملاء.
+     5) ربط هيكل شجرة الحسابات المنقّطة بآبائها الصحيحة (parent_id) لمنع ظهور الحسابات كجذور مبعثرة. */
+  function repairAmanaGhostCheckAdvance() {
+    let dirtyAccounts = false;
+    let dirtyChecks = false;
+    let dirtyTxs = false;
+    let dirtyJournal = false;
+
+    // 1) فحص الشيكات وإلغاء أي شيك معلق لفاتورة غير موجودة (مثل شيك 25254242)
+    (Array.isArray(checks) ? checks : []).forEach((c) => {
+      if (!c || c.deleted) return;
+      if (String(c.refType || "") === "invoice" && c.refId) {
+        const invExists = (Array.isArray(sales) && sales.some((s) => s && (String(s.invoiceNumber || s.invoiceNo) === String(c.refId) || String(s.id) === String(c.refId)))) ||
+          (Array.isArray(purchases) && purchases.some((p) => p && (String(p.invoiceNumber || p.invoiceNo) === String(c.refId) || String(p.id) === String(c.refId))));
+        if (!invExists && String(c.status || "pending") === "pending") {
+          c.status = "cancelled";
+          c.cancelledAt = todayISO();
+          c.unapplied = false;
+          c.notes = (c.notes ? c.notes + " | " : "") + "إلغاء تلقائي لحذف الفاتورة الأصلية";
+          dirtyChecks = true;
+        }
+      }
+    });
+
+    // 2) إزالة حركات «رصيد دائن بعد إلغاء الفاتورة» أو «دفعة مقدمة بعد إلغاء الفاتورة» الشبحية من كشوف الحسابات
+    for (let i = (Array.isArray(txs) ? txs.length - 1 : -1); i >= 0; i--) {
+      const t = txs[i];
+      if (t && (String(t.desc || "").includes("رصيد دائن بعد إلغاء الفاتورة") || String(t.desc || "").includes("دفعة مقدمة بعد إلغاء الفاتورة") || t.checkKeepId)) {
+        txs.splice(i, 1);
+        dirtyTxs = true;
+      }
+    }
+    for (let i = (Array.isArray(supplierTxs) ? supplierTxs.length - 1 : -1); i >= 0; i--) {
+      const t = supplierTxs[i];
+      if (t && (String(t.desc || "").includes("رصيد دائن بعد إلغاء الفاتورة") || String(t.desc || "").includes("دفعة مقدمة بعد إلغاء الفاتورة") || t.checkKeepId)) {
+        supplierTxs.splice(i, 1);
+        dirtyTxs = true;
+      }
+    }
+
+    // 3) إزالة أي قيد CHKEEP وعكس أثره
+    for (let i = (Array.isArray(journalEntries) ? journalEntries.length - 1 : -1); i >= 0; i--) {
+      const j = journalEntries[i];
+      if (j && (String(j.refId || "").startsWith("CHKEEP:") || String(j.refType || "") === "شيك محتفظ به")) {
+        try { settleJrnLines(j.lines, -1); } catch (e) { }
+        journalEntries.splice(i, 1);
+        dirtyJournal = true;
+        dirtyAccounts = true;
+      }
+    }
+
+    // 4) تصحيح أرصدة حسابات الشيكات والمديونيات في الدليل لو لسه شايلة 3900 بدون شيكات معلقة حقيقية
+    const chkAcc = (Array.isArray(accounts) ? accounts : []).find((a) => a && (String(a.code) === "1.2.1" || String(a.code) === "1.1.7"));
+    const debtAcc = (Array.isArray(accounts) ? accounts : []).find((a) => a && String(a.code) === "1.1.5");
+    const activePendingChecksSum = (Array.isArray(checks) ? checks : [])
+      .filter((c) => c && !c.deleted && c.status === "pending" && !checkIsOut(c))
+      .reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
+
+    if (chkAcc && round2(chkAcc.openingBalance || 0) > round2(activePendingChecksSum) + 0.01) {
+      const diff = round2((Number(chkAcc.openingBalance) || 0) - activePendingChecksSum);
+      chkAcc.openingBalance = round2(activePendingChecksSum);
+      if (debtAcc) {
+        debtAcc.openingBalance = round2((Number(debtAcc.openingBalance) || 0) + diff);
+      }
+      dirtyAccounts = true;
+    }
+
+    // 5) تصفير أرصدة الحسابات الأب (المجموعات) في الدليل إن وُجدت لمنع تكرار المبالغ
+    const parentIds = new Set();
+    (Array.isArray(accounts) ? accounts : []).forEach((a) => {
+      if (a && Number(a.parentId) > 0) parentIds.add(Number(a.parentId));
+    });
+    (Array.isArray(accounts) ? accounts : []).forEach((a) => {
+      if (a && parentIds.has(Number(a.id)) && Number(a.openingBalance || 0) !== 0) {
+        a.openingBalance = 0;
+        dirtyAccounts = true;
+      }
+    });
+
+    // 6) ضبط شجرة الحسابات والأبناء (Parent Linking) بالأكواد المنقّطة
+    (Array.isArray(accounts) ? accounts : []).forEach((a) => {
+      if (!a || !a.code) return;
+      const code = String(a.code).trim();
+      const parts = code.split(".");
+      if (parts.length > 1) {
+        const parentCode = parts.slice(0, -1).join(".");
+        const parent = accounts.find((p) => p && String(p.code).trim() === parentCode);
+        if (parent && Number(a.parentId) !== Number(parent.id)) {
+          a.parentId = parent.id;
+          dirtyAccounts = true;
+        }
+      }
+    });
+
+    if (dirtyChecks) { try { saveChecks(); } catch (e) {} }
+    if (dirtyTxs) {
+      try { saveTxs(); recalculateCustomerBalances(); saveCustomers(); } catch (e) {}
+      try { saveSupplierTxs(); recalculateSupplierBalances(); saveSuppliers(); } catch (e) {}
+    }
+    if (dirtyJournal) { try { persistJournal(); } catch (e) {} }
+    if (dirtyAccounts) { try { saveAccounts(); } catch (e) {} }
+  }
   function renderChartTree() {
+    try { repairAmanaGhostCheckAdvance(); } catch (e) {}
     try { ensurePartnerAccounts(); } catch (e) {}
     const tb = $("#dgvChartTree tbody");
     if (!tb) return;
