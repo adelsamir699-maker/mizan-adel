@@ -2316,6 +2316,11 @@ td.c-tax.tax-hidden {
   padding: 6px 10px; margin: 6px 0 2px;
 }
 .scan-hint[hidden] { display: none; }
+/* 📇 بناء 228: السطر اللي الماسح عرفه في دليل العملاء/الموردين يلمع ثانيتين */
+.dgv tbody tr.scan-hit > td {
+  background: #FEF9C3;
+  box-shadow: inset 0 0 0 2px #EAB308;
+}
 .scan-hint.ok { border-color: var(--success); color: var(--success); background: #fff; }
 .scan-hint.warn { border-color: var(--warning); color: var(--text-primary); background: #fff; }
 .scan-hint.info { border-color: var(--info); color: var(--info); background: #fff; }

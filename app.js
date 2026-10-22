@@ -4476,6 +4476,338 @@
     return "<b class='scan-code'>" + esc(code || "") + "</b>" + (extra ? " " + extra : "");
   }
 
+  /* ══════════════════════════════════════════════════════════════════════════════
+     📇 بناء 228 — الماسح الضوئي في دليل العملاء والموردين
+     (مأخوذ من فرع wip147-dirscan99 بعد مراجعته على الكود الحالي)
+
+     الدليل مش شاشة فاتورة: مافيش صنف يتضاف ولا كمية. الهدف إن كارت/باركود
+     العميل أو المورد يتقرا فيفتح سطره أو يفتح عملياته على طول.
+
+     • الخمسة مصادر زي الفاتورة: الإسكانر على الخانة + Enter، أو صمت الماسح
+       (cold scan بلا Enter)، أو لصق رقم، أو زرار «📷 مسح»، أو كاميرا الموبايل.
+     • المطابقة **حرفية** مع تسامح الأصفار الشمالية فقط: «00123» = «123»،
+       وممنوع البحث الجزئي (كود «100» ما يفتحش «1000»).
+     • الأولوية: كود العميل/المورد، بعدين الموبايل، بعدين الهاتف الثاني للمورد
+       أو التليفون الأرضي للعميل، بعدين المحفظة.
+     • لو أكتر من سطر طابق نفس المستوى ⇒ قائمة اختيار، ممنوع نختار واحد بالحظ.
+     • الأسماء والرسائل كلها بـ esc، والكود بيتعرض كنص صافي في scanMsg.
+     ══════════════════════════════════════════════════════════════════════════════ */
+  const DIR_SCAN_FIELD_LABEL = {
+    code: "الكود", phone: "رقم الموبايل", secondaryPhone: "الهاتف التاني", walletPhone: "المحفظة"
+  };
+  const DIR_SCAN_CONF = {
+    cust: {
+      field: "txtCustomerSearch",
+      hint: "#custScanHint",
+      button: "btnCustScanArm",
+      what: "العميل",
+      indef: "عميل",
+      plural: "العملاء",
+      codeField: "fCode",
+      nameField: "fName",
+      rowSel: "#dgvCustomers tbody tr",
+      rowKey: "id",
+      render: function () { renderTable(); },
+      visible: function () {
+        return customers.filter((c) => !c.protected && c.code !== "1" && !(c.nameAr && c.nameAr.includes("العميل النقدي")));
+      },
+      fields: [
+        { f: "code", tier: 1 },
+        { f: "phone", tier: 2 },
+        { f: "secondaryPhone", tier: 3 },
+        { f: "walletPhone", tier: 4 }
+      ],
+      openNew: function () { openAddEdit(null); },
+      openRow: function (r) { openActions(r); }
+    },
+    supp: {
+      field: "txtSupplierSearch",
+      hint: "#suppScanHint",
+      button: "btnSuppScanArm",
+      what: "المورد",
+      indef: "مورد",
+      plural: "الموردين",
+      codeField: "fSCode",
+      nameField: "fSName",
+      rowSel: "#dgvSuppliers tbody tr",
+      rowKey: "sid",
+      render: function () { renderSuppliers(); },
+      visible: function () {
+        return suppliers.filter((s) => !s.protected && s.code !== "1" && !(s.nameAr && s.nameAr.includes("المورد النقدي")));
+      },
+      fields: [
+        { f: "code", tier: 1 },
+        { f: "phone", tier: 2 },
+        { f: "walletPhone", tier: 3 }
+      ],
+      openNew: function () { openSuppAddEdit(null); },
+      openRow: function (r) { openSuppActions(r); }
+    }
+  };
+  let dirScanWired = false;
+  let dirScanQuiet = null;
+  const dirScanLast = { cust: "", supp: "" };
+
+  function dirScanFieldValue(r, field) {
+    try {
+      if (!r || r[field] == null) return "";
+      return String(r[field]);
+    } catch (e) { return ""; }
+  }
+
+  // نفس طبقات الأصناف: الحرفي قبل المتسامح، وكل طبقة حقل (كود/موبايل/…) قبل اللي بعدها.
+  // 0 = مافيش تطابق، وأي رقم موجب = أولوية (الأصغر أهم).
+  function dirScanRank(kind, field, value, up) {
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return 0;
+    const meta = conf.fields.find((f) => f.f === field);
+    if (!meta) return 0;
+    const v = scanClean(value).toUpperCase();
+    if (!v) return 0;
+    if (v === up) return meta.tier * 2;
+    if (/^[0-9]+$/.test(up)) {
+      const a = v.replace(/^0+/, "");
+      const b = up.replace(/^0+/, "");
+      if (a !== "" && a === b) return meta.tier * 2 + 1;
+    }
+    return 0;
+  }
+
+  function dirScanMatches(kind, code) {
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return [];
+    const up = scanClean(code).toUpperCase();
+    if (!up) return [];
+    return conf.visible().filter((r) => conf.fields.some((f) => dirScanRank(kind, f.f, dirScanFieldValue(r, f.f), up) > 0));
+  }
+
+  function dirScanBest(kind, code) {
+    const conf = DIR_SCAN_CONF[kind];
+    const matches = dirScanMatches(kind, code);
+    if (!conf || !matches.length) return { hit: null, matches: [], tier: Infinity, field: "", ambiguous: false };
+    const up = scanClean(code).toUpperCase();
+    let best = null;
+    matches.forEach((r) => {
+      let t = Infinity;
+      let field = "";
+      conf.fields.forEach((f) => {
+        const rank = dirScanRank(kind, f.f, dirScanFieldValue(r, f.f), up);
+        if (rank > 0 && rank < t) { t = rank; field = f.f; }
+      });
+      if (t < Infinity && (!best || t < best.tier)) best = { r: r, tier: t, field: field };
+    });
+    if (!best) return { hit: null, matches: [], tier: Infinity, field: "", ambiguous: false };
+    const ambiguous = matches.filter((r) => {
+      if (String(r[conf.rowKey]) === String(best.r[conf.rowKey])) return false;
+      return conf.fields.some((f) => dirScanRank(kind, f.f, dirScanFieldValue(r, f.f), up) === best.tier);
+    }).length > 0;
+    return { hit: best.r, matches: matches, tier: best.tier, field: best.field, ambiguous: ambiguous };
+  }
+
+  function dirScanRowOf(conf, id) {
+    const rows = document.querySelectorAll(conf.rowSel);
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].dataset[conf.rowKey]) === String(id)) return rows[i];
+    }
+    return null;
+  }
+
+  function dirScanFlash(conf, id) {
+    const tr = dirScanRowOf(conf, id);
+    if (!tr) return;
+    tr.classList.add("scan-hit");
+    try { tr.scrollIntoView({ block: "nearest" }); } catch (e) { }
+    setTimeout(() => { try { tr.classList.remove("scan-hit"); } catch (e) { } }, 2400);
+  }
+
+  function dirScanPick(kind, r, matchedField) {
+    const conf = DIR_SCAN_CONF[kind];
+    const el = $("#" + conf.field);
+    if (!el || !r) return;
+    const code = dirScanFieldValue(r, "code");
+    el.value = code || el.value;
+    conf.render();
+    if (!dirScanRowOf(conf, r[conf.rowKey])) {
+      el.value = code;
+      conf.render();
+    }
+    dirScanFlash(conf, r[conf.rowKey]);
+    const via = matchedField && matchedField !== "code"
+      ? " — اتعرّف عليه من " + (DIR_SCAN_FIELD_LABEL[matchedField] || "الرقم") : "";
+    scanHint(conf.hint, "ok", "✅ " + esc(r.nameAr || r.code) + " — كود " + scanMsg(r.code) +
+      " — الرصيد الحالي " + fmt(r.currentBalance || 0) + " ج.م" + via +
+      "<button type='button' class='scan-act' data-dir-kind='" + kind + "' data-dir-open='" + esc(r[conf.rowKey]) + "'>🧾 كشف الحساب والعمليات</button>" +
+      "<button type='button' class='scan-act' data-dir-kind='" + kind + "' data-dir-clear='1'>✖️ رجّع كل " + conf.plural + "</button>");
+    el.focus();
+    el.select();
+  }
+
+  function dirScanNone(kind, code) {
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return false;
+    dirScanLast[kind] = code;
+    scanHint(conf.hint, "warn", "🔍 ملقتش " + conf.indef + " بالرقم " + scanMsg(code) +
+      " — تقدر تكتب اسمه في خانة البحث، أو تسجّله جديد بالرقم ده:" +
+      "<button type='button' class='scan-act' data-dir-kind='" + kind + "' data-dir-new='" + esc(code) + "'>➕ سجّل " + conf.indef + " جديد بالرقم ده</button>");
+    return true;
+  }
+
+  function dirScanAmbiguous(kind, code, rows) {
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return false;
+    dirScanLast[kind] = "";
+    const picks = rows.slice(0, 5).map((r) =>
+      "<button type='button' class='scan-act' data-dir-kind='" + kind + "' data-dir-open='" + esc(r[conf.rowKey]) + "'>" +
+      esc(r.code) + " — " + esc(r.nameAr || "") + "</button>").join(" ");
+    scanHint(conf.hint, "warn", "⚠️ الرقم ده مسجّل عند أكتر من " + conf.indef + " — اختار اللي تقصده:" +
+      "<div class='scan-picks' style='margin-top:6px'>" + picks + "</div>");
+    return true;
+  }
+
+  function dirHandleScan(kind, raw) {
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return false;
+    const code = scanClean(raw);
+    if (!code) {
+      dirScanLast[kind] = "";
+      scanHint(conf.hint, "info", "📷 مافيش رقم وصل — مرّر الماسح على الكارت، أو اكتب كود " + conf.what + " أو اسمه بنفسك.");
+      try { scanBeep("no"); } catch (e) { }
+      return false;
+    }
+    if (!scanLooksCode(code)) return false;
+    const best = dirScanBest(kind, code);
+    if (best.ambiguous) {
+      try { scanBeep("no"); } catch (e) { }
+      return dirScanAmbiguous(kind, code, best.matches);
+    }
+    if (best.hit) {
+      dirScanLast[kind] = "";
+      try { scanBeep("ok"); } catch (e) { }
+      dirScanPick(kind, best.hit, best.field);
+      return true;
+    }
+    try { scanBeep("no"); } catch (e) { }
+    return dirScanNone(kind, code);
+  }
+
+  function dirScanNew(kind, code) {
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return;
+    conf.openNew();
+    const codeEl = $("#" + conf.codeField);
+    const nameEl = $("#" + conf.nameField);
+    if (codeEl) { codeEl.disabled = false; codeEl.value = code; }
+    if (nameEl) nameEl.focus();
+    scanHint(conf.hint, "info", "📷 الرقم " + scanMsg(code) + " في خانة الكود — اكتب الاسم وباقي البيانات ودوس «حفظ».");
+  }
+
+  function dirScanCopy(code) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(() => toast("تم نسخ الكود: " + code, "success")).catch(() => toast("الكود: " + code, "info"));
+        return;
+      }
+    } catch (e) { }
+    toast("الكود: " + code, "info");
+  }
+
+  function dirScanActionClick(ev) {
+    const t = ev.target && ev.target.closest ? ev.target.closest("[data-dir-open],[data-dir-new],[data-dir-copy],[data-dir-clear]") : null;
+    if (!t) return;
+    const kind = t.getAttribute("data-dir-kind");
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return;
+    ev.preventDefault();
+    if (t.hasAttribute("data-dir-open")) {
+      const id = t.getAttribute("data-dir-open");
+      const row = conf.visible().find((r) => String(r[conf.rowKey]) === String(id));
+      if (row) { scanHint(conf.hint); conf.openRow(row); }
+      else scanHint(conf.hint, "warn", "⚠️ السطر ده مش موجود دلوقتي — مرّر الماسح تاني.");
+      return;
+    }
+    if (t.hasAttribute("data-dir-new")) {
+      const code = t.getAttribute("data-dir-new") || dirScanLast[kind];
+      dirScanNew(kind, code);
+      if (code) { try { scanBeep("new"); } catch (e) { } }
+      return;
+    }
+    if (t.hasAttribute("data-dir-clear")) {
+      const el = $("#" + conf.field);
+      if (el) { el.value = ""; el.focus(); }
+      scanHint(conf.hint);
+      conf.render();
+      return;
+    }
+    if (t.hasAttribute("data-dir-copy")) { dirScanCopy(t.getAttribute("data-dir-copy")); }
+  }
+
+  function dirScanArm(kind) {
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return;
+    const el = $("#" + conf.field);
+    if (!el) return;
+    el.focus();
+    el.select();
+    scanCamToggle(conf.field);
+    if (camIsHandheld()) {
+      camArmHint(conf.hint, conf.field);
+    } else {
+      scanHint(conf.hint, "info", "👉 الخانة جاهزة للماسح الضوئي — مرّر كارت/باركود " + conf.what + "، أو اكتب الاسم/الرقم بنفسك.");
+    }
+  }
+
+  function dirScanQuietArm(kind) {
+    const conf = DIR_SCAN_CONF[kind];
+    if (!conf) return;
+    const el = $("#" + conf.field);
+    if (!el) return;
+    if (dirScanQuiet) clearTimeout(dirScanQuiet);
+    dirScanQuiet = setTimeout(() => {
+      dirScanQuiet = null;
+      const now = $("#" + conf.field);
+      if (!now) return;
+      if (!scanBurstOf(conf.field, now.value)) return;
+      const raw = scanTailNorm(conf.field);
+      if (dirHandleScan(kind, raw)) now.select();
+    }, 500);
+  }
+
+  function dirScanKey(kind, conf, ev) {
+    if (!ev || ev.key !== "Enter") return;
+    const el = $("#" + conf.field);
+    if (!el) return;
+    if (!scanBurstOf(conf.field, el.value)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (dirScanQuiet) { clearTimeout(dirScanQuiet); dirScanQuiet = null; }
+    if (dirHandleScan(kind, scanTailNorm(conf.field))) el.select();
+  }
+
+  function dirScanWire() {
+    if (dirScanWired) return;
+    dirScanWired = true;
+    Object.keys(DIR_SCAN_CONF).forEach((kind) => {
+      const conf = DIR_SCAN_CONF[kind];
+      const el = $("#" + conf.field);
+      const btn = $("#" + conf.button);
+      if (btn) btn.addEventListener("click", () => dirScanArm(kind));
+      if (!el) return;
+      el.addEventListener("input", (ev) => {
+        scanKey(conf.field, ev);
+        dirScanQuietArm(kind);
+      });
+      el.addEventListener("keydown", (ev) => dirScanKey(kind, conf, ev));
+      el.addEventListener("paste", () => scanPasteRun(conf.field, () => {
+        const v = scanClean(el.value);
+        if (scanLooksCode(v)) dirHandleScan(kind, v);
+      }));
+      el.addEventListener("blur", () => {
+        if (dirScanQuiet) { clearTimeout(dirScanQuiet); dirScanQuiet = null; }
+      });
+    });
+    document.addEventListener("click", dirScanActionClick);
+  }
+
   /* الرسالة بكل حالاتها — كلها ودّية وبتدلّ على الخطوة الجاية، وممنوع فيها
      (barcode/RLS/RPC/42501/Invalid) أو أي مصطلح تقني. */
   function scanFailText(res) {
@@ -20327,6 +20659,7 @@ id: nextVoucherId(),
     $("#btnAddSupplier").addEventListener("click", () => openSuppAddEdit(null));
     $("#btnPaySuppDebt").addEventListener("click", () => openPaySuppDebt(null));
     $("#txtSupplierSearch").addEventListener("input", renderSuppliers);
+    dirScanWire();
     $("#btnSaveSupplier").addEventListener("click", saveSupplier);
     $("#btnCancelSuppAdd").addEventListener("click", () => hideModal("mSuppAddEdit"));
     $("#sactEdit").addEventListener("click", () => {
