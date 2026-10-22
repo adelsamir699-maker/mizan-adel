@@ -522,6 +522,25 @@ body {
 .act-row4:hover { background: #E2E8F0; }
 
 /* ===== كشف الحساب ===== */
+/* 🆕 بناء 230: كشف العميل/المورد أعرض والأرقام أوضح، وتاريخا الفترة في سطر واحد */
+.stmt-modal { width: 1100px; }
+.stmt-modal .search-bar { flex-wrap: nowrap; gap: 8px; }
+.stmt-modal .filter-label { flex: 0 0 auto; white-space: nowrap; }
+.stmt-modal .search-input { flex: 0 0 150px; max-width: 150px; }
+.stmt-modal #stmPeriodInfo { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stmt-modal .stmt-table th, .stmt-modal .stmt-table td { font-size: 13px; padding: 8px 10px; }
+.stmt-modal .stmt-table td:nth-child(3), .stmt-modal .stmt-table td:nth-child(4), .stmt-modal .stmt-table td:nth-child(5) {
+  font-variant-numeric: tabular-nums; font-weight: 700;
+}
+.stmt-modal .stmt-table td:nth-child(1), .stmt-modal .stmt-table th:nth-child(1) { width: 118px; }
+.stmt-modal .stmt-table td:nth-child(3), .stmt-modal .stmt-table th:nth-child(3),
+.stmt-modal .stmt-table td:nth-child(4), .stmt-modal .stmt-table th:nth-child(4),
+.stmt-modal .stmt-table td:nth-child(5), .stmt-modal .stmt-table th:nth-child(5) { width: 132px; }
+@media (max-width: 900px) {
+  .stmt-modal { width: 96vw; }
+  .stmt-modal .search-bar { flex-wrap: wrap; }
+  .stmt-modal .search-input { flex: 1 1 130px; max-width: none; }
+}
 .stmt-scroll { overflow: auto; flex: 1; min-height: 0; }
 
 .stmt-head-mini {

@@ -2284,8 +2284,30 @@
   window.addEventListener("beforeprint", function () { enterPaperTitle(null); });
   window.addEventListener("afterprint", exitPaperTitle);
 
+  /* 🆕 بناء 230: قفل واحد للطباعة — ضغطة الحفظ المتكررة ما تفتحش نافذتين طباعة ورا بعض.
+     `uiClickOnce` بيبلع الضغطة التانية لحد ما الأولى تخلص + مهلة قصيرة، ومش بيأثر على
+     أي استدعاء مباشر من الاختبارات (القفل على مستوى زرار الواجهة بس). */
+  let printUiBusy = false;
+  let printUiCooldownUntil = 0;
+
+  function uiClickOnce(fn, ms) {
+    let busy = false;
+    return function (ev) {
+      if (busy) return undefined;
+      busy = true;
+      let ret;
+      try { ret = fn(ev); }
+      catch (e) { busy = false; throw e; }
+      const done = () => setTimeout(() => { busy = false; }, ms || 1000);
+      if (ret && typeof ret.then === "function") ret.then(done, done);
+      else done();
+      return ret;
+    };
+  }
+
   function printSection(el) {
     if (!el) return;
+    if (printUiBusy || Date.now() < printUiCooldownUntil) return;
     // اسم الشركة من الضبط (لكل شركة على حدة) يظهر في كل صفحات الطباعة
     // ملاحظة: صفحتا الفاتورة (بيع/شراء) تملآن ترويستهما بنفسها احترامًا لصناديق «على الفاتورة».
     const org = invOrgName();
@@ -2315,16 +2337,29 @@
     document.body.classList.add("printing");
     enterPaperTitle(el.id); // عنوان نظيف طول فترة الطباعة، ويرجع عنوان الشاشة أول ما تخلص
 
+    let cleaned = false;
     const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
       exitPaperTitle();
       el.classList.remove("print-target");
       el.classList.remove("paper-a4", "paper-a5", "paper-thermal");
       document.body.classList.remove("printing");
       window.removeEventListener("afterprint", cleanup);
+      printUiBusy = false;
+      printUiCooldownUntil = Date.now() + 800;
     };
+    printUiBusy = true;
     window.addEventListener("afterprint", cleanup);
-    window.print();
-    setTimeout(cleanup, 1200);
+    try {
+      const ae = document.activeElement;
+      if (ae && typeof ae.blur === "function") ae.blur();
+      window.print();
+    } catch (e) {
+      cleanup();
+      return;
+    }
+    setTimeout(cleanup, 900);
   }
 
   /* ================== الروترة بين الشاشات ================== */
@@ -20408,7 +20443,7 @@ id: nextVoucherId(),
     $("#btnTransferStock").addEventListener("click", openTransferModal);
     $("#btnRefreshProducts").addEventListener("click", renderProducts);
     /* 🆕 بناء 197: زرار تنزيل دليل الأصناف ملف Excel حقيقي (.xlsx) — بياخد نفس اللي ظاهر على الشاشة بالضبط */
-    $("#btnExportProductsXlsx").addEventListener("click", () => exportProductsExcel());
+    $("#btnExportProductsXlsx").addEventListener("click", uiClickOnce(function () { return exportProductsExcel(); }, 1500));
     $("#txtProductSearch").addEventListener("input", renderProducts);
     $("#cmbProductCategory").addEventListener("change", renderProducts);
 
@@ -20626,7 +20661,7 @@ id: nextVoucherId(),
     $("#btnScZeroMarkAll").addEventListener("click", scZeroMarkAll);
     $("#btnScZeroCancel").addEventListener("click", scZeroCancel);
     $("#btnScZeroApply").addEventListener("click", scZeroApply);
-    $("#btnPosSave").addEventListener("click", savePosInvoice);
+    $("#btnPosSave").addEventListener("click", uiClickOnce(savePosInvoice, 1200));
     $("#txtPosDiscount").addEventListener("input", posRecalc);
     $("#cmbPosWarehouse").addEventListener("change", () => {
       const firstProd = products.find((p) => p.id === (posItems[0] && posItems[0].productId));
@@ -20713,7 +20748,7 @@ id: nextVoucherId(),
     $("#ppScanHint").addEventListener("click", (e) => {
       if (e.target.closest("[data-scan-new]")) { openProductDialogForScan(lastPpScan); return; }
     });
-    $("#btnPPSave").addEventListener("click", savePurchaseInvoice);
+    $("#btnPPSave").addEventListener("click", uiClickOnce(savePurchaseInvoice, 1200));
     $("#txtPPDiscount").addEventListener("input", ppRecalc);
 
     $("#dgvPItems tbody").addEventListener("input", (e) => {
