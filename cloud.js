@@ -117,6 +117,28 @@
   //   1) ترحيل ٣ٻ بيضيف العمود، و toCloud بيبعت unit بس لما HAS_PRODUCT_UNIT=true (فحص مرّة).
   //   2) لحد العمود يتنفّذ: fromCloud بياخد الوحدة من النسخة اللي في الذاكرة (localUnitOf)
   //      بدل ما يمسيحها — فاللي مسجّله المستخدم على الجهاز ده ما يضيعش.
+  var PROBE_CACHE_KEY = "mizan_schema_probes_v1";
+  var PROBE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+  function probeCacheState() {
+    try {
+      var c = JSON.parse(localStorage.getItem(PROBE_CACHE_KEY) || "null");
+      if (!c || typeof c !== "object" || !c.flags || typeof c.flags !== "object") return { at: Date.now(), build: String(window.MIZAN_BUILD || ""), flags: {} };
+      if (String(c.build || "") !== String(window.MIZAN_BUILD || "")) return { at: Date.now(), build: String(window.MIZAN_BUILD || ""), flags: {} };
+      if (!c.at || (Date.now() - Number(c.at)) > PROBE_CACHE_TTL_MS) return { at: Date.now(), build: String(window.MIZAN_BUILD || ""), flags: {} };
+      return c;
+    } catch (e) { return { at: Date.now(), build: String(window.MIZAN_BUILD || ""), flags: {} }; }
+  }
+  function probeCacheHit(name) {
+    return probeCacheState().flags[name] === true;
+  }
+  function probeCacheSet(name, ok) {
+    var c = probeCacheState();
+    if (ok) c.flags[name] = true; else delete c.flags[name];
+    c.at = Date.now();
+    c.build = String(window.MIZAN_BUILD || "");
+    try { localStorage.setItem(PROBE_CACHE_KEY, JSON.stringify(c)); } catch (e) { }
+  }
+
   var HAS_PRODUCT_UNIT = false;
   function localUnitOf(localId) {
     var list = (typeof W !== "undefined" && W.products) || [];
@@ -128,12 +150,14 @@
   // فحص وجود العمود على السحابة: select لنفس العمود → لو مرجّعش خطأ = موجود.
   // بينادي مرة واحدة قبل loadAll عشان أول رفع للأصناف في الجلسة يعرف يبعث unit ولا لأ.
   function probeProductUnit() {
+    if (probeCacheHit("productUnit")) { HAS_PRODUCT_UNIT = true; return Promise.resolve(true); }
     return Promise.resolve().then(function () {
       return DATA.client().from("products").select("unit").limit(1);
     }).then(function (r) {
       HAS_PRODUCT_UNIT = !(r && r.error);
       return HAS_PRODUCT_UNIT;
-    }).catch(function () { HAS_PRODUCT_UNIT = false; return false; });
+    }).catch(function () { HAS_PRODUCT_UNIT = false; return false; })
+      .then(function (ok) { probeCacheSet("productUnit", ok); return ok; });
   }
 
   /* 🆕 بناء 179: الخانتين «آخر سعر شراء» و«متوسط سعر الشراء» (طلب المالك 17/10 عن أعمدة
@@ -155,12 +179,14 @@
     return 0;
   }
   function probeProductPrices() {
+    if (probeCacheHit("productPrices")) { HAS_PRODUCT_PRICES = true; return Promise.resolve(true); }
     return Promise.resolve().then(function () {
       return DATA.client().from("products").select("last_purchase_price, avg_purchase_price").limit(1);
     }).then(function (r) {
       HAS_PRODUCT_PRICES = !(r && r.error);
       return HAS_PRODUCT_PRICES;
-    }).catch(function () { HAS_PRODUCT_PRICES = false; return false; });
+    }).catch(function () { HAS_PRODUCT_PRICES = false; return false; })
+      .then(function (ok) { probeCacheSet("productPrices", ok); return ok; });
   }
   // القيمة اللي ليها وجود فعلًا في الموديل المحلي (ولو الحقل الجديد ناقص = صفر/مش معروف).
   function priceForCloud(a, b) {
@@ -184,13 +210,15 @@
   }
   function probeFixedAssetsTable() {
     if (!DATA.client()) return Promise.resolve(false);
+    if (probeCacheHit("fixedAssets")) { FA_TABLE_MISSING = false; return Promise.resolve(true); }
     return Promise.resolve()
       .then(function () { return DATA.client().from("fixed_assets").select("id").limit(1); })
       .then(function (r) {
         if (r && r.error) { if (isMissingTableError(r.error)) FA_TABLE_MISSING = true; return false; }
         FA_TABLE_MISSING = false; return true;
       })
-      .catch(function (e) { if (isMissingTableError(e)) FA_TABLE_MISSING = true; return false; });
+      .catch(function (e) { if (isMissingTableError(e)) FA_TABLE_MISSING = true; return false; })
+      .then(function (ok) { probeCacheSet("fixedAssets", ok); return ok; });
   }
 
   // 🧾 بناء 176: ورديات الكاشير — نفس منطق «الأصول الثابتة»: الجدول بيتعمل بترحيل ٥٤،
@@ -200,13 +228,15 @@
   var CS_TABLE_MISSING = false;
   function probeCashierShiftsTable() {
     if (!DATA.client()) return Promise.resolve(false);
+    if (probeCacheHit("cashierShifts")) { CS_TABLE_MISSING = false; return Promise.resolve(true); }
     return Promise.resolve()
       .then(function () { return DATA.client().from("cashier_shifts").select("id").limit(1); })
       .then(function (r) {
         if (r && r.error) { if (isMissingTableError(r.error)) CS_TABLE_MISSING = true; return false; }
         CS_TABLE_MISSING = false; return true;
       })
-      .catch(function (e) { if (isMissingTableError(e)) CS_TABLE_MISSING = true; return false; });
+      .catch(function (e) { if (isMissingTableError(e)) CS_TABLE_MISSING = true; return false; })
+      .then(function (ok) { probeCacheSet("cashierShifts", ok); return ok; });
   }
 
   // 🚚 بناء 178: رحلات سيارات المناديب — نفس منطق ورديات الكاشير: الجدول بيتعمل بترحيل ٥٥،
@@ -215,13 +245,15 @@
   var CT_TABLE_MISSING = false;
   function probeCarTripsTable() {
     if (!DATA.client()) return Promise.resolve(false);
+    if (probeCacheHit("carTrips")) { CT_TABLE_MISSING = false; return Promise.resolve(true); }
     return Promise.resolve()
       .then(function () { return DATA.client().from("car_trips").select("id").limit(1); })
       .then(function (r) {
         if (r && r.error) { if (isMissingTableError(r.error)) CT_TABLE_MISSING = true; return false; }
         CT_TABLE_MISSING = false; return true;
       })
-      .catch(function (e) { if (isMissingTableError(e)) CT_TABLE_MISSING = true; return false; });
+      .catch(function (e) { if (isMissingTableError(e)) CT_TABLE_MISSING = true; return false; })
+      .then(function (ok) { probeCacheSet("carTrips", ok); return ok; });
   }
 
   // 🧾 بناء 190: الشيكات (ترحيل ٦٢) — نفس نمط car_trips: الجدول بيتعمل بترحيل ٦٢، ولحد ما
@@ -230,13 +262,15 @@
   var CH_TABLE_MISSING = false;
   function probeChecksTable() {
     if (!DATA.client()) return Promise.resolve(false);
+    if (probeCacheHit("checks")) { CH_TABLE_MISSING = false; return Promise.resolve(true); }
     return Promise.resolve()
       .then(function () { return DATA.client().from("checks").select("id").limit(1); })
       .then(function (r) {
         if (r && r.error) { if (isMissingTableError(r.error)) CH_TABLE_MISSING = true; return false; }
         CH_TABLE_MISSING = false; return true;
       })
-      .catch(function (e) { if (isMissingTableError(e)) CH_TABLE_MISSING = true; return false; });
+      .catch(function (e) { if (isMissingTableError(e)) CH_TABLE_MISSING = true; return false; })
+      .then(function (ok) { probeCacheSet("checks", ok); return ok; });
   }
 
   // 🆕 بناء 184: خانتا وسم السند (ref_type/ref_id) على جدول vouchers — ترحيل ٥٦ بيضيفهم،
@@ -247,13 +281,15 @@
   var HAS_VOUCHER_REFS = false;
   function probeVoucherRefs() {
     if (!DATA.client()) return Promise.resolve(false);
+    if (probeCacheHit("voucherRefs")) { HAS_VOUCHER_REFS = true; return Promise.resolve(true); }
     return Promise.resolve()
       .then(function () { return DATA.client().from("vouchers").select("ref_type, ref_id").limit(1); })
       .then(function (r) {
         HAS_VOUCHER_REFS = !(r && r.error);
         return HAS_VOUCHER_REFS;
       })
-      .catch(function () { HAS_VOUCHER_REFS = false; return false; });
+      .catch(function () { HAS_VOUCHER_REFS = false; return false; })
+      .then(function (ok) { probeCacheSet("voucherRefs", ok); return ok; });
   }
 
   // 🆕 بناء 199 (بند #15 — الخيار ب): «مصدر السداد» على حركات العملاء/الموردين
@@ -263,10 +299,12 @@
   var HAS_TX_RECEIPT = false;
   function probePartyTxReceipt() {
     if (!DATA.client()) return Promise.resolve(false);
+    if (probeCacheHit("partyTxReceipt")) { HAS_TX_RECEIPT = true; return Promise.resolve(true); }
     return Promise.resolve()
       .then(function () { return DATA.client().from("customer_txs").select("treasury_id, treasury_name, payment_method").limit(1); })
       .then(function (r) { HAS_TX_RECEIPT = !(r && r.error); return HAS_TX_RECEIPT; })
-      .catch(function () { HAS_TX_RECEIPT = false; return false; });
+      .catch(function () { HAS_TX_RECEIPT = false; return false; })
+      .then(function (ok) { probeCacheSet("partyTxReceipt", ok); return ok; });
   }
   // تعبئة أعمدة مصدر السداد على صف حركة طرف (بتُنادى جوّه toCloud بشرط HAS_TX_RECEIPT)
   function partyRecvCols(r) {
@@ -293,10 +331,12 @@
   var HAS_INV_PAID = false;
   function probeInvPaid() {
     if (!DATA.client()) return Promise.resolve(false);
+    if (probeCacheHit("invPaid")) { HAS_INV_PAID = true; return Promise.resolve(true); }
     return Promise.resolve()
       .then(function () { return DATA.client().from("sales").select("paid_amount, due_amount, payments").limit(1); })
       .then(function (r) { HAS_INV_PAID = !(r && r.error); return HAS_INV_PAID; })
-      .catch(function () { HAS_INV_PAID = false; return false; });
+      .catch(function () { HAS_INV_PAID = false; return false; })
+      .then(function (ok) { probeCacheSet("invPaid", ok); return ok; });
   }
   // تعبئة أعمدة المدفوع/الآجل/السطور على صف فاتورة (بتُنادى جوّه toCloud بشرط HAS_INV_PAID)
   function invPaidCols(r) {

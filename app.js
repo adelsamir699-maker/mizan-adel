@@ -485,7 +485,7 @@
   let dashActRows = null;              // آخر نسخة سحابية جاهزة للرسم
   let dashActAt = 0;                   // وقت آخر سحب/محاولة (لتنظيم النداءات)
   let dashActBusy = false;             // منع تعليق نداءين متوازيين
-  const DASH_ACT_TTL_MS = 60000;       // ما نسحبش أكتر من مرة كل دقيقة
+  const DASH_ACT_TTL_MS = 300000;      // ما نسحبش أكتر من مرة كل 5 دقائق
   const DASH_ACT_MAX = 12;             // الودجت يعرض ١٢ سطر (زي الأصل)
   const DASH_ACT_FETCH = 30;           // بنسحب ٣٠ وبنعرض ١٢
   let sales = [];
