@@ -471,12 +471,22 @@
       // لـ uuid قديم من شركة تانية — تفضى معاهم.
       if (window.MIZAN_STATE) window.MIZAN_STATE.idMap = {};
       mirror();
+      productsSyncInit();
     } finally { A.cleaning = false; }
   }
 
   /* ================== الحالة ================== */  let customers = [];
   let txs = [];
   let products = [];
+  // 🆕 بناء 232: مزامنة صفوف الأصناف المتغيرة فقط (بدل رفع/سحب الجدول كامل مع كل فاتورة).
+  // productsSnap = آخر نسخة وصلت السحابة فعلًا؛ المقارنة بها تحدد الصفوف المتغيرة/المحذوفة.
+  let productsSnap = null;
+  let productsDirty = new Set();
+  let productsRemoved = new Set();
+  let productsPushTimer = null;
+  let productsPushBusy = false;
+  let productsPushQueued = false;
+  let productsPushGen = 0;
   let activity = [];
   // 🆕 بناء 173: حالة ودجت «آخر العمليات» في الداشبورد — مصدره السجل السحابي
   // المشترك (`audit_logs`) مع رجوع للسجل المحلي (`activity`). السبب: السجل
@@ -1519,6 +1529,7 @@
     // لمس localStorage (وضع خاص قديم / iframe محجوب الكوكيز) كان بيطير Exception من
     // هنا وتفضل الشاشة بيضاء. البيانات في الذاكرة تكون اتبنيت فعلًا فوق، فالمزامنة
     // السحابية والحفظ العادي بيكملوا شغلهم — والفشل هنا محلي بحت ومش صامت (console).
+    productsSyncInit();
     try {
       if (!localStorage.getItem(LS_CUSTOMERS)) saveCustomers();
       if (!localStorage.getItem(LS_TXS)) saveTxs();
@@ -1549,10 +1560,111 @@
     ensureChecksAccounts();
   }
 
+  // 🆕 بناء 232: بصمة الصف = الحقول اللي فعلاً بتترفع للسحابة (بدون حقول محلية).
+  // ترتيب مفاتيح المخزون ثابت عشان المقارنة ما تطلعش «متغيّر» بسبب ترتيب عشوائي.
+  function productSyncSig(p) {
+    const stock = (p && p.stock && typeof p.stock === "object" && !Array.isArray(p.stock)) ? p.stock : {};
+    const stockSig = Object.keys(stock).sort().map((k) => k + "=" + (Number(stock[k]) || 0)).join("|");
+    return [
+      String(p.code || ""), String(p.barcode || ""), String(p.nameAr || ""), String(p.nameEn || ""),
+      String(p.category || ""), Number(p.purchasePrice) || 0, Number(p.salePrice) || 0,
+      Number(p.qty) || 0, Number(p.reorder) || 0, stockSig, p.isActive !== false ? 1 : 0,
+      String(p.unit || ""), Number(p.lastPurchasePrice) || 0, Number(p.avgPurchasePrice) || 0,
+      Number(p.weightedAvgCost) || 0
+    ].join("\u0001");
+  }
+
+  function productsSyncInit() {
+    productsPushGen++;
+    if (productsPushTimer) { clearTimeout(productsPushTimer); productsPushTimer = null; }
+    productsDirty = new Set();
+    productsRemoved = new Set();
+    productsSnap = new Map();
+    (products || []).forEach((p) => {
+      if (p && p.id != null) productsSnap.set(Number(p.id), productSyncSig(p));
+    });
+  }
+
+  function productsMarkAllDirty() {
+    (products || []).forEach((p) => { if (p && p.id != null) productsDirty.add(Number(p.id)); });
+    productsRemoved = new Set();
+  }
+
+  function productsTrackChanges() {
+    const now = new Map();
+    (products || []).forEach((p) => {
+      if (p && p.id != null) now.set(Number(p.id), productSyncSig(p));
+    });
+    if (!productsSnap) { productsSnap = now; return; }
+    // رجوع صف كان محذوفًا قبل ما يتزامن = تعديل، مش حذف.
+    Array.from(productsRemoved).forEach((id) => {
+      if (now.has(id)) { productsRemoved.delete(id); productsDirty.add(id); }
+    });
+    now.forEach((sig, id) => {
+      if (!productsSnap.has(id) || productsSnap.get(id) !== sig) productsDirty.add(id);
+    });
+    productsSnap.forEach((sig, id) => {
+      if (!now.has(id)) productsRemoved.add(id);
+    });
+  }
+
+  function productsQueuePush(delay) {
+    if (productsPushTimer) return;
+    productsPushTimer = setTimeout(() => {
+      productsPushTimer = null;
+      productsFlush();
+    }, delay == null ? 0 : delay);
+  }
+
+  function productsFlush() {
+    if (productsPushBusy) { productsPushQueued = true; return Promise.resolve(false); }
+    if (!A.online || A.adopting || A.cleaning || !window.CLOUD || !DATA.orgId || !DATA.orgId()) {
+      return Promise.resolve(false);
+    }
+    const ids = Array.from(productsDirty);
+    const removed = Array.from(productsRemoved);
+    if (!ids.length && !removed.length) return Promise.resolve(true);
+    const sentSigs = new Map();
+    ids.forEach((id) => {
+      const p = (products || []).find((x) => Number(x.id) === Number(id));
+      if (p) sentSigs.set(Number(id), productSyncSig(p));
+    });
+    const gen = productsPushGen;
+    productsDirty.clear();
+    productsRemoved.clear();
+    productsPushBusy = true;
+    let call;
+    try { call = window.CLOUD.pushRows("products", ids, removed); }
+    catch (e) { call = Promise.resolve(false); }
+    const done = (ok) => {
+      productsPushBusy = false;
+      const queued = productsPushQueued;
+      productsPushQueued = false;
+      if (gen === productsPushGen && ok) {
+        sentSigs.forEach((sig, id) => productsSnap.set(id, sig));
+        removed.forEach((id) => productsSnap.delete(id));
+      } else if (gen === productsPushGen) {
+        ids.forEach((id) => productsDirty.add(id));
+        removed.forEach((id) => productsRemoved.add(id));
+      }
+      if (gen === productsPushGen && queued && ok) productsQueuePush(50);
+      return ok;
+    };
+    return Promise.resolve(call).then(done, () => done(false));
+  }
+
   function saveProducts() {
     localStorage.setItem(LS_PRODUCTS, JSON.stringify(products));
-    pushTable("products"); syncToLocalDisk();
+    productsTrackChanges();
+    productsQueuePush();
+    syncToLocalDisk();
   }
+
+  try {
+    window.addEventListener("online", function () {
+      if (productsDirty.size || productsRemoved.size) productsQueuePush(100);
+    });
+  } catch (e) { }
 
   function saveSales() {
     localStorage.setItem(LS_SALES, JSON.stringify(sales));
@@ -21590,6 +21702,7 @@ const pwEye = document.getElementById("btnShowPass");
       return window.CLOUD.loadAll().then(() => {
         const changed = adoptCloud();
         A.adopting = false;
+        if (productsDirty.size || productsRemoved.size) productsQueuePush();
         // 🆕 بناء 149 (سطر ٥): القيود دي نزلت فعلًا ⇒ أي شاشة كانت مستنية «لسه بتنزل»
         // بتترسم من جديد بالبيانات الحقيقية (مافيش «لا توجد قيود بعد» كذّابة).
         try { window.mizanOnLazyReady(); } catch (e) { }
@@ -21605,7 +21718,7 @@ const pwEye = document.getElementById("btnShowPass");
         try { stampStateOrg(DATA.org && DATA.org() ? DATA.org().id : null); } catch (e) { }
         seedPushFromLocal();
         // ارفع الجداول اللي فيها سجلات محلية لسه مش في السحابة (عشان ما تضلش معلّقة للأبد)
-        if (changed && changed.length) changed.forEach((t) => pushTable(t));
+        if (changed && changed.length) changed.forEach((t) => { if (t !== "products") pushTable(t); });
         syncInvoiceSeqFromCloud();
         $("#btnLogout").hidden = false;
         // لا نُظهره هنا: يُتحكم فيه داخل proceedOnline
@@ -22041,6 +22154,10 @@ const pwEye = document.getElementById("btnShowPass");
     recalculateSupplierBalances();
     recalculateTreasuryBalances();
     syncToLocalDisk();
+    // 🆕 بناء 232: بعد الدمج نأخذ بصمة جديدة، وأي أصناف محلية زيادة (مش على السحابة)
+    // تتعلّم «متغيرة» عشان تتزامن صفوفًا فقط — بدل رفع الجدول كامل.
+    productsSyncInit();
+    if (changed.indexOf("products") >= 0) productsMarkAllDirty();
     return changed;
   }
 

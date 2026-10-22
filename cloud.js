@@ -1014,6 +1014,95 @@
     return o ? q.eq("org_id", o) : q;
   }
 
+  // 🆕 بناء 232: رفع صفوف الأصناف المتغيرة فقط (بدل الجدول كامل مع كل فاتورة).
+  // ids = أرقام local_id المتغيرة، removed = أرقام local_id المحذوفة محليًا.
+  // لا نعمل select للجدول كامل: الهوية السحابية من W.idMap، والصفوف الجديدة فقط
+  // بنسأل عليها بنداء مصغّر (id, local_id) مقسّم لدفعات.
+  function pushProductRows(ids, removed) {
+    if (!DATA.isOnline() || !DATA.client()) return Promise.resolve(false);
+    var local = W.products || [];
+    var want = {};
+    (ids || []).forEach(function (id) { var n = Number(id); if (n > 0) want[n] = 1; });
+    var rows = local.filter(function (r) { return want[Number(r.id)]; }).map(function (r) {
+      return META.products.toCloud(r);
+    });
+    var rem = (removed || []).map(Number).filter(function (n) { return n > 0; });
+    if (!rows.length && !rem.length) return Promise.resolve(true);
+    // حذف جماعي غير طبيعي ⇒ نرجع للمزامنة الكاملة (بحماياتها) بدل حذف واسع.
+    if (rem.length > Math.max(5, Math.floor(local.length * 0.25))) return syncOne("products");
+    var client = DATA.client();
+    W.idMap = W.idMap || {};
+    var idMap = W.idMap.products || (W.idMap.products = {});
+    var missing = [];
+    rows.forEach(function (row) {
+      if (idMap[Number(row.local_id)] == null && missing.indexOf(Number(row.local_id)) < 0) {
+        missing.push(Number(row.local_id));
+      }
+    });
+    var ready = Promise.resolve();
+    if (missing.length) {
+      var parts = [];
+      for (var i = 0; i < missing.length; i += 200) parts.push(missing.slice(i, i + 200));
+      ready = Promise.all(parts.map(function (part) {
+        return orgScoped(client.from("products").select("id, local_id")).in("local_id", part).then(function (res) {
+          if (res && res.error) throw res.error;
+          (res.data || []).forEach(function (r) {
+            if (r && r.local_id != null) idMap[Number(r.local_id)] = r.id;
+          });
+        });
+      }));
+    }
+    return ready.then(function () {
+      rows.forEach(function (row) {
+        var cid = idMap[Number(row.local_id)];
+        if (cid) row.id = cid;
+      });
+      var chain = Promise.resolve();
+      if (rem.length) {
+        chain = orgScoped(client.from("products").delete()).in("local_id", rem).then(function (d) {
+          if (d && d.error) throw d.error;
+          rem.forEach(function (id) { delete idMap[Number(id)]; });
+        });
+      }
+      if (rows.length) {
+        chain = chain.then(function () {
+          return client.from("products").upsert(rows, { onConflict: "id" }).select("id, local_id").then(function (u) {
+            if (u && u.error) {
+              var code = String((u.error && u.error.code) || "");
+              var msg = String((u.error && u.error.message) || "");
+              if (code === "23505" || /duplicate key/i.test(msg)) {
+                return client.from("products").upsert(rows, { onConflict: "org_id,local_id" }).select("id, local_id").then(function (u2) {
+                  if (u2 && u2.error) throw u2.error;
+                  return u2.data || [];
+                });
+              }
+              throw u.error;
+            }
+            return u && u.data ? u.data : [];
+          }).then(function (saved) {
+            saved.forEach(function (r) {
+              if (r && r.local_id != null) idMap[Number(r.local_id)] = r.id;
+            });
+          });
+        });
+      }
+      return chain.then(function () {
+        rememberIds("products", rows);
+        W.lastSyncAt = Date.now();
+        W.lastSyncTable = "products";
+        return true;
+      });
+    }).catch(function (e) {
+      syncFailed("products", e);
+      return false;
+    });
+  }
+
+  function pushRows(name, ids, removed) {
+    if (name === "products") return pushProductRows(ids, removed);
+    return syncOne(name);
+  }
+
   function syncOne(name) {
     var meta = META[name];
     if (!meta || !DATA.isOnline() || !DATA.client()) return Promise.resolve(null);
@@ -1683,6 +1772,7 @@
     chatRealtimeStatus: chatRealtimeStatus,
     chatBroadcast: chatBroadcast,
     setTreasuryOpening: setTreasuryOpening,
+    pushRows: pushRows,
     loadAll: loadAll,
     detUuid: detUuid,
     bumpInvoiceSeq: bumpInvoiceSeq,
