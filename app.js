@@ -472,6 +472,7 @@
       if (window.MIZAN_STATE) window.MIZAN_STATE.idMap = {};
       mirror();
       productsSyncInit();
+      accountsSyncInit();
     } finally { A.cleaning = false; }
   }
 
@@ -487,6 +488,15 @@
   let productsPushBusy = false;
   let productsPushQueued = false;
   let productsPushGen = 0;
+  // 🆕 بناء 233: مزامنة صفوف الحسابات المتغيرة فقط (بدل رفع/سحب الجدول كامل مع كل فاتورة).
+  let accountsSnap = null;
+  let accountsDirty = new Set();
+  let accountsRemoved = new Set();
+  let accountsPushTimer = null;
+  let accountsPushBusy = false;
+  let accountsPushQueued = false;
+  let accountsPushGen = 0;
+  let accountsPushWaiters = [];
   let activity = [];
   // 🆕 بناء 173: حالة ودجت «آخر العمليات» في الداشبورد — مصدره السجل السحابي
   // المشترك (`audit_logs`) مع رجوع للسجل المحلي (`activity`). السبب: السجل
@@ -1530,6 +1540,7 @@
     // هنا وتفضل الشاشة بيضاء. البيانات في الذاكرة تكون اتبنيت فعلًا فوق، فالمزامنة
     // السحابية والحفظ العادي بيكملوا شغلهم — والفشل هنا محلي بحت ومش صامت (console).
     productsSyncInit();
+    accountsSyncInit();
     try {
       if (!localStorage.getItem(LS_CUSTOMERS)) saveCustomers();
       if (!localStorage.getItem(LS_TXS)) saveTxs();
@@ -1663,8 +1674,112 @@
   try {
     window.addEventListener("online", function () {
       if (productsDirty.size || productsRemoved.size) productsQueuePush(100);
+      if (accountsDirty.size || accountsRemoved.size) accountsQueuePush(100);
     });
   } catch (e) { }
+
+  // 🆕 بناء 233: بصمة صف الحساب = الحقول اللي فعلاً بتترفع للسحابة (بدون حقول محلية).
+  function accountSyncSig(a) {
+    return [
+      String(a.code || ""), String(a.nameAr || ""), String(a.type || ""),
+      Number(a.parentId) || 0, round2(Number(a.openingBalance) || 0),
+      round2(Number(a.balance) || 0), a.isActive !== false ? 1 : 0
+    ].join("\u0001");
+  }
+
+  function accountsSyncInit() {
+    accountsPushGen++;
+    if (accountsPushTimer) { clearTimeout(accountsPushTimer); accountsPushTimer = null; }
+    const waiters = accountsPushWaiters;
+    accountsPushWaiters = [];
+    waiters.forEach((fn) => { try { fn(false); } catch (e) { } });
+    accountsDirty = new Set();
+    accountsRemoved = new Set();
+    accountsSnap = new Map();
+    (accounts || []).forEach((a) => {
+      if (a && a.id != null) accountsSnap.set(Number(a.id), accountSyncSig(a));
+    });
+  }
+
+  function accountsMarkAllDirty() {
+    (accounts || []).forEach((a) => { if (a && a.id != null) accountsDirty.add(Number(a.id)); });
+    accountsRemoved = new Set();
+  }
+
+  function accountsTrackChanges() {
+    const now = new Map();
+    (accounts || []).forEach((a) => {
+      if (a && a.id != null) now.set(Number(a.id), accountSyncSig(a));
+    });
+    if (!accountsSnap) { accountsSnap = now; return; }
+    Array.from(accountsRemoved).forEach((id) => {
+      if (now.has(id)) { accountsRemoved.delete(id); accountsDirty.add(id); }
+    });
+    now.forEach((sig, id) => {
+      if (!accountsSnap.has(id) || accountsSnap.get(id) !== sig) accountsDirty.add(id);
+    });
+    accountsSnap.forEach((sig, id) => {
+      if (!now.has(id)) accountsRemoved.add(id);
+    });
+  }
+
+  function accountsQueuePush(delay) {
+    const p = new Promise((resolve) => { accountsPushWaiters.push(resolve); });
+    if (accountsPushBusy) { accountsPushQueued = true; return p; }
+    if (accountsPushTimer) return p;
+    accountsPushTimer = setTimeout(() => {
+      accountsPushTimer = null;
+      const waiters = accountsPushWaiters;
+      accountsPushWaiters = [];
+      accountsFlush().then((ok) => {
+        waiters.forEach((fn) => { try { fn(ok); } catch (e) { } });
+      });
+    }, delay == null ? 0 : delay);
+    return p;
+  }
+
+  function accountsFlush() {
+    if (accountsPushBusy) { accountsPushQueued = true; return Promise.resolve(false); }
+    if (!A.online || A.adopting || A.cleaning || !window.CLOUD || !DATA.orgId || !DATA.orgId()) {
+      return Promise.resolve(false);
+    }
+    const ids = Array.from(accountsDirty);
+    const removed = Array.from(accountsRemoved);
+    if (!ids.length && !removed.length) return Promise.resolve(true);
+    const sentSigs = new Map();
+    ids.forEach((id) => {
+      const a = (accounts || []).find((x) => Number(x.id) === Number(id));
+      if (a) sentSigs.set(Number(id), accountSyncSig(a));
+    });
+    const gen = accountsPushGen;
+    accountsDirty.clear();
+    accountsRemoved.clear();
+    accountsPushBusy = true;
+    let call;
+    try { call = window.CLOUD.pushRows("accounts", ids, removed); }
+    catch (e) { call = Promise.resolve(false); }
+    const done = (ok) => {
+      accountsPushBusy = false;
+      const queued = accountsPushQueued;
+      accountsPushQueued = false;
+      if (gen === accountsPushGen && ok) {
+        sentSigs.forEach((sig, id) => accountsSnap.set(id, sig));
+        removed.forEach((id) => accountsSnap.delete(id));
+      } else if (gen === accountsPushGen) {
+        ids.forEach((id) => accountsDirty.add(id));
+        removed.forEach((id) => accountsRemoved.add(id));
+      }
+      if (gen === accountsPushGen && queued && ok) accountsQueuePush(50);
+      else if (gen !== accountsPushGen && (accountsDirty.size || accountsRemoved.size)) accountsQueuePush(50);
+      else if (queued) {
+        const ws = accountsPushWaiters;
+        accountsPushWaiters = [];
+        ws.forEach((fn) => { try { fn(false); } catch (e) { } });
+      }
+      return ok;
+    };
+    return Promise.resolve(call).then(done, () => done(false));
+  }
 
   function saveSales() {
     localStorage.setItem(LS_SALES, JSON.stringify(sales));
@@ -1712,7 +1827,10 @@
 
   function saveAccounts() {
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
-    const sync = pushTable("accounts"); syncToLocalDisk(); return sync;
+    accountsTrackChanges();
+    const sync = accountsQueuePush();
+    syncToLocalDisk();
+    return sync;
   }
 
   function persistJournal() {
@@ -16284,8 +16402,9 @@ id: nextVoucherId(),
          «مسحوبات - <الاسم>» (٣.٣)؛ ورأسماله/مسحوباته المسجّلة في الإعدادات تتحوّل أرصدةً افتتاحيةً على حسابيه.
        • المسحوبات تُسجَّل بسند صرف طرفه حساب الشريك ⇒ الخزينة تنقص وحقوق الملكية تنقص، و**ليست مصروفًا**
          فلا تدخل معادلة الربح (استُثنيت سندات الشريك في `balanceSheetData`).
-     ⛔ مفيش ترقية سحابية: الحسابات بتُنشأ على الجهاز وبتتزامن عبر `pushTable("accounts")` — نفس نمط
-     بنود ١١٥ — فالعزل بين الشركات سليم والحساب الجديد (٣.٣) بيوصل لكل الشركات من غير SQL. */
+    ⛔ مفيش ترقية سحابية: الحسابات بتُنشأ على الجهاز وبتتزامن تزايديًا عبر `pushRows("accounts")`
+    (بناء ٢٣٣) — نفس نمط الأصناف/بنود ١١٥ — فالعزل بين الشركات سليم والحساب الجديد (٣.٣) بيوصل
+    لكل الشركات من غير SQL. */
   const OWN_CAP_PREFIX = "رأس المال - ";
   const OWN_WD_PREFIX = "مسحوبات - ";
   function cacheOwners(list) { try { localStorage.setItem(LS_OWNERS, JSON.stringify(list || [])); } catch (e) {} }
@@ -21703,6 +21822,7 @@ const pwEye = document.getElementById("btnShowPass");
         const changed = adoptCloud();
         A.adopting = false;
         if (productsDirty.size || productsRemoved.size) productsQueuePush();
+        if (accountsDirty.size || accountsRemoved.size) accountsQueuePush();
         // 🆕 بناء 149 (سطر ٥): القيود دي نزلت فعلًا ⇒ أي شاشة كانت مستنية «لسه بتنزل»
         // بتترسم من جديد بالبيانات الحقيقية (مافيش «لا توجد قيود بعد» كذّابة).
         try { window.mizanOnLazyReady(); } catch (e) { }
@@ -21718,7 +21838,7 @@ const pwEye = document.getElementById("btnShowPass");
         try { stampStateOrg(DATA.org && DATA.org() ? DATA.org().id : null); } catch (e) { }
         seedPushFromLocal();
         // ارفع الجداول اللي فيها سجلات محلية لسه مش في السحابة (عشان ما تضلش معلّقة للأبد)
-        if (changed && changed.length) changed.forEach((t) => { if (t !== "products") pushTable(t); });
+        if (changed && changed.length) changed.forEach((t) => { if (t !== "products" && t !== "accounts") pushTable(t); });
         syncInvoiceSeqFromCloud();
         $("#btnLogout").hidden = false;
         // لا نُظهره هنا: يُتحكم فيه داخل proceedOnline
@@ -22158,6 +22278,8 @@ const pwEye = document.getElementById("btnShowPass");
     // تتعلّم «متغيرة» عشان تتزامن صفوفًا فقط — بدل رفع الجدول كامل.
     productsSyncInit();
     if (changed.indexOf("products") >= 0) productsMarkAllDirty();
+    accountsSyncInit();
+    if (changed.indexOf("accounts") >= 0) accountsMarkAllDirty();
     return changed;
   }
 
