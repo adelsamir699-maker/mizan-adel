@@ -2372,7 +2372,11 @@
     // (seedCustomers + ensureCashEntities). قبل كده على شركة فاضية أول عميل بيدخل
     // كان بياخد id = 1 ⇒ ensureCashEntities كان بيلقيه وبيبدّل اسمه لكاش وبيحميه،
     // فالفاتورة تختفي من القائمة من غير ما حد يممسها.
-    return Math.max(1, customers.reduce((m, c) => Math.max(m, Number(c.id) || 0), 0)) + 1;
+    // 🟥 بناء 240 (F2): الرقم بقى من الأرضية الدائمة `idFloorTake` — قبل كده كان
+    // «أكبر id موجود + 1»، فبعد مسح الحالة (خروج/تبديل شركة) كان يرجع يبدأ من 2
+    // و`detUuid("customers", 2)` يولّد uuid **محفوظ بالفعل** على السحابة ⇒ سطر عميل
+    // جديد يكتب فوق القديم صامتًا. الـ floorMin=1 بيحجز لكيان النقدية زي الأول.
+    return idFloorTake("customers", customers, 1);
   }
 
   // 🧱 بناء 199: الاحترام لأرضية الرقم — بعد أي حذف حركة، رقمها مايتولّدش تاني
@@ -2398,7 +2402,8 @@
 
   function nextSupplierId() {
     // 🔒 نفس حجز رقم 1 لكيان «المورد النقدي» النظامي (شوف nextCustomerId)
-    return Math.max(1, suppliers.reduce((m, s) => Math.max(m, Number(s.id) || 0), 0)) + 1;
+    // 🟥 بناء 240 (F2): من الأرضية الدائمة — نفس سبب العملاء.
+    return idFloorTake("suppliers", suppliers, 1);
   }
 
   function nextSupplierCode() {
@@ -6023,7 +6028,8 @@
   let editingProductId = null;
 
   function nextProductId() {
-    return products.reduce((m, p) => Math.max(m, p.id), 0) + 1;
+    // 🟥 بناء 240 (F2): أرضية دائمة — الأصناف لها `detUuid("products", id)` على السحابة.
+    return idFloorTake("products", products);
   }
 
   function nextProductCode() {
@@ -9166,7 +9172,9 @@
     const invNo = $("#txtInvoiceNo").value || nextInvoiceNumber();
     const invDate = $("#dtpDate").value || todayISO();
     const invoice = {
-      id: sales.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1,
+      // 🟥 بناء 240 (F2): رقم الفاتورة من الأرضية الدائمة `idFloorTake` — ممنوع
+      // «أكبر id + 1» لأنه بعد مسح الحالة كان يعيد رقمًا الـuuid بتاعه على السحابة.
+      id: idFloorTake("sales", sales),
       invoiceNumber: invNo,
       invoiceNo: invNo,
       invoiceDate: invDate,
@@ -9856,7 +9864,8 @@
     const invNo = $("#txtPInvNo").value || nextPurchaseInvoiceNumber();
     const invDate = $("#dtpPDate").value || todayISO();
     const invoice = {
-      id: purchases.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1,
+      // 🟥 بناء 240 (F2): رقم من الأرضية الدائمة (شوف فاتورة البيع)
+      id: idFloorTake("purchases", purchases),
       invoiceNumber: invNo,
       invoiceNo: invNo,
       invoiceDate: invDate,
@@ -10947,7 +10956,8 @@
       fmt(Math.max(0, (Number(inv.grandTotal) || 0) - t.value)) + ' ج.م</b>';
   }
   function nextReturnId(isSales) {
-    return retList(isSales).reduce((m, r) => Math.max(m, Number(r.id) || 0), 0) + 1;
+    // 🟥 بناء 240 (F2): مرتجعات البيع والشراء ليها مساحتها المستقلة من الأرضية
+    return idFloorTake(isSales ? "saleReturns" : "purchaseReturns", retList(isSales));
   }
 
   /* ---- عرض جدول المرتجعات ---- */
@@ -11727,7 +11737,10 @@ id: nextVoucherId(),
       if (!hasBankData && !hasWalletData) {
         return false;
       }
-      let nextId = treasury.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
+      // 🟥 بناء 240 (F2): أول رقم من الأرضية الدائمة، مش «أكبر id + 1» — لو الحالة
+      // المحلية اتمسحت (خروج/تبديل شركة) القديم كان يرجع يبدأ من أول و`detUuid`
+      // يعيد uuid محفوظ على السحابة فيكتب حساب بنكي/محفظة فوق حساب تاني.
+      let nextId = idFloorTake("treasury", treasury);
       const built = [];
       const used = {};
       let changed = false;
@@ -11806,6 +11819,8 @@ id: nextVoucherId(),
 
       place(banks, "banks", "bank");
       place(wallets, "wallets", "wallet");
+      // 🟥 بناء 240 (F2): أي رقم اتصرف في الحلقة دي يدخل الأرضية (nextId آخر رقم مستعمل = nextId-1)
+      if (nextId > 1) bumpIdFloor("treasury", nextId - 1);
 
       treasury.forEach((t) => {
         if (used[t.id]) return;
@@ -12411,7 +12426,7 @@ id: nextVoucherId(),
   function checkIsOut(c) {
     return String((c && c.direction) || "in") === "out" || String((c && c.partyKind) || "customer") === "supplier";
   }
-  function nextCheckId() { return checks.reduce((m, c) => Math.max(m, Number(c && c.id) || 0), 0) + 1; }
+  function nextCheckId() { return idFloorTake("checks", checks); }
   function checkJrnKey(id) { const n = Number(id); return n > 0 ? "CH:" + n : ""; }
   /* 🆕 بناء 203 (بند #1 + #3): حركة التحصيل الجاية من «تحصيل بشيك» قيدها **مختلف** (CHCUST: + معرّف
      الشيك على حساب 1.1.7) مش قيد تحصيل عادي (CT:). الربط بين الحركة والشيك محفوظ على **الشيك نفسه**
@@ -12803,7 +12818,7 @@ id: nextVoucherId(),
   function activeShift() { return currentShift(); }
 
   function nextShiftId() {
-    return (shifts.reduce((m, x) => Math.max(m, x.id || 0), 0)) + 1;
+    return idFloorTake("shifts", shifts);
   }
 
   function shiftOverShortAccountName(treasuryName, cashierName) {
@@ -13346,7 +13361,7 @@ id: nextVoucherId(),
   let vanRepCache = null;
 
   function nextCarTripId() {
-    return (carTrips || []).reduce((m, t) => Math.max(m, Number(t.id) || 0), 0) + 1;
+    return idFloorTake("trips", carTrips);
   }
   function vanMainWh() {
     const w = String((settings && settings.vanMainWarehouse) || "").trim();
@@ -13485,7 +13500,7 @@ id: nextVoucherId(),
     try { renderJournal(); } catch (e) {}
   }
   function nextVanExpenseId(trip) {
-    return vanTripExpenses(trip).reduce((m, e) => Math.max(m, Number(e.id) || 0), 0) + 1;
+    return idFloorTake("vanExp", vanTripExpenses(trip));
   }
   function openVanExpenseDialog(tid) {
     const trip = vanTripById(tid);
@@ -14076,7 +14091,8 @@ id: nextVoucherId(),
     const due = Math.round((t.grand - paid) * 100) / 100;
     try { saleCostAlloc(vanSaleDraft.items); } catch (e) {}
     const invoice = {
-      id: sales.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1,
+      // 🧱 بناء 240: رقم فاتورة السيارة كمان من الأرضية الدائمة (نفس علة sales/purchases)
+      id: idFloorTake("sales", sales),
       invoiceNumber: invNo, invoiceNo: invNo,
       invoiceDate: trip.date, date: trip.date,
       customerId: cust.id, customerName: cust.nameAr, customer: cust.nameAr,
@@ -14398,7 +14414,7 @@ id: nextVoucherId(),
       }
     } else {
       const t = {
-        id: treasury.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+        id: idFloorTake("treasury", treasury),
         name: name,
         type: type,
         accountNo: $("#tAccountNo").value.trim(),
@@ -14592,7 +14608,7 @@ id: nextVoucherId(),
   let editingAccountId = null;
 
   function nextAccountId() {
-    return accounts.reduce((m, a) => Math.max(m, a.id), 0) + 1;
+    return idFloorTake("accounts", accounts);
   }
 
   function nextAccountCode() {
@@ -17161,7 +17177,7 @@ id: nextVoucherId(),
   const faClass = (a) => (a && a.assetClass === "intangible" ? "intangible" : "noncurrent");
   const faLive = () => (Array.isArray(fixedAssets) ? fixedAssets.filter((a) => a && a.deleted !== true) : []);
   const faById = (id) => faLive().filter((a) => String(a.id) === String(id))[0];
-  const faNextLocalId = () => (Array.isArray(fixedAssets) ? fixedAssets.reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0) : 0) + 1;
+  const faNextLocalId = () => idFloorTake("fixedAssets", fixedAssets);
   // الصافي محسوب مش مخزّن: أي تعديل في التكلفة أو الإهلاك يبان فورًا في القائمة والكشف
   const faNet = (a) => bsRound((Number(a && a.cost) || 0) - (Number(a && a.accumDep) || 0));
   const faNetText = (a) => {
