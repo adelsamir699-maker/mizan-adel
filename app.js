@@ -2103,7 +2103,8 @@
       if (!Array.isArray(treasury)) return;
       let changed = false;
       if (!treasury.some((t) => t && t.type === "instapay")) {
-        treasury.push({ id: treasury.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+        // 🧱 بناء 240: رقم محجوز في الأرضية الدائمة (`detUuid("treasury", id)`)
+        treasury.push({ id: idFloorTake("treasury", treasury),
           name: "إنستا باي", type: "instapay", balance: 0, system: true });
         changed = true;
       } else {
@@ -15709,12 +15710,49 @@ id: nextVoucherId(),
   function nextVoucherId() {
     return Math.max(VOU_ID_FLOOR, vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
   }
+  /* 🧱 بناء 240 (باگ الموبايل): أرضيات دائمة لباقي الجداول — نفس علة build 186/199 بالحرف.
+     أي جدول بيرقّم سطره بـ`reduce(max)+1` على المصفوفة الحالية وحدها ⇒ بعد مسح الحالة
+     المحلية (تبديل شركة / لقطة ديسك / جهاز جديد) الرقم يرجع يبدأ من 1، و`detUuid(table, id)`
+     (cloud.js:14) بيولّد **نفس** الـuuid اللي صف السحابة شايله فعلًا ⇒ فرع
+     `on conflict (id) do update` يكتب فوق صف قديم بدل ما يضيف جديد — وده بالضبط «الفاتورة
+     الأولى وصلت من غير الشيك والثانية مسمعتش خالص». الأرقام بتتخزن في نفس مفتاح
+     `LS_ID_FLOORS` (بره `LS_ALL_KEYS` ⇒ المسح ما بيشيلهاش) وفي نفس كائن
+     `settings.idFloors` المتزامن (ترقية ٦٤) بدمج `max` فقط. */
+  let X_ID_FLOOR = {
+    sales: 0, purchases: 0, saleReturns: 0, purchaseReturns: 0, checks: 0,
+    shifts: 0, trips: 0, vanExp: 0, treasury: 0, customers: 0, suppliers: 0,
+    products: 0, accounts: 0, fixedAssets: 0
+  };
+  function xFloorOf(kind) { return Number(X_ID_FLOOR[kind]) || 0; }
+  function rowsMaxId(rows) {
+    return (rows || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0);
+  }
+  // دمج «max فقط» لوعاء الأرضيات الجديد (من القرص أو من السحابة) — بلا أي نقصان
+  function xFloorsMerge(src) {
+    const s = src || {};
+    Object.keys(X_ID_FLOOR).forEach((k) => {
+      const n = Number(s[k]) || 0;
+      if (n > xFloorOf(k)) X_ID_FLOOR[k] = n;
+    });
+  }
+  // رقم محلي جديد + **حجزه فورًا** في الأرضية: حتى لو السطر ما اتحفظش (رفض/إلغاء)
+  // الرقم ما بيرجعش يتولّد تاني ويكتب فوق صف سحابي قديم.
+  // `floorMin` = رقم محجوز لكيان نظامي (مثال: id=1 للعميل/المورد النقدي).
+  function idFloorTake(kind, rows, floorMin) {
+    const base = Math.max(xFloorOf(kind), rowsMaxId(rows), Number(floorMin) || 0);
+    const n = base + 1;
+    X_ID_FLOOR[kind] = Math.max(xFloorOf(kind), n);
+    idFloorsPersist();
+    idFloorsPush();
+    return n;
+  }
   // رفع «الأرضية» عند الحذف (قبل ما الرقم يتاح للتوليد تاني) + تثبيتها على القرص
   function bumpIdFloor(kind, id) {
     const n = Number(id) || 0;
     if (kind === "voucher") { if (n > VOU_ID_FLOOR) VOU_ID_FLOOR = n; }
     else if (kind === "tx") { if (n > TX_ID_FLOOR) TX_ID_FLOOR = n; }
     else if (kind === "stx") { if (n > STX_ID_FLOOR) STX_ID_FLOOR = n; }
+    else if (Object.prototype.hasOwnProperty.call(X_ID_FLOOR, kind)) { if (n > xFloorOf(kind)) X_ID_FLOOR[kind] = n; }
     else { if (n > JRN_ID_FLOOR) JRN_ID_FLOOR = n; }
     idFloorsSave();
   }
@@ -15725,16 +15763,19 @@ id: nextVoucherId(),
     JRN_ID_FLOOR = Math.max(Number(o.journal) || 0, (journalEntries || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0));
     TX_ID_FLOOR = Math.max(Number(o.txs) || 0, (txs || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0));
     STX_ID_FLOOR = Math.max(Number(o.supplierTxs) || 0, (supplierTxs || []).reduce((m, x) => Math.max(m, Number(x && x.id) || 0), 0));
+    // 🧱 بناء 240: وعاء باقي الجداول (أرقامه من القرص/السحابة بس — المصفوفات بتترفع
+    // في `idFloorTake` وقت التوليد، فالدالة دي ما بتقراش أي مصفوفة جديدة)
+    xFloorsMerge(o.others);
     __jrnLastId = Math.max(__jrnLastId, JRN_ID_FLOOR);
   }
   function idFloorsSave() {
-    try { localStorage.setItem(LS_ID_FLOORS, JSON.stringify({ vouchers: VOU_ID_FLOOR, journal: JRN_ID_FLOOR, txs: TX_ID_FLOOR, supplierTxs: STX_ID_FLOOR })); } catch (e) { }
+    try { localStorage.setItem(LS_ID_FLOORS, JSON.stringify({ vouchers: VOU_ID_FLOOR, journal: JRN_ID_FLOOR, txs: TX_ID_FLOOR, supplierTxs: STX_ID_FLOOR, others: X_ID_FLOOR })); } catch (e) { }
     idFloorsPush();
   }
   // 🧾 بناء 201 (بند #13/٣): الأرضيات تتزامن بين الأجهزة عبر organizations.settings.idFloors
   //   (ترقية ٦٤) — دمج max فقط (الأرقام تزيد ومش بتنقص) ⇒ جهازان ما يكتبوش فوق بعض.
   let idFloorsPushTimer = null;
-  function idFloorsObj() { return { vouchers: VOU_ID_FLOOR, journal: JRN_ID_FLOOR, txs: TX_ID_FLOOR, supplierTxs: STX_ID_FLOOR }; }
+  function idFloorsObj() { return { vouchers: VOU_ID_FLOOR, journal: JRN_ID_FLOOR, txs: TX_ID_FLOOR, supplierTxs: STX_ID_FLOOR, others: X_ID_FLOOR }; }
   function idFloorsPersist() {
     try { localStorage.setItem(LS_ID_FLOORS, JSON.stringify(idFloorsObj())); } catch (e) { }
   }
@@ -15744,6 +15785,7 @@ id: nextVoucherId(),
     JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(s.journal) || 0);
     TX_ID_FLOOR = Math.max(TX_ID_FLOOR, Number(s.txs) || 0);
     STX_ID_FLOOR = Math.max(STX_ID_FLOOR, Number(s.supplierTxs) || 0);
+    xFloorsMerge(s.others);   // 🧱 بناء 240: باقي الجداول بنفس قانون max
     __jrnLastId = Math.max(__jrnLastId, JRN_ID_FLOOR);
   }
   function idFloorsPush() {
@@ -21909,6 +21951,22 @@ const pwEye = document.getElementById("btnShowPass");
   /* ================== بعد الدخول ================== */
   // 🛡 تنظيف حالة الجلسة: ما يفضلش أي أثر للحساب السابق في الذاكرة
   // (بيانات الجداول نفسها تفضل في localStorage بس هتُفحص عند الدخول بـ guardOrgSwitch)
+  // 🔒 بناء 240 (باگ الموبايل): «ختم الحالة» (LS_STATE_ORG) ملك **الشركة** مش الجلسة ⇒
+  // ممنوع نشيله عند الخروج. كان بيمسحه من build 119 ⇒ أي «خروج ثم دخول **لنفس الشركة**»
+  // يلاقي حالة بلا ختم ⇒ `guardOrgSwitch()` تنادي `wipeLocalTables()` وتشف **كل** مفاتيح
+  // `LS_ALL_KEYS` — ومن بينها الشيكات (`LS_CHECKS`) وورديات الكاشير ورحلات السيارات
+  // والفواتير اللي لسه ما رفعتش للسحابة. بلاغ المالك الحرفي: «الشيكات كانت موجودة في
+  // الموبايل واختفت لما خرجت من البرنامج ودخلت تاني».
+  // العزل المطلوب من build 119 لسه شغال بالظبط: الختم بيقول الحالة دي بتاعة شركة إيه،
+  // فالدخول على **شركة تانية** لسه يمسح قبل أي رفع (`owned !== org`)، ومافيش بقايا
+  // حساب تنسب لشركة جديدة. الطمأنة التانية إن المسح ما كانش آمن أصلًا: «البيانات
+  // الحقيقية بأمان على السحابة» كانت **كلام غير مقيس** — أي سطر فشل رفعه (أو اتلغّى
+  // رفعه بصمت) كان بيتمسح من الجهاز ومفيش نسخة منه على السحابة.
+  // الحصانتين الليخليتانا نطمن على ترك الحالة:
+  //   (١) `org_id` بتتحط سحابيًا من `current_org()` (ترقية ٢٧) مش من الحمولة، و
+  //   (٢) الدمج بعد الدخول (`adoptCloud`) بيعيد طابور رفع أي سطر محلي مالوش مثيل في
+  //       السحابة (`mergeCloudLocal` + `rowPushersMarkChanged`) ⇒ السطر اللي لسه ما
+  //       رفعش اتشل يرفع نفسه، بدل ما يتمسح من الجهاز.
   function resetSessionState() {
     window.__isOwner = false;
     csetData = null;
@@ -21916,9 +21974,6 @@ const pwEye = document.getElementById("btnShowPass");
     lastOrgMembers = null;
     // خريطة معرّفات السحابة تخص الشركة السابقة → نفضيها
     if (window.MIZAN_STATE) window.MIZAN_STATE.idMap = {};
-    // 🔑 build 119: الحالة المحلية بقت «غير مختومة» = مجهولة الملكية ⇒ الدخول
-    // الجاي يمسحها قبل أي رفع (مافيش بقايا الحساب ده تنسب لحساب تاني)
-    try { localStorage.removeItem(LS_STATE_ORG); } catch (e) { }
     // 🛡 نرجّع الجداول لحالة تجريبية نظيفة (مفيش بقايا بيانات شركة في الذاكرة)
     // مع منع أي رفع للسحابة أثناء التنظيف
     A.cleaning = true;
@@ -21933,8 +21988,14 @@ const pwEye = document.getElementById("btnShowPass");
   // بنفتحها دلوقتي = حالة من حساب/شركة تانية ⇒ تُمسح قبل أي رفع للسحابة.
   // build 119: «ختم ملكية الحالة» (LS_STATE_ORG) هو الحكم — السبب الجذري إن
   // عملاء/موردين من حساب المالك اترفعوا لشركة «امين» اللي اتعملت فاضية.
-  // البيانات الحقيقية بأمان على السحابة وبتنزل تاني في adoptCloud، فمسح حالة
-  // غير مختومة لا يُفقد أحد شيئًا (وممنوع يرفعه لشركة تانية).
+  // ⚠️ بناء 240: الجملة اللي كانت هنا («البيانات الحقيقية بأمان على السحابة وبتنزل
+  // تاني في adoptCloud، فمسح حالة غير مختومة لا يُفقد أحد شيئًا») **كانت غلط وما
+  // اتقاستش**: رفع أي جدول بيرجع `null` بصمت لما الجدول السحابي ناقص، و`syncOne`
+  // ما بيعيدش المحاولة، والسطر اللي ما رفعش كان بيتمسح هنا ومفيش نسخة منه على
+  // السحابة (شيكات/ورديات/رحلات/فواتير — بلاغ الموبايل). المسح ده بقى بيحصل **بس**
+  // لما الختم لشركة تانية (أو حالة مجهولة المصدر: جهاز جديد/لقطة ديسك/وضع تجريبي)؛
+  // الخروج والدخول لنفس الشركة ما بيرفعوش الختم تاني (`resetSessionState`) ⇒ الحالة
+  // بتاعت الشركة بتفضل على الجهاز والسطور اللي ما رفعتش بتعيد طابورها في adoptCloud.
   function guardOrgSwitch() {
     const org = DATA && DATA.org && DATA.org() ? DATA.org().id : null;
     if (!org) return;
