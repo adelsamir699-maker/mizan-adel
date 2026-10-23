@@ -2093,7 +2093,7 @@ td.c-tax.tax-hidden {
    بيظهر تحت صفّ الفاتورة (البيع والشراء) وتحت خانة الباركود في نافذة الصنف،
    وبيقول بالعربي الودّي: قريت الصنف / ملقتش / مكرر / موقوف / متوفر قد إيه.
    الألوان من متغيرات الثيم وحدها (درس 142: حارس التباين بيسكن النصوص من
-   `.wa-toolbar` ولساه وممنوع أي hex غير الأبيض)، وممنوع أي قاعدة غالبة تجبر
+   حارس التباين وممنوع أي hex غير الأبيض)، وممنوع أي قاعدة غالبة تجبر
    الترتيب — `[hidden]` لازم يقهر الكلاس بنفسه عشان الشريط يختفي فعلًا.
    `.fld-code` اتوسّعت (95px → 150px) لأن الليبل بقى «📷 باركود / كود:»
    وفيه placeholder — من غير التوسعة الرقم الممسوح كان بينقص بصريًا. */
@@ -2206,7 +2206,7 @@ td.c-tax.tax-hidden {
    البائع وهو ماسك الموبايل، مش تحت الفاتورة. `z-index` فوق الشريط العلوي (`topbar`) وفوق
    أي نافذة، والكانفس اللي بيقرا منه الكود **مخفي** (1px + opacity 0) لأنه أداة قياس مش
    صورة — اللي البائع بيشوفه هو <video> بس. مافيش أي لون hex هنا (حارس التباين بيمنع
-   الرموز بعد `.wa-toolbar`) كله rgb()/rgba() ومتغيرات، والبياض #fff حصريًا.
+   الرموز) كله rgb()/rgba() ومتغيرات، والبياض #fff حصريًا.
    القاعدة دي جاية **قبل** `@media print` عشان الورق ما يطبعش الكاميرا أبدًا. */
 .cam-panel {
   position: fixed; top: 0; right: 0; left: 0; z-index: 1400;
@@ -2323,7 +2323,7 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 /* نافذة تعليمات المسح الضوئي — build 168 */
 #mScanHelpBox .docs-head { flex: 0 0 auto; }
 #mScanHelpBox .docs-folder { margin: 0 0 10px; font-size: 12.5px; color: #0e7a6d; background: #eefaf7; border: 1px dashed #9fd8cf; border-radius: 8px; padding: 7px 11px; overflow-wrap: anywhere; }
-/* بناء 197: نفس اللونين بالحرف لكن بصيغة rgb() — القاعدة «ممنوع hex بعد .wa-toolbar إلا الأبيض»
+/* بناء 197: نفس اللونين بالحرف لكن بصيغة rgb() — قاعدة «ممنوع أي hex غير الأبيض»
    محترمة، والصرف البصري صفر (35,48,61 = #23303d · 124,135,148 = #7c8794). */
 #mScanHelpBox .scan-help-list { margin: 0 0 12px; padding: 0 20px 0 0; display: grid; gap: 7px; font-size: 13px; line-height: 1.7; color: rgb(35, 48, 61); }
 #mScanHelpBox .scan-help-list li { text-align: right; }
