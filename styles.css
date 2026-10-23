@@ -2396,6 +2396,8 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .modal.m900 { width: 960px; }
 .van-banner { display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:#e0f2fe; border:1.5px solid #0284c7; color:#075985; border-radius:10px; padding:10px 14px; margin:8px 0; font-size:14px; }
 .van-info { display:flex; flex-direction:column; gap:5px; background:#f8fafc; border:1px solid var(--border); border-radius:10px; padding:9px 12px; margin:8px 0; font-size:13px; color:#334155; }
+/* 🧱 بناء 240 (F4): شريط «الرفع المعلق» — عدّاد مقيس من طوابير الصفوف المتسخة (نص ودّي بلا اصطلاح تقني) */
+.up-pending { display:flex; align-items:center; gap:8px; background:rgba(245,158,11,.14); border:1.5px solid var(--warning); color:var(--text-primary); border-radius:10px; padding:9px 14px; margin:8px 12px; font-size:13px; font-weight:600; }
 .van-grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin:6px 0; }
 .van-grid3 > div { min-width:0; }
 .van-list-wrap { max-height:44vh; overflow:auto; border:1px solid var(--border); border-radius:10px; margin:8px 0; }

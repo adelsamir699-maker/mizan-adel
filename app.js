@@ -1535,6 +1535,8 @@
     salesSyncInit();
     journalSyncInit();
     rowPushersInit();
+    // 🧱 بناء 240 (F4): مراقب «الرفع المعلق» — شريط عدّاد مقيس من الطوابير + آخر محاولة قبل الإغلاق
+    try { startUpPendingWatch(); } catch (e) { }
     try {
       if (!localStorage.getItem(LS_CUSTOMERS)) saveCustomers();
       if (!localStorage.getItem(LS_TXS)) saveTxs();
@@ -1799,12 +1801,19 @@
   // نفس مسار بقية الجداول: محلي أولًا (ما يضيعش)، ثم رفع للسحابة لو متصل، ثم لقطة الديسك.
   function saveFixedAssets() {
     localStorage.setItem(LS_FIXED_ASSETS, JSON.stringify(fixedAssets));
-    pushTable("fixed_assets"); syncToLocalDisk();
+    // 🧱 بناء 240: إعادة رفع عند الفشل بدل pushTable المطفي بصمت
+    // (لو جدول fixed_assets لسه مش على السحابة، syncOne بيرجع null والصفوف تفضل متسخة — بلا طنين).
+    fixedAssetsPusher.trackChanges();
+    fixedAssetsPusher.queue();
+    syncToLocalDisk();
   }
 
   function saveSuppliers() {
     localStorage.setItem(LS_SUPPLIERS, JSON.stringify(suppliers));
-    pushTable("suppliers"); syncToLocalDisk();
+    // 🧱 بناء 240: نفس النمط — المتسخ يفضل مطلوب لحد النجاح
+    suppliersPusher.trackChanges();
+    suppliersPusher.queue();
+    syncToLocalDisk();
   }
 
   function saveSupplierTxs() {
@@ -1952,6 +1961,12 @@
       now.forEach(function (sig, id) {
         if (!st.snap.has(id) || st.snap.get(id) !== sig) st.dirty.add(id);
       });
+      // 🧹 صنف انحذف من القائمة المحلية ولم يُرفع للسحابة فعلًا قط (مالوش صورة في st.snap)
+      //    يتشال من «مطلوب رفع»: لو فضّل فيها، الرفعة الجاية تبعت id لصنف مش موجود = سطر
+      //    وهمى بيظهر على الأجهزة التانية، والشريط «مطلوب رفع» يفضل عددًا كدّاب للأبد.
+      Array.from(st.dirty).forEach(function (id) {
+        if (!now.has(id) && !st.snap.has(id)) st.dirty.delete(id);
+      });
       st.snap.forEach(function (sig, id) {
         if (!now.has(id)) st.removed.add(id);
       });
@@ -1999,7 +2014,14 @@
           sentSigs.forEach(function (sig, id) { st.snap.set(id, sig); });
           removed.forEach(function (id) { st.snap.delete(id); });
         } else if (gen === st.gen) {
-          ids.forEach(function (id) { st.dirty.add(id); });
+          // 🧱 إعادة المحاولة مش عمياء: الصنف اللي لسه في القائمة يرجع «مطلوب رفع»،
+          //    واللي انحذف منها قبل ما الرفعة تنجح يرجع «مطلوب حذف» — وإلا يفضل في dirty
+          //    ويتبعت كأبسيرت لسطر مش موجود ⇒ **شبح على السحابة ما لوش صاحب**.
+          const nowList = listFn() || [];
+          ids.forEach(function (id) {
+            const stillThere = nowList.some(function (x) { return x && Number(x.id) === Number(id); });
+            if (stillThere) st.dirty.add(id); else st.removed.add(id);
+          });
           removed.forEach(function (id) { st.removed.add(id); });
         }
         if (gen === st.gen && queued && ok) queue(50);
@@ -2028,8 +2050,20 @@
   const customerTxPusher = makeRowPusher("customer_txs", function () { return txs; }, cloudRowSyncSig("customer_txs"));
   const supplierTxPusher = makeRowPusher("supplier_txs", function () { return supplierTxs; }, cloudRowSyncSig("supplier_txs"));
   const voucherPusher = makeRowPusher("vouchers", function () { return vouchers; }, cloudRowSyncSig("vouchers"));
+
+  // 🧱 بناء 240: الجداول اللي كانت بترفع بـ pushTable (fire-and-forget — فشل بلا إعادة وبلا أثر).
+  // الشيكات اللي اتعملت من الموبايل ووقعت في رفعة فاشلة ما بظهرتش في أي جهاز تاني خالص —
+  // من هنا أي صف متسخ بيفضل في st.dirty لحد ما الرفعة تنجح فعليًا (نفس آلية 235).
+  const checksPusher = makeRowPusher("checks", function () { return checks; }, cloudRowSyncSig("checks"));
+  const customersPusher = makeRowPusher("customers", function () { return customers; }, cloudRowSyncSig("customers"));
+  const suppliersPusher = makeRowPusher("suppliers", function () { return suppliers; }, cloudRowSyncSig("suppliers"));
+  const fixedAssetsPusher = makeRowPusher("fixed_assets", function () { return fixedAssets; }, cloudRowSyncSig("fixed_assets"));
+  const shiftPusher = makeRowPusher("cashier_shifts", function () { return shifts; }, cloudRowSyncSig("cashier_shifts"));
+  const tripPusher = makeRowPusher("car_trips", function () { return carTrips; }, cloudRowSyncSig("car_trips"));
+
   const rowPushers = [treasuryPusher, purchasePusher, saleReturnPusher, purchaseReturnPusher,
-    customerTxPusher, supplierTxPusher, voucherPusher];
+    customerTxPusher, supplierTxPusher, voucherPusher,
+    checksPusher, customersPusher, suppliersPusher, fixedAssetsPusher, shiftPusher, tripPusher];
 
   function rowPushersInit() {
     rowPushers.forEach(function (p) { p.init(); });
@@ -2045,6 +2079,98 @@
       if (list.indexOf(p.name) >= 0) p.markAllDirty();
     });
   }
+
+  /* 🧱 بناء 240 (F4): «مطلوب رفع للسحابة» بقى مقيسًا ومعلنًا.
+   * العلة: رفعة فشلت كانت بتسيب الصفوف متسخة في الطابور بصمت — المستخدم فاكر إنها وصلت،
+   * وبعدها يقفل الصفحة (الموبايل) فالطابور بيروح مع الذاكرة ⇒ الشيك/الفاتورة ما وصلوش خالص.
+   * من هنا: شريط ودّي فوق المحتوى بعدّاد مقيس من state بتاع الطوابير (مش تقدير) +
+   * آخر محاولة رفع قبل ما الصفحة تقفل + لقطة ديسك ضمان عند الإغلاق.
+   * (الكتلة دي محلة بعد تعريف كل الطوابير — `[salesPusher…].concat(rowPushers)` بتتقوَّم
+   * فور تعريفها، وحطها فوق كان بيرمي ReferenceError في هدوء الـ try/catch بتاع الإقلاع.) */
+  const ALL_ROW_PUSHERS = [salesPusher, journalPusher].concat(rowPushers);
+  const UP_PENDING_TICK_MS = 10000;
+  function uploadsPendingCount() {
+    let n = 0;
+    try {
+      if (typeof productsDirty !== "undefined") n += productsDirty.size + productsRemoved.size;
+      if (typeof accountsDirty !== "undefined") n += accountsDirty.size + accountsRemoved.size;
+    } catch (e) { }
+    ALL_ROW_PUSHERS.forEach(function (p) {
+      try { n += (p.state.dirty ? p.state.dirty.size : 0) + (p.state.removed ? p.state.removed.size : 0); } catch (e) { }
+    });
+    return n;
+  }
+  function ensureUpPendingBar() {
+    let el = document.getElementById("upPendingBar");
+    if (el) return el;
+    try {
+      el = document.createElement("div");
+      el.id = "upPendingBar";
+      el.className = "up-pending";
+      el.setAttribute("role", "status");
+      el.hidden = true;
+      const main = document.querySelector("main.content");
+      if (main && main.parentNode) main.parentNode.insertBefore(el, main);
+      else document.body.appendChild(el);
+    } catch (e) { el = null; }
+    return el;
+  }
+  function isUpOnline() {
+    // نفس مصدر قرار الرفع (A.online هو اللي flush بيتحقّق منه) — عشان الشريط مايعرفش حالة غير اللي جوّه الطابير.
+    return !!(A.online && typeof DATA !== "undefined" && DATA.isOnline && DATA.isOnline());
+  }
+  function inCompanySession() {
+    // نفس شرط اللي flush بيشترطه (مافيش رفعة بره شركة) — فالشريط ما يظهرش على شاشة الدخول.
+    try { return !!(typeof DATA !== "undefined" && DATA.orgId && DATA.orgId()); } catch (e) { return false; }
+  }
+  function updateUpPendingBanner() {
+    const el = ensureUpPendingBar();
+    if (!el) return;
+    let n = 0;
+    try { n = uploadsPendingCount(); } catch (e) { }
+    if (!n || !inCompanySession()) { el.hidden = true; return; }
+    const online = isUpOnline();
+    el.hidden = false;
+    el.textContent = online
+      ? "⏳ " + n + " تعديل لسه ما وصلش للسحابة — متقفلش البرنامج، بيدوّق يوصّلهم لوحده."
+      : "⏳ " + n + " تعديل مستني الإنترنت — بياناتك على الجهاز محفوظة، وهتوصل السحابة أول ما الشبكة ترجع.";
+  }
+  // 🧱 إعادة المحاولة الدورية: الطابور كان بيرجع الصفوف لـ dirty بصمت ومافيش حد بينادي queue() تاني
+  //    غير «زرّ online» بتاع المتصفح. من هنا المراقب نفسه هو اللي بيدق — فما يبقى معلّق لأبد.
+  //    A.adopting/A.cleaning مستثنيين: نداء في نص دمج السحابة = يرفع صف محلي فوق صف حيّ.
+  function upPendingRetry() {
+    if (A.adopting || A.cleaning) return;
+    if (!inCompanySession() || !isUpOnline()) return;
+    if (typeof productsDirty !== "undefined" && (productsDirty.size || productsRemoved.size)) productsQueuePush(0);
+    if (typeof accountsDirty !== "undefined" && (accountsDirty.size || accountsRemoved.size)) accountsQueuePush(0);
+    ALL_ROW_PUSHERS.forEach(function (p) {
+      try { if (p.state.dirty.size || p.state.removed.size) p.queue(0); } catch (e) { }
+    });
+  }
+  let upPendingTimer = null;
+  function startUpPendingWatch() {
+    if (upPendingTimer) return;
+    upPendingTimer = setInterval(function () {
+      try { updateUpPendingBanner(); } catch (e) { }
+      try { upPendingRetry(); } catch (e) { }
+    }, UP_PENDING_TICK_MS);
+    updateUpPendingBanner();
+  }
+  // 🧱 آخر محاولة قبل الإغلاق: flush() مباشرة (مش queue) — الـ setTimeout ما بيدّقش والمرحلة
+  //    دي بتموت مع الصفحة، فالنداء لازم يتطلق جوه المعالج نفسه. ومعاه ضمانة لقطة ديسك.
+  //    المنطق ده هو اللي بيمنع تكرار البلاغ: شيك اتسجّل والرفعة وقعت = يفضل مطلوبًا لحد ما يوصل.
+  try {
+    window.addEventListener("pagehide", function () {
+      try {
+        ALL_ROW_PUSHERS.forEach(function (p) {
+          if (p.state.dirty.size || p.state.removed.size) p.flush();
+        });
+        if (typeof productsDirty !== "undefined" && (productsDirty.size || productsRemoved.size)) productsFlush();
+        if (typeof accountsDirty !== "undefined" && (accountsDirty.size || accountsRemoved.size)) accountsFlush();
+      } catch (e) { }
+      try { syncToLocalDisk(); } catch (e) { }
+    });
+  } catch (e) { }
 
   function salesSyncInit() { salesPusher.init(); }
   function salesMarkAllDirty() { salesPusher.markAllDirty(); }
@@ -2078,21 +2204,31 @@
   }
 
   // 🆕 بناء 176: حفظ ورديات الكاشير — محلي أولًا ثم رفع سحابي ثم لقطة الديسك
+  // 🧱 بناء 240: رفعة بالصفوف المتسخة مع إعادة عند الفشل (كانت pushTable بلا إعادة).
   function saveShifts() {
     localStorage.setItem(LS_SHIFTS, JSON.stringify(shifts));
-    pushTable("cashier_shifts"); syncToLocalDisk();
+    shiftPusher.trackChanges();
+    shiftPusher.queue();
+    syncToLocalDisk();
   }
 
   // 🚚 بناء 178: حفظ رحلات سيارات المناديب — محلي أولًا ثم رفع سحابي ثم لقطة الديسك
+  // 🧱 بناء 240: نفس النمط — الصف الفاشل يفضل متسخ لحد ما الرفعة تنجح.
   function saveCarTrips() {
     localStorage.setItem(LS_CAR_TRIPS, JSON.stringify(carTrips));
-    pushTable("car_trips"); syncToLocalDisk();
+    tripPusher.trackChanges();
+    tripPusher.queue();
+    syncToLocalDisk();
   }
 
   // 🧾 بناء 190: حفظ الشيكات — محلي أولًا ثم رفع سحابي ثم لقطة الديسك
+  // 🧱 بناء 240: جذر بلاغ الموبايل — الشيك كان بيوصل لـ pushTable وفيه الرفعة بتطيح بصمت.
+  // من هنا أي شيك متغير أو جديد بيظل مطلوبًا في الطابور لحد ما السحابة تقبله.
   function saveChecks() {
     localStorage.setItem(LS_CHECKS, JSON.stringify(checks));
-    pushTable("checks"); syncToLocalDisk();
+    checksPusher.trackChanges();
+    checksPusher.queue();
+    syncToLocalDisk();
   }
 
   // 🧾 بناء 190: ضمان وجود «إنستا باي» (خزينة نظام محمية) + «المحفظة» الافتراضية لأي شركة
@@ -2161,7 +2297,10 @@
 
   function saveCustomers() {
     localStorage.setItem(LS_CUSTOMERS, JSON.stringify(customers));
-    pushTable("customers"); syncToLocalDisk();
+    // 🧱 بناء 240: نفس نمط 235 — العميل الجديد اللي الرفعة وقعت بيظل في الطابور
+    customersPusher.trackChanges();
+    customersPusher.queue();
+    syncToLocalDisk();
   }
 
   function saveTxs() {
