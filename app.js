@@ -57,6 +57,14 @@
      **بره LS_ALL_KEYS عمدًا** (ما يتمسحش عند تبديل الشركة: أرضية أعلى = تخطّي أرقام،
      ومفيش أي تصادم لأن detUuid بيشمل رقم الشركة). */
   const LS_ID_FLOORS = "mizan_id_floors_v1";
+  /* 🧱 بناء 241: «اللي لسه ما وصلش للسحابة» بقى محفوظًا على القرص لكل شركة.
+     السبب الجذري المقاس: طوابير الرفع (makeRowPusher / products / accounts) كلها في الذاكرة،
+     و`rowPushersInit()` — اللي بتتنفّذ عند الإقلاع وبعد كل دمج سحابي — بتاخد البصمة من
+     القائمة المحلية فتعدّ أي صف «مرفوع». فأي رفعة فشلت أو التطبيق اتقفل قبلها = الصف بيضِل
+     على الجهاز ده للأبد بلا أي إعادة محاولة (بلاغ المالك: «الفواتير اللي اتعملت من الموبايل
+     موصلتش للاب توب»). المفتاح ده **بره LS_ALL_KEYS** ومتقسّم لكل شركة لوحدها، فما يلوثش
+     شركة ببيانات شركة تانية، وما يتمسحش عند تبديل الشركة. */
+  const LS_OUTBOX = "mizan_outbox_v1";
   /* 🧮 بناء 145 → 146: ورق «الجرد بالباركود» على جهاز العميل بس (مافيش جدول سحابي ومافيش ترقية).
      ⚠️ المفتاح **بره** `LS_ALL_KEYS` عندنا عمدًا، والسبب مقاس حيًّا (طلب المالك 06/10 ≈23:50:
      «مش بيحفظ ورقة الجرد»): `guardOrgSwitch()` بينادي `wipeLocalTables()` اللي بتمسح **كل**
@@ -491,6 +499,7 @@
   let productsPushBusy = false;
   let productsPushQueued = false;
   let productsPushGen = 0;
+  let productsPushFails = 0;          // 🧱 بناء 241: تتابع الفشل = مدة الانتظار قبل المحاولة الجاية
   // 🆕 بناء 233: مزامنة صفوف الحسابات المتغيرة فقط (بدل رفع/سحب الجدول كامل مع كل فاتورة).
   let accountsSnap = null;
   let accountsDirty = new Set();
@@ -499,6 +508,7 @@
   let accountsPushBusy = false;
   let accountsPushQueued = false;
   let accountsPushGen = 0;
+  let accountsPushFails = 0;          // 🧱 بناء 241: نفس الأرضية للحسابات
   let accountsPushWaiters = [];
   let activity = [];
   // 🆕 بناء 173: حالة ودجت «آخر العمليات» في الداشبورد — مصدره السجل السحابي
@@ -1590,11 +1600,17 @@
     (products || []).forEach((p) => {
       if (p && p.id != null) productsSnap.set(Number(p.id), productSyncSig(p));
     });
+    /* 🧱 بناء 241: نفس علة طوابير 235/240 — كل إقلاع كان بيمسح المعلّق وبيعدّ
+       المحلي مرفوع. المعلّق على القرص يرجع الأول، وبعدين الرفعة تتعادى. */
+    const back = outboxRestore("products", productsDirty, productsRemoved, productsSnap, function () { return products; });
+    outboxSave("products", productsDirty, productsRemoved);
+    if (back && (productsDirty.size || productsRemoved.size)) productsQueuePush(50);
   }
 
   function productsMarkAllDirty() {
     (products || []).forEach((p) => { if (p && p.id != null) productsDirty.add(Number(p.id)); });
     productsRemoved = new Set();
+    outboxSave("products", productsDirty, productsRemoved);
   }
 
   function productsTrackChanges() {
@@ -1613,6 +1629,7 @@
     productsSnap.forEach((sig, id) => {
       if (!now.has(id)) productsRemoved.add(id);
     });
+    outboxSave("products", productsDirty, productsRemoved);   // 🧱 بناء 241
   }
 
   function productsQueuePush(delay) {
@@ -1637,6 +1654,7 @@
       if (p) sentSigs.set(Number(id), productSyncSig(p));
     });
     const gen = productsPushGen;
+    outboxSave("products", productsDirty, productsRemoved);   // 🧱 اللي «في اليد» يفضل مطلوب رفعه
     productsDirty.clear();
     productsRemoved.clear();
     productsPushBusy = true;
@@ -1645,19 +1663,50 @@
     catch (e) { call = Promise.resolve(false); }
     const done = (ok) => {
       productsPushBusy = false;
-      const queued = productsPushQueued;
       productsPushQueued = false;
       if (gen === productsPushGen && ok) {
         sentSigs.forEach((sig, id) => productsSnap.set(id, sig));
         removed.forEach((id) => productsSnap.delete(id));
+        productsPushFails = 0;
       } else if (gen === productsPushGen) {
         ids.forEach((id) => productsDirty.add(id));
         removed.forEach((id) => productsRemoved.add(id));
+        if (ids.length || removed.length) productsPushFails++;
       }
-      if (gen === productsPushGen && queued && ok) productsQueuePush(50);
+      /* 🧱 بناء 241: الفرع القديم كان «queued && ok» بس ⇒ رفعة فاشلة = مافيش محاولة
+         جاية خالص، والصفوف تفضل متسخة في الذاكرة لحد ما الصفحة تتقفل. */
+      outboxSave("products", productsDirty, productsRemoved);
+      const residue = !!(productsDirty.size || productsRemoved.size);
+      if (gen === productsPushGen && residue) {
+        productsQueuePush(ok ? 50 : Math.min(120000, 2000 * Math.pow(2, Math.min(6, productsPushFails))));
+      }
       return ok;
     };
     return Promise.resolve(call).then(done, () => done(false));
+  }
+
+  /* 🧱 بناء 241: مصالحة الأصناف مع السحابة (نفس قرار طوابير الصفوف: add-only،
+     والزرعة اللي بتترجّع صفرًا لو السحابة ما ردّتش). */
+  function productsReconcile() {
+    if (!A.online || A.adopting || A.cleaning || !window.CLOUD || !window.CLOUD.listLocalIds) {
+      return Promise.resolve(0);
+    }
+    if (!DATA.orgId || !DATA.orgId()) return Promise.resolve(0);
+    return Promise.resolve(window.CLOUD.listLocalIds("products")).then((have) => {
+      if (!have) return 0;
+      let added = 0;
+      (products || []).forEach((p) => {
+        if (!p || p.id == null) return;
+        const id = Number(p.id);
+        if (have[id] || productsDirty.has(id)) return;
+        productsDirty.add(id); added++;
+      });
+      if (added) {
+        outboxSave("products", productsDirty, productsRemoved);
+        productsQueuePush(50);
+      }
+      return added;
+    }).catch(() => 0);
   }
 
   function saveProducts() {
@@ -1674,6 +1723,10 @@
       if (salesPusher.state.dirty.size || salesPusher.state.removed.size) salesQueuePush(100);
       if (journalPusher.state.dirty.size || journalPusher.state.removed.size) journalQueuePush(100);
       rowPushersQueueIfDirty(100);
+      // 🧱 بناء 241: النت رجع ⇒ (١) أي رفعة مستنية على القرص ترجع للطابور (restoreOutbox جوّه healUnsynced)
+      //    و(٢) نقارن اللي على الجهاز باللي فعليًا على السحابة، فالناقص يتعلّم dirty ويترفع.
+      //    force=true: النت جديد فالسقف الزمني (HEAL_MS) مالوش معنى هنا — دي أول فرصة مقارنة.
+      try { healUnsynced(true); } catch (e) { }
     });
   } catch (e) { }
 
@@ -1698,11 +1751,16 @@
     (accounts || []).forEach((a) => {
       if (a && a.id != null) accountsSnap.set(Number(a.id), accountSyncSig(a));
     });
+    /* 🧱 بناء 241: الحسابات المعلّقة ترجع من القرص — نفس العلة بالظبط. */
+    const back = outboxRestore("accounts", accountsDirty, accountsRemoved, accountsSnap, function () { return accounts; });
+    outboxSave("accounts", accountsDirty, accountsRemoved);
+    if (back && (accountsDirty.size || accountsRemoved.size)) accountsQueuePush(50);
   }
 
   function accountsMarkAllDirty() {
     (accounts || []).forEach((a) => { if (a && a.id != null) accountsDirty.add(Number(a.id)); });
     accountsRemoved = new Set();
+    outboxSave("accounts", accountsDirty, accountsRemoved);
   }
 
   function accountsTrackChanges() {
@@ -1720,6 +1778,7 @@
     accountsSnap.forEach((sig, id) => {
       if (!now.has(id)) accountsRemoved.add(id);
     });
+    outboxSave("accounts", accountsDirty, accountsRemoved);   // 🧱 بناء 241
   }
 
   function accountsQueuePush(delay) {
@@ -1751,6 +1810,7 @@
       if (a) sentSigs.set(Number(id), accountSyncSig(a));
     });
     const gen = accountsPushGen;
+    outboxSave("accounts", accountsDirty, accountsRemoved);   // 🧱 بناء 241
     accountsDirty.clear();
     accountsRemoved.clear();
     accountsPushBusy = true;
@@ -1764,13 +1824,21 @@
       if (gen === accountsPushGen && ok) {
         sentSigs.forEach((sig, id) => accountsSnap.set(id, sig));
         removed.forEach((id) => accountsSnap.delete(id));
+        accountsPushFails = 0;
       } else if (gen === accountsPushGen) {
         ids.forEach((id) => accountsDirty.add(id));
         removed.forEach((id) => accountsRemoved.add(id));
+        if (ids.length || removed.length) accountsPushFails++;
       }
-      if (gen === accountsPushGen && queued && ok) accountsQueuePush(50);
-      else if (gen !== accountsPushGen && (accountsDirty.size || accountsRemoved.size)) accountsQueuePush(50);
-      else if (queued) {
+      /* 🧱 بناء 241: أي بقايا ليها محاولة جاية مضمونة (بـ backoff عند الفشل)،
+         والفرع الميت القديم («في طابور + الرفعة فشلت») بقى بيشتغل. */
+      outboxSave("accounts", accountsDirty, accountsRemoved);
+      const residue = !!(accountsDirty.size || accountsRemoved.size);
+      if (gen === accountsPushGen && residue) {
+        accountsQueuePush(ok ? 50 : Math.min(120000, 2000 * Math.pow(2, Math.min(6, accountsPushFails))));
+      } else if (gen !== accountsPushGen && residue) {
+        accountsQueuePush(50);
+      } else if (queued) {
         const ws = accountsPushWaiters;
         accountsPushWaiters = [];
         ws.forEach((fn) => { try { fn(false); } catch (e) { } });
@@ -1778,6 +1846,29 @@
       return ok;
     };
     return Promise.resolve(call).then(done, () => done(false));
+  }
+
+  /* 🧱 بناء 241: مصالحة الحسابات مع السحابة (add-only — نفس قرار الصفوف). */
+  function accountsReconcile() {
+    if (!A.online || A.adopting || A.cleaning || !window.CLOUD || !window.CLOUD.listLocalIds) {
+      return Promise.resolve(0);
+    }
+    if (!DATA.orgId || !DATA.orgId()) return Promise.resolve(0);
+    return Promise.resolve(window.CLOUD.listLocalIds("accounts")).then((have) => {
+      if (!have) return 0;
+      let added = 0;
+      (accounts || []).forEach((a) => {
+        if (!a || a.id == null) return;
+        const id = Number(a.id);
+        if (have[id] || accountsDirty.has(id)) return;
+        accountsDirty.add(id); added++;
+      });
+      if (added) {
+        outboxSave("accounts", accountsDirty, accountsRemoved);
+        accountsQueuePush(50);
+      }
+      return added;
+    }).catch(() => 0);
   }
 
   function saveSales() {
@@ -1914,6 +2005,51 @@
 
   // 🆕 بناء 235: بصمة الصف من نفس حقول الرفع السحابي (META.toCloud) + أسطره.
   // إعادة استخدام التعريف الواحد تمنع اختلاف البصمة عن المحتوى المرفوع فعلًا.
+  /* ===== بناء 241: الطابور الدائم على القرص — مفتاح لكل شركة لوحدها ===== */
+  function outboxKey() {
+    try {
+      const o = (typeof DATA !== "undefined" && DATA.orgId && DATA.orgId()) || null;
+      return o ? LS_OUTBOX + ":" + String(o) : null;   // بره شركة سحابية = مافيش طابور دائم
+    } catch (e) { return null; }
+  }
+  function outboxAll() {
+    const k = outboxKey();
+    if (!k) return null;
+    try { return JSON.parse(localStorage.getItem(k) || "{}") || {}; } catch (e) { return null; }
+  }
+  function outboxSave(name, dirty, removed) {
+    const k = outboxKey(); if (!k) return;
+    try {
+      const all = outboxAll() || {};
+      const ids = Array.from(dirty || []), rem = Array.from(removed || []);
+      if (ids.length || rem.length) all[name] = { i: ids, r: rem }; else delete all[name];
+      localStorage.setItem(k, JSON.stringify(all));
+    } catch (e) { }
+  }
+  /* يرجّع «كام صف كان معلّقًا على القرص ورجع للطابور» — وده اللي بيرجع فواتير الموبايل
+     اللي ضاعت من builds قبل كده، لأن البصمة الجديدة وحدها كانت بتعتبرها مرفوعة. */
+  function outboxRestore(name, dirty, removed, snap, listFn) {
+    const all = outboxAll(); if (!all) return 0;
+    const o = all[name]; if (!o) return 0;
+    try {
+      const list = (typeof listFn === "function" ? listFn() : null) || [];
+      const has = function (id) { return list.some(function (x) { return x && Number(x.id) === id; }); };
+      let n = 0;
+      (o.i || []).forEach(function (raw) {
+        const id = Number(raw);
+        if (id > 0 && has(id) && !dirty.has(id)) { dirty.add(id); n++; }
+      });
+      (o.r || []).forEach(function (raw) {
+        const id = Number(raw);
+        if (id > 0 && !has(id)) {
+          if (snap && !snap.has(id)) snap.set(id, "~outbox");   // عشان trackChanges ما يعتبروش صنفًا جديدًا
+          if (!removed.has(id)) { removed.add(id); n++; }
+        }
+      });
+      return n;
+    } catch (e) { return 0; }
+  }
+
   function cloudRowSyncSig(name) {
     return function (r) {
       const m = window.CLOUD && window.CLOUD.META && window.CLOUD.META[name];
@@ -1930,7 +2066,7 @@
   function makeRowPusher(name, listFn, sigFn) {
     const st = {
       snap: null, dirty: new Set(), removed: new Set(), timer: null,
-      busy: false, queued: false, gen: 0, waiters: []
+      busy: false, queued: false, gen: 0, waiters: [], fails: 0
     };
     function init() {
       st.gen++;
@@ -1944,10 +2080,16 @@
       (listFn() || []).forEach(function (r) {
         if (r && r.id != null) st.snap.set(Number(r.id), sigFn(r));
       });
+      /* 🧱 بناء 241: الطابور مكانش بيرجع من القرص — فكل إقلاع كان بيمسح «اللي ما وصلش»
+         ويعدّي المحلي كله مرفوع. من هنا المعلّق على القرص يرجع أول ما البصمة تتاخد. */
+      const back = outboxRestore(name, st.dirty, st.removed, st.snap, listFn);
+      outboxSave(name, st.dirty, st.removed);
+      if (back && (st.dirty.size || st.removed.size)) queue(50);
     }
     function markAllDirty() {
       (listFn() || []).forEach(function (r) { if (r && r.id != null) st.dirty.add(Number(r.id)); });
       st.removed = new Set();
+      outboxSave(name, st.dirty, st.removed);
     }
     function trackChanges() {
       const now = new Map();
@@ -1970,6 +2112,9 @@
       st.snap.forEach(function (sig, id) {
         if (!now.has(id)) st.removed.add(id);
       });
+      /* 🧱 بناء 241: كل تغيير محلي بيتسجّل على القرص فورًا — لأن الموبايل بيتقفل
+         والمؤقّت (setTimeout) ما كانش لسه ضرب، فالطابور كان بيروح مع الذاكرة. */
+      outboxSave(name, st.dirty, st.removed);
     }
     function queue(delay) {
       const p = new Promise(function (resolve) { st.waiters.push(resolve); });
@@ -2000,6 +2145,9 @@
         if (r) sentSigs.set(Number(id), sigFn(r));
       });
       const gen = st.gen;
+      /* 🧱 بناء 241: الطابور بيتكتب على القرص **قبل** ما يتفرّغ — فاللي هو «في اليد»
+         دلوقتي يفضل مطلوب رفعه لو الصفحة اتقفلت في نص الرفعة (الموبايل). */
+      outboxSave(name, st.dirty, st.removed);
       st.dirty.clear();
       st.removed.clear();
       st.busy = true;
@@ -2013,6 +2161,7 @@
         if (gen === st.gen && ok) {
           sentSigs.forEach(function (sig, id) { st.snap.set(id, sig); });
           removed.forEach(function (id) { st.snap.delete(id); });
+          st.fails = 0;
         } else if (gen === st.gen) {
           // 🧱 إعادة المحاولة مش عمياء: الصنف اللي لسه في القائمة يرجع «مطلوب رفع»،
           //    واللي انحذف منها قبل ما الرفعة تنجح يرجع «مطلوب حذف» — وإلا يفضل في dirty
@@ -2023,10 +2172,18 @@
             if (stillThere) st.dirty.add(id); else st.removed.add(id);
           });
           removed.forEach(function (id) { st.removed.add(id); });
+          if (ids.length || removed.length) st.fails++;
         }
-        if (gen === st.gen && queued && ok) queue(50);
-        else if (gen !== st.gen && (st.dirty.size || st.removed.size)) queue(50);
-        else if (queued) {
+        /* 🧱 بناء 241: القرص بيتحدّث أول، وبعدين أي بقايا — ناجحة كانت أو فاشلة —
+           ليها محاولة جاية مضمونة. القديم كان فيه فرع ميت: «في طابور + الرفعة فشلت»
+           ما بيسّتش أي queue جديد، فالصفوف كانت بتفضل متسخة وحية في الذاكرة لسرمد. */
+        outboxSave(name, st.dirty, st.removed);
+        const residue = !!(st.dirty.size || st.removed.size);
+        if (gen === st.gen && residue) {
+          queue(ok ? 50 : Math.min(120000, 2000 * Math.pow(2, Math.min(6, st.fails))));
+        } else if (gen !== st.gen && residue) {
+          queue(50);
+        } else if (queued) {
           const ws = st.waiters;
           st.waiters = [];
           ws.forEach(function (fn) { try { fn(false); } catch (e) { } });
@@ -2035,7 +2192,50 @@
       };
       return Promise.resolve(call).then(done, function () { return done(false); });
     }
-    return { name: name, init: init, markAllDirty: markAllDirty, trackChanges: trackChanges, queue: queue, flush: flush, state: st };
+    /* 🧱 بناء 241: «مصالحة مع السحابة» — مش بنبصّ على البصمة المحلية وبس،
+       بنسأل السحابة نفسها: الأرقام دي موجودة هناك ولا لأ؟
+       أي رقم محلي ناقص عند السحابة يرجع «مطلوب رفع» ⇒ الفاتورة اللي ضاعت من
+       شاشة الموبايل قبل كده (وإحنا فاكرين إنها مرفوعة) بتنزل لوحدها أول ما الجهاز يفتح.
+       add-only عمدًا: مافيش رقم بيتشال من الطابور لمجرد إن السحابة تعرفه،
+       وإلا أي تعديل لسه معلّق بيتلغى بصمت (نفس الغلط بوجه تاني). */
+    function reconcile() {
+      if (!A.online || A.adopting || A.cleaning || !window.CLOUD || !window.CLOUD.listLocalIds) {
+        return Promise.resolve(0);
+      }
+      if (!DATA.orgId || !DATA.orgId()) return Promise.resolve(0);
+      return Promise.resolve(window.CLOUD.listLocalIds(name)).then(function (have) {
+        if (!have) return 0;                       // زعلة نت/صلاحية = مافيش لمس خالص
+        const gen = st.gen;
+        let added = 0;
+        if (gen === st.gen) {
+          (listFn() || []).forEach(function (r) {
+            if (!r || r.id == null) return;
+            const id = Number(r.id);
+            if (have[id] || st.dirty.has(id)) return;
+            st.dirty.add(id); added++;
+          });
+          if (added) {
+            outboxSave(name, st.dirty, st.removed);
+            queue(50);
+          }
+        }
+        return added;
+      }).catch(function () { return 0; });
+    }
+    /* 🧱 بناء 241: قرص الطابور بيقدر يرجع في أي وقت (مش عند init بس) — لأن init
+       بيتنفّذ والإقلاع لسه بره شركة سحابية (مافيش orgId) فالختم كان بيرجع صفر. */
+    function restoreOutbox() {
+      const back = outboxRestore(name, st.dirty, st.removed, st.snap, listFn);
+      if (back && (st.dirty.size || st.removed.size)) {
+        outboxSave(name, st.dirty, st.removed);
+        queue(50);
+      }
+      return back;
+    }
+    return {
+      name: name, init: init, markAllDirty: markAllDirty, trackChanges: trackChanges,
+      queue: queue, flush: flush, reconcile: reconcile, restoreOutbox: restoreOutbox, state: st
+    };
   }
 
   const salesPusher = makeRowPusher("sales", function () { return sales; }, saleSyncSig);
@@ -2089,6 +2289,56 @@
    * فور تعريفها، وحطها فوق كان بيرمي ReferenceError في هدوء الـ try/catch بتاع الإقلاع.) */
   const ALL_ROW_PUSHERS = [salesPusher, journalPusher].concat(rowPushers);
   const UP_PENDING_TICK_MS = 10000;
+  /* 🧱 بناء 241: مصالحة واحدة لكل الطوابير — تنادي السحابة وتسأل «الأرقام دي عندك؟».
+     بتتنادى (من healUnsynced): بعد كل دمج سحابي، وأول ما النت يرجع، وكل HEAL_MS
+     من المراقب الدوري (فأول نبضة بعد الفتح بتقارن علشان lastHealAt = 0).
+     رجوعها = كام صف اترجّع للطابور (مقيس، مش كلام). */
+  let rowPushersReconcileBusy = false;
+  function rowPushersReconcile() {
+    if (rowPushersReconcileBusy) return Promise.resolve(0);
+    rowPushersReconcileBusy = true;
+    const one = function (p) {
+      return Promise.resolve().then(function () { return p.reconcile(); }).catch(function () { return 0; });
+    };
+    const jobs = ALL_ROW_PUSHERS.map(one).concat([
+      Promise.resolve().then(function () { return productsReconcile(); }).catch(function () { return 0; }),
+      Promise.resolve().then(function () { return accountsReconcile(); }).catch(function () { return 0; })
+    ]);
+    return Promise.all(jobs).then(function (rs) {
+      rowPushersReconcileBusy = false;
+      let n = 0;
+      (rs || []).forEach(function (x) { n += Number(x) || 0; });
+      if (n) {
+        try { if (typeof updateUpPendingBanner === "function") updateUpPendingBanner(); } catch (e) { }
+      }
+      return n;
+    }, function () { rowPushersReconcileBusy = false; return 0; });
+  }
+
+  /* 🧱 بناء 241: «الشفاء الذاتي» — نقطتا دخول للحالة دي:
+     (١) المعلّق على القرص يرجع للطوابير حتى لو الإقلاع حصل بره شركة (restoreOutbox)
+     (١ب) نفس الأرضية للأصناف والحسابات
+     (٢) مصالحة مع السحابة: أي صف محلي مش هناك يرجع مطلوب رفع
+     بتتنادى: أول ما النت يرجع، وبعد كل دمج سحابي، وكل HEAL_MS في المراقب الدوري. */
+  const HEAL_MS = 300000;
+  let lastHealAt = 0;
+  function healUnsynced(force) {
+    if (!inCompanySession()) return Promise.resolve(0);
+    let back = 0;
+    try {
+      ALL_ROW_PUSHERS.forEach(function (p) { back += Number(p.restoreOutbox()) || 0; });
+      const pd = outboxRestore("products", productsDirty, productsRemoved, productsSnap, function () { return products; });
+      if (pd) { outboxSave("products", productsDirty, productsRemoved); productsQueuePush(50); }
+      const ad = outboxRestore("accounts", accountsDirty, accountsRemoved, accountsSnap, function () { return accounts; });
+      if (ad) { outboxSave("accounts", accountsDirty, accountsRemoved); accountsQueuePush(50); }
+      back += (Number(pd) || 0) + (Number(ad) || 0);
+    } catch (e) { }
+    if (!isUpOnline() || A.adopting || A.cleaning) return Promise.resolve(back);
+    if (!force && Date.now() - lastHealAt < HEAL_MS) return Promise.resolve(back);
+    lastHealAt = Date.now();
+    return rowPushersReconcile().then(function (r) { return back + (Number(r) || 0); }, function () { return back; });
+  }
+
   function uploadsPendingCount() {
     let n = 0;
     try {
@@ -2153,6 +2403,9 @@
     upPendingTimer = setInterval(function () {
       try { updateUpPendingBanner(); } catch (e) { }
       try { upPendingRetry(); } catch (e) { }
+      // 🧱 بناء 241: نفس النبضة تعيد الطابور الدائم لو الصفحة اتفتحت بعد موت التطبيق،
+      //    وتقارن مع السحابة كل HEAL_MS (الدالة نفسها بتسقف نفسها).
+      try { healUnsynced(); } catch (e) { }
     }, UP_PENDING_TICK_MS);
     updateUpPendingBanner();
   }
@@ -22716,6 +22969,10 @@ const pwEye = document.getElementById("btnShowPass");
     journalSyncInit();
     if (changed.indexOf("journal_entries") >= 0) journalMarkAllDirty();
     rowPushersMarkChanged(changed);
+    // 🧱 بناء 241: الدمج خلّص ⇒ ساعته تقدر تقارن «اللي على الجهاز» بـ«اللي فعليًا على السحابة»
+    //    (قبل الدمج المقارنة غلط لأن الصفوف لسه نازلة). force=true لأن ده أنضف وقت للمقارنة.
+    //    restoreOutbox جوّه healUnsynced كمان بيشيل أي رفعة معلّقة من موت التطبيق.
+    try { healUnsynced(true); } catch (e) { }
     return changed;
   }
 

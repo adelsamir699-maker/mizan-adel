@@ -1822,10 +1822,32 @@
       .catch(function (e) { return { ok: false, error: (e && e.message) || String(e) }; });
   }
 
+  /* 🧱 بناء 241 (جذر باگ «فواتير الموبايل موصلتش للاب توب»): «السحابة فيها أرقام إيه فعلًا».
+   * العلة المقاسة: الطابور المحلي (makeRowPusher) كان بيمسح نفسه عند كل إقلاع وكل دمج —
+   * `rowPushersInit()` بتاخد البصمة من **القائمة المحلية** فتعتبر أي صف «مرفوع وخلاص»، حتى لو
+   * الرفعة فشلت أو التطبيق اتقفل قبل ما تدوق. فالصف بيضل على الجهاز ده ظاهر للمستخدم، ومافيش
+   * حد بيعيد طلبه تاني أبدًا ⇒ بقية الأجهزة ما تشوفوشش خالص.
+   * من هنا: مقارنة **بواقع السحابة** (قراءة local_id بس، محصورة على شركة الجلسة بـ orgScoped)
+   * هي اللي بتكشف الناقص — وبتجبّلي الصفوف اللي ضاعت قبل كده من غير أي كتابة مننا.
+   * أي زعلة (نت/صرحية/جدول مش موجود) = null ⇒ «مافيش دليل» والطابور ما يتلمسش (fail-safe). */
+  function listLocalIds(name) {
+    var meta = META[name];
+    if (!meta || !meta.local || !DATA.isOnline() || !DATA.client()) return Promise.resolve(null);
+    return orgScoped(DATA.client().from(name).select("local_id"))
+      .then(function (res) {
+        if (res && res.error) { syncFailed(name, res.error); return null; }
+        var have = {};
+        ((res && res.data) || []).forEach(function (r) { if (r && r.local_id != null) have[Number(r.local_id)] = 1; });
+        return have;
+      })
+      .catch(function (e) { syncFailed(name, e); return null; });
+  }
+
   window.CLOUD = {
     push: push,
     setTreasuryOpening: setTreasuryOpening,
     pushRows: pushRows,
+    listLocalIds: listLocalIds,
     useBatchRows: useBatchRows,
     loadAll: loadAll,
     detUuid: detUuid,
