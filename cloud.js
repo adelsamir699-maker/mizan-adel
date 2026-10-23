@@ -1014,6 +1014,110 @@
     return o ? q.eq("org_id", o) : q;
   }
 
+  // 🆕 بناء 234: أدوات رفع أسطر الأصناف/القيود للأب المتغير فقط.
+  function chunkList(arr, size) {
+    var out = [];
+    for (var i = 0; i < (arr || []).length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  }
+
+  function upsertRowsSmart(client, table, rows) {
+    return client.from(table).upsert(rows, { onConflict: "id" }).select("id, local_id").then(function (u) {
+      if (u && u.error) {
+        var code = String((u.error && u.error.code) || "");
+        var msg = String((u.error && u.error.message) || "");
+        if (code === "23505" || /duplicate key/i.test(msg)) {
+          return client.from(table).upsert(rows, { onConflict: "org_id,local_id" }).select("id, local_id").then(function (u2) {
+            if (u2 && u2.error) throw u2.error;
+            return u2.data || [];
+          });
+        }
+        throw u.error;
+      }
+      return u && u.data ? u.data : [];
+    });
+  }
+
+  function deleteIdList(client, table, idList) {
+    var list = (idList || []).filter(Boolean);
+    if (!list.length) return Promise.resolve();
+    return Promise.all(chunkList(list, 100).map(function (part) {
+      return client.from(table).delete().in("id", part).then(function (d) {
+        if (d && d.error) throw d.error;
+      });
+    }));
+  }
+
+  // أسطر الأب المتغير: نرفع أسطره الحالية، ونمسح فقط الأسطر القديمة اللي الجهاز شافها
+  // (نفس حارس seenIds في syncItems) — مش بنمسح أسطر أضافها جهاز تاني بعد آخر تنزيل.
+  function pushSubsetItems(name, ids, removed) {
+    var meta = META[name];
+    if (!meta || !meta.itemsTable) return Promise.resolve(true);
+    var itemsTable = meta.itemsTable;
+    var parentField = meta.itemsParentField || PARENT_OF[itemsTable];
+    if (!parentField) return Promise.resolve(true);
+    var client = DATA.client();
+    var idMap = (W.idMap && W.idMap[name]) || {};
+    var itemMap = (W.idMap && W.idMap[itemsTable]) || {};
+    var local = meta.local() || [];
+    var byId = {};
+    local.forEach(function (p) { if (p && p.id != null) byId[Number(p.id)] = p; });
+    var keep = {};
+    (ids || []).forEach(function (raw) {
+      var id = Number(raw);
+      var p = byId[id];
+      if (!p) return;
+      keep[id] = 0;
+    });
+    var rows = [];
+    (ids || []).forEach(function (raw) {
+      var id = Number(raw);
+      var p = byId[id];
+      var pUuid = idMap[id];
+      if (!p || !pUuid) return;
+      var mapped = meta.itemToCloud(p) || [];
+      mapped.forEach(function (row, idx) {
+        if (!row) return;
+        row.local_id = id * 1000 + (idx + 1);
+        row[parentField] = pUuid;
+        row.id = detUuid(itemsTable, row.local_id);
+        rows.push(row);
+      });
+      keep[id] = Math.min(mapped.length, 999);
+    });
+    var changedParents = {};
+    (ids || []).forEach(function (id) { changedParents[Number(id)] = 1; });
+    (removed || []).forEach(function (id) { changedParents[Number(id)] = 1; });
+    var stale = [];
+    Object.keys(itemMap).forEach(function (k) {
+      var lid = Number(k);
+      if (!lid) return;
+      var pid = Math.floor(lid / 1000);
+      if (!changedParents[pid]) return;
+      if (keep[pid] != null && (lid % 1000) <= keep[pid]) return;
+      if (itemMap[k]) stale.push(itemMap[k]);
+    });
+    var chain = Promise.resolve();
+    if (rows.length) {
+      chain = upsertRowsSmart(client, itemsTable, rows).then(function (saved) {
+        rememberIds(itemsTable, saved);
+      });
+    }
+    if (stale.length) {
+      var staleSet = {};
+      stale.forEach(function (id) { staleSet[id] = 1; });
+      chain = chain.then(function () { return deleteIdList(client, itemsTable, stale); }).then(function () {
+        Object.keys(itemMap).forEach(function (k) {
+          if (staleSet[itemMap[k]]) delete itemMap[k];
+        });
+      });
+    }
+    return chain.then(function () { return true; }).catch(function (e) {
+      syncFailed(itemsTable, e);
+      return false;
+    });
+  }
+
   // 🆕 بناء 232/233: رفع الصفوف المتغيرة فقط بدل الجدول كامل مع كل حفظ.
   // ids = أرقام local_id المتغيرة، removed = أرقام local_id المحذوفة محليًا.
   // لا نعمل select للجدول كامل: الهوية السحابية من W.idMap، والصفوف الجديدة فقط
@@ -1039,6 +1143,9 @@
       if (idMap[Number(row.local_id)] == null && missing.indexOf(Number(row.local_id)) < 0) {
         missing.push(Number(row.local_id));
       }
+    });
+    rem.forEach(function (id) {
+      if (idMap[id] == null && missing.indexOf(id) < 0) missing.push(id);
     });
     var ready = Promise.resolve();
     if (missing.length) {
@@ -1067,20 +1174,7 @@
       }
       if (rows.length) {
         chain = chain.then(function () {
-          return client.from(name).upsert(rows, { onConflict: "id" }).select("id, local_id").then(function (u) {
-            if (u && u.error) {
-              var code = String((u.error && u.error.code) || "");
-              var msg = String((u.error && u.error.message) || "");
-              if (code === "23505" || /duplicate key/i.test(msg)) {
-                return client.from(name).upsert(rows, { onConflict: "org_id,local_id" }).select("id, local_id").then(function (u2) {
-                  if (u2 && u2.error) throw u2.error;
-                  return u2.data || [];
-                });
-              }
-              throw u.error;
-            }
-            return u && u.data ? u.data : [];
-          }).then(function (saved) {
+          return upsertRowsSmart(client, name, rows).then(function (saved) {
             saved.forEach(function (r) {
               if (r && r.local_id != null) idMap[Number(r.local_id)] = r.id;
             });
@@ -1088,6 +1182,9 @@
         });
       }
       return chain.then(function () {
+        return pushSubsetItems(name, ids, rem);
+      }).then(function (itemsOk) {
+        if (itemsOk === false) return false;
         // الهوية السحابية بتتسجّل من رد upsert نفسه (saved) — مش من row.id
         // المحسوب محليًا، عشان مسار fallback (org_id,local_id) ممكن يرجّع id مختلف.
         W.lastSyncAt = Date.now();
@@ -1111,6 +1208,8 @@
   function pushRows(name, ids, removed) {
     if (name === "products") return pushProductRows(ids, removed);
     if (name === "accounts") return pushAccountRows(ids, removed);
+    if (name === "sales") return pushSubsetRows("sales", ids, removed);
+    if (name === "journal_entries") return pushSubsetRows("journal_entries", ids, removed);
     return syncOne(name);
   }
 

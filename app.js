@@ -473,6 +473,8 @@
       mirror();
       productsSyncInit();
       accountsSyncInit();
+      salesSyncInit();
+      journalSyncInit();
     } finally { A.cleaning = false; }
   }
 
@@ -1541,6 +1543,8 @@
     // السحابية والحفظ العادي بيكملوا شغلهم — والفشل هنا محلي بحت ومش صامت (console).
     productsSyncInit();
     accountsSyncInit();
+    salesSyncInit();
+    journalSyncInit();
     try {
       if (!localStorage.getItem(LS_CUSTOMERS)) saveCustomers();
       if (!localStorage.getItem(LS_TXS)) saveTxs();
@@ -1675,6 +1679,8 @@
     window.addEventListener("online", function () {
       if (productsDirty.size || productsRemoved.size) productsQueuePush(100);
       if (accountsDirty.size || accountsRemoved.size) accountsQueuePush(100);
+      if (salesPusher.state.dirty.size || salesPusher.state.removed.size) salesQueuePush(100);
+      if (journalPusher.state.dirty.size || journalPusher.state.removed.size) journalQueuePush(100);
     });
   } catch (e) { }
 
@@ -1783,7 +1789,10 @@
 
   function saveSales() {
     localStorage.setItem(LS_SALES, JSON.stringify(sales));
-    pushTable("sales"); syncToLocalDisk();
+    salesTrackChanges();
+    const sync = salesQueuePush();
+    syncToLocalDisk();
+    return sync;
   }
 
   function saveTreasury() {
@@ -1838,8 +1847,168 @@
     journalEntries.forEach((j) => { const n = Number(j && j.id) || 0; if (n > JRN_ID_FLOOR) JRN_ID_FLOOR = n; });
     idFloorsSave();
     localStorage.setItem(LS_JOURNAL, JSON.stringify(journalEntries));
-    const sync = pushTable("journal_entries"); syncToLocalDisk(); return sync;
+    journalTrackChanges();
+    const sync = journalQueuePush(); syncToLocalDisk(); return sync;
   }
+
+  // 🆕 بناء 234: مزامنة صفوف الفواتير والقيود المتغيرة فقط + أسطرها.
+  // نفس نمط 232/233 (snapshot + dirty/removed + دمج + فشل يعيد الطابور).
+  function salePaySig(p) {
+    return [
+      String(p.method || p.payMethod || ""), round2(Number(p.amount) || 0),
+      p.treasuryId == null ? "" : String(p.treasuryId), String(p.bankName || ""),
+      String(p.checkNo || ""), String(p.dueDate || "")
+    ].join("~");
+  }
+
+  function saleSyncSig(s) {
+    const items = (s.items || []).map(function (it) {
+      return [
+        String(it.productId == null ? "" : it.productId), String(it.nameAr || it.name || ""),
+        String(it.code || ""), String(it.unit || ""), round2(Number(it.qty) || 0),
+        round2(Number(it.price) || 0), round2(Number(it.discount) || 0),
+        round2(Number(it.tax) || 0), round2(Number(it.total) || 0)
+      ].join("~");
+    }).join("|");
+    const pays = (s.payments || []).map(salePaySig).join("|");
+    return [
+      String(s.invoiceNumber || s.invoiceNo || s.id || ""), String(s.date || s.invoiceDate || ""),
+      String(s.customerName || s.customer || ""), s.customerId == null ? "" : String(s.customerId),
+      String(s.paymentMethod || ""), s.treasuryId == null ? "" : String(s.treasuryId),
+      String(s.warehouse || s.store || ""), String(s.notes || ""),
+      round2(Number(s.discountAmount || s.discount) || 0),
+      round2(Number(s.taxAmount || s.tax) || 0), round2(Number(s.grandTotal) || 0),
+      round2(Number(s.paidAmount) || 0), round2(Number(s.dueAmount) || 0), pays, items
+    ].join("\u0001");
+  }
+
+  function journalSyncSig(j) {
+    const lines = (j.lines || []).map(function (l) {
+      return [
+        l.accountId == null ? "" : String(l.accountId),
+        String(l.accountName || l.accountText || ""),
+        round2(Number(l.debit) || 0), round2(Number(l.credit) || 0)
+      ].join("~");
+    }).join("|");
+    return [
+      String(j.jrnNo || j.number || j.id || ""), String(j.date || j.docDate || ""),
+      String(j.refType || j.ref || ""), String(j.refId || ""),
+      String(j.description || j.desc || ""), lines
+    ].join("\u0001");
+  }
+
+  function makeRowPusher(name, listFn, sigFn) {
+    const st = {
+      snap: null, dirty: new Set(), removed: new Set(), timer: null,
+      busy: false, queued: false, gen: 0, waiters: []
+    };
+    function init() {
+      st.gen++;
+      if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+      const waiters = st.waiters;
+      st.waiters = [];
+      waiters.forEach(function (fn) { try { fn(false); } catch (e) { } });
+      st.dirty = new Set();
+      st.removed = new Set();
+      st.snap = new Map();
+      (listFn() || []).forEach(function (r) {
+        if (r && r.id != null) st.snap.set(Number(r.id), sigFn(r));
+      });
+    }
+    function markAllDirty() {
+      (listFn() || []).forEach(function (r) { if (r && r.id != null) st.dirty.add(Number(r.id)); });
+      st.removed = new Set();
+    }
+    function trackChanges() {
+      const now = new Map();
+      (listFn() || []).forEach(function (r) {
+        if (r && r.id != null) now.set(Number(r.id), sigFn(r));
+      });
+      if (!st.snap) { st.snap = now; return; }
+      Array.from(st.removed).forEach(function (id) {
+        if (now.has(id)) { st.removed.delete(id); st.dirty.add(id); }
+      });
+      now.forEach(function (sig, id) {
+        if (!st.snap.has(id) || st.snap.get(id) !== sig) st.dirty.add(id);
+      });
+      st.snap.forEach(function (sig, id) {
+        if (!now.has(id)) st.removed.add(id);
+      });
+    }
+    function queue(delay) {
+      const p = new Promise(function (resolve) { st.waiters.push(resolve); });
+      if (st.busy) { st.queued = true; return p; }
+      if (st.timer) return p;
+      st.timer = setTimeout(function () {
+        st.timer = null;
+        const waiters = st.waiters;
+        st.waiters = [];
+        flush().then(function (ok) {
+          waiters.forEach(function (fn) { try { fn(ok); } catch (e) { } });
+        });
+      }, delay == null ? 0 : delay);
+      return p;
+    }
+    function flush() {
+      if (st.busy) { st.queued = true; return Promise.resolve(false); }
+      if (!A.online || A.adopting || A.cleaning || !window.CLOUD || !DATA.orgId || !DATA.orgId()) {
+        return Promise.resolve(false);
+      }
+      const ids = Array.from(st.dirty);
+      const removed = Array.from(st.removed);
+      if (!ids.length && !removed.length) return Promise.resolve(true);
+      const list = listFn() || [];
+      const sentSigs = new Map();
+      ids.forEach(function (id) {
+        const r = list.find(function (x) { return Number(x.id) === Number(id); });
+        if (r) sentSigs.set(Number(id), sigFn(r));
+      });
+      const gen = st.gen;
+      st.dirty.clear();
+      st.removed.clear();
+      st.busy = true;
+      let call;
+      try { call = window.CLOUD.pushRows(name, ids, removed); }
+      catch (e) { call = Promise.resolve(false); }
+      const done = function (ok) {
+        st.busy = false;
+        const queued = st.queued;
+        st.queued = false;
+        if (gen === st.gen && ok) {
+          sentSigs.forEach(function (sig, id) { st.snap.set(id, sig); });
+          removed.forEach(function (id) { st.snap.delete(id); });
+        } else if (gen === st.gen) {
+          ids.forEach(function (id) { st.dirty.add(id); });
+          removed.forEach(function (id) { st.removed.add(id); });
+        }
+        if (gen === st.gen && queued && ok) queue(50);
+        else if (gen !== st.gen && (st.dirty.size || st.removed.size)) queue(50);
+        else if (queued) {
+          const ws = st.waiters;
+          st.waiters = [];
+          ws.forEach(function (fn) { try { fn(false); } catch (e) { } });
+        }
+        return ok;
+      };
+      return Promise.resolve(call).then(done, function () { return done(false); });
+    }
+    return { init: init, markAllDirty: markAllDirty, trackChanges: trackChanges, queue: queue, flush: flush, state: st };
+  }
+
+  const salesPusher = makeRowPusher("sales", function () { return sales; }, saleSyncSig);
+  const journalPusher = makeRowPusher("journal_entries", function () { return journalEntries; }, journalSyncSig);
+
+  function salesSyncInit() { salesPusher.init(); }
+  function salesMarkAllDirty() { salesPusher.markAllDirty(); }
+  function salesTrackChanges() { salesPusher.trackChanges(); }
+  function salesQueuePush(delay) { return salesPusher.queue(delay); }
+  function salesFlush() { return salesPusher.flush(); }
+
+  function journalSyncInit() { journalPusher.init(); }
+  function journalMarkAllDirty() { journalPusher.markAllDirty(); }
+  function journalTrackChanges() { journalPusher.trackChanges(); }
+  function journalQueuePush(delay) { return journalPusher.queue(delay); }
+  function journalFlush() { return journalPusher.flush(); }
 
   function saveUsers() {
     localStorage.setItem(LS_USERS, JSON.stringify(users));
@@ -21823,6 +21992,8 @@ const pwEye = document.getElementById("btnShowPass");
         A.adopting = false;
         if (productsDirty.size || productsRemoved.size) productsQueuePush();
         if (accountsDirty.size || accountsRemoved.size) accountsQueuePush();
+        if (salesPusher.state.dirty.size || salesPusher.state.removed.size) salesQueuePush();
+        if (journalPusher.state.dirty.size || journalPusher.state.removed.size) journalQueuePush();
         // 🆕 بناء 149 (سطر ٥): القيود دي نزلت فعلًا ⇒ أي شاشة كانت مستنية «لسه بتنزل»
         // بتترسم من جديد بالبيانات الحقيقية (مافيش «لا توجد قيود بعد» كذّابة).
         try { window.mizanOnLazyReady(); } catch (e) { }
@@ -21838,7 +22009,7 @@ const pwEye = document.getElementById("btnShowPass");
         try { stampStateOrg(DATA.org && DATA.org() ? DATA.org().id : null); } catch (e) { }
         seedPushFromLocal();
         // ارفع الجداول اللي فيها سجلات محلية لسه مش في السحابة (عشان ما تضلش معلّقة للأبد)
-        if (changed && changed.length) changed.forEach((t) => { if (t !== "products" && t !== "accounts") pushTable(t); });
+        if (changed && changed.length) changed.forEach((t) => { if (t !== "products" && t !== "accounts" && t !== "sales" && t !== "journal_entries") pushTable(t); });
         syncInvoiceSeqFromCloud();
         $("#btnLogout").hidden = false;
         // لا نُظهره هنا: يُتحكم فيه داخل proceedOnline
@@ -22280,6 +22451,10 @@ const pwEye = document.getElementById("btnShowPass");
     if (changed.indexOf("products") >= 0) productsMarkAllDirty();
     accountsSyncInit();
     if (changed.indexOf("accounts") >= 0) accountsMarkAllDirty();
+    salesSyncInit();
+    if (changed.indexOf("sales") >= 0) salesMarkAllDirty();
+    journalSyncInit();
+    if (changed.indexOf("journal_entries") >= 0) journalMarkAllDirty();
     return changed;
   }
 
