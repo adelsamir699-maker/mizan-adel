@@ -1210,6 +1210,12 @@
     if (name === "accounts") return pushAccountRows(ids, removed);
     if (name === "sales") return pushSubsetRows("sales", ids, removed);
     if (name === "journal_entries") return pushSubsetRows("journal_entries", ids, removed);
+    // 🆕 بناء 235: نفس النمط للجداول اللي كانت بتترفع كاملة مع كل حفظ.
+    if (name === "purchases" || name === "sale_returns" || name === "purchase_returns" ||
+        name === "customer_txs" || name === "supplier_txs" || name === "vouchers" ||
+        name === "treasury") {
+      return pushSubsetRows(name, ids, removed);
+    }
     return syncOne(name);
   }
 
