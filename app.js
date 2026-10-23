@@ -554,6 +554,7 @@
 
   /* ================== الأدوات الأونلاين ================== */
   const DB = window.MIZAN_STATE;
+  try { if (window.CLOUD && typeof window.CLOUD.useBatchRows === "function") window.CLOUD.useBatchRows(); } catch (e) { }
   const A = { online: false, uid: null, adopting: false, cleaning: false };
   let planWatchTimer = null;
   let presenceTimer = null;
@@ -20068,6 +20069,9 @@ id: nextVoucherId(),
     "db/supabase-upgrade-64-org-settings.sql",
     "db/supabase-upgrade-65-invoice-paid.sql",
     "db/supabase-upgrade-66-backup-checks.sql",
+    // 🔁 ترقية ٦٧ (بناء 236): RPC موحّدة mizan_sync_batch — تجمع رفع الأب وأسطره
+    // والقيود والحركات في معاملة واحدة بدل عشرات الطلبات لكل فاتورة.
+    "db/supabase-upgrade-67-sync-batch.sql",
     // 🔐 ترقية ٥٨ (بند المراجعة #17 — إخفاء كلمات المرور الصريحة): تعيد تعريف ٧ دوال بلا حفظ
     // الصريح، وتحذف mizan_admin_get_password، وتحذف عمودَي plain_password/password_plain.
     "db/supabase-upgrade-58-hide-plain-passwords.sql"];

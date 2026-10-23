@@ -1197,6 +1197,211 @@
     });
   }
 
+  // 🆕 بناء 236: تجميع رفع الجداول المتغيرة في RPC واحدة.
+  // الوضع الافتراضي متوقف (W.batchRows=false) حتى لا تتأثر الاختبارات/المسارات المباشرة.
+  var BATCH_TABLES = {
+    products: 1, accounts: 1, sales: 1, purchases: 1, sale_returns: 1,
+    purchase_returns: 1, customer_txs: 1, supplier_txs: 1, vouchers: 1,
+    treasury: 1, journal_entries: 1
+  };
+  var BATCH_RANK = {
+    treasury: 1, products: 2, accounts: 3, sales: 4, purchases: 4, sale_returns: 4,
+    purchase_returns: 4, journal_entries: 4, customer_txs: 5, supplier_txs: 5, vouchers: 5,
+    sale_items: 6, purchase_items: 6, sale_return_items: 6, purchase_return_items: 6,
+    journal_lines: 6
+  };
+  var rowBatch = { ops: {}, timer: null, busy: false, again: false, waiters: [] };
+
+  function useBatchRows() {
+    W.batchRows = true;
+  }
+
+  function batchSupported(name) {
+    return !!BATCH_TABLES[name];
+  }
+
+  function buildBatchOp(name, ids, removed) {
+    var meta = META[name];
+    if (!meta || !meta.local) return null;
+    var local = meta.local() || [];
+    var want = {};
+    (ids || []).forEach(function (id) { var n = Number(id); if (n > 0) want[n] = 1; });
+    var idMap = (W.idMap && W.idMap[name]) || {};
+    var rows = local.filter(function (r) { return want[Number(r.id)]; }).map(function (r) {
+      var row = meta.toCloud(r);
+      var cid = idMap[Number(r.id)];
+      if (cid) row.id = cid;
+      return row;
+    });
+    var rem = (removed || []).map(Number).filter(function (n) { return n > 0; });
+    if (!rows.length && !rem.length) return null;
+    var out = { name: name, ops: [{ table: name, rows: rows, deletes: rem }], itemTable: null, itemDeletes: [] };
+    if (!meta.itemsTable) return out;
+    var itemsTable = meta.itemsTable;
+    var parentField = meta.itemsParentField || PARENT_OF[itemsTable];
+    if (!parentField) return out;
+    var itemMap = (W.idMap && W.idMap[itemsTable]) || {};
+    var byId = {};
+    local.forEach(function (p) { if (p && p.id != null) byId[Number(p.id)] = p; });
+    var keep = {};
+    (ids || []).forEach(function (raw) {
+      var id = Number(raw);
+      if (!byId[id]) return;
+      keep[id] = 0;
+    });
+    var itemRows = [];
+    (ids || []).forEach(function (raw) {
+      var id = Number(raw);
+      var p = byId[id];
+      if (!p) return;
+      var pUuid = idMap[id] || detUuid(name, id);
+      var mapped = meta.itemToCloud(p) || [];
+      mapped.forEach(function (row, idx) {
+        if (!row) return;
+        row.local_id = id * 1000 + (idx + 1);
+        row[parentField] = pUuid;
+        row.id = detUuid(itemsTable, row.local_id);
+        row._parent_local_id = id;
+        itemRows.push(row);
+      });
+      keep[id] = Math.min(mapped.length, 999);
+    });
+    var changedParents = {};
+    (ids || []).forEach(function (id) { changedParents[Number(id)] = 1; });
+    (removed || []).forEach(function (id) { changedParents[Number(id)] = 1; });
+    var stale = [];
+    Object.keys(itemMap).forEach(function (k) {
+      var lid = Number(k);
+      if (!lid) return;
+      var pid = Math.floor(lid / 1000);
+      if (!changedParents[pid]) return;
+      if (keep[pid] != null && (lid % 1000) <= keep[pid]) return;
+      if (itemMap[k]) stale.push(itemMap[k]);
+    });
+    if (itemRows.length || stale.length) out.ops.push({ table: itemsTable, rows: itemRows, deletes: stale });
+    out.itemTable = itemsTable;
+    out.itemDeletes = stale;
+    return out;
+  }
+
+  function scheduleBatch(delay) {
+    if (rowBatch.timer) return;
+    rowBatch.timer = setTimeout(function () {
+      rowBatch.timer = null;
+      flushRowBatch();
+    }, delay || 20);
+  }
+
+  function queueRowBatch(name, ids, removed) {
+    var slot = rowBatch.ops[name];
+    if (!slot) slot = rowBatch.ops[name] = { ids: {}, removed: {} };
+    (ids || []).forEach(function (id) { var n = Number(id); if (n > 0) slot.ids[n] = 1; });
+    (removed || []).forEach(function (id) { var n = Number(id); if (n > 0) slot.removed[n] = 1; });
+    return new Promise(function (resolve) {
+      rowBatch.waiters.push({ name: name, resolve: resolve });
+      scheduleBatch(20);
+    });
+  }
+
+  function applyBatchMap(map) {
+    if (!map || typeof map !== "object") return;
+    W.idMap = W.idMap || {};
+    Object.keys(map).forEach(function (table) {
+      var mm = W.idMap[table] || (W.idMap[table] = {});
+      (map[table] || []).forEach(function (r) {
+        if (r && r.local_id != null && r.id) mm[Number(r.local_id)] = r.id;
+      });
+    });
+  }
+
+  function settleBatch(waiters, perName, allOk) {
+    waiters.forEach(function (w) {
+      var ok = allOk ? true : (perName[w.name] === true);
+      w.resolve(ok);
+    });
+    rowBatch.busy = false;
+    if (rowBatch.again) {
+      rowBatch.again = false;
+      scheduleBatch(30);
+    } else if (Object.keys(rowBatch.ops).length) {
+      scheduleBatch(30);
+    }
+  }
+
+  function fallbackBatch(pending, built, waiters, rpcErr) {
+    var names = Object.keys(built);
+    var perName = {};
+    Object.keys(pending).forEach(function (n) { if (!built[n]) perName[n] = true; });
+    return Promise.all(names.map(function (n) {
+      var ids = Object.keys(pending[n].ids).map(Number);
+      var rem = Object.keys(pending[n].removed).map(Number);
+      return pushSubsetRows(n, ids, rem).then(function (ok) { return { n: n, ok: ok === true }; })
+        .catch(function () { return { n: n, ok: false }; });
+    })).then(function (list) {
+      list.forEach(function (x) { perName[x.n] = x.ok; });
+      if (list.some(function (x) { return !x.ok; })) syncFailed("rows_batch", rpcErr);
+      settleBatch(waiters, perName, false);
+    });
+  }
+
+  function flushRowBatch() {
+    if (rowBatch.busy) { rowBatch.again = true; return; }
+    rowBatch.busy = true;
+    var pending = rowBatch.ops;
+    rowBatch.ops = {};
+    var waiters = rowBatch.waiters;
+    rowBatch.waiters = [];
+    var names = Object.keys(pending);
+    if (!names.length) { rowBatch.busy = false; return; }
+    var built = {}, ops = [];
+    names.sort(function (a, b) { return (BATCH_RANK[a] || 50) - (BATCH_RANK[b] || 50); }).forEach(function (name) {
+      var ids = Object.keys(pending[name].ids).map(Number);
+      var rem = Object.keys(pending[name].removed).map(Number);
+      var op = buildBatchOp(name, ids, rem);
+      if (!op) return;
+      built[name] = op;
+      op.ops.forEach(function (o) { ops.push(o); });
+    });
+    if (!ops.length) {
+      var empty = {};
+      names.forEach(function (n) { empty[n] = true; });
+      settleBatch(waiters, empty, true);
+      return;
+    }
+    var count = 0;
+    ops.forEach(function (o) { count += (o.rows || []).length + (o.deletes || []).length; });
+    var payload = null;
+    try { payload = JSON.stringify(ops); } catch (e) { payload = null; }
+    if (!payload || payload.length > 800000 || count > 1200) {
+      fallbackBatch(pending, built, waiters, new Error("batch too large"));
+      return;
+    }
+    Promise.resolve().then(function () {
+      return DATA.client().rpc("mizan_sync_batch", { p_ops: ops });
+    }).then(function (res) {
+      if (res && res.error) throw res.error;
+      applyBatchMap(res && res.data);
+      Object.keys(pending).forEach(function (n) {
+        var mm = W.idMap && W.idMap[n];
+        if (mm) Object.keys(pending[n].removed).forEach(function (id) { delete mm[Number(id)]; });
+      });
+      Object.keys(built).forEach(function (n) {
+        var op = built[n];
+        if (!op.itemTable || !op.itemDeletes.length) return;
+        var im = W.idMap && W.idMap[op.itemTable];
+        if (!im) return;
+        var dead = {};
+        op.itemDeletes.forEach(function (id) { dead[id] = 1; });
+        Object.keys(im).forEach(function (k) { if (dead[im[k]]) delete im[k]; });
+      });
+      W.lastSyncAt = Date.now();
+      W.lastSyncTable = "batch";
+      settleBatch(waiters, {}, true);
+    }).catch(function (e) {
+      fallbackBatch(pending, built, waiters, e);
+    });
+  }
+
   function pushProductRows(ids, removed) {
     return pushSubsetRows("products", ids, removed);
   }
@@ -1206,6 +1411,12 @@
   }
 
   function pushRows(name, ids, removed) {
+    if (W.batchRows && batchSupported(name) && DATA.isOnline() && DATA.client()) {
+      var local = (META[name] && META[name].local && META[name].local()) || [];
+      var rem = (removed || []).map(Number).filter(function (n) { return n > 0; });
+      if (rem.length > Math.max(5, Math.floor(local.length * 0.25))) return syncOne(name);
+      return queueRowBatch(name, ids, removed);
+    }
     if (name === "products") return pushProductRows(ids, removed);
     if (name === "accounts") return pushAccountRows(ids, removed);
     if (name === "sales") return pushSubsetRows("sales", ids, removed);
@@ -1889,6 +2100,7 @@
     chatBroadcast: chatBroadcast,
     setTreasuryOpening: setTreasuryOpening,
     pushRows: pushRows,
+    useBatchRows: useBatchRows,
     loadAll: loadAll,
     detUuid: detUuid,
     bumpInvoiceSeq: bumpInvoiceSeq,
