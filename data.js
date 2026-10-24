@@ -269,16 +269,81 @@
     return o ? q.eq("org_id", o) : q;
   }
 
+  /* 🧱 بناء 242 — «ممنوع قراءة جدول كامل في طلب واحد» (السبب الجذري لشريط
+   * «⏳ 271 تعديل لسه ما وصلش للسحابة» ولـ«أصناف محفوظة ومفيش على اللاب»).
+   * القياس: Supabase/PostgREST بترجع **1000 سطر بالكثير في الطلب الواحد** من غير ما
+   * declare عن نفسها بخطأ. وعلى قاعدة المالك (أداة read_pending_b5.js، قراءة + rollback):
+   * أصناف «الامانة» = 1269 وأصناف «محمد رافت» = 1269 · `local_id` فاضي = 0 · مكرر = 0.
+   * ⇒ أي `select()` بلا `range` كان بيسلّم أول 1000 ويرجع الباقي «مفيش»:
+   *   (أ) أي جهاز ما بيُنزّلش الـ269 صنفًا التانيين خالص،
+   *   (ب) و`CLOUD.listLocalIds` (بناء 241) بتخُدهم «ما اترفعوش» فترميهم في الطابور كل
+   *       `HEAL_MS` (٥ دقايق) للأبد ⇒ الشريط ما بيصفّي + ~269×288 ≈ 77 ألف سطر
+   *       بيتبعتوا تاني كل يوم على الجهاز الواحد.
+   * القاعدة الجديدة: ترقيم زي `loadLazy` بالظبط (ترتيب كامل التحديد + `range`) **لحد صفحة
+   * ناقصة** — ونحنا بنطلب 500 بالظبط، فـ«سقف الـ1000» ما بيقدرش يقص أي صفحة.
+   * الترتيب لازم كامل التحديد: `created_at` بييتساوى في الاستيراد بالجملة (نفس الثانية)
+   * ⇒ الصفحات بتزح وتكرّر/تفوّت، فاللافق `local_id` وراها.
+   * لو خلصت مساحة الصفحات (`READ_MAX_PAGES`) والصفحة لسه كاملة = قراءة **ناقصة** فعلمناها
+   * `mizanIncomplete`؛ اللي يقرأها ياخد قراره (`listLocalIds` بترجع null ⇒ الطابور ما يتلمسش).
+   * صفر كتابة في أي مسار هنا — قراءة بس. */
+  var READ_PAGE = 500;
+  var READ_MAX_PAGES = 40; // 20000 سطر للجدول (مقيس: أكبر جدول عندنا دلوقتي = 1269)
+
+  // opts = { select, order:[[col,asc]], eq:[[col,val]], pageSize, maxPages, strictOrg, orgScoped }
+  function readComplete(table, opts) {
+    opts = opts || {};
+    var sel = opts.select || "*";
+    var order = opts.order || [["created_at", true], ["local_id", true]];
+    var pageSize = opts.pageSize || READ_PAGE;
+    var maxPages = opts.maxPages == null ? READ_MAX_PAGES : opts.maxPages;
+    var rows = [];
+    var page = 0;
+
+    function markIncomplete(list) {
+      try { list.mizanIncomplete = true; } catch (e) { }
+      try { list.mizanReadPages = page; } catch (e) { }
+      return list;
+    }
+    function onePage() {
+      // العدد الصريح في أول نبضة بس — للكن الإكمال بيتحقق بـ«صفحة ناقصة»، فالعدّاد هنا
+      // تشخيص مش حُكم (ولو السحابة ما رجّعتهوش الحياة ما بتقعش).
+      var base = sb.from(table).select(sel, page === 0 ? { count: "exact" } : {});
+      // الحصر على شركة الجلسة هو الافتراضي (Scoped selection = default) — نفس `scoped` القديمة
+      var q = opts.orgScoped === false ? base : scoped(base);
+      if (opts.eq) { opts.eq.forEach(function (c) { q = q.eq(c[0], c[1]); }); }
+      order.forEach(function (o) { q = q.order(o[0], { ascending: o[1] !== false }); });
+      return q.range(page * pageSize, page * pageSize + pageSize - 1).then(function (res) {
+        if (res.error) throw res.error;
+        var data = res.data || [];
+        rows = rows.concat(data);
+        page++;
+        return data.length === pageSize;
+      });
+    }
+    function loop() {
+      return onePage().then(function (wasFull) {
+        if (!wasFull) return rows;                    // صفحة ناقصة = Ended (دليل الانتهاء)
+        if (page >= maxPages) return markIncomplete(rows); // سقف صفحات والصفحة لسه كاملة
+        return loop();
+      });
+    }
+    if (opts.strictOrg && !orgId()) {
+      var e = new Error("ما فيش شركة محدّدة: القراءة المحصورة مستحيلة");
+      e.mizanNoOrg = true;
+      return Promise.reject(e);
+    }
+    return Promise.resolve().then(loop);
+  }
+
   function loadEager() {
     var tasks = EAGER.map(function (t) {
-      return scoped(sb.from(t).select("*")).order("created_at", { ascending: true }).then(function (res) {
-        if (res.error) {
-          // 🆕 مهمة 98: جدول اختياري مالوش وجود على السحابة لسه = فاضي، مش فشل تحميل
-          if (isOptionalEager(t)) return [];
-          throw res.error;
-        }
-        try { localStorage.setItem(cacheKey(t), JSON.stringify(res.data || [])); } catch (e) { }
-        return res.data || [];
+      return readComplete(t).then(function (res) {
+        try { localStorage.setItem(cacheKey(t), JSON.stringify(res)); } catch (e) { }
+        return res;
+      }).catch(function (err) {
+        // 🆕 مهمة 98: جدول اختياري مالوش وجود على السحابة لسه = فاضي، مش فشل تحميل
+        if (isOptionalEager(t)) return [];
+        throw err;
       });
     });
     return Promise.all(tasks).then(function (lists) {
@@ -292,15 +357,14 @@
   }
 
   function loadEagerAll() {
+    // 🧱 بناء 242: نفس قراءة `loadEager` بالترقيم — والقرار نفسه (الجدول الاختياري
+    // المفقود = فاضي، وأي زعلة تانية ترفع الخطأ). راجع فوق عند readComplete.
     var tasks = EAGER.map(function (t) {
-      return scoped(sb.from(t).select("*")).order("created_at", { ascending: true }).then(function (res) {
-        if (res.error) {
-          // 🆕 مهمة 98: لو الجدول الاختياري مالوش وجود على السحابة لسه، نرجعه فاضي —
-          // Promise.all كله ما يقعش، وإلا العميل ما بشوفش عملاء ولا أصناف ولا خزائن.
-          if (isOptionalEager(t)) return [t, []];
-          throw res.error;
-        }
-        return [t, res.data || []];
+      return readComplete(t).then(function (res) {
+        return [t, res];
+      }).catch(function (err) {
+        if (isOptionalEager(t)) return [t, []];
+        throw err;
       });
     });
     return Promise.all(tasks).then(function (pairs) {
@@ -968,6 +1032,8 @@ function changeMyPassword(oldPass, newPass) {
     logout: logout,
     loadEager: loadEager,
     loadEagerAll: loadEagerAll,
+    // 🧱 بناء 242: القراءة الكاملة على دفعات (بتلغي سقف الـ1000 سطر في الطلب الواحد) — مصدر وحيد
+    readComplete: readComplete,
     countRows: countRows,
     eagerCache: eagerCache,
     loadLazy: loadLazy,

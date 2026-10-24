@@ -1007,11 +1007,55 @@
   //  ٢) الحذف بيتم بس للسطور اللي الجهاز ده شافها في آخر تنزيل، وبكمية محدودة.
   // 🆕 بناء 209 (بند 16): فلتر الشركة صريحًا على كل قراءة/مسح — حتى لو سياسة
   // السحابة اتغيّرت أو الدور بقى واسعًا، الجهاز ما يلمسش صفوف شركة تانية.
-  function orgScoped(q) {
+  function cloudOrgId() {
     var o = DATA.orgId ? DATA.orgId() : null;
     var w = window.MIZAN_STATE || {};
     if (!o && w.org && w.org.id) o = w.org.id;
+    return o || null;
+  }
+  function orgScoped(q) {
+    var o = cloudOrgId();
     return o ? q.eq("org_id", o) : q;
+  }
+
+  /* 🧱 بناء 242 — القراءة الكاملة على دفعات (مصدر وحيد: DATA.readComplete).
+     العلة المقاسة (D:/_work/temp/read_pending_b5.js): نبضة PostgREST واحدة بترجع **1000 سطر
+     بحد أقصى وبلا أي خطأ** — فالقراءة من غير ترقيم كانت بتدي «أول 1000» وكمان:
+       · syncOne/syncItems كانت بتبني عليهم قرارات الحذف والترقيم ⇒ أي صنف بعد الـ1000 كان
+         بياخد uuid جديد = تكرار محتمل على السحابة، و`have.length` غلط = حسابات wipeGuard ضايعة.
+       · listLocalIds (بناء 241) كانت بتقارن الطابور بـ«أول 1000» ⇒ 269 صنفًا بانوا «ما وصلوش»
+         وأعادوا الطلب كل 5 دقايق للأبد (شريط «271 تعديل»).
+       · نفس السقف كان بيمنع نزول أي صنف بعد الـ1000 على أي جهاز.
+     الترتيب `local_id` وحده = ثابت (القيد على السحابة org_id+local_id ⇒ وحيد لكل شركة)، وده
+     مطلوب لأن مستورد Excel بيحط.created_at متطابق لآلاف السطور.
+     سبب الرجوع: "no-org" (مافيش شركة_session ⇒ صفر قرار) · "partial" (سقف الصفحات والصفحة
+     لسه كاملة ⇒ القائمة مش كلها) · "error" (نت/صرحية/جدول مش موجود). التلاتة معناها
+     «مافيش دليل» — والقرار اللي كان هيتبني عليها يتلغى (fail-safe)، ومافيش صمت:
+     "error"/"partial" بيمرّوا على syncFailed (درس build 108). */
+  function pagedReadAll(table, opts) {
+    if (!DATA || typeof DATA.readComplete !== "function") {
+      return Promise.resolve({ ok: false, reason: "error", rows: [], error: new Error("DATA.readComplete مش موجودة") });
+    }
+    var o = cloudOrgId();
+    if (!o) return Promise.resolve({ ok: false, reason: "no-org", rows: [] });
+    opts = opts || {};
+    return DATA.readComplete(table, {
+      select: opts.select || "id, local_id",
+      order: [["local_id", true]],
+      eq: [["org_id", o]],
+      orgScoped: false,                              // الحصر جاي صريحًا في eq فوق
+      pageSize: opts.pageSize,
+      maxPages: opts.maxPages
+    }).then(function (rows) {
+      if (rows && rows.mizanIncomplete) return { ok: false, reason: "partial", rows: rows };
+      return { ok: true, reason: "", rows: rows || [] };
+    }).catch(function (e) { return { ok: false, reason: "error", rows: [], error: e }; });
+  }
+  function reportReadIssue(table, rd) {
+    if (rd.ok || rd.reason === "no-org") return;
+    syncFailed(table, rd.error || new Error(
+      rd.reason === "partial" ? "قراءة «" + table + "» وقفت عند سقف الصفحات — قرار المزامنة اتلغى"
+                              : "قراءة «" + table + "» ما كملتوش — قرار المزامنة اتلغى"));
   }
 
   // 🆕 بناء 234: أدوات رفع أسطر الأصناف/القيود للأب المتغير فقط.
@@ -1444,9 +1488,11 @@
     function fail(what, err) { failed = true; syncFailed(what, err); }
     var local = meta.local() || [];
     var client = DATA.client();
-    return orgScoped(client.from(name).select("id, local_id")).then(function (res) {
-      if (res.error) { fail(name, res.error); return false; }
-      var have = res.data || [];
+    // 🧱 بناء 242: القراءة مترقّمة — قرار الحذف والترقيم ما يتبنيش على «أول 1000 سطر».
+    return pagedReadAll(name, { select: "id, local_id" }).then(function (rd) {
+      reportReadIssue(name, rd);
+      if (!rd.ok) return false;
+      var have = rd.rows;
       var cloudId = {};                                  // local_id -> uuid الموجود على السحابة
       have.forEach(function (r) { if (r && r.local_id != null) cloudId[Number(r.local_id)] = r.id; });
       var seen = seenIds(name);
@@ -1534,9 +1580,11 @@
         items.push(row);
       });
     });
-    return orgScoped(client.from(itemsTable).select("id, local_id, " + parentField)).then(function (res) {
-      if (res.error) { fail(itemsTable, res.error); return false; }
-      var have = res.data || [];
+    // 🧱 بناء 242: أسطر الأصناف أكبر جدول عندنا (فواتير × أسطر) — الترقيم إلزامي هنا بالذات.
+    return pagedReadAll(itemsTable, { select: "id, local_id, " + parentField }).then(function (rd) {
+      reportReadIssue(itemsTable, rd);
+      if (!rd.ok) return false;
+      var have = rd.rows;
       // لو السطر ده موجود على السحابة في نفس الأب وبنفس ترتيبه → نستخدم رقمه القديم
       var byPos = {}, claimed = {};
       have.forEach(function (r) {
@@ -1602,11 +1650,14 @@
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
       "fixed_assets", "cashier_shifts", "car_trips"];
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
-    var eagerFallback = eagerLoad ? null : function (n) {
-      return orgScoped(DATA.client().from(n).select("*")).order("created_at").then(function (r) { return [n, r.error ? [] : (r.data || [])]; });
+    // 🧱 بناء 242: أي مسار بديل للتنزيل لازم يكون مترقّم هو كمان — الطلب الواحد بيقف عند
+    // 1000 سطر وبلا خطأ، فالقراءة الكاملة بطلب واحد كانت بتفقد أي صنف بعدهم للأبد.
+    var eagerFallback = eagerLoad || !DATA.readComplete ? null : function (n) {
+      return DATA.readComplete(n).then(function (rows) { return [n, rows || []]; },
+                                        function () { return [n, []]; });
     };
     return probes.then(function () {
-      return eagerLoad || Promise.all(names.map(eagerFallback));
+      return eagerLoad || (eagerFallback ? Promise.all(names.map(eagerFallback)) : Promise.resolve(null));
     }).then(function (all) {
       var arr = {};
       if (eagerLoad && all) { names.forEach(function (n) { arr[n] = all[n] || []; }); }
@@ -1827,20 +1878,21 @@
    * `rowPushersInit()` بتاخد البصمة من **القائمة المحلية** فتعتبر أي صف «مرفوع وخلاص»، حتى لو
    * الرفعة فشلت أو التطبيق اتقفل قبل ما تدوق. فالصف بيضل على الجهاز ده ظاهر للمستخدم، ومافيش
    * حد بيعيد طلبه تاني أبدًا ⇒ بقية الأجهزة ما تشوفوشش خالص.
-   * من هنا: مقارنة **بواقع السحابة** (قراءة local_id بس، محصورة على شركة الجلسة بـ orgScoped)
-   * هي اللي بتكشف الناقص — وبتجبّلي الصفوف اللي ضاعت قبل كده من غير أي كتابة مننا.
+   * من هنا: مقارنة **بواقع السحابة** (قراءة local_id بس، محصورة على شركة الجلسة ومترقّمة
+   * في بناء 242) هي اللي بتكشف الناقص — وبتجبّلي الصفوف اللي ضاعت قبل كده من غير أي كتابة مننا.
    * أي زعلة (نت/صرحية/جدول مش موجود) = null ⇒ «مافيش دليل» والطابور ما يتلمسش (fail-safe). */
   function listLocalIds(name) {
     var meta = META[name];
     if (!meta || !meta.local || !DATA.isOnline() || !DATA.client()) return Promise.resolve(null);
-    return orgScoped(DATA.client().from(name).select("local_id"))
-      .then(function (res) {
-        if (res && res.error) { syncFailed(name, res.error); return null; }
-        var have = {};
-        ((res && res.data) || []).forEach(function (r) { if (r && r.local_id != null) have[Number(r.local_id)] = 1; });
-        return have;
-      })
-      .catch(function (e) { syncFailed(name, e); return null; });
+    // 🧱 بناء 242: مترقّمة بالظبط. قبل كده كانت «أول 1000» ⇒ كل صنف بعدهم كان بيبان
+    // ما وصلش للطابور كل 5 دقايق للأبد (شريط «271 تعديل» المقيس على الأصناف 1269).
+    return pagedReadAll(name, { select: "local_id" }).then(function (rd) {
+      reportReadIssue(name, rd);
+      if (!rd.ok) return null;                          // «مافيش دليل» ⇒ الطابور ما يتلمسش
+      var have = {};
+      rd.rows.forEach(function (r) { if (r && r.local_id != null) have[Number(r.local_id)] = 1; });
+      return have;
+    });
   }
 
   window.CLOUD = {
