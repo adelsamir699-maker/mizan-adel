@@ -460,7 +460,10 @@
   // ده الحل الجذري مش حارس تطابق: السطور اللي مش تبع الشركة — لا تجريبية ولا
   // بتاعت حساب تاني ولا لقطة ديسك — مابقاش لها وجود وقت الدمج، فـ adoptCloud
   // ما يلاقيش «سطور محلية زيادة» يرفعها للشركة الجديدة.
-  function wipeLocalTables() {
+  /* 🧱 بناء 243: `opts.dropOutbox` = الحالة الوحيدة اللي الطابور الدائم بيتشال فيها.
+     تفريغ المالك للشركة (applyResetEpoch) لازم يمسحه — وإلا الصفوف المحفوظة على القرص
+     ترجع ترفع نفسها بعد التفريغ. أي مسح تاني (دخول/تبديل شركة/ختم ناقص) بيسيبه حيًّا. */
+  function wipeLocalTables(opts) {
     A.cleaning = true;
     try {
       LS_ALL_KEYS.forEach((k) => { try { localStorage.removeItem(k); } catch (e) { } });
@@ -485,6 +488,7 @@
       journalSyncInit();
       rowPushersInit();
     } finally { A.cleaning = false; }
+    if (opts && opts.dropOutbox) outboxDrop();
   }
 
   /* ================== الحالة ================== */  let customers = [];
@@ -1664,14 +1668,34 @@
     const done = (ok) => {
       productsPushBusy = false;
       productsPushQueued = false;
-      if (gen === productsPushGen && ok) {
+      /* 🧱 بناء 243: «الفشل الجزئي» بقى مقياس — السحابة بتقول لنا الأرقام اللي
+         فشلت فعلًا (`W.pushFailed`، والسطر البايظ مش بيحجز باقي الجدول).
+         `null` = فشل شامل ⇒ الكل يرجع (السلوك القديم). قائمة فاضية = كله نجح. */
+      const failed = ok ? null : pushFailedIds("products");
+      const failedSet = Array.isArray(failed) ? new Set(failed.map(Number)) : null;
+      const effectiveOk = !!ok || !!(failedSet && !failedSet.size);
+      if (gen === productsPushGen && effectiveOk) {
         sentSigs.forEach((sig, id) => productsSnap.set(id, sig));
         removed.forEach((id) => productsSnap.delete(id));
         productsPushFails = 0;
       } else if (gen === productsPushGen) {
-        ids.forEach((id) => productsDirty.add(id));
-        removed.forEach((id) => productsRemoved.add(id));
-        if (ids.length || removed.length) productsPushFails++;
+        if (failedSet) {
+          ids.forEach((id) => {
+            const n = Number(id);
+            if (failedSet.has(n)) { productsDirty.add(id); return; }
+            const sig = sentSigs.get(n);
+            if (sig !== undefined) productsSnap.set(n, sig);   // الناجح يتختم مرفوع
+          });
+          removed.forEach((id) => {
+            if (failedSet.has(Number(id))) productsRemoved.add(id);
+            else productsSnap.delete(Number(id));
+          });
+          if (failedSet.size) productsPushFails++;
+        } else {
+          ids.forEach((id) => productsDirty.add(id));
+          removed.forEach((id) => productsRemoved.add(id));
+          if (ids.length || removed.length) productsPushFails++;
+        }
       }
       /* 🧱 بناء 241: الفرع القديم كان «queued && ok» بس ⇒ رفعة فاشلة = مافيش محاولة
          جاية خالص، والصفوف تفضل متسخة في الذاكرة لحد ما الصفحة تتقفل. */
@@ -1701,9 +1725,16 @@
         if (have[id] || productsDirty.has(id)) return;
         productsDirty.add(id); added++;
       });
-      if (added) {
+      /* 🧱 بناء 243: «مطلوب حذف» لسطر مش موجود على السحابة أصلًا = اتنفّذ فعلًا.
+         قبل كده كان بيفضل في الطابور للأبد فيخلّي الشريط «N تعديل» ما يصفّاش
+         حتى بعد ما كل الرفع ينجح (المصالحة كانت بتزيد بس ومش بتنضّف). */
+      let pruned = 0;
+      Array.from(productsRemoved).forEach((id) => {
+        if (!have[id]) { productsRemoved.delete(id); pruned++; }
+      });
+      if (added || pruned) {
         outboxSave("products", productsDirty, productsRemoved);
-        productsQueuePush(50);
+        if (added) productsQueuePush(50);
       }
       return added;
     }).catch(() => 0);
@@ -1821,14 +1852,32 @@
       accountsPushBusy = false;
       const queued = accountsPushQueued;
       accountsPushQueued = false;
-      if (gen === accountsPushGen && ok) {
+      /* 🧱 بناء 243: الفشل الجزئي (نفس قرار الأصناف): رجّع اللي فشل بس. */
+      const failed = ok ? null : pushFailedIds("accounts");
+      const failedSet = Array.isArray(failed) ? new Set(failed.map(Number)) : null;
+      const effectiveOk = !!ok || !!(failedSet && !failedSet.size);
+      if (gen === accountsPushGen && effectiveOk) {
         sentSigs.forEach((sig, id) => accountsSnap.set(id, sig));
         removed.forEach((id) => accountsSnap.delete(id));
         accountsPushFails = 0;
       } else if (gen === accountsPushGen) {
-        ids.forEach((id) => accountsDirty.add(id));
-        removed.forEach((id) => accountsRemoved.add(id));
-        if (ids.length || removed.length) accountsPushFails++;
+        if (failedSet) {
+          ids.forEach((id) => {
+            const n = Number(id);
+            if (failedSet.has(n)) { accountsDirty.add(id); return; }
+            const sig = sentSigs.get(n);
+            if (sig !== undefined) accountsSnap.set(n, sig);
+          });
+          removed.forEach((id) => {
+            if (failedSet.has(Number(id))) accountsRemoved.add(id);
+            else accountsSnap.delete(Number(id));
+          });
+          if (failedSet.size) accountsPushFails++;
+        } else {
+          ids.forEach((id) => accountsDirty.add(id));
+          removed.forEach((id) => accountsRemoved.add(id));
+          if (ids.length || removed.length) accountsPushFails++;
+        }
       }
       /* 🧱 بناء 241: أي بقايا ليها محاولة جاية مضمونة (بـ backoff عند الفشل)،
          والفرع الميت القديم («في طابور + الرفعة فشلت») بقى بيشتغل. */
@@ -1863,9 +1912,14 @@
         if (have[id] || accountsDirty.has(id)) return;
         accountsDirty.add(id); added++;
       });
-      if (added) {
+      // 🧱 بناء 243: «مطلوب حذف» لسطر مش على السحابة = اتنفّذ ⇒ يتشال من الطابور.
+      let pruned = 0;
+      Array.from(accountsRemoved).forEach((id) => {
+        if (!have[id]) { accountsRemoved.delete(id); pruned++; }
+      });
+      if (added || pruned) {
         outboxSave("accounts", accountsDirty, accountsRemoved);
-        accountsQueuePush(50);
+        if (added) accountsQueuePush(50);
       }
       return added;
     }).catch(() => 0);
@@ -2017,37 +2071,151 @@
     if (!k) return null;
     try { return JSON.parse(localStorage.getItem(k) || "{}") || {}; } catch (e) { return null; }
   }
+  function outboxDrop() {
+    const k = outboxKey(); if (!k) return;
+    try { localStorage.removeItem(k); } catch (e) { }
+  }
+  /* 🧱 بناء 243: الطابور الدائم بقى بيحمل **جسم الصف** مش رقمه بس.
+     العلة المقاسة: لحظة الدخول/تبديل الشركة `wipeLocalTables` بتفضّي المصفوفات،
+     ثم `outboxSave` (بالأرقام الفاضية) كانت بتمسح سطر الطابور ⇒ الفاتورة/الشيك اللي
+     على الموبايل بيتحوّل لرقم بلا صف ⇒ `outboxRestore` يعتبره «مطلوب حذف» ولا رجعة.
+     دلوقتي الصف بيتحفظ ويترجع بجسمه، والمسح ممنوع أثناء `A.cleaning`.
+     الحدود مسقوفة عشان مساحة الجهاز: ٦٠٠ صف / ١٫٨ ميجا حرف (الأحدث له الأولوية). */
+  const OUTBOX_MAX_ROWS = 600;
+  const OUTBOX_MAX_CHARS = 1800000;
+  const OUTBOX_LS = {
+    products: LS_PRODUCTS, accounts: LS_ACCOUNTS, sales: LS_SALES, purchases: LS_PURCHASES,
+    sale_returns: LS_SALE_RETURNS, purchase_returns: LS_PURCHASE_RETURNS,
+    customer_txs: LS_TXS, supplier_txs: LS_SUP_TXS, vouchers: LS_VOUCHERS,
+    treasury: LS_TREASURY, journal_entries: LS_JOURNAL, customers: LS_CUSTOMERS,
+    suppliers: LS_SUPPLIERS, fixed_assets: LS_FIXED_ASSETS, cashier_shifts: LS_SHIFTS,
+    car_trips: LS_CAR_TRIPS, checks: LS_CHECKS
+  };
+  function outboxLsKey(name) { return OUTBOX_LS[name] || null; }
+  function outboxListOf(name) {
+    switch (name) {
+      case "products": return products;
+      case "accounts": return accounts;
+      case "sales": return sales;
+      case "purchases": return purchases;
+      case "sale_returns": return saleReturns;
+      case "purchase_returns": return purchaseReturns;
+      case "customer_txs": return txs;
+      case "supplier_txs": return supplierTxs;
+      case "vouchers": return vouchers;
+      case "treasury": return treasury;
+      case "journal_entries": return journalEntries;
+      case "customers": return customers;
+      case "suppliers": return suppliers;
+      case "fixed_assets": return fixedAssets;
+      case "cashier_shifts": return shifts;
+      case "car_trips": return carTrips;
+      case "checks": return checks;
+    }
+    return null;
+  }
+  function outboxPayloadFor(name, ids) {
+    const out = {};
+    const list = outboxListOf(name);
+    if (!list || !list.length || !ids || !ids.length) return out;
+    const want = new Set(ids.slice(-OUTBOX_MAX_ROWS).map(Number));
+    if (!want.size) return out;
+    let chars = 0;
+    list.forEach(function (r) {
+      if (!r || r.id == null) return;
+      const id = Number(r.id);
+      if (!want.has(id)) return;
+      let s;
+      try { s = JSON.stringify(r); } catch (e) { return; }
+      if (!s || chars + s.length > OUTBOX_MAX_CHARS) return;
+      chars += s.length;
+      out[id] = r;
+    });
+    return out;
+  }
+  function outboxInsertLocal(name, row) {
+    if (!row || row.id == null) return false;
+    const list = outboxListOf(name);
+    if (!list) return false;
+    const id = Number(row.id);
+    if (!(id > 0)) return false;
+    if (list.some(function (x) { return x && Number(x.id) === id; })) return false;
+    list.push(row);
+    const ls = outboxLsKey(name);
+    if (ls) { try { localStorage.setItem(ls, JSON.stringify(list)); } catch (e) { } }
+    return true;
+  }
   function outboxSave(name, dirty, removed) {
+    /* 🧱 بناء 243: أثناء تفريغ الجداول لا نلمس الطابور — الأرقام فاضية بالتصميم
+       (مسح) ومسحها = ضياع المعلّق. اللي اتحفظ قبل كده بيفضل زي ما هو. */
+    if (A.cleaning) return;
     const k = outboxKey(); if (!k) return;
     try {
       const all = outboxAll() || {};
-      const ids = Array.from(dirty || []), rem = Array.from(removed || []);
-      if (ids.length || rem.length) all[name] = { i: ids, r: rem }; else delete all[name];
+      const ids = Array.from(dirty || []).map(Number).filter(function (n) { return n > 0; });
+      const rem = Array.from(removed || []).map(Number).filter(function (n) { return n > 0; });
+      if (ids.length || rem.length) {
+        const prev = all[name] || {};
+        const known = (prev && prev.p && typeof prev.p === "object") ? prev.p : {};
+        const p = {};
+        ids.forEach(function (id) { if (known[id]) p[id] = known[id]; });
+        const fresh = outboxPayloadFor(name, ids);
+        Object.keys(fresh).forEach(function (id) { p[id] = fresh[id]; });
+        all[name] = { i: ids, r: rem, p: p };
+      } else {
+        delete all[name];
+      }
       localStorage.setItem(k, JSON.stringify(all));
     } catch (e) { }
   }
   /* يرجّع «كام صف كان معلّقًا على القرص ورجع للطابور» — وده اللي بيرجع فواتير الموبايل
-     اللي ضاعت من builds قبل كده، لأن البصمة الجديدة وحدها كانت بتعتبرها مرفوعة. */
+     اللي ضاعت من builds قبل كده، لأن البصمة الجديدة وحدها كانت بتعتبرها مرفوعة.
+     🧱 بناء 243: الصف اللي اتحفظ بجسمه بيرجع للقائمة نفسها (مش رقم بلا صف). */
   function outboxRestore(name, dirty, removed, snap, listFn) {
+    if (A.cleaning) return 0;                    // ممنوع ترجيع صفوف في نص تفريغ الجداول
     const all = outboxAll(); if (!all) return 0;
     const o = all[name]; if (!o) return 0;
     try {
-      const list = (typeof listFn === "function" ? listFn() : null) || [];
-      const has = function (id) { return list.some(function (x) { return x && Number(x.id) === id; }); };
+      let list = (typeof listFn === "function" ? listFn() : null) || [];
+      const byId = Object.create(null);
+      list.forEach(function (x) { if (x && x.id != null) byId[Number(x.id)] = 1; });
+      const p = (o.p && typeof o.p === "object") ? o.p : {};
       let n = 0;
       (o.i || []).forEach(function (raw) {
         const id = Number(raw);
-        if (id > 0 && has(id) && !dirty.has(id)) { dirty.add(id); n++; }
+        if (!(id > 0)) return;
+        if (!byId[id] && p[id] && typeof p[id] === "object") {
+          try {
+            if (outboxInsertLocal(name, p[id])) {
+              byId[id] = 1;
+              list = (typeof listFn === "function" ? listFn() : null) || list;
+              n++;
+            }
+          } catch (e) { }
+        }
+        if (byId[id] && !dirty.has(id)) { dirty.add(id); n++; }
       });
       (o.r || []).forEach(function (raw) {
         const id = Number(raw);
-        if (id > 0 && !has(id)) {
+        if (id > 0 && !byId[id]) {
           if (snap && !snap.has(id)) snap.set(id, "~outbox");   // عشان trackChanges ما يعتبروش صنفًا جديدًا
           if (!removed.has(id)) { removed.add(id); n++; }
         }
       });
       return n;
     } catch (e) { return 0; }
+  }
+  /* 🧱 بناء 243: «اللي فشل فعلًا بس» من رد السحابة — بدل ما الصف السليم يفضل
+     معلّق للأبد بسبب صف واحد بايظ حاجز الجدول كله. null = فشل شامل ⇒ الكل يرجع. */
+  function pushFailedIds(name) {
+    try {
+      const w = window.CLOUD && window.CLOUD.state;
+      if (!w || !w.pushFailed) return null;
+      const v = w.pushFailed[name];
+      if (!v) return null;
+      delete w.pushFailed[name];
+      return v;
+    } catch (e) { return null; }
   }
 
   function cloudRowSyncSig(name) {
@@ -2158,7 +2326,12 @@
         st.busy = false;
         const queued = st.queued;
         st.queued = false;
-        if (gen === st.gen && ok) {
+        /* 🧱 بناء 243: «اللي فشل فعلًا بس» من رد السحابة (السطر البايظ مش بيحجز
+           الجدول كله). القائمة فاضية = كله نجح، `null` = فشل شامل ⇒ الكل يرجع. */
+        const failed = ok ? null : pushFailedIds(name);
+        const failedSet = Array.isArray(failed) ? new Set(failed.map(Number)) : null;
+        const effectiveOk = !!ok || !!(failedSet && !failedSet.size);
+        if (gen === st.gen && effectiveOk) {
           sentSigs.forEach(function (sig, id) { st.snap.set(id, sig); });
           removed.forEach(function (id) { st.snap.delete(id); });
           st.fails = 0;
@@ -2167,12 +2340,30 @@
           //    واللي انحذف منها قبل ما الرفعة تنجح يرجع «مطلوب حذف» — وإلا يفضل في dirty
           //    ويتبعت كأبسيرت لسطر مش موجود ⇒ **شبح على السحابة ما لوش صاحب**.
           const nowList = listFn() || [];
-          ids.forEach(function (id) {
-            const stillThere = nowList.some(function (x) { return x && Number(x.id) === Number(id); });
-            if (stillThere) st.dirty.add(id); else st.removed.add(id);
-          });
-          removed.forEach(function (id) { st.removed.add(id); });
-          if (ids.length || removed.length) st.fails++;
+          if (failedSet) {
+            ids.forEach(function (id) {
+              const n = Number(id);
+              if (failedSet.has(n)) {
+                const stillThere = nowList.some(function (x) { return x && Number(x.id) === n; });
+                if (stillThere) st.dirty.add(id); else st.removed.add(id);
+                return;
+              }
+              const sig = sentSigs.get(n);
+              if (sig !== undefined) st.snap.set(n, sig);      // الناجح يتختم مرفوع
+            });
+            removed.forEach(function (id) {
+              if (failedSet.has(Number(id))) st.removed.add(id);
+              else st.snap.delete(Number(id));
+            });
+            if (failedSet.size) st.fails++;
+          } else {
+            ids.forEach(function (id) {
+              const stillThere = nowList.some(function (x) { return x && Number(x.id) === Number(id); });
+              if (stillThere) st.dirty.add(id); else st.removed.add(id);
+            });
+            removed.forEach(function (id) { st.removed.add(id); });
+            if (ids.length || removed.length) st.fails++;
+          }
         }
         /* 🧱 بناء 241: القرص بيتحدّث أول، وبعدين أي بقايا — ناجحة كانت أو فاشلة —
            ليها محاولة جاية مضمونة. القديم كان فيه فرع ميت: «في طابور + الرفعة فشلت»
@@ -2214,9 +2405,16 @@
             if (have[id] || st.dirty.has(id)) return;
             st.dirty.add(id); added++;
           });
-          if (added) {
+          /* 🧱 بناء 243: «مطلوب حذف» لسطر مش موجود على السحابة = اتنفّذ فعلًا
+             (الرفع اللي قبله نجح أو السطر ما وصلش أصلًا) ⇒ يتشال من الطابور.
+             قبل كده كان بيفضل معلّق للأبد فيخلّي الشريط ما يصفّاش أبدًا. */
+          let pruned = 0;
+          Array.from(st.removed).forEach(function (id) {
+            if (!have[id]) { st.removed.delete(id); pruned++; }
+          });
+          if (added || pruned) {
             outboxSave(name, st.dirty, st.removed);
-            queue(50);
+            if (added) queue(50);
           }
         }
         return added;
@@ -2350,6 +2548,37 @@
     });
     return n;
   }
+  /* 🧱 بناء 243: تشخيص **قراءة فقط** — «الـN تعديل دول في أنهي جدول بالظبط؟».
+     ما بيبعتش ولا بيحفظ ولا بيمسح: بيقرا الذاكرة + ملف الطابور على القرص ويرجّع
+     تفصيلة لكل جدول. مقصود إنه يكون آمن يتنادى في أي وقت من الكونسول. */
+  window.mizanPendingBreakdown = function () {
+    const out = { total: 0, online: !!A.online, adopting: !!A.adopting, cleaning: !!A.cleaning, org: null, tables: {} };
+    try { out.org = DATA && DATA.orgId ? (DATA.orgId() || null) : null; } catch (e) { }
+    const one = function (name, d, r) {
+      let ds = 0, rs = 0;
+      try { ds = d ? d.size : 0; } catch (e) { }
+      try { rs = r ? r.size : 0; } catch (e) { }
+      if (!ds && !rs) return;
+      out.tables[name] = { dirty: ds, removed: rs };
+      out.total += ds + rs;
+    };
+    try { one("products", productsDirty, productsRemoved); } catch (e) { }
+    try { one("accounts", accountsDirty, accountsRemoved); } catch (e) { }
+    ALL_ROW_PUSHERS.forEach(function (p) {
+      try { one(p.name, p.state.dirty, p.state.removed); } catch (e) { }
+    });
+    let ob = null;
+    try { ob = outboxAll(); } catch (e) { }
+    out.outbox = { key: (function () { try { return outboxKey(); } catch (e) { return null; } })(), tables: {} };
+    if (ob) {
+      Object.keys(ob).forEach(function (name) {
+        const e = ob[name] || {};
+        const i = (e.i || []).length, r = (e.r || []).length;
+        if (i || r) out.outbox.tables[name] = { pending: i, removed: r };
+      });
+    }
+    return out;
+  };
   function ensureUpPendingBar() {
     let el = document.getElementById("upPendingBar");
     if (el) return el;
@@ -22462,7 +22691,10 @@ const pwEye = document.getElementById("btnShowPass");
     if (!ep) return false;
     const stale = ep > localResetEpoch(org);
     if (stale) {
-      wipeLocalTables();
+      // 🧱 بناء 243: التفريغ من المالك معناه الشركة نفسها اتمسحت سحابيًا —
+      // المعلّق القديم بقى «يتيم» وممنوع يرجع يتزرع في شركة مفضّية. هنا بس
+      // نمسح الطابور الدائم كمان (عكس `guardOrgSwitch` اللي بيسيب المعلّق).
+      wipeLocalTables({ dropOutbox: true });
       toast("الشركة اتفضّت من عند المالك — تم مسح كاش الجهاز وسحب الحالة النظيفة ✅", "info");
     }
     stampResetEpoch(org, ep);

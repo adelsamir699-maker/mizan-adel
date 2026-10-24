@@ -1086,6 +1086,84 @@
     });
   }
 
+  /* 🧱 بناء 243 — «سطر بايظ واحد ما يحجزش الجدول كله»:
+     العلة المقاسة: `upsert` كان بيتبعت للجدول كله في طلب واحد، وأي سطر واحد يرفضه
+     trigger/قيد بيرجّع خطأ للطلب كله ⇒ الردّ `false` والطابور يرجّع **كل** الأسطر،
+     فالأسطر السليمة تفشل معاه للأبد ⇒ الشريط «N تعديل معلّق» ما يصفّاش أبدًا
+     (بلاغ المالك: 271 تعديل ثابتين). الحل هنا:
+       · تقسيم لأجزاء ٤٠٠ سطر (كمان بيمنع سقف الردّ 1000 سطر من إنه يوهّمنا).
+       · أي جزء فشل بخطأ خاص بالسطر ⇒ نقسمه نصّين لحد ما نوصل للسطر البايظ
+         ونسجّله في `W.pushFailed[name]` — والباقي يترفع ويتختم ناجح.
+       · أي خطأ «شامل» (نت/صلاحية/جدول مش موجود/JWT) **بيترمي زي ما هو** وبلا
+         أي تسجيل — عشان التطبيق يرجّع كل السطور (fail-safe) مش جزء منهم. */
+  function isWideError(e) {
+    var code = String((e && e.code) || "");
+    var status = Number((e && e.status) || 0);
+    var msg = String((e && e.message) || e || "");
+    if (code === "42501" || code === "42P01" || code === "PGRST205" ||
+        code === "PGRST301" || code === "PGRST302" || code === "57014") return true;
+    if (status === 401 || status === 403 || status >= 500 && status <= 599) return true;
+    return /fetch|network|failed to load|load failed|timeout|timed out|offline|jwt|unauthor|permission|does not exist|schema cache|abort/i.test(msg);
+  }
+  function pushFailedReset(name) {
+    try { if (W.pushFailed) delete W.pushFailed[name]; } catch (e) { }
+  }
+  function pushFailedMark(name, lid) {
+    var n = Number(lid);
+    if (!(n > 0)) return;
+    if (!W.pushFailed) W.pushFailed = {};
+    var arr = W.pushFailed[name] || (W.pushFailed[name] = []);
+    if (arr.indexOf(n) < 0) arr.push(n);
+  }
+  function pushFailedCount(name) {
+    try { return ((W.pushFailed && W.pushFailed[name]) || []).length; } catch (e) { return 0; }
+  }
+  function markMissingRows(rows, saved, reportName, mapLid) {
+    var got = {};
+    (saved || []).forEach(function (r) { if (r && r.local_id != null) got[Number(r.local_id)] = 1; });
+    (rows || []).forEach(function (r) {
+      if (!r || r.local_id == null) return;
+      if (got[Number(r.local_id)]) return;
+      pushFailedMark(reportName, mapLid ? mapLid(r.local_id) : r.local_id);
+    });
+  }
+  function upsertChunkResilient(client, table, rows, reportName, mapLid) {
+    return upsertRowsSmart(client, table, rows).then(function (saved) {
+      saved = saved || [];
+      /* ردّ ناقص = مش دليل فشل مطلق، بس بنسجّل الناقص «معلّق» وبيتبعت تاني
+         في الجولة الجاية (إعادة الرفع idempotent) — مفيش سطر بيضيع. */
+      if (saved.length && saved.length < rows.length) markMissingRows(rows, saved, reportName, mapLid);
+      return saved;
+    }, function (e) {
+      if (isWideError(e)) throw e;
+      if (rows.length <= 1) {
+        var one = rows[0];
+        pushFailedMark(reportName, mapLid && one ? mapLid(one.local_id) : (one ? one.local_id : 0));
+        return [];
+      }
+      var mid = Math.floor(rows.length / 2);
+      return upsertChunkResilient(client, table, rows.slice(0, mid), reportName, mapLid).then(function (a) {
+        return upsertChunkResilient(client, table, rows.slice(mid), reportName, mapLid).then(function (b) {
+          return a.concat(b);
+        });
+      });
+    });
+  }
+  function upsertRowsResilient(client, table, rows, reportName, mapLid) {
+    var rep = reportName || table;
+    var list = rows || [];
+    if (!list.length) return Promise.resolve([]);
+    var out = [];
+    return chunkList(list, 400).reduce(function (p, part) {
+      return p.then(function () {
+        return upsertChunkResilient(client, table, part, rep, mapLid).then(function (saved) {
+          out = out.concat(saved);
+        });
+      });
+    }, Promise.resolve()).then(function () { return out; });
+  }
+  function mapItemLidToParent(lid) { return Math.floor(Number(lid) / 1000); }
+
   function deleteIdList(client, table, idList) {
     var list = (idList || []).filter(Boolean);
     if (!list.length) return Promise.resolve();
@@ -1147,7 +1225,9 @@
     });
     var chain = Promise.resolve();
     if (rows.length) {
-      chain = upsertRowsSmart(client, itemsTable, rows).then(function (saved) {
+      /* 🧱 بناء 243: سطر صنف بايظ واحد ما يحجزش الفاتورة كلها — والتسجيل باسم
+         الأب (sales/purchases…) عشان التطبيق يرجّع **الأب** للطابور ويعيد محاولته. */
+      chain = upsertRowsResilient(client, itemsTable, rows, name, mapItemLidToParent).then(function (saved) {
         rememberIds(itemsTable, saved);
       });
     }
@@ -1173,6 +1253,9 @@
   function pushSubsetRows(name, ids, removed) {
     var meta = META[name];
     if (!meta || !DATA.isOnline() || !DATA.client()) return Promise.resolve(false);
+    /* 🧱 بناء 243: كل محاولة رفع بتبدأ بقائمة فشل فاضية — عشان اللي يرجع
+       للتطبيق يبقى فشل **المحاولة دي** بس، مش بقايا محاولة قديمة. */
+    pushFailedReset(name);
     var local = meta.local() || [];
     var want = {};
     (ids || []).forEach(function (id) { var n = Number(id); if (n > 0) want[n] = 1; });
@@ -1222,7 +1305,7 @@
       }
       if (rows.length) {
         chain = chain.then(function () {
-          return upsertRowsSmart(client, name, rows).then(function (saved) {
+          return upsertRowsResilient(client, name, rows, name).then(function (saved) {
             saved.forEach(function (r) {
               if (r && r.local_id != null) idMap[Number(r.local_id)] = r.id;
             });
@@ -1233,6 +1316,9 @@
         return pushSubsetItems(name, ids, rem);
       }).then(function (itemsOk) {
         if (itemsOk === false) return false;
+        /* 🧱 بناء 243: فيه سطور اتسجّلت فاشلة ⇒ المحاولة مش ناجحة كاملة.
+           التطبيق هياخد قائمة الفشل دي ويحتفظ بالمعلّق فعلًا بس. */
+        if (pushFailedCount(name)) return false;
         // الهوية السحابية بتتسجّل من رد upsert نفسه (saved) — مش من row.id
         // المحسوب محليًا، عشان مسار fallback (org_id,local_id) ممكن يرجّع id مختلف.
         W.lastSyncAt = Date.now();
@@ -1444,6 +1530,38 @@
       });
       W.lastSyncAt = Date.now();
       W.lastSyncTable = "batch";
+      /* 🧱 بناء 243: «رجعت نجاح» مش تصديق أعمى. الرابعة بترجّع خريطة اللي اتكتب
+         فعلًا؛ أي سطر متوقع مش في الخريطة = **تخطّي صامت** (زي id متعارض مع شركة
+         تانية، ON CONFLICT DO UPDATE بيتخطاه بـ WHERE) ⇒ بنرمي للمسار المباشر
+         (fallbackBatch) اللي بيرفع ويسجّل الفشل بالسطر بدل ما السطر يختفي للأبد. */
+      var expected = {}, reported = 0, map = res && res.data;
+      Object.keys(built).forEach(function (n) {
+        (built[n].ops || []).forEach(function (o) {
+          (o.rows || []).forEach(function (r) {
+            if (!r || r.local_id == null) return;
+            var t = o.table || n;
+            (expected[t] || (expected[t] = {}))[Number(r.local_id)] = 1;
+          });
+        });
+      });
+      if (map && typeof map === "object") {
+        Object.keys(map).forEach(function (t) { reported += (map[t] || []).length; });
+      }
+      if (reported) {
+        var got = {};
+        Object.keys(map).forEach(function (t) {
+          (map[t] || []).forEach(function (r) {
+            if (r && r.local_id != null) (got[t] || (got[t] = {}))[Number(r.local_id)] = 1;
+          });
+        });
+        var slipped = null;
+        Object.keys(expected).forEach(function (t) {
+          Object.keys(expected[t]).forEach(function (lid) {
+            if (!slipped && (!got[t] || !got[t][lid])) slipped = t + "#" + lid;
+          });
+        });
+        if (slipped) throw new Error("batch silent skip: " + slipped);
+      }
       settleBatch(waiters, {}, true);
     }).catch(function (e) {
       fallbackBatch(pending, built, waiters, e);
@@ -1481,6 +1599,8 @@
   function syncOne(name) {
     var meta = META[name];
     if (!meta || !DATA.isOnline() || !DATA.client()) return Promise.resolve(null);
+    /* 🧱 بناء 243: نفس قاعدة pushSubsetRows — الفشل المسجّل يخص المحاولة دي بس. */
+    pushFailedReset(name);
     // 🆕 مهمة 98: الجدول لسه ما اتعملش على السحابة (ترحيل ٣٧ بأمر المالك) ⇒ الرفع مالوش مكان.
     // السجل بيتحفظ محليًا + على الديسك زي ما هو، والعلامة بتتمحي أول ما الجدول يظهر.
     // غير كده (نت مثلاً) المحاولة بتفضل عادية — صمت فشل المزامنة ممنوع (درس build 108).
@@ -1530,18 +1650,8 @@
           // (خطأ 23505) ⇒ الدفعة كلها تفشل ⇒ رسالة «رفع «الخزائن» للسحابة مكملش دلوقتي».
           // بـ "id": نفس السطر بيتحدّث وlocal_id المرجّح بيتكتب من جديد (السطر بيقوم بصلح نفسه).
           // ولو حصل تصادم على فهرس تاني (نفس org_id+local_id برقمين مختلفين) نرجع للطريقة القديمة.
-          return client.from(name).upsert(rows, { onConflict: "id" }).then(function (u) {
-            if (u && u.error) {
-              var code = String((u.error && u.error.code) || "");
-              var msg = String((u.error && u.error.message) || "");
-              if (code === "23505" || /duplicate key/i.test(msg)) {
-                return client.from(name).upsert(rows, { onConflict: "org_id,local_id" }).then(function (u2) {
-                  if (u2 && u2.error) throw u2.error;
-                });
-              }
-              throw u.error;
-            }
-          });
+          // 🧱 بناء 243: بنفس المنطق لكن مقاوم لسطر واحد بايظ (bisection + تسجيل الفاشل).
+          return upsertRowsResilient(client, name, rows, name);
         });
       }
       return chain.then(function () {
@@ -1553,7 +1663,7 @@
           W.lastSyncAt = Date.now();
           W.lastSyncTable = name;
         }
-        return !failed && itemsSynced !== false;
+        return !failed && itemsSynced !== false && !pushFailedCount(name);
       }).catch(function (e) { fail(name, e); return false; });
     });
   }
@@ -1615,9 +1725,8 @@
       if (items.length) {
         var payload = items.map(function (r) { delete r._pos; return r; });
         chain = chain.then(function () {
-          return client.from(itemsTable).upsert(payload, { onConflict: "id" }).then(function (u) {
-            if (u && u.error) throw u.error;
-          });
+          // 🧱 بناء 243: سطر صنف بايظ ما يوقفش الجدول كله — والتسجيل باسم الأب.
+          return upsertRowsResilient(client, itemsTable, payload, name, mapItemLidToParent);
         });
       }
       return chain.then(function () { rememberIds(itemsTable, items); return !failed; })
