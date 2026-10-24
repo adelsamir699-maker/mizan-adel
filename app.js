@@ -2534,7 +2534,7 @@
     if (!isUpOnline() || A.adopting || A.cleaning) return Promise.resolve(back);
     if (!force && Date.now() - lastHealAt < HEAL_MS) return Promise.resolve(back);
     lastHealAt = Date.now();
-    return rowPushersReconcile().then(function (r) { return back + (Number(r) || 0); }, function () { return back; });
+    return rowPushersReconcile().then(function (r) { try { syncPullInvoices(false); } catch(e){} return back + (Number(r) || 0); }, function () { return back; });
   }
 
   function uploadsPendingCount() {
@@ -4057,7 +4057,7 @@
       renderPurchasesLookups();
     }
     if (name === "suppliers") renderSuppliers();
-    if (name === "returns") renderInvoiceQuery();
+    if (name === "returns") { renderInvoiceQuery(); if (A.online) syncPullInvoices(false); }
     if (name === "returnsReg") renderReturns();
     if (name === "treasury") { syncTreasuryFromSett(); recalculateTreasuryBalances(); renderTreasury(); renderTreMoves(); }
     if (name === "accounts") renderAccounts();
@@ -9928,6 +9928,14 @@
     sales.push(invoice);
     saveSales();
     commitInvoiceSeq("sale", invEncodedOf(invoice));
+    // 🚀 بناء 243: دفع فوري ومباشر للسحابة من الموبايل مع تأكيد النتيجة للمستخدم
+    if (A.online && typeof salesFlush === "function") {
+      try {
+        salesFlush().then(function (ok) {
+          if (ok) toast("☁️ تم تأكيد رفع الفاتورة " + invoice.invoiceNumber + " للسحابة بنجاح", "success");
+        }).catch(function () { });
+      } catch (e) { }
+    }
     // 🆕 بناء 134: الفاتورة تترحّل أوتوماتيك للقيود اليومية (قيد متزن، بلا سند — انظر رأس القسم)
     const postedJ = postInvoiceJournal("sale", invoice, paidTreasury);
     // 🆕 بناء 208: بعد ترحيل الفاتورة (بتكلفتها المسجّلة) تنقص الكمية القديمة؛ لما تخلص المتوسط = آخر سعر
@@ -11124,6 +11132,62 @@
     return t;
   }
 
+  
+  // 🔄 بناء 243: تحديث الفواتير الحقيقي من السحابة ودمجها فوراً في الذاكرة والكاش وشاشة الاستعلام
+  function syncPullInvoices(interactive) {
+    if (!A.online || !window.CLOUD || !window.CLOUD.pullLazyTable) {
+      if (interactive) renderInvoiceQuery();
+      return Promise.resolve(false);
+    }
+    const btn = document.getElementById("btnRefreshInvoices");
+    const origHtml = btn ? btn.innerHTML : "";
+    if (interactive && btn) {
+      btn.disabled = true;
+      btn.innerHTML = '⏳ جارٍ التحديث من السحابة...';
+    }
+    return Promise.all([
+      window.CLOUD.pullLazyTable("sales"),
+      window.CLOUD.pullLazyTable("purchases")
+    ]).then(function (res) {
+      const cloudSales = res[0];
+      const cloudPurchases = res[1];
+      let changed = false;
+      if (Array.isArray(cloudSales) && cloudSales.length) {
+        const mS = mergeCloudLocal(cloudSales, sales);
+        sales = mS.merged;
+        localStorage.setItem(LS_SALES, JSON.stringify(sales));
+        changed = true;
+      }
+      if (Array.isArray(cloudPurchases) && cloudPurchases.length) {
+        const mP = mergeCloudLocal(cloudPurchases, purchases);
+        purchases = mP.merged;
+        localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
+        changed = true;
+      }
+      if (changed) {
+        linkInvoiceParties();
+        if (typeof idFloorsLoad === "function") idFloorsLoad();
+      }
+      renderInvoiceQuery();
+      if (interactive) {
+        toast("🟢 تم تحديث الفواتير من السحابة بنجاح", "success");
+      }
+      return true;
+    }).catch(function (e) {
+      console.warn("syncPullInvoices error:", e);
+      renderInvoiceQuery();
+      if (interactive) {
+        toast("تعذر تحديث بعض الفواتير من السحابة: " + (e.message || e), "warning");
+      }
+      return false;
+    }).finally(function () {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = origHtml || '🔄 تحديث الفواتير من السحابة';
+      }
+    });
+  }
+
   function renderInvoiceQuery() {
     const fromS = $("#dtpFromS").value || "2000-01-01";
     const toS = $("#dtpToS").value || "2999-12-31";
@@ -11132,7 +11196,7 @@
     const canDel = canDeleteInvoices();
     const canRet = canManageReturns();
 
-    const inRange = (d, from, to) => (d || "") >= from && (d || "") <= to;
+    const inRange = (d, from, to) => { const s = String(d || "").slice(0, 10); return s >= from && s <= to; };
 
     const fill = (tbody, list, isSales) => {
       tbody.innerHTML = "";
@@ -21985,7 +22049,7 @@ id: nextVoucherId(),
     });
     ["dtpFromS", "dtpToS", "txtSearchInvS"].forEach((id) => $("#" + id).addEventListener("input", renderInvoiceQuery));
     ["dtpFromP", "dtpToP", "txtSearchInvP"].forEach((id) => $("#" + id).addEventListener("input", renderInvoiceQuery));
-    $("#btnRefreshInvoices").addEventListener("click", renderInvoiceQuery);
+    $("#btnRefreshInvoices").addEventListener("click", () => syncPullInvoices(true));
     $("#dgvInvS tbody").addEventListener("click", (e) => {
       const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"]');
       if (!btn) return;

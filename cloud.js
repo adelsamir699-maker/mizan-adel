@@ -38,6 +38,12 @@
     d = String(d).trim();
     return d ? d.slice(0, 10) : null;
   }
+  // 🧼 بناء 243: تنظيف التاريخ القادم من السحابة لضمان YYYY-MM-DD بدون أي توقيت أو فارق زمني
+  function cleanDate(d) {
+    if (!d) return "";
+    var s = String(d).trim();
+    return s.length >= 10 ? s.slice(0, 10) : s;
+  }
 
   // 🔗 رقم الطرف (عميل/مورد/صنف/خزينة) بين الأجهزة: بيتخزن كنص = local_id بتاعه.
   //    من غير الرقم ده الجهاز التاني بيشوف الاسم بس → الفاتورة بتقطع صلة صاحبها،
@@ -629,8 +635,8 @@
           id: r.local_id,
           invoiceNo: r.invoice_no,
           invoiceNumber: r.invoice_no,
-          date: r.doc_date,
-          invoiceDate: r.doc_date,
+          date: cleanDate(r.doc_date),
+          invoiceDate: cleanDate(r.doc_date),
           customer: r.customer || "",
           customerName: r.customer || "",
           customerId: localIdNum(r.customer_id),
@@ -713,8 +719,8 @@
           id: r.local_id,
           invoiceNo: r.invoice_no,
           invoiceNumber: r.invoice_no,
-          date: r.doc_date,
-          invoiceDate: r.doc_date,
+          date: cleanDate(r.doc_date),
+          invoiceDate: cleanDate(r.doc_date),
           supplier: r.supplier || "",
           supplierName: r.supplier || "",
           supplierId: localIdNum(r.supplier_id),
@@ -795,7 +801,7 @@
         return {
           id: r.local_id,
           returnNo: r.return_no, returnNumber: r.return_no,
-          date: r.doc_date, returnDate: r.doc_date,
+          date: cleanDate(r.doc_date), returnDate: cleanDate(r.doc_date),
           saleId: (r.sale_local_id == null ? null : Number(r.sale_local_id)),
           customerId: localIdNum(r.customer_id),
           customer: r.customer || "", customerName: r.customer || "",
@@ -859,7 +865,7 @@
         return {
           id: r.local_id,
           returnNo: r.return_no, returnNumber: r.return_no,
-          date: r.doc_date, returnDate: r.doc_date,
+          date: cleanDate(r.doc_date), returnDate: cleanDate(r.doc_date),
           purchaseId: (r.purchase_local_id == null ? null : Number(r.purchase_local_id)),
           supplierId: localIdNum(r.supplier_id),
           supplier: r.supplier || "", supplierName: r.supplier || "",
@@ -920,7 +926,7 @@
           if (String(r.type || "").indexOf("مرتجع") !== -1 || String(r.description || "").indexOf("مرتجع") !== -1) c = Number(r.amount);
           else d = Number(r.amount);
         }
-        return partyRecvOut(r, { id: r.local_id, supplierId: localIdNum(r.supplier_id), date: r.doc_date,
+        return partyRecvOut(r, { id: r.local_id, supplierId: localIdNum(r.supplier_id), date: cleanDate(r.doc_date),
           createdAt: r.created_at || null,
           type: r.type || "", amount: Number(r.amount || 0),
           desc: r.description || "", debit: d, credit: c });
@@ -936,7 +942,7 @@
         return row;
       },
       fromCloud: function (r) {
-        return partyRecvOut(r, { id: r.local_id, customerId: localIdNum(r.customer_id), date: r.doc_date,
+        return partyRecvOut(r, { id: r.local_id, customerId: localIdNum(r.customer_id), date: cleanDate(r.doc_date),
           createdAt: r.created_at || null,
           desc: r.description || "", debit: Number(r.debit || 0), credit: Number(r.credit || 0) });
       }
@@ -956,7 +962,7 @@
       },
       fromCloud: function (r) {
         var k = r.kind || "in";
-        return { id: r.local_id, no: r.no, date: r.doc_date, kind: k, type: k,
+        return { id: r.local_id, no: r.no, date: cleanDate(r.doc_date), kind: k, type: k,
           treasuryId: Number(r.treasury_id || 0), accountId: Number(r.account_id || 0),
           amount: Number(r.amount || 0), desc: r.notes || "", notes: r.notes || "",
           refType: r.ref_type || "", refId: r.ref_id || "" };
@@ -975,7 +981,7 @@
         // 🆕 بناء 118: ترجيع نفس أسماء الحقول اللي شاشة «القيود اليومية» بتقرأها
         // (number/desc/ref/debit/credit). قبل كده كانت بترجع jrnNo/description فقط ⇒
         // الجدول بيطلع صفوف فاضية بعد أي إعادة تشغيل رغم إن البيانات موجودة على السحابة.
-        return { id: r.local_id, number: r.jrn_no, jrnNo: r.jrn_no, date: r.doc_date,
+        return { id: r.local_id, number: r.jrn_no, jrnNo: r.jrn_no, date: cleanDate(r.doc_date),
           desc: r.description || "", description: r.description || "",
           ref: r.ref_type || "", refType: r.ref_type || "", refId: r.ref_id,
           debit: 0, credit: 0, lines: [] };
@@ -1918,6 +1924,44 @@
   }
 
   // ترتيب أسطر الصنف زي ما هي في الفاتورة الأصلية (الأقدم الأول)
+
+  // 📥 بناء 243: سحب جدول كسول (فواتير/حركات) بأسطره التابعة لدمجه فوراً دون إعادة تشغيل
+  function pullLazyTable(name) {
+    var meta = META[name];
+    if (!meta || !DATA.isOnline() || !DATA.client() || !DATA.loadLazy) return Promise.resolve(null);
+    return DATA.loadLazy(name).then(function (rows) {
+      rememberIds(name, rows);
+      var mapped = (rows || []).map(function (r) { return meta.fromCloud(r); }).filter(function (x) { return x && x.id != null; });
+      if (!meta.itemsTable) return mapped;
+      var itemsTable = meta.itemsTable;
+      var parentField = meta.itemsParentField || PARENT_OF[itemsTable];
+      if (!parentField) return mapped;
+      return DATA.loadLazy(itemsTable).then(function (itemRows) {
+        rememberIds(itemsTable, itemRows);
+        var byParent = {};
+        (itemRows || []).forEach(function (ir) {
+          var pid = ir[parentField];
+          byParent[pid] = byParent[pid] || [];
+          byParent[pid].push(ir);
+        });
+        mapped.forEach(function (doc) {
+          doc.items = [];
+          var pid = (W.idMap[name] || {})[Number(doc.id)] || detUuid(name, doc.id);
+          bySorted(byParent[pid] || []).forEach(function (it) {
+            doc.items.push(meta.itemFromCloud(it));
+          });
+        });
+        return mapped;
+      }).catch(function (e) {
+        console.warn("pullLazyTable items error:", itemsTable, e);
+        return mapped;
+      });
+    }).catch(function (e) {
+      console.warn("pullLazyTable error:", name, e);
+      return null;
+    });
+  }
+
   function bySorted(rows) {
     return rows.slice().sort(function (a, b) {
       return (Number(a.local_id) % 1000) - (Number(b.local_id) % 1000);
@@ -2015,6 +2059,7 @@
     listLocalIds: listLocalIds,
     useBatchRows: useBatchRows,
     loadAll: loadAll,
+    pullLazyTable: pullLazyTable,
     detUuid: detUuid,
     bumpInvoiceSeq: bumpInvoiceSeq,
     getInvoiceSeq: getInvoiceSeq,
