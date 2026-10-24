@@ -1289,6 +1289,12 @@
     }
   }
   // ---- الحضور (من فاتح التطبيق الآن) ----
+  // 🆕 بناء 246 (صف ٦): النبض بقى ٥ دقايق بدل دقيقة — نفس نافذة «متصل الآن» على السحابة
+  // (ترقية ٦٩: interval '5 minutes' في mizan_presence_online و mizan_admin_orgs).
+  // ٦٠ ثانية كانت بتعمل ≈١٤٤٠ نبضة لكل جهاز في اليوم على حساب الباقة المجانية،
+  // و٥ دقايق بتنزل بيها لـ ≈٢٨٨ من غير ما البطاقة تبان غلط (الجهاز المقفول
+  // بيتحوّل لغير متصل بعد ٥ دقايق زي قبل بالحرف).
+  var PRESENCE_PULSE_MS = 300000;
   function isPresenceEligible() {
     return A.online && window.DATA && DATA.isOnline() && !DATA.accessInfo().locked;
   }
@@ -1301,7 +1307,7 @@
       if (!isPresenceEligible()) { stopPresence(); return; }
       if (!netLeader()) return;
       DATA.presenceHeartbeat().catch(() => {});
-    }, 60000);
+    }, PRESENCE_PULSE_MS);
     if (netLeader()) DATA.presenceHeartbeat().catch(() => {});
   }
   function stopPresence() {
@@ -21062,6 +21068,14 @@ id: nextVoucherId(),
     // 🔁 ترقية ٦٧ (بناء 236): RPC موحّدة mizan_sync_batch — تجمع رفع الأب وأسطره
     // والقيود والحركات في معاملة واحدة بدل عشرات الطلبات لكل فاتورة.
     "db/supabase-upgrade-67-sync-batch.sql",
+    // 🟢 ترقية ٦٩ (بناء 246): نافذة «متصل الآن» ٥ دقائق بدل ١١٠ ثانية في mizan_presence_online
+    // و mizan_admin_orgs. **اتنفّذت على القاعدة الحيّة** (مقاس ٢٥/١٠: الدالتان فيهم
+    // interval '5 minutes') ⇒ بقت في نسخة النشر: سيرفر جديد بياخد نفس حالة القاعدة الحيّة.
+    "db/supabase-upgrade-69-presence-5min.sql",
+    // 🟢 ترقية ٧٠ (بناء 246): دمج settings.idFloors بكل مفاتيحه (others) بـ max في
+    // mizan_client_sett_save + إدراج paid_amount/due_amount/payments في دالتَي الاستعادة
+    // + تصحيح فواتير اتفرّغت بالاستعادة القديمة. **اتنفّذت 25/10** (guardedRun + ١٨ فحصًا).
+    "db/supabase-upgrade-70-idfloors-others.sql",
     // 🔐 ترقية ٥٨ (بند المراجعة #17 — إخفاء كلمات المرور الصريحة): تعيد تعريف ٧ دوال بلا حفظ
     // الصريح، وتحذف mizan_admin_get_password، وتحذف عمودَي plain_password/password_plain.
     "db/supabase-upgrade-58-hide-plain-passwords.sql"];
@@ -21069,14 +21083,11 @@ id: nextVoucherId(),
   // ملفات rollback لا تدخل الحزمة.
   // بناء 141: ترقية ٥ـ (قفل التسجيل + دوال الرموز) **اتنفّذت** 5/10 ≈01:29 ⇒ دخلت FILES فوق
   // وبره الاستبعاد زي أخواتها (٤٣→٤٩)، والقاعدة نفسها: أي ملف جديد لسه ما اتنفّذتش يتحط هنا بسبب.
+  // بناء 246: ترقية ٦٩ اتنفّذت على السحابة ⇒ طلعت من هنا ودخلت FILES فوق. الاستبعاد بقى
+  // ملفات الرجوع بس (ومنها اللي مش في الحزمة أصلًا مثل rollback ٤٩ في نسخة الباك أب).
   var DEPLOY_DB_EXCLUDE = {
     "db/supabase-rollback-59-profile-identity-guard.sql": "ملف رجوع احتياطي يزيل حارس ترقية ٥٩ ويعيد السياسة السابقة؛ لا يدخل حزمة النشر.",
     "db/supabase-rollback-60-profile-self-features-guard.sql": "ملف رجوع يعيد تعريف حارس ترقية ٥٩؛ لا يدخل حزمة النشر.",
-    // 🆕 ترقية ٦٩ (بناء 238): نافذة «متصل الآن» ٥ دقائق بدل 110 ثانية في mizan_presence_online
-    // و mizan_admin_orgs (ملف عادل 23/10). **لسه ما اتنفّذتش على السحابة** ⇒ مستبعدة من نسخة
-    // النشر: سيرفر جديد ما ياخدش ترقية غير مطبقة. أول ما تُنفَّذ (بأمر «نفّذ») تنضمّ لـ FILES
-    // — نفس مسار ترقية ٤٩ في بناء 128.
-    "db/supabase-upgrade-69-presence-5min.sql": "ترقية مكتوبة على القرص لسه ما اتنفّذتش على Supabase (نافذة الحضور ٥ دقايق)؛ تتضمّ لـ DEPLOY_DB_FILES بعد تنفيذها بأمر المالك.",
   };
   var DEPLOY_DATA_TABLES = ["organizations", "profiles",
     "accounts", "audit_logs", "car_trips", "categories", "cashier_shifts", "customer_txs", "customers",
