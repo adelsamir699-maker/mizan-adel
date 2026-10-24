@@ -1817,6 +1817,18 @@
     outboxSave("accounts", accountsDirty, accountsRemoved);   // 🧱 بناء 241
   }
 
+  /* 🧱 بناء 245: نفس «إعادة تأسيس البصمة» للحسابات — بعد سحب الدليل من السحابة
+     البصمة القديمة كانت بتخلي كل حساب نازل «متغيّر» ⇒ إعادة رفع الدليل كله.
+     dirty/removed ما بيتلمسوش: المعلّق فعلًا يفضل معلّق. */
+  function accountsRebase() {
+    const now = new Map();
+    (accounts || []).forEach((a) => {
+      if (a && a.id != null) now.set(Number(a.id), accountSyncSig(a));
+    });
+    accountsSnap = now;
+    return now.size;
+  }
+
   function accountsQueuePush(delay) {
     const p = new Promise((resolve) => { accountsPushWaiters.push(resolve); });
     if (accountsPushBusy) { accountsPushQueued = true; return p; }
@@ -1974,6 +1986,7 @@
 
   function saveSupplierTxs() {
     localStorage.setItem(LS_SUP_TXS, JSON.stringify(supplierTxs));
+    try { mirror(); } catch (e) { }   // 🧱 بناء 245: الرفع بياخد القائمة من MIZAN_STATE — من غيرها كان ممكن يرفع نسخة قديمة
     supplierTxPusher.trackChanges();
     const sync = supplierTxPusher.queue();
     syncToLocalDisk();
@@ -1982,6 +1995,7 @@
 
   function savePurchases() {
     localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
+    try { mirror(); } catch (e) { }   // 🧱 بناء 245
     purchasePusher.trackChanges();
     const sync = purchasePusher.queue();
     syncToLocalDisk();
@@ -1991,6 +2005,7 @@
   // المرتجعات (بناء 108) — نفس مسار الحفظ: محلي أولًا ثم رفع للسحابة ثم لقطة الديسك
   function saveSaleReturns() {
     localStorage.setItem(LS_SALE_RETURNS, JSON.stringify(saleReturns));
+    try { mirror(); } catch (e) { }   // 🧱 بناء 245
     saleReturnPusher.trackChanges();
     const sync = saleReturnPusher.queue();
     syncToLocalDisk();
@@ -1999,6 +2014,7 @@
 
   function savePurchaseReturns() {
     localStorage.setItem(LS_PURCHASE_RETURNS, JSON.stringify(purchaseReturns));
+    try { mirror(); } catch (e) { }   // 🧱 بناء 245
     purchaseReturnPusher.trackChanges();
     const sync = purchaseReturnPusher.queue();
     syncToLocalDisk();
@@ -2296,6 +2312,19 @@
          والمؤقّت (setTimeout) ما كانش لسه ضرب، فالطابور كان بيروح مع الذاكرة. */
       outboxSave(name, st.dirty, st.removed);
     }
+    /* 🧱 بناء 245: «إعادة تأسيس البصمة» بعد أي سحب من السحابة.
+       العلة: البصمة بتتاخد قبل السحب، فلما صفوف السحابة تندمج في الذاكرة بتظهر
+       كأنها «اتغيّرت محليًا» ⇒ الرفعة الجاية تعيد رفعها كلها (صدى) وتزحم الشبكة.
+       rebase بيختم الوضع الحالي كبصمة **من غير** ما يلمس dirty/removed —
+       فاللي لسه معلّق فعلًا يفضل مطلوب رفعه، واللي نزل من السحابة ما يترفعش تاني. */
+    function rebase() {
+      const now = new Map();
+      (listFn() || []).forEach(function (r) {
+        if (r && r.id != null) now.set(Number(r.id), sigFn(r));
+      });
+      st.snap = now;
+      return now.size;
+    }
     function queue(delay) {
       const p = new Promise(function (resolve) { st.waiters.push(resolve); });
       if (st.busy) { st.queued = true; return p; }
@@ -2445,6 +2474,7 @@
     }
     return {
       name: name, init: init, markAllDirty: markAllDirty, trackChanges: trackChanges,
+      rebase: rebase,
       queue: queue, flush: flush, reconcile: reconcile, restoreOutbox: restoreOutbox, state: st
     };
   }
@@ -2683,6 +2713,63 @@
   function journalQueuePush(delay) { return journalPusher.queue(delay); }
   function journalFlush() { return journalPusher.flush(); }
 
+  /* 🧱 بناء 245 — «الفاتورة اترحلت» ≠ «الترحيلات وصلت».
+     توست 244 كان بيطلع بعد رفع الفاتورة وحدها وقبل `postInvoiceJournal` أصلًا.
+     هنا: بعد الترحيل بندفع مع الفاتورة كل اللي هي لمساه — الخزينة، حركات العميل/المورد،
+     القيود، السندات، الشيكات، الحسابات، والمخزون — بثلاث محاولات قصيرة.
+     التأكيد ما يتقالش غير لما عدّاد المعلّق يوصل صفر فعلاً (مقيس من state الطوابير،
+     مش من قيمة رجوع flush)، ولو لسه فيه معلّق: مافيش توست كدّاب — الشريط الهادي هو اللي بيعلن. */
+  function pushInvoiceSettled(kind) {
+    const names = ["sales", "purchases", "treasury", "customer_txs", "supplier_txs",
+      "journal_entries", "vouchers", "checks"];
+    const pending = function () {
+      let n = 0;
+      names.forEach(function (nm) {
+        const p = PULL_PUSHERS[nm];
+        if (p && p.state) {
+          n += (p.state.dirty ? p.state.dirty.size : 0) + (p.state.removed ? p.state.removed.size : 0);
+        }
+      });
+      try { n += (productsDirty ? productsDirty.size : 0) + (productsRemoved ? productsRemoved.size : 0); } catch (e) { }
+      try { n += (accountsDirty ? accountsDirty.size : 0) + (accountsRemoved ? accountsRemoved.size : 0); } catch (e) { }
+      return n;
+    };
+    const round = function () {
+      const jobs = names.map(function (nm) {
+        const p = PULL_PUSHERS[nm];
+        if (!p) return Promise.resolve(true);
+        return Promise.resolve().then(function () { return p.flush(); }).catch(function () { return false; });
+      });
+      jobs.push(Promise.resolve().then(function () {
+        if (productsDirty.size || productsRemoved.size) return productsFlush();
+        return true;
+      }).catch(function () { return false; }));
+      jobs.push(Promise.resolve().then(function () {
+        if (accountsDirty.size || accountsRemoved.size) return accountsFlush();
+        return true;
+      }).catch(function () { return false; }));
+      return Promise.all(jobs);
+    };
+    return round().then(function () {
+      if (pending() === 0) return true;
+      return new Promise(function (r) { setTimeout(r, 800); }).then(round).then(function () {
+        if (pending() === 0) return true;
+        return new Promise(function (r) { setTimeout(r, 1200); }).then(round).then(function () {
+          return pending() === 0;
+        });
+      });
+    }).then(function (ok) {
+      if (ok) {
+        try {
+          toast("☁️ وصلت للسحابة: الفاتورة و" + (kind === "purchase" ? "ترحيلاتها (المخزون والمورد والقيود)" : "ترحيلاتها (الخزينة والقيود والحسابات)"), "success");
+        } catch (e) { }
+        try { syncPullInvoices(false); } catch (e) { }
+      }
+      try { if (typeof updateUpPendingBanner === "function") updateUpPendingBanner(); } catch (e) { }
+      return ok;
+    }).catch(function () { return false; });
+  }
+
   function saveUsers() {
     localStorage.setItem(LS_USERS, JSON.stringify(users));
   }
@@ -2796,6 +2883,7 @@
 
   function saveCustomers() {
     localStorage.setItem(LS_CUSTOMERS, JSON.stringify(customers));
+    try { mirror(); } catch (e) { }   // 🧱 بناء 245
     // 🧱 بناء 240: نفس نمط 235 — العميل الجديد اللي الرفعة وقعت بيظل في الطابور
     customersPusher.trackChanges();
     customersPusher.queue();
@@ -2804,6 +2892,7 @@
 
   function saveTxs() {
     localStorage.setItem(LS_TXS, JSON.stringify(txs));
+    try { mirror(); } catch (e) { }   // 🧱 بناء 245: حركة العميل/التحصيل ترفع من الحالة الحيّة
     customerTxPusher.trackChanges();
     const sync = customerTxPusher.queue();
     syncToLocalDisk();
@@ -9944,19 +10033,13 @@
     sales.push(invoice);
     saveSales();
     commitInvoiceSeq("sale", invEncodedOf(invoice));
-    // 🚀 بناء 244: دفع فوري ومباشر للسحابة من الموبايل واللاب مع تأكيد النتيجة
-    if (A.online && typeof salesFlush === "function") {
-      try {
-        salesFlush().then(function (ok) {
-          if (ok) {
-            toast("☁️ تم تأكيد رفع الفاتورة " + invoice.invoiceNumber + " للسحابة بنجاح", "success");
-            try { syncPullInvoices(false); } catch (e) { }
-          }
-        }).catch(function () { });
-      } catch (e) { }
-    }
     // 🆕 بناء 134: الفاتورة تترحّل أوتوماتيك للقيود اليومية (قيد متزن، بلا سند — انظر رأس القسم)
     const postedJ = postInvoiceJournal("sale", invoice, paidTreasury);
+    // 🧱 بناء 245: التأكيد بعد الترحيل — بندفع الفاتورة + الخزينة + الأطراف + القيود + الحسابات معًا.
+    // (شال توست 244 اللي كان بيعلن «وصلت» بمجرد رفع الفاتورة وقبل الترحيل أصلًا.)
+    if (A.online) {
+      try { pushInvoiceSettled("sale").catch(function () { }); } catch (e) { }
+    }
     // 🆕 بناء 208: بعد ترحيل الفاتورة (بتكلفتها المسجّلة) تنقص الكمية القديمة؛ لما تخلص المتوسط = آخر سعر
     consumeAvgForItems(posItems);
     addActivity("فاتورة مبيعات", "فاتورة " + invoice.invoiceNumber + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")" +
@@ -10674,6 +10757,10 @@
     commitInvoiceSeq("purchase", invEncodedOf(invoice));
     // 🆕 بناء 134: فاتورة المشتريات تترحّل أوتوماتيك للقيود (مخزون + ضريبة مقابل الحساب/المورد)
     const postedJ = postInvoiceJournal("purchase", invoice, paidTreasury);
+    // 🧱 بناء 245: نفس تأكيد البيع — الفاتورة + المخزون + المورد + القيود + الخزينة/الحسابات
+    if (A.online) {
+      try { pushInvoiceSettled("purchase").catch(function () { }); } catch (e) { }
+    }
     addActivity("فاتورة مشتريات", "فاتورة " + invoice.invoiceNumber + " - " + supplier.nameAr + " - " + fmt(t.grand) + " ج.م (" + payment + ")" +
       (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : ""));
 
@@ -11152,57 +11239,221 @@
   }
 
   
-  // 🔄 بناء 243: تحديث الفواتير الحقيقي من السحابة ودمجها فوراً في الذاكرة والكاش وشاشة الاستعلام
+  /* 🔄 بناء 243: تحديث الفواتير الحقيقي من السحابة ودمجها فوراً في الذاكرة والكاش وشاشة الاستعلام.
+     🧱 بناء 245 — «الفاتورة اترحلت بس الترحيلات ما وصلتش»: السحب كان بيسحب الفواتير بس،
+     فجهاز مفتوح (اللاب) ما كانش بياخد خزينة/حركات الأطراف/قيود/حسابات/سندات/شيكات إلا
+     عند الدخول الكامل. هنا بقى:
+     • سحب شامل لترحيلات الفاتورة (كل الجداول اللي الفاتورة بتلمسها) — مرة كل ٥ دقايق،
+       والضغط اليدوي «🔄 تحديث» بيسحب شامل فورًا.
+     • دمج واعي: صف عليه تعديل لسه ما اترفعش (dirty) أو انحذف من الجهاز ده (removed)
+       ما بيتدهسش من السحابة؛ والسحب الفاشل (null) ما بيمسحش حاجة.
+     • الأصناف/أسطر القيود/الرصيد الافتتاحي اللي السحابة مش بترجّعهم بيُحفظوا من المحلي.
+     • بعد الدمج: إعادة تأسيس بصمة الطوابير (rebase) — عشان ما يترفعش «صدى» رجع من السحابة. */
+  const FULL_PULL_MS = 300000;
+  let lastFullPullAt = 0;
+  let syncPullBusy = false;
+  let syncPullAgain = false;
+  const PULL_PUSHERS = {};
+  ALL_ROW_PUSHERS.forEach(function (p) { if (p && p.name) PULL_PUSHERS[p.name] = p; });
+
+  function pullKeepSets(name) {
+    const out = { keep: new Set(), removed: new Set() };
+    const p = PULL_PUSHERS[name];
+    if (!p || !p.state) return out;
+    try { (p.state.dirty || new Set()).forEach(function (id) { out.keep.add(Number(id)); }); } catch (e) { }
+    try { (p.state.removed || new Set()).forEach(function (id) { out.removed.add(Number(id)); }); } catch (e) { }
+    return out;
+  }
+
+  function mergePulled(cloudArr, localArr, sets, fixRow) {
+    cloudArr = Array.isArray(cloudArr) ? cloudArr : [];
+    localArr = Array.isArray(localArr) ? localArr : [];
+    if (!cloudArr.length) return { merged: localArr.slice(), changed: 0 };
+    const keep = (sets && sets.keep) || new Set();
+    const gone = (sets && sets.removed) || new Set();
+    const byId = new Map();
+    localArr.forEach(function (r) { if (r && r.id != null) byId.set(Number(r.id), r); });
+    const out = [];
+    let changed = 0;
+    cloudArr.forEach(function (c) {
+      if (!c || c.id == null) return;
+      const id = Number(c.id);
+      if (gone.has(id)) { changed++; return; }              // انحذف من الجهاز ده ⇒ ما ترجعوش
+      const loc = byId.get(id) || null;
+      if (keep.has(id) && loc) { out.push(loc); return; }    // عليه تعديل معلّق ⇒ المحلي هو الأحدث
+      let row = c;
+      if (typeof fixRow === "function") { try { row = fixRow(c, loc) || c; } catch (e) { row = c; } }
+      out.push(row);
+      changed++;
+    });
+    const seen = new Set();
+    cloudArr.forEach(function (c) { if (c && c.id != null) seen.add(Number(c.id)); });
+    localArr.forEach(function (r) {
+      if (!r || r.id == null) return;
+      const id = Number(r.id);
+      if (seen.has(id) || gone.has(id)) return;
+      out.push(r);                                          // لسه ما وصلش للسحابة ⇒ يفضل
+    });
+    return { merged: out, changed: changed };
+  }
+
+  // الرصيد الافتتاحي مش بيترفع للسحابة عمدًا (build 119) ⇒ رجوعه صفر مش معناه إنه اتغير.
+  function keepTreasuryOpening(c, loc) {
+    const row = Object.assign({}, c);
+    if (loc && Number(row.openingBalance || 0) === 0 && Number(loc.openingBalance || 0) !== 0) {
+      row.openingBalance = Number(loc.openingBalance) || 0;
+    }
+    return row;
+  }
+
+  // أسطر القيود بتيجي ملحقة بالسحب؛ لو رجعت فاضية (سقف الصفحات) نستخدم أسطرنا المحلية.
+  function keepJournalLines(c, loc) {
+    const row = Object.assign({}, c);
+    let lines = Array.isArray(row.lines) ? row.lines : [];
+    if (!lines.length && loc && Array.isArray(loc.lines) && loc.lines.length) lines = loc.lines;
+    if (lines.length) {
+      row.lines = lines;
+      let d = 0, cr = 0;
+      lines.forEach(function (l) { d += Number(l.debit) || 0; cr += Number(l.credit) || 0; });
+      row.debit = Math.round(d * 100) / 100;
+      row.credit = Math.round(cr * 100) / 100;
+    }
+    return row;
+  }
+
+  // سطور الفاتورة كمان: السحب لو رجّع بلا أصناف، منمسحش أصنافنا.
+  function keepInvoiceItems(c, loc) {
+    const row = Object.assign({}, c);
+    if ((!Array.isArray(row.items) || !row.items.length) && loc && Array.isArray(loc.items) && loc.items.length) {
+      row.items = loc.items;
+    }
+    return row;
+  }
+
+  const PULL_TABLES = [
+    { name: "sales", ls: LS_SALES, get: function () { return sales; }, set: function (v) { sales = v; }, fix: keepInvoiceItems },
+    { name: "purchases", ls: LS_PURCHASES, get: function () { return purchases; }, set: function (v) { purchases = v; }, fix: keepInvoiceItems },
+    { name: "sale_returns", ls: LS_SALE_RETURNS, get: function () { return saleReturns; }, set: function (v) { saleReturns = v; }, fix: keepInvoiceItems },
+    { name: "purchase_returns", ls: LS_PURCHASE_RETURNS, get: function () { return purchaseReturns; }, set: function (v) { purchaseReturns = v; }, fix: keepInvoiceItems },
+    { name: "treasury", ls: LS_TREASURY, get: function () { return treasury; }, set: function (v) { treasury = v; }, fix: keepTreasuryOpening },
+    { name: "customers", ls: LS_CUSTOMERS, get: function () { return customers; }, set: function (v) { customers = v; } },
+    { name: "suppliers", ls: LS_SUPPLIERS, get: function () { return suppliers; }, set: function (v) { suppliers = v; } },
+    { name: "customer_txs", ls: LS_TXS, get: function () { return txs; }, set: function (v) { txs = v; } },
+    { name: "supplier_txs", ls: LS_SUP_TXS, get: function () { return supplierTxs; }, set: function (v) { supplierTxs = v; } },
+    { name: "journal_entries", ls: LS_JOURNAL, get: function () { return journalEntries; }, set: function (v) { journalEntries = v; }, fix: keepJournalLines },
+    { name: "accounts", ls: LS_ACCOUNTS, get: function () { return accounts; }, set: function (v) { accounts = v; } },
+    { name: "vouchers", ls: LS_VOUCHERS, get: function () { return vouchers; }, set: function (v) { vouchers = v; } },
+    { name: "checks", ls: LS_CHECKS, get: function () { return checks; }, set: function (v) { checks = v; } }
+  ];
+
+  /* الشاشة اللي المستخدم واقف عليها تتحدث فورًا — وإلا «الترحيلات وصلت» بتبان كأنها ما وصلتش. */
+  function refreshAfterPull(touched) {
+    const v = ownerCurrentView || "";
+    const has = function (n) { return touched[n] === true; };
+    try {
+      if (v === "dashboard" || !v) { if (typeof renderDashboard === "function") renderDashboard(); }
+      if (v === "customers" && typeof renderTable === "function") renderTable();
+      if (v === "suppliers" && typeof renderSuppliers === "function") renderSuppliers();
+      if (v === "treasury") { if (typeof renderTreasury === "function") renderTreasury(); if (typeof renderTreMoves === "function") renderTreMoves(); }
+      if (v === "treasuryStatements") { if (typeof renderTreStmt === "function") renderTreStmt(); }
+      if (v === "accounts" && typeof renderAccounts === "function") renderAccounts();
+      if (v === "journal") { if (typeof renderJournal === "function") renderJournal(); if (typeof renderLedger === "function") renderLedger(); }
+      if (v === "accStatement" && typeof renderAccStatementView === "function") renderAccStatementView();
+      if (v === "balance" && typeof renderBalance === "function") renderBalance();
+      if (v === "chartTree" && typeof renderChartTree === "function") renderChartTree();
+      if (v === "glLedger" && typeof renderLedgerView === "function") renderLedgerView("general");
+      if (v === "subLedger" && typeof renderLedgerView === "function") renderLedgerView("sub");
+      if (v === "checks" && typeof renderChecks === "function") renderChecks();
+      if ((v === "returns" || v === "pos") && typeof renderInvoiceQuery === "function") renderInvoiceQuery();
+      if (v === "sales") { if (typeof renderPosItems === "function") renderPosItems(); if (typeof posRecalc === "function") posRecalc(); }
+      if (v === "purchases") { if (typeof renderPPItems === "function") renderPPItems(); if (typeof ppRecalc === "function") ppRecalc(); }
+      if (has("sales") || has("purchases")) { if (typeof renderInvoiceQuery === "function") renderInvoiceQuery(); }
+      if (has("sales") || has("purchases")) { if (typeof renderSalesLookups === "function") renderSalesLookups(); }
+      if (typeof updateUpPendingBanner === "function") updateUpPendingBanner();
+    } catch (e) { console.warn("refreshAfterPull:", e); }
+  }
+
   function syncPullInvoices(interactive) {
     if (!A.online || !window.CLOUD || !window.CLOUD.pullLazyTable) {
       if (interactive) renderInvoiceQuery();
       return Promise.resolve(false);
     }
+    if (syncPullBusy) {
+      if (interactive) syncPullAgain = true;   // الضغط اليدوي اللي جه فوق سحب شغّال = سحب شامل بعده
+      return Promise.resolve(false);
+    }
+    syncPullBusy = true;
     const btn = document.getElementById("btnRefreshInvoices");
     const origHtml = btn ? btn.innerHTML : "";
     if (interactive && btn) {
       btn.disabled = true;
       btn.innerHTML = '⏳ جارٍ التحديث من السحابة...';
     }
-    return Promise.all([
-      window.CLOUD.pullLazyTable("sales"),
-      window.CLOUD.pullLazyTable("purchases")
-    ]).then(function (res) {
-      const cloudSales = res[0];
-      const cloudPurchases = res[1];
-      let changed = false;
-      if (Array.isArray(cloudSales) && cloudSales.length) {
-        const mS = mergeCloudLocal(cloudSales, sales);
-        sales = mS.merged;
-        localStorage.setItem(LS_SALES, JSON.stringify(sales));
-        changed = true;
+    const full = !!interactive || (Date.now() - lastFullPullAt >= FULL_PULL_MS);
+    const tables = full ? PULL_TABLES : PULL_TABLES.filter(function (t) {
+      return t.name === "sales" || t.name === "purchases";
+    });
+    return Promise.all(tables.map(function (t) {
+      return Promise.resolve().then(function () { return window.CLOUD.pullLazyTable(t.name); })
+        .then(function (rows) { return { t: t, rows: rows }; })
+        .catch(function () { return { t: t, rows: null }; });
+    })).then(function (res) {
+      const touched = {};
+      (res || []).forEach(function (one) {
+        const t = one.t;
+        const cloud = one.rows;
+        if (!Array.isArray(cloud)) return;          // فشل/أوفلاين ⇒ ممنوع نمسح أو نعلن نجاح
+        const sets = pullKeepSets(t.name);
+        const m = mergePulled(cloud, t.get() || [], sets, t.fix);
+        t.set(m.merged);
+        touched[t.name] = true;
+        try { localStorage.setItem(t.ls, JSON.stringify(m.merged)); } catch (e) { }
+        const p = PULL_PUSHERS[t.name];
+        if (p && typeof p.rebase === "function") { try { p.rebase(); } catch (e) { } }
+        try {
+          window.MIZAN_STATE = window.MIZAN_STATE || {};
+          window.MIZAN_STATE.loadedTables = window.MIZAN_STATE.loadedTables || {};
+          window.MIZAN_STATE.loadedTables[t.name] = true;
+          if (t.name === "journal_entries") window.MIZAN_STATE.loadedTables["journal_lines"] = true;
+        } catch (e) { }
+      });
+      if (full) lastFullPullAt = Date.now();
+      if (Object.keys(touched).length) {
+        try { linkInvoiceParties(); } catch (e) { }
+        if (typeof idFloorsLoad === "function") { try { idFloorsLoad(); } catch (e) { } }
+        if (touched["customer_txs"] && typeof recalculateCustomerBalances === "function") {
+          try { recalculateCustomerBalances(); } catch (e) { }
+        }
+        if (touched["supplier_txs"] && typeof recalculateSupplierBalances === "function") {
+          try { recalculateSupplierBalances(); } catch (e) { }
+        }
+        if (touched["accounts"] && typeof accountsRebase === "function") { try { accountsRebase(); } catch (e) { } }
+        /* ⚠️ ممنوع recalculateTreasuryBalances هنا: بتنادي saveTreasury (رفع) — والسحب قراءة.
+           رصيد الخزينة النازل من السحابة محسوب عند الجهاز اللي حفظ آخر حركة. */
+        try { mirror(); } catch (e) { }
+        try { syncToLocalDisk(); } catch (e) { }
+        refreshAfterPull(touched);
       }
-      if (Array.isArray(cloudPurchases) && cloudPurchases.length) {
-        const mP = mergeCloudLocal(cloudPurchases, purchases);
-        purchases = mP.merged;
-        localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
-        changed = true;
-      }
-      if (changed) {
-        linkInvoiceParties();
-        if (typeof idFloorsLoad === "function") idFloorsLoad();
-      }
-      renderInvoiceQuery();
       if (interactive) {
-        toast("🟢 تم تحديث الفواتير من السحابة بنجاح", "success");
+        toast(full ? "🟢 تم تحديث الفواتير والحسابات من السحابة بنجاح" : "🟢 تم تحديث الفواتير من السحابة بنجاح", "success");
       }
       return true;
     }).catch(function (e) {
       console.warn("syncPullInvoices error:", e);
       renderInvoiceQuery();
       if (interactive) {
-        toast("تعذر تحديث بعض الفواتير من السحابة: " + (e.message || e), "warning");
+        toast("تعذر تحديث بعض البيانات من السحابة: " + (e.message || e), "warning");
       }
       return false;
     }).finally(function () {
+      syncPullBusy = false;
       if (btn) {
         btn.disabled = false;
         btn.innerHTML = origHtml || '🔄 تحديث الفواتير من السحابة';
+      }
+      if (syncPullAgain) {
+        syncPullAgain = false;
+        try { syncPullInvoices(true); } catch (e) { }
       }
     });
   }
