@@ -1256,20 +1256,23 @@
   // ids = أرقام local_id المتغيرة، removed = أرقام local_id المحذوفة محليًا.
   // لا نعمل select للجدول كامل: الهوية السحابية من W.idMap، والصفوف الجديدة فقط
   // بنسأل عليها بنداء مصغّر (id, local_id) مقسّم لدفعات.
-  function pushSubsetRows(name, ids, removed) {
+  function pushSubsetRows(name, ids, removed, rowsOverride) {
     var meta = META[name];
     if (!meta || !DATA.isOnline() || !DATA.client()) return Promise.resolve(false);
     /* 🧱 بناء 243: كل محاولة رفع بتبدأ بقائمة فشل فاضية — عشان اللي يرجع
        للتطبيق يبقى فشل **المحاولة دي** بس، مش بقايا محاولة قديمة. */
     pushFailedReset(name);
-    var local = meta.local() || [];
+    var local = rowsOverride || (meta.local && meta.local()) || [];
     var want = {};
     (ids || []).forEach(function (id) { var n = Number(id); if (n > 0) want[n] = 1; });
     var rows = local.filter(function (r) { return want[Number(r.id)]; }).map(function (r) {
       return meta.toCloud(r);
     });
     var rem = (removed || []).map(Number).filter(function (n) { return n > 0; });
-    if (!rows.length && !rem.length) return Promise.resolve(true);
+    /* 🧱 بناء 244: «مطلوب رفع رقم مش موجود في القائمة المحلية» = فشل مش نجاح.
+       قبل كده كان بيرجّع true فيتفرّغ الطابور من غير ما يترفع أي صف (نجاح كاذب).
+       true بس لما يكون مفيش أي رقم مطلوب أصلًا (مافيش شغل). */
+    if (!rows.length && !rem.length) return Promise.resolve(Object.keys(want).length === 0);
     // حذف جماعي غير طبيعي ⇒ نرجع للمزامنة الكاملة (بحماياتها) بدل حذف واسع.
     if (rem.length > Math.max(5, Math.floor(local.length * 0.25))) return syncOne(name);
     var client = DATA.client();
@@ -1360,10 +1363,10 @@
     return !!BATCH_TABLES[name];
   }
 
-  function buildBatchOp(name, ids, removed) {
+  function buildBatchOp(name, ids, removed, rowsOverride) {
     var meta = META[name];
-    if (!meta || !meta.local) return null;
-    var local = meta.local() || [];
+    if (!meta) return null;
+    var local = rowsOverride || (meta.local && meta.local()) || [];
     var want = {};
     (ids || []).forEach(function (id) { var n = Number(id); if (n > 0) want[n] = 1; });
     var idMap = (W.idMap && W.idMap[name]) || {};
@@ -1432,9 +1435,10 @@
     }, delay || 20);
   }
 
-  function queueRowBatch(name, ids, removed) {
+  function queueRowBatch(name, ids, removed, rowsOverride) {
     var slot = rowBatch.ops[name];
-    if (!slot) slot = rowBatch.ops[name] = { ids: {}, removed: {} };
+    if (!slot) slot = rowBatch.ops[name] = { ids: {}, removed: {}, rowsOverride: rowsOverride };
+    else if (rowsOverride) slot.rowsOverride = rowsOverride;
     (ids || []).forEach(function (id) { var n = Number(id); if (n > 0) slot.ids[n] = 1; });
     (removed || []).forEach(function (id) { var n = Number(id); if (n > 0) slot.removed[n] = 1; });
     return new Promise(function (resolve) {
@@ -1469,13 +1473,13 @@
   }
 
   function fallbackBatch(pending, built, waiters, rpcErr) {
-    var names = Object.keys(built);
+    var names = Object.keys(pending);
     var perName = {};
-    Object.keys(pending).forEach(function (n) { if (!built[n]) perName[n] = true; });
     return Promise.all(names.map(function (n) {
       var ids = Object.keys(pending[n].ids).map(Number);
       var rem = Object.keys(pending[n].removed).map(Number);
-      return pushSubsetRows(n, ids, rem).then(function (ok) { return { n: n, ok: ok === true }; })
+      var rowsOverride = pending[n].rowsOverride;
+      return pushSubsetRows(n, ids, rem, rowsOverride).then(function (ok) { return { n: n, ok: ok === true }; })
         .catch(function () { return { n: n, ok: false }; });
     })).then(function (list) {
       list.forEach(function (x) { perName[x.n] = x.ok; });
@@ -1497,15 +1501,21 @@
     names.sort(function (a, b) { return (BATCH_RANK[a] || 50) - (BATCH_RANK[b] || 50); }).forEach(function (name) {
       var ids = Object.keys(pending[name].ids).map(Number);
       var rem = Object.keys(pending[name].removed).map(Number);
-      var op = buildBatchOp(name, ids, rem);
+      var rowsOverride = pending[name].rowsOverride;
+      var op = buildBatchOp(name, ids, rem, rowsOverride);
       if (!op) return;
       built[name] = op;
       op.ops.forEach(function (o) { ops.push(o); });
     });
     if (!ops.length) {
       var empty = {};
-      names.forEach(function (n) { empty[n] = true; });
-      settleBatch(waiters, empty, true);
+      var allEmpty = true;
+      names.forEach(function (n) {
+        var reqCount = Object.keys(pending[n].ids).length + Object.keys(pending[n].removed).length;
+        empty[n] = reqCount === 0;
+        if (reqCount > 0) allEmpty = false;
+      });
+      settleBatch(waiters, empty, allEmpty);
       return;
     }
     var count = 0;
@@ -1574,30 +1584,30 @@
     });
   }
 
-  function pushProductRows(ids, removed) {
-    return pushSubsetRows("products", ids, removed);
+  function pushProductRows(ids, removed, rowsOverride) {
+    return pushSubsetRows("products", ids, removed, rowsOverride);
   }
 
-  function pushAccountRows(ids, removed) {
-    return pushSubsetRows("accounts", ids, removed);
+  function pushAccountRows(ids, removed, rowsOverride) {
+    return pushSubsetRows("accounts", ids, removed, rowsOverride);
   }
 
-  function pushRows(name, ids, removed) {
+  function pushRows(name, ids, removed, rowsOverride) {
     if (W.batchRows && batchSupported(name) && DATA.isOnline() && DATA.client()) {
-      var local = (META[name] && META[name].local && META[name].local()) || [];
+      var local = rowsOverride || (META[name] && META[name].local && META[name].local()) || [];
       var rem = (removed || []).map(Number).filter(function (n) { return n > 0; });
       if (rem.length > Math.max(5, Math.floor(local.length * 0.25))) return syncOne(name);
-      return queueRowBatch(name, ids, removed);
+      return queueRowBatch(name, ids, removed, rowsOverride);
     }
-    if (name === "products") return pushProductRows(ids, removed);
-    if (name === "accounts") return pushAccountRows(ids, removed);
-    if (name === "sales") return pushSubsetRows("sales", ids, removed);
-    if (name === "journal_entries") return pushSubsetRows("journal_entries", ids, removed);
+    if (name === "products") return pushProductRows(ids, removed, rowsOverride);
+    if (name === "accounts") return pushAccountRows(ids, removed, rowsOverride);
+    if (name === "sales") return pushSubsetRows("sales", ids, removed, rowsOverride);
+    if (name === "journal_entries") return pushSubsetRows("journal_entries", ids, removed, rowsOverride);
     // 🆕 بناء 235: نفس النمط للجداول اللي كانت بتترفع كاملة مع كل حفظ.
     if (name === "purchases" || name === "sale_returns" || name === "purchase_returns" ||
         name === "customer_txs" || name === "supplier_txs" || name === "vouchers" ||
         name === "treasury") {
-      return pushSubsetRows(name, ids, removed);
+      return pushSubsetRows(name, ids, removed, rowsOverride);
     }
     return syncOne(name);
   }

@@ -1658,12 +1658,16 @@
       if (p) sentSigs.set(Number(id), productSyncSig(p));
     });
     const gen = productsPushGen;
+    /* 🧱 بناء 244: القائمة الحيّة تُمرَّر للرفع (نفس الطبقة اللي اتصلحت في الجدول العام)
+       — وإلا `CLOUD` كان بيقرا صورة قديمة فما يلاقيش الصف ⇒ نجاح كاذب وطابور بيتفرّغ. */
+    const liveList = products || [];
     outboxSave("products", productsDirty, productsRemoved);   // 🧱 اللي «في اليد» يفضل مطلوب رفعه
     productsDirty.clear();
     productsRemoved.clear();
     productsPushBusy = true;
+    try { mirror(); } catch (e) { }
     let call;
-    try { call = window.CLOUD.pushRows("products", ids, removed); }
+    try { call = window.CLOUD.pushRows("products", ids, removed, liveList); }
     catch (e) { call = Promise.resolve(false); }
     const done = (ok) => {
       productsPushBusy = false;
@@ -1742,6 +1746,7 @@
 
   function saveProducts() {
     localStorage.setItem(LS_PRODUCTS, JSON.stringify(products));
+    try { mirror(); } catch (e) { }
     productsTrackChanges();
     productsQueuePush();
     syncToLocalDisk();
@@ -1841,12 +1846,15 @@
       if (a) sentSigs.set(Number(id), accountSyncSig(a));
     });
     const gen = accountsPushGen;
+    /* 🧱 بناء 244: القائمة الحيّة للحسابات تُمرَّر للرفع (نفس إصلاح الأصناف). */
+    const liveList = accounts || [];
     outboxSave("accounts", accountsDirty, accountsRemoved);   // 🧱 بناء 241
     accountsDirty.clear();
     accountsRemoved.clear();
     accountsPushBusy = true;
+    try { mirror(); } catch (e) { }
     let call;
-    try { call = window.CLOUD.pushRows("accounts", ids, removed); }
+    try { call = window.CLOUD.pushRows("accounts", ids, removed, liveList); }
     catch (e) { call = Promise.resolve(false); }
     const done = (ok) => {
       accountsPushBusy = false;
@@ -1927,6 +1935,7 @@
 
   function saveSales() {
     localStorage.setItem(LS_SALES, JSON.stringify(sales));
+    try { mirror(); } catch (e) { }
     salesTrackChanges();
     const sync = salesQueuePush();
     syncToLocalDisk();
@@ -1935,6 +1944,7 @@
 
   function saveTreasury() {
     localStorage.setItem(LS_TREASURY, JSON.stringify(treasury));
+    try { mirror(); } catch (e) { }
     treasuryPusher.trackChanges();
     const sync = treasuryPusher.queue();
     syncToLocalDisk();
@@ -1955,6 +1965,7 @@
 
   function saveSuppliers() {
     localStorage.setItem(LS_SUPPLIERS, JSON.stringify(suppliers));
+    try { mirror(); } catch (e) { }
     // 🧱 بناء 240: نفس النمط — المتسخ يفضل مطلوب لحد النجاح
     suppliersPusher.trackChanges();
     suppliersPusher.queue();
@@ -1996,6 +2007,7 @@
 
   function saveAccounts() {
     localStorage.setItem(LS_ACCOUNTS, JSON.stringify(accounts));
+    try { mirror(); } catch (e) { }
     accountsTrackChanges();
     const sync = accountsQueuePush();
     syncToLocalDisk();
@@ -2319,8 +2331,9 @@
       st.dirty.clear();
       st.removed.clear();
       st.busy = true;
+      try { mirror(); } catch (e) { }
       let call;
-      try { call = window.CLOUD.pushRows(name, ids, removed); }
+      try { call = window.CLOUD.pushRows(name, ids, removed, list); }
       catch (e) { call = Promise.resolve(false); }
       const done = function (ok) {
         st.busy = false;
@@ -2518,7 +2531,7 @@
      (١ب) نفس الأرضية للأصناف والحسابات
      (٢) مصالحة مع السحابة: أي صف محلي مش هناك يرجع مطلوب رفع
      بتتنادى: أول ما النت يرجع، وبعد كل دمج سحابي، وكل HEAL_MS في المراقب الدوري. */
-  const HEAL_MS = 300000;
+  const HEAL_MS = 30000;
   let lastHealAt = 0;
   function healUnsynced(force) {
     if (!inCompanySession()) return Promise.resolve(0);
@@ -4057,7 +4070,10 @@
       renderPurchasesLookups();
     }
     if (name === "suppliers") renderSuppliers();
-    if (name === "returns") { renderInvoiceQuery(); if (A.online) syncPullInvoices(false); }
+    if (name === "returns" || name === "pos" || name === "dashboard") {
+      if (name === "returns") renderInvoiceQuery();
+      if (A.online) try { syncPullInvoices(false); } catch (e) { }
+    }
     if (name === "returnsReg") renderReturns();
     if (name === "treasury") { syncTreasuryFromSett(); recalculateTreasuryBalances(); renderTreasury(); renderTreMoves(); }
     if (name === "accounts") renderAccounts();
@@ -9928,11 +9944,14 @@
     sales.push(invoice);
     saveSales();
     commitInvoiceSeq("sale", invEncodedOf(invoice));
-    // 🚀 بناء 243: دفع فوري ومباشر للسحابة من الموبايل مع تأكيد النتيجة للمستخدم
+    // 🚀 بناء 244: دفع فوري ومباشر للسحابة من الموبايل واللاب مع تأكيد النتيجة
     if (A.online && typeof salesFlush === "function") {
       try {
         salesFlush().then(function (ok) {
-          if (ok) toast("☁️ تم تأكيد رفع الفاتورة " + invoice.invoiceNumber + " للسحابة بنجاح", "success");
+          if (ok) {
+            toast("☁️ تم تأكيد رفع الفاتورة " + invoice.invoiceNumber + " للسحابة بنجاح", "success");
+            try { syncPullInvoices(false); } catch (e) { }
+          }
         }).catch(function () { });
       } catch (e) { }
     }
