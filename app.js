@@ -1107,7 +1107,10 @@
           // اللقطة المحلية فيها الحركة كاملة ⇒ حصانة بناء 118 ما تمنعش إعادة الحساب هنا
           try {
             const LT = (window.MIZAN_STATE.loadedTables = window.MIZAN_STATE.loadedTables || {});
-            ["customer_txs", "supplier_txs", "sales", "purchases", "vouchers", "journal_entries"].forEach((t) => { LT[t] = true; });
+            // 🧱 بناء 248: «checks» معاهم هنا — في الوضع المحلي الشيكات بتيجي من قرص الجهاز
+            // نفسه (LS_CHECKS) ومافيش سحابة تستنى عليها. لو مسجلناهاش كان ترحيل فاتورة
+            // بشيك يقابله «الشيكات لسه بتنزل» على جهاز شغال من اللقطة المحلية.
+            ["customer_txs", "supplier_txs", "sales", "purchases", "vouchers", "journal_entries", "checks"].forEach((t) => { LT[t] = true; });
           } catch (e) { }
           recalculateCustomerBalances();
           recalculateSupplierBalances();
@@ -11439,6 +11442,13 @@
         try { mirror(); } catch (e) { }
         try { syncToLocalDisk(); } catch (e) { }
         refreshAfterPull(touched);
+        /* 🧱 بناء 248: الشيكات/Fواتير/القيود وصلت للتو ⇒ أي فاتورة اتحفظت على الجهاز ده
+           وسطر شيكها «استنى» الشيكات، قيد هيكتب نفسه دلوقتي على حساب الشيك الصح (1.2.1/2.1.4).
+           بدون السطر ده كان الانتظار لحد الدخول الجاي — و`S:` كان بيمنع أي تصحيح أصلاً.
+           reconcileJournalWithDocs بيقف من نفسه لو الجداول لسه ما نزلتش ولو مافيش ناقص. */
+        if (touched["checks"] || touched["sales"] || touched["purchases"] || touched["journal_entries"]) {
+          try { reconcileJournalWithDocs(); } catch (e) { }
+        }
       }
       if (interactive) {
         toast(full ? "🟢 تم تحديث الفواتير والحسابات من السحابة بنجاح" : "🟢 تم تحديث الفواتير من السحابة بنجاح", "success");
@@ -16879,9 +16889,29 @@ id: nextVoucherId(),
   // يرجّع true (ويعرض رسالة) لو المستند مينفعش يتحفظ بسبب حساب مطلوب ناقص — وإلا false
   function jrnBlocked(what, plan) {
     if (!plan || !plan.error) return false;
+    // 🧱 بناء 248: «checks» مؤقت (الشيكات لسه بتنزل) ⇒ الفاتورة تتحفظ عادي، والقيد يتحاول
+    // تاني لوحده أول ما توصل. منع الحفظ هنا كان بيرمي بيانات كاتبها المستخدم بإيده.
+    if (plan.error === "checks") return false;
     toast("مش هينفع نسجّل " + what + ": " + invoiceJrnMissText(plan.error) +
       " — ضيفه من شاشة الحسابات وبعدها سجّله تاني.", "error");
     return true;
+  }
+
+  // 🧱 بناء 248: «الشيكات وصلت الذاكرة فعلًا؟» — السؤال ده بقى شرطًا قبل أي ترحيل لسطر شيك.
+  // الجذر المقاس (بلاغ الموبايل→اللاب): cloud.js ما كانش يسلّم checks للذاكرة ولا يسجلها
+  // كمحمّلة ⇒ سطر «شيك» في فاتورة كان يلوح chk = فاضي ⇒ يروح على 1.1.5 / 2.1.1 (مديونية الطرف)
+  // بدل 1.2.1 «شيكات لدى العملاء» / 2.1.4 «شيكات مستحقة للموردين»، ومفتاح S: بيمنع أي تصحيح بعدين.
+  function checksInMemory() {
+    if (bigDataLoaded("checks")) return true;
+    // 🧱 بناء 248: استثناء أمين — لو جدول الشيكات مالوش وجود على السحابة خالص (قاعدة قديمة
+    // بلا ترقية ٦٢) فـ «لسه بتنزل» حالة مستحيلة ⇒ الاستمرار في الانتظار معناه إن القيد
+    // ما يتكتبش للأبد. في الحالة دي نسيب القرار القديم (حساب الطرف) أحسن من صفر قيد.
+    const C = window.CLOUD;
+    return !!(C && typeof C.checksTableMissing === "function" && C.checksTableMissing());
+  }
+  // كود خطأ سطر السداد: «checks» = الشيكات لسه ما نزلتش (مؤقت ومش مانع الحفظ) · «cash» = حساب ناقص
+  function jrnPayLineErr(p) {
+    return (p && p.method === "check" && !checksInMemory()) ? "checks" : "cash";
   }
 
   // 🧾 بناء 190: أطراف «المدفوع» — تدعم تعدّد طرق السداد + الشيكات (متوافق خلفيًا بالحرف)
@@ -16892,7 +16922,12 @@ id: nextVoucherId(),
     if (p && p.method === "check") {
       const chk = checksOfInvoice(inv).find((c) => c && !c.deleted && !c.unapplied &&
         ["pending", "collected"].indexOf(String(c.status || "pending")) !== -1);
-      if (!chk) return accByCode(kind === "sale" ? "1.1.5" : "2.1.1", kind === "sale" ? "مديونيات العملاء" : "مستحقات الموردين");
+      if (!chk) {
+        // 🧱 بناء 248: الشيكات لسه ما نزلتش من السحابة ⇒ نرفض القيد (مؤقت) أفضل ألف مرة من
+        // نحطّ مبلغ الشيك على حساب مديونية الطرف — الغلط ده كان بيقفل نفسه بمفتاح S:.
+        if (!checksInMemory()) return null;
+        return accByCode(kind === "sale" ? "1.1.5" : "2.1.1", kind === "sale" ? "مديونيات العملاء" : "مستحقات الموردين");
+      }
       return kind === "sale" ? checksAcc() : checksPayableAcc();
     }
     if (inv.vanRepAccountId) return accounts.find((a) => Number(a.id) === Number(inv.vanRepAccountId)) || null;
@@ -16936,7 +16971,8 @@ id: nextVoucherId(),
         if (payLines.length) {
           for (const p of payLines) {
             const acc = invPaidAccount(kind, inv, tr, p);
-            if (!acc) return { error: "cash" };
+            // 🧱 بناء 248: سطر «شيك» والشيكات لسه ما نزلتش ⇒ خطأ "checks" مؤقت (مش "cash")
+            if (!acc) return { error: jrnPayLineErr(p) };
             lines.push({ accountId: Number(acc.id), debit: round2(p.amount), credit: 0 });
           }
         } else {
@@ -16972,7 +17008,8 @@ id: nextVoucherId(),
         if (payLines.length) {
           for (const p of payLines) {
             const acc = invPaidAccount(kind, inv, tr, p);
-            if (!acc) return { error: "cash" };
+            // 🧱 بناء 248: سطر «شيك» والشيكات لسه ما نزلتش ⇒ خطأ "checks" مؤقت (مش "cash")
+            if (!acc) return { error: jrnPayLineErr(p) };
             lines.push({ accountId: Number(acc.id), debit: 0, credit: round2(p.amount) });
           }
         } else {
@@ -17007,6 +17044,8 @@ id: nextVoucherId(),
     if (err === "2.1.2") return "حساب «ضريبة القيمة المضافة المحصلة» (2.1.2) مش موجود في دليل حساباتك";
     if (err === "2.1.3") return "حساب «ضريبة القيمة المضافة المدفوعة» (2.1.3) مش موجود في دليل حساباتك";
     if (err === "cash") return "حساب النقدية/البنك/المحفظة مش موجود في دليل حساباتك";
+    // 🧱 بناء 248: مؤقت — الشيكات لسه بتنزل من السحابة (مافيش حاجة تنضاف من شاشة الحسابات)
+    if (err === "checks") return "قائمة الشيكات لسه ما نزلتش من السحابة";
     if (err === "acc") return "الحساب المقابل للسند مش موجود في دليل الحسابات";
     if (err === "amount") return "مبلغ الفاتورة مش صالح للترحيل";
     if (err === "unbalanced") return "الطرفان مش متزنيين";
@@ -17020,6 +17059,14 @@ id: nextVoucherId(),
     ensureJrnStd();
     const plan = invoiceJrnPlan(kind, inv, tr);
     if (plan.error) {
+      // 🧱 بناء 248: «checks» حالة مختلفة — مافيش حساب ناقص يضيفه المستخدم، دي الشيكات لسه
+      // بتنزل من السحابة. الفاتورة اتحفظت، والقيد هيكتب نفسه على «حساب الشيك» الصح أول ما
+      // توصل (سحب كل ٥ دقايق + زرار «تحديث» + الشفاء الذاتي) — فممنوع نوجهه لشاشة الحسابات.
+      if (plan.error === "checks") {
+        toast("الفاتورة اتحفظت تمام ✅ سطر الشيك لسه ما اترحّلش لأن قائمة الشيكات لسه بتنزل " +
+          "من السحابة — أول ما توصل القيد هيكتب نفسه على حساب الشيك الصح.", "warning");
+        return null;
+      }
       toast("الفاتورة اتحفظت تمام. الترحيل التلقائي للقيود ما كملش لأن " +
         invoiceJrnMissText(plan.error) + " — ضيفه من شاشة الحسابات وبعدها سجّل القيد من «القيود اليومية».", "warning");
       return null;

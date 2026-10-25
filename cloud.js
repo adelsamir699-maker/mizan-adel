@@ -265,10 +265,14 @@
   // 🧾 بناء 190: الشيكات (ترحيل ٦٢) — نفس نمط car_trips: الجدول بيتعمل بترحيل ٦٢، ولحد ما
   // يتنفّذ (بأمر المالك) الشيكات بتتسجّل محليًا + على الديسك وما نحاولش رفعها (مافيش جدول)
   // عشان كل تحصيل/ارتجاع ما يطلعلوش تحذير «المزامنة وقفت» بلا سبب.
+  // 🧱 بناء 248: «جاهزة» = الجدول موجود ومتقرى فعلًا من السحابة. بنحتفظ بالعلامة على حدة
+  // لأن data.js بيقرأ checks كجدول اختياري (OPTIONAL_EAGER): زعلة عابرة بتترجّع «فاضية»
+  // بلا فرق عن «مالوش شيكات» — فهي أصدق إشارة عندنا إن الصفوف دي وصلت فعلًا.
   var CH_TABLE_MISSING = false;
+  var CH_TABLE_READY = false;
   function probeChecksTable() {
     if (!DATA.client()) return Promise.resolve(false);
-    if (probeCacheHit("checks")) { CH_TABLE_MISSING = false; return Promise.resolve(true); }
+    if (probeCacheHit("checks")) { CH_TABLE_MISSING = false; CH_TABLE_READY = true; return Promise.resolve(true); }
     return Promise.resolve()
       .then(function () { return DATA.client().from("checks").select("id").limit(1); })
       .then(function (r) {
@@ -276,7 +280,7 @@
         CH_TABLE_MISSING = false; return true;
       })
       .catch(function (e) { if (isMissingTableError(e)) CH_TABLE_MISSING = true; return false; })
-      .then(function (ok) { probeCacheSet("checks", ok); return ok; });
+      .then(function (ok) { CH_TABLE_READY = ok === true; probeCacheSet("checks", ok); return ok; });
   }
 
   // 🆕 بناء 184: خانتا وسم السند (ref_type/ref_id) على جدول vouchers — ترحيل ٥٦ بيضيفهم،
@@ -1776,8 +1780,14 @@
       probePartyTxReceipt(), // 🆕 بناء 199 (بند #15ب): هل أعمدة مصدر السداد على حركات الأطراف موجودة (ترحيل ٦٣) ولا لسه
       probeInvPaid() // 🆕 بناء 204 (بند #2): هل أعمدة المدفوع/الآجل/السطور على الفواتير موجودة (ترحيل ٦٥) ولا لسه
     ]);
+    // 🧱 بناء 248: «الشيكات» كانت بتتقرا في data.js (جوه EAGER) بس المسار ده ما كانش
+    // بيسلّمها لـ MIZAN_STATE خالص ⇒ `checks` في app.js بتفضل فاضية وقت الدخول،
+    // والترحيل التلقائي اللي بيحصل في نفس اللحظة كان بيرمي سطر الشيك على
+    // «1.1.5 مديونيات العملاء» (بيع) أو «2.1.1 مستحقات الموردين» (شراء) بدل
+    // «1.2.1 شيكات لدى العملاء» — وده بلاغ الموبايل→اللاب بالحرف.
+    // القراية دي مش طلب زيادة: loadEagerAll بترجّع checks في نفس الحزمة اللي بنقراها أصلًا.
     var names = ["customers", "suppliers", "products", "treasury", "accounts",
-      "fixed_assets", "cashier_shifts", "car_trips"];
+      "fixed_assets", "cashier_shifts", "car_trips", "checks"];
     var eagerLoad = DATA.loadEagerAll ? DATA.loadEagerAll() : null;
     // 🧱 بناء 242: أي مسار بديل للتنزيل لازم يكون مترقّم هو كمان — الطلب الواحد بيقف عند
     // 1000 سطر وبلا خطأ، فالقراءة الكاملة بطلب واحد كانت بتفقد أي صنف بعدهم للأبد.
@@ -1806,6 +1816,14 @@
         if (n === "treasury") pairs = dedupeTreasury(pairs);
         assignLocalIds(n, pairs.map(function (p) { return p.loc; }));
         W[n] = pairs.map(function (p) { return p.loc; });
+        // 🧱 بناء 248: الجدول ده وصل فعلًا ⇒ أي ترحيل/إعادة حساب مبنية عليه بقت مسموحة.
+        // قبل كده العلامة دي كانت بتتسجل بس في loadLazyAll (الجداول الكسولة)، فالجداول
+        // اللي بتيجي في الحزمة الكاملة — وعلى راسها checks — فضّلت «معلّقة للأبد» وكان
+        // الترحيل يقراها فاضية ويختار حساب الطرف بدل حساب الشيك.
+        // checks ليها استثناء: لو فحص الجدول قال «ما اتقرتش» ما نقولش «وصلت»، لأن
+        // data.js بيرجّع [] على أي زعلة في الجدول الاختياري (فرق بين فاضي وما وصلش).
+        if (n !== "checks") W.loadedTables[n] = true;
+        else if (CH_TABLE_READY) W.loadedTables.checks = true;
       });
       // 🗑️ الدردشة اتلغت نهائيًا: مفيش فحص لجدول الرسايل، والجدول نفسه اتحذف
       // بترقية ٦٨ — صفر نداء شبكة أو كائن مرتبط بالدردشة عند الدخول.
@@ -2070,6 +2088,10 @@
     useBatchRows: useBatchRows,
     loadAll: loadAll,
     pullLazyTable: pullLazyTable,
+    // 🧱 بناء 248: «جدول الشيكات مش موجود على السحابة خالص» — علامة **ثابتة** (42P01/PGRST205
+    // بس، مش زعلة نت). app.js بيستخدمها علشان ميستناش للأبد: لو الجدول مالوش وجود فـ
+    // «الشيكات لسه بتنزل» حالة مستحيلة ⇒ يرجع للسلوك القديم بدل ما القيد ما يتكتبش خالص.
+    checksTableMissing: function () { return CH_TABLE_MISSING === true; },
     detUuid: detUuid,
     bumpInvoiceSeq: bumpInvoiceSeq,
     getInvoiceSeq: getInvoiceSeq,
