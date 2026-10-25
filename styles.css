@@ -2705,6 +2705,14 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 /* زرار الطيّ: مُخفي على الكمبيوتر/اللاب (ودايمًا على الطباعة) */
 #btnNavToggle { display: none; }
 
+/* 🧱 بناء 247: زرارَي السحابة في الهيدر — على الكمبيوتر الاسم الكامل،
+   وعلى الموبايل الاسم القصير بس (السطر واحد وضيق). النصّان في نفس الزرار
+   ونفس الـ id ونفس المنطق ⇒ مافيش نسخة تانية من السلوك.
+   القاعدة دي بره استعلام الموبايل عمدًا: الاسم القصير `display:none` على
+   الكمبيوتر، و`[hidden] { display:none !important }` (سطر 3) بيظلّ الزرار
+   نفسه مخفي قبل الدخول، فالشكل القديم ما اتغيّرش. */
+.sync-short { display: none; }
+
 @media screen and (max-width: 860px) {
   /* (أ) الهيدر بقى سطر واحد: الاسم/البراند/الحالة/التاريخ/الاشتراك/تغيير الباسورد يتشالوا،
      ويفضل «مين داخل + الشبكة + الخروج + ☰ الأقسام» بس. */
@@ -2719,6 +2727,12 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
   #btnChangePw { display: none; }
   .app-header .header-left { gap: 6px; }
   .app-header .btn.small { padding: 5px 9px; font-size: 12px; }
+
+  /* 🧱 بناء 247: على الموبايل الاسم القصير بس («تحديث» / «تصدير») — نفس الزرار ونفس
+     الـ id ونفس النداء، الفرق في النص وحده، فـ«الزرارين في كل الشاشات» مش محتاجين
+     نسخة تانية من السلوك. البلوك جوه `screen` + `max-width:860px` ⇒ الطباعة واللاب ما بيشوفوهماش. */
+  .app-header .sync-long { display: none; }
+  .app-header .sync-short { display: inline; }
 
   /* (ب) سطور أزرار التنقل → زرار واحد صغير يفتحها/يقفلها (مقفولة أول ما تفتح) */
   #btnNavToggle {

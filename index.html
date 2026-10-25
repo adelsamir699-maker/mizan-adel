@@ -104,6 +104,13 @@
       <span class="db-status" id="subInfo" hidden></span>
       <button id="btnNetStatus" class="btn small blue" type="button" title="حالة الشبكة والمزامنة">🌐 الشبكة</button>
       <button id="btnSubStatus" class="btn small teal" type="button" title="حالة الاشتراك">🪪 الاشتراك</button>
+      <!-- 🧱 بناء 247 (طلب المالك: «زرار تحديث … يستدعى كل الموجود على السحابه و زرار تصدير كل
+           العمليات … فى الشاشه الرئيسية و فى كل الشاشات»): الزرارين في **الشريط العلوي المشترك**،
+           فاللوحة وكل شاشة شايفينهم. `hidden` في الـ markup ⇒ قبل الدخول شكل الشريط زي ما هو
+           بالحرف، و`refreshSyncButtons()` هو مصدر إظهارهم الوحيد (برّه شركة سحابية = مخفيّين).
+           النص الطويل للكمبيوتر والقصير للموبايل — نفس الزرار، بلا نسخة ثانية من المنطق. -->
+      <button id="btnCloudPull" class="btn small sky" type="button" hidden title="يجيب كل اللي على السحابة دلوقتي ويشاش الشاشة اللي انت عليها">🔄 <span class="sync-long">تحديث من السحابة</span><span class="sync-short">تحديث</span></button>
+      <button id="btnCloudPush" class="btn small green" type="button" hidden title="يبعت كل العمليات اللي لسه ما وصلتش للسحابة">☁️ <span class="sync-long">تصدير كل العمليات</span><span class="sync-short">تصدير</span></button>
       <!-- 🛠️ لوحة الإدارة انتقلت لشريط الأقسام العلوي (بناء 132) — نفس الـ id ونفس الربط بـ openAdmin -->
       <button id="btnChangePw" class="btn small orange" type="button" hidden>🔑 تغيير كلمة مرورك</button>
       <button id="btnLogout" class="btn small red" type="button" hidden>الخروج ↩</button>
