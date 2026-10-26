@@ -3363,6 +3363,44 @@
       '</span><b class="' + (r.cls || "") + '">' + r.value + '</b></div>').join("");
   }
 
+  // 🔧 بناء 251 (بلاغ المالك #339): «الرصيد الحالي» على الطبعة لازم يكون **آخر سطر في كشف الحساب** —
+  // مصدر وحيد واحد. قبل كده كان بيتقرأ من `inv.partyPrevBalance`، وده:
+  //   (أ) **لقطة رصيد قبل** الفاتورة اتحفظت وقت الدخول، فأي حركة بعدها (سداد/فاتورة تانية) بيقى الرقم قديم
+  //   (ب) **مش موجود في `cloud.js` ولا `data.js`** ⇒ ما بيعديش جولة السحابة خالص ⇒ أي فاتورة نازلة من
+  //       السحابة أو على جهاز تاني بتطير منها خانات الرصيد، والطبعة بتنتهي بـ«• آجل (على الحساب)» المكرّر.
+  // لو الكشف نفسه مرفوض أو الطرف محمي ⇒ رجوع لسلوك 199 (بلا كسر للطباعة وبلا أي اختراع رقم).
+  function partyBalForPrint(isSale, inv) {
+    const due = round2(Number(inv.dueAmount) || 0);
+    // اصطلاح الكشف: **موجب = الطرف مديون لينا** (عميل). عند المورد المستحق عليه = **سالب**،
+    // فـ«الديون» (اللي بيحدّد اللون) = curr × الإشارة، مش curr الخام. الطبعة بتطبع **الرقم زي ما
+    // هو في الكشف** (طلب المالك الحرفي: «مطابق للرصيد الموجود في كشف الحساب النهائي»).
+    const sgn = isSale ? 1 : -1;
+    // اللقطة القديمة (partyPrevBalance) كانت بيتحفظ فيها «المستحق على الطرف» بصفله المعتاد
+    // (موجب عند العميل والمورد معًا) ⇒ هناك الديون = curr بالحرف، بلا قلب.
+    const legacy = () => (inv.partyPrevBalance == null ? null : (() => {
+      const prev = round2(Number(inv.partyPrevBalance) || 0);
+      const curr = round2(prev + due);
+      return { prev: prev, curr: curr, prevDebt: prev, debt: curr, src: "legacy" };
+    })());
+    try {
+      const pid = isSale ? inv.customerId : (inv.supplierId != null ? inv.supplierId : inv.supplier_id);
+      const party = (isSale ? customers : suppliers).find((x) => Number(x.id) === Number(pid));
+      if (!party || party.protected) return legacy();
+      const rows = isSale ? getStatement(party) : getSupplierStatement(party);
+      if (!Array.isArray(rows)) return legacy();
+      const no = String(inv.invoiceNumber || inv.invoiceNo || inv.id || "");
+      const inStmt = rows.some((r) => String(r.desc || "").indexOf("رقم " + no + " —") >= 0);
+      const fin = rows.length ? round2(Number(rows[rows.length - 1].balance) || 0)
+                              : round2(Number(party.openingBalance) || 0);
+      const delta = round2(due * sgn);                        // أثر الفاتورة في سطور الكشف
+      const curr = inStmt ? fin : round2(fin + delta);
+      const prev = round2(curr - delta);
+      return { prev: prev, curr: curr, prevDebt: round2(prev * sgn), debt: round2(curr * sgn), src: "statement" };
+    } catch (e) {
+      return legacy();
+    }
+  }
+
   function invTotalRows(isSale, inv) {
     const taxLabel = String(orgSettValue("tax_title", "") || "ضريبة القيمة المضافة").trim() || "ضريبة القيمة المضافة";
     const rows = [{ label: "المجموع", value: fmt(inv.subTotal) + " ج.م" }];
@@ -3384,37 +3422,35 @@
     const methodRows = () => {
       let _pl = Array.isArray(inv.payments) ? inv.payments.filter((p) => Number(p.amount) > 0) : [];
       if (!_pl.length && Number(inv.paidAmount) > 0) _pl = [{ method: inv.paymentMethod || "نقداً", amount: Number(inv.paidAmount) }];
-      return _pl.map((p) => {
-        const isAjal = payMethodLabelOf(p.method) === "آجل";
+      // 🔧 بناء 251 (#339): «• آجل (على الحساب)» كان **تكرارًا** لسطر «الآجل» اللي فوقه، وبيفضل
+      // آخر سطر في الطبعة بعد الرصيد. الآجل ليه سطر واحد بالظبط ⇒ سطور الآجل ما تنزلش هنا.
+      return _pl.filter((p) => payMethodLabelOf(p.method) !== "آجل").map((p) => {
         const _isChk = posPayMode(p.method).isCheck;
         const _chkInfo = _isChk ? ([p.bankName, p.checkNo].filter(Boolean).join(" #")) : "";
         return {
-          label: "    • " + payMethodLabelOf(p.method) + (_isChk && _chkInfo ? " — " + _chkInfo : "") + (isAjal ? " (على الحساب)" : ""),
+          label: "    • " + payMethodLabelOf(p.method) + (_isChk && _chkInfo ? " — " + _chkInfo : ""),
           value: fmt(p.amount) + " ج.م",
           sum: true,
-          cls: isAjal ? "amount-neg" : "amount-pos"
+          cls: "amount-pos"
         };
       });
     };
-    if (inv.partyPrevBalance != null) {
-      const paid = Number(inv.paidAmount) || 0;
-      const due = Number(inv.dueAmount) || 0;
-      const prev = Number(inv.partyPrevBalance) || 0;
-      const curr = Math.round((prev + due) * 100) / 100;
+    const paid = Number(inv.paidAmount) || 0;
+    const due = Number(inv.dueAmount) || 0;
+    const mRows = methodRows();
+    const bal = partyBalForPrint(isSale, inv);
+    // 🔧 بناء 251 (#339): الترتيب الثابت — الإجمالي · المدفوع · طرق الدفع · الآجل · الرصيد السابق ·
+    // **الرصيد الحالي آخر سطر في الفاتورة** (طلب المالك الحرفي)، وبنفس آخر رصيد في كشف الحساب.
+    if (bal != null || mRows.length || paid > 0 || due > 0) {
       rows.push({ label: "الإجمالي", value: fmt(inv.grandTotal) + " ج.م", sum: true });
       rows.push({ label: "المدفوع", value: fmt(paid) + " ج.م", sum: true, cls: "amount-pos" });
+      mRows.forEach((r) => rows.push(r));
       rows.push({ label: "الآجل", value: fmt(due) + " ج.م", sum: true, cls: due > 0 ? "amount-neg" : "" });
-      rows.push({ label: "الرصيد السابق", value: fmt(prev) + " ج.م", sum: true, cls: prev > 0 ? "amount-neg" : prev < 0 ? "amount-pos" : "" });
-      rows.push({ label: "الرصيد الحالي", value: fmt(curr) + " ج.م", sum: true, cls: curr > 0 ? "amount-neg" : curr < 0 ? "amount-pos" : "" });
-      methodRows().forEach((r) => rows.push(r));
-    } else if (methodRows().length) {
-      // 🔧 بناء 199: عميل كاش محمي (مافيش رصيد سابق) — برضه نطبع المدفوع وطرقه بمبالغها
-      const paid = Number(inv.paidAmount) || 0;
-      const due = Number(inv.dueAmount) || 0;
-      rows.push({ label: "الإجمالي", value: fmt(inv.grandTotal) + " ج.م", sum: true });
-      rows.push({ label: "المدفوع", value: fmt(paid) + " ج.م", sum: true, cls: "amount-pos" });
-      rows.push({ label: "الآجل", value: fmt(due) + " ج.م", sum: true, cls: due > 0 ? "amount-neg" : "" });
-      methodRows().forEach((r) => rows.push(r));
+      if (bal != null) {
+        // الرقم المطبوع = رقم الكشف بالحرف (بإشارته)، واللون من «المستحق على الطرف»: فيه دين ⇒ أحمر.
+        rows.push({ label: "الرصيد السابق", value: fmt(bal.prev) + " ج.م", sum: true, cls: bal.prevDebt > 0 ? "amount-neg" : bal.prevDebt < 0 ? "amount-pos" : "" });
+        rows.push({ label: "الرصيد الحالي", value: fmt(bal.curr) + " ج.م", sum: true, cls: bal.debt > 0 ? "amount-neg" : bal.debt < 0 ? "amount-pos" : "" });
+      }
     }
     return rows;
   }
