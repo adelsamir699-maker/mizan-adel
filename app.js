@@ -11636,7 +11636,15 @@
       announceOfflinePull();
       return Promise.resolve(false);
     }
+    /* 🧱 بناء 250: الجملة دي كانت **كاذبة** — الفرع ده كان بيرجّع الرسالة وبس من غير ما يسجّل
+       إن الضغطة عايزة تعدّي، فالطلب التاني بيضيع فعليًا. علامة `syncPullAgain` هي اللي بيستهلكها
+       `.finally` جوه `syncPullInvoices` (11583–11588) وبيشغّل سحب تاني؛ و`syncPullAgainManual`
+       لازم ترفع كمان عشان السحب المتأخر يبقى **يدويًا كاملًا (١٤ جدول)** زي ما المستخدم ضغط، مش
+       سحب فواتير بس. الجذر اتقاس من الحارس `check_cloud_buttons_247.js` (رحلة j5: ١٣ نداءً سحابيًا
+       بعد الضغطة المتأخرة = صفر «products»، و`lastPullSummary.manual=false`). */
     if (syncPullBusy) {
+      syncPullAgain = true;
+      syncPullAgainManual = true;
       toast("⏳ فيه تحديث شغال دلوقتي، واللي طلبته هيحصل بعده على طول.", "info");
       return Promise.resolve(false);
     }
