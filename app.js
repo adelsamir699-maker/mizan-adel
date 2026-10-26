@@ -1645,6 +1645,19 @@
     outboxSave("products", productsDirty, productsRemoved);   // 🧱 بناء 241
   }
 
+  /* 🧱 بناء 247: «إعادة تأسيس البصمة» للأصناف — كانت موجودة للحسابات بس (بناء 245).
+     الأصناف بقت تدخل السحب اليدوي («تحديث من السحابة»)، ومن غير الـ rebase كل صنف
+     نازل من السحابة كان بيبان «متغيّر» ⇒ رفعة رجعية للدليل كله (صدى).
+     dirty/removed ما بيتلمسوش عمدًا: اللي فعلًا لسه مرفوعش يفضل معلّق. */
+  function productsRebase() {
+    const now = new Map();
+    (products || []).forEach((p) => {
+      if (p && p.id != null) now.set(Number(p.id), productSyncSig(p));
+    });
+    productsSnap = now;
+    return now.size;
+  }
+
   function productsQueuePush(delay) {
     if (productsPushTimer) return;
     productsPushTimer = setTimeout(() => {
@@ -2691,8 +2704,11 @@
       // 🧱 بناء 241: نفس النبضة تعيد الطابور الدائم لو الصفحة اتفتحت بعد موت التطبيق،
       //    وتقارن مع السحابة كل HEAL_MS (الدالة نفسها بتسقف نفسها).
       try { healUnsynced(); } catch (e) { }
+      // 🧱 بناء 247: نفس النبضة (بلا مؤقت جديد) بتحدّث حالة زرارَي السحابة في الهيدر.
+      try { refreshSyncButtons(); } catch (e) { }
     }, UP_PENDING_TICK_MS);
     updateUpPendingBanner();
+    try { refreshSyncButtons(); } catch (e) { }
   }
   // 🧱 آخر محاولة قبل الإغلاق: flush() مباشرة (مش queue) — الـ setTimeout ما بيدّقش والمرحلة
   //    دي بتموت مع الصفحة، فالنداء لازم يتطلق جوه المعالج نفسه. ومعاه ضمانة لقطة ديسك.
@@ -11262,15 +11278,45 @@
   let lastFullPullAt = 0;
   let syncPullBusy = false;
   let syncPullAgain = false;
+  /* 🧱 بناء 247: الضغطة الجاية وهي فوق سحب شغّال «ورثت» نية صاحبها — وإلا الضغط على
+     «تحديث من السحابة» وقت سحب دوري كان بيسحب شامل عادي و**بلا إعلان**، فيفتكر المستخدم
+     إن الزرار ما شغالش. بتتشال بعد ما النداء المؤجّل يتنفّذ. */
+  let syncPullAgainManual = false;
+  /* 🧱 بناء 247: ملخص مقيس لآخر سحب (كام جدول جه · كام سطر · كله تمام ولا لأ) —
+     الزرار بيقوله، فمايقولش «تم بنجاح» فاضية. */
+  let lastPullSummary = null;
   const PULL_PUSHERS = {};
   ALL_ROW_PUSHERS.forEach(function (p) { if (p && p.name) PULL_PUSHERS[p.name] = p; });
 
+  /* 🧱 بناء 247: العائلات القديمة (الأصناف والحسابات) ليها طوابير خاصة بيها مش
+     `makeRowPusher` ⇒ كانت خارج الحساب خالص. النتيجة المقاسة قبل الإصلاح ده:
+     حساب عليه تعديل لسه ما اترفعش كان بيتدهس بصورة السحابة في السحب، وبعدين
+     `accountsRebase()` بيختم الصورة الجديدة «مرفوعة» ⇒ **التعديل بيضيع بصمت**.
+     دلوقتي `pullKeepSets` بتلمّ المعلّق من المصدرين كلهم. */
+  const LEGACY_PULL_SETS = {
+    products: function () { return { keep: productsDirty, removed: productsRemoved }; },
+    accounts: function () { return { keep: accountsDirty, removed: accountsRemoved }; }
+  };
+
   function pullKeepSets(name) {
     const out = { keep: new Set(), removed: new Set() };
+    const addAll = function (target, src) {
+      try {
+        if (!src || typeof src.forEach !== "function") return;
+        src.forEach(function (id) { target.add(Number(id)); });
+      } catch (e) { }
+    };
     const p = PULL_PUSHERS[name];
-    if (!p || !p.state) return out;
-    try { (p.state.dirty || new Set()).forEach(function (id) { out.keep.add(Number(id)); }); } catch (e) { }
-    try { (p.state.removed || new Set()).forEach(function (id) { out.removed.add(Number(id)); }); } catch (e) { }
+    if (p && p.state) {
+      addAll(out.keep, p.state.dirty);
+      addAll(out.removed, p.state.removed);
+    }
+    const legacy = LEGACY_PULL_SETS[name];
+    if (legacy) {
+      let s = null;
+      try { s = legacy(); } catch (e) { s = null; }
+      if (s) { addAll(out.keep, s.keep); addAll(out.removed, s.removed); }
+    }
     return out;
   }
 
@@ -11355,6 +11401,15 @@
     { name: "checks", ls: LS_CHECKS, get: function () { return checks; }, set: function (v) { checks = v; } }
   ];
 
+  /* 🧱 بناء 247: «كل الموجود على السحابة» لازم يلمّ الأصناف كمان — قبل كده الدليل كان
+     بينزل عند الدخول الكامل بس، فجهاز مفتوح كان بيقعد بشاشة أصناف قديمة (مخزون وأسعار)
+     مهما المستخدم دوس. الأصناف دخلت **السحب اليدوي** وحدها: السحب الدوري (كل ٥ دقايق)
+     قائمة الـ13 بتاعته ما اتغيّرش ⇒ صفر طلب إضافي على سقف الباقة المجانية
+     (نفس العلة اللي خلّت نبض الحضور يبقى ٥ دقايق في بناء 246). */
+  const PULL_TABLES_EXTRA = [
+    { name: "products", ls: LS_PRODUCTS, get: function () { return products; }, set: function (v) { products = v; }, rebase: productsRebase }
+  ];
+
   /* الشاشة اللي المستخدم واقف عليها تتحدث فورًا — وإلا «الترحيلات وصلت» بتبان كأنها ما وصلتش. */
   function refreshAfterPull(touched) {
     const v = ownerCurrentView || "";
@@ -11378,40 +11433,77 @@
       if (v === "purchases") { if (typeof renderPPItems === "function") renderPPItems(); if (typeof ppRecalc === "function") ppRecalc(); }
       if (has("sales") || has("purchases")) { if (typeof renderInvoiceQuery === "function") renderInvoiceQuery(); }
       if (has("sales") || has("purchases")) { if (typeof renderSalesLookups === "function") renderSalesLookups(); }
+      /* 🧱 بناء 247: الأصناف بقت تنزل في السحب اليدوي ⇒ الشاشات اللي بتقرأ الدليل
+         (المخزون + الجرد بالباركود) تتترسم من جديد، وإلا المستخدم يضغط «تحديث»
+         ويشوف نفس القديم قدامه. `renderSalesLookups` متعمّدة هنا: بتعيد حساب الأرصدة
+         وبتغيّر العميل المختار في نص فاتورة شغّالة. */
+      if (has("products")) {
+        if (v === "products" && typeof renderProducts === "function") { try { renderProducts(); } catch (e) { } }
+        if (v === "stockCount" && typeof renderStockCount === "function") { try { renderStockCount(); } catch (e) { } }
+      }
       if (typeof updateUpPendingBanner === "function") updateUpPendingBanner();
     } catch (e) { console.warn("refreshAfterPull:", e); }
   }
 
-  function syncPullInvoices(interactive) {
+  /* 🧱 بناء 247: «السحابة مش متاحة خالص» — مش خطأ ولا تحذير تقني: السحب قراءة،
+     والشغل على الجهاز سابق له أصلًا (بناء 241) ⇒ المستخدم ما بيخسرش حاجة. */
+  function announceOfflinePull() {
+    toast("📡 السحابة مش متاحة دلوقتي — شغلك على جهازك محفوظ وهيظهر لحاله أول ما الشبكة ترجع.", "warning");
+  }
+
+  /* 🧱 بناء 247: إعلان مقيس لضغطة «تحديث من السحابة» — بيقول كام سطر جه في كام جدول،
+     ولو مافيش جديد يقول كمان. أي رسالة تانية = كلام عام، وده اللي بلاغ «ما وصلتش» علشانّه. */
+  function announceManualPull() {
+    const s = lastPullSummary || {};
+    if (!s.tables) { announceOfflinePull(); return; }
+    if (!s.rows) {
+      toast("📥 رجعنا من السحابة: " + s.tables + " جدول ومافيش سطور هناك — جهازك زي ما هو.", "info");
+      return;
+    }
+    toast("📥 نزل من السحابة " + s.rows + " سطر في " + s.tables + " جدول، والشاشة اتحدّثت.", "success");
+  }
+
+  /* `manual` = الطلب جاي من زرار الهيدر («كل الموجود على السحابة»):
+     ⇒ يلمّ الأصناف كمان، ما يلمسش زرار شاشة الفواتير، ويعلن بالملخص المقيس. */
+  function syncPullInvoices(interactive, manual) {
     if (!A.online || !window.CLOUD || !window.CLOUD.pullLazyTable) {
-      if (interactive) renderInvoiceQuery();
+      if (manual) announceOfflinePull();
+      if (interactive && !manual) renderInvoiceQuery();
       return Promise.resolve(false);
     }
     if (syncPullBusy) {
-      if (interactive) syncPullAgain = true;   // الضغط اليدوي اللي جه فوق سحب شغّال = سحب شامل بعده
+      if (interactive) { syncPullAgain = true; if (manual) syncPullAgainManual = true; }
       return Promise.resolve(false);
     }
     syncPullBusy = true;
     const btn = document.getElementById("btnRefreshInvoices");
     const origHtml = btn ? btn.innerHTML : "";
-    if (interactive && btn) {
+    /* 🧱 بناء 247: زرار الشاشة («🔄 تحديث الفواتير») ما يتغيّرش اسمه ولا يقفل لمّا الطلب
+       جاي من الهيدر — زرار الهيدر ليه رسمته وسكوته بتاعه (`setSyncBtnBusy`). */
+    const hijack = !!interactive && !manual;
+    if (hijack && btn) {
       btn.disabled = true;
       btn.innerHTML = '⏳ جارٍ التحديث من السحابة...';
     }
     const full = !!interactive || (Date.now() - lastFullPullAt >= FULL_PULL_MS);
-    const tables = full ? PULL_TABLES : PULL_TABLES.filter(function (t) {
-      return t.name === "sales" || t.name === "purchases";
-    });
+    /* 🧱 بناء 247: «كل الموجود على السحابة» = ١٣ الجدول + الأصناف.
+       السحب الدوري (النبض) قائمة الـ13 بتاعته بالحرف ⇒ صفر طلب إضافي على سقف الباقة. */
+    const tables = full ? (manual ? PULL_TABLES.concat(PULL_TABLES_EXTRA) : PULL_TABLES)
+      : PULL_TABLES.filter(function (t) {
+        return t.name === "sales" || t.name === "purchases";
+      });
     return Promise.all(tables.map(function (t) {
       return Promise.resolve().then(function () { return window.CLOUD.pullLazyTable(t.name); })
         .then(function (rows) { return { t: t, rows: rows }; })
         .catch(function () { return { t: t, rows: null }; });
     })).then(function (res) {
       const touched = {};
+      let rowsTotal = 0;
       (res || []).forEach(function (one) {
         const t = one.t;
         const cloud = one.rows;
         if (!Array.isArray(cloud)) return;          // فشل/أوفلاين ⇒ ممنوع نمسح أو نعلن نجاح
+        rowsTotal += cloud.length;
         const sets = pullKeepSets(t.name);
         const m = mergePulled(cloud, t.get() || [], sets, t.fix);
         t.set(m.merged);
@@ -11419,6 +11511,10 @@
         try { localStorage.setItem(t.ls, JSON.stringify(m.merged)); } catch (e) { }
         const p = PULL_PUSHERS[t.name];
         if (p && typeof p.rebase === "function") { try { p.rebase(); } catch (e) { } }
+        /* 🧱 بناء 247: العائلات القديمة (الأصناف) مالهاش pusher جوه `PULL_PUSHERS` ⇒
+           إعادة تأسيس البصمة بتاعتها معلومة في الجدول نفسه، وإلا الدليل كله بيبان
+           «متغيّر محليًا» والرفعة الجاية تعيد رفعه من أوله (صدى). */
+        if (typeof t.rebase === "function") { try { t.rebase(); } catch (e) { } }
         try {
           window.MIZAN_STATE = window.MIZAN_STATE || {};
           window.MIZAN_STATE.loadedTables = window.MIZAN_STATE.loadedTables || {};
@@ -11427,6 +11523,15 @@
         } catch (e) { }
       });
       if (full) lastFullPullAt = Date.now();
+      lastPullSummary = {
+        at: Date.now(),
+        full: !!full,
+        manual: !!manual,
+        tables: Object.keys(touched).length,
+        asked: tables.length,
+        rows: rowsTotal,
+        ok: Object.keys(touched).length > 0
+      };
       if (Object.keys(touched).length) {
         try { linkInvoiceParties(); } catch (e) { }
         if (typeof idFloorsLoad === "function") { try { idFloorsLoad(); } catch (e) { } }
@@ -11450,27 +11555,182 @@
           try { reconcileJournalWithDocs(); } catch (e) { }
         }
       }
-      if (interactive) {
+      if (hijack) {
         toast(full ? "🟢 تم تحديث الفواتير والحسابات من السحابة بنجاح" : "🟢 تم تحديث الفواتير من السحابة بنجاح", "success");
+      } else if (manual) {
+        announceManualPull();
       }
       return true;
     }).catch(function (e) {
       console.warn("syncPullInvoices error:", e);
-      renderInvoiceQuery();
-      if (interactive) {
+      lastPullSummary = {
+        at: Date.now(), full: !!full, manual: !!manual,
+        tables: 0, asked: tables.length, rows: 0, ok: false
+      };
+      if (!manual) { try { renderInvoiceQuery(); } catch (e2) { } }
+      if (hijack) {
         toast("تعذر تحديث بعض البيانات من السحابة: " + (e.message || e), "warning");
+      } else if (manual) {
+        announceManualPull();
       }
       return false;
     }).finally(function () {
       syncPullBusy = false;
-      if (btn) {
+      if (hijack && btn) {
         btn.disabled = false;
         btn.innerHTML = origHtml || '🔄 تحديث الفواتير من السحابة';
       }
       if (syncPullAgain) {
+        const againManual = syncPullAgainManual === true;
         syncPullAgain = false;
-        try { syncPullInvoices(true); } catch (e) { }
+        syncPullAgainManual = false;
+        try { syncPullInvoices(true, againManual); } catch (e) { }
       }
+    });
+  }
+
+  /* 🧱 بناء 247 (طلب المالك الحرفي): «اعمل لى زرار تحديث لو المستخدم ضغط عليه يستدعى كل
+     الموجود على السحابة و زرار تصدير كل العمليات على السحابه … فى الشاشه الرئيسية و فى كل
+     الشاشات علشان المشكله متتكررش تانى و يكونوا فعالين».
+     التركيز في `<header class="app-header">` — وهو العنصر الوحيد المشترك بين اللوحة وكل
+     شاشة، فمافيش نسخة تتنسى ولا شاشة تتنسى. الرؤية من نفس مصدر القرار اللي الرفع بيشترطه
+     (`inCompanySession`) ⇒ الزرار ما يبانش على شاشة الدخول ولا بره شركة.
+     ومافيش تايمر جديد: تحديث الرؤية بيتنادى من نبضة `startUpPendingWatch` الموجودة. */
+  const SYNC_BTN_HTML = {};
+  function syncBtn(id) {
+    let b = null;
+    try { b = document.getElementById(id); } catch (e) { }
+    return b;
+  }
+  function setSyncBtnBusy(id, txt) {
+    const b = syncBtn(id);
+    if (!b) return;
+    if (SYNC_BTN_HTML[id] == null) { try { SYNC_BTN_HTML[id] = b.innerHTML; } catch (e) { } }
+    try { b.disabled = true; b.innerHTML = txt; } catch (e) { }
+  }
+  function clearSyncBtnBusy(id) {
+    const b = syncBtn(id);
+    if (!b) return;
+    try {
+      if (SYNC_BTN_HTML[id] != null) b.innerHTML = SYNC_BTN_HTML[id];
+      b.disabled = false;
+    } catch (e) { }
+  }
+  /* 🧱 بناء 247: في شركة متسجّل دخولها = الزرارين ظاهرين (ولو الشبكة واقفة، الضغط نفسها
+     بتقول الحقيقة بصوت هادي). بره الشركة/قبل الدخول = مخفيين، لأن مافيش حاجة تُسحب ولا تُصدَّر. */
+  function refreshSyncButtons() {
+    const show = inCompanySession();
+    ["btnCloudPull", "btnCloudPush"].forEach(function (id) {
+      const b = syncBtn(id);
+      if (!b) return;
+      try { b.hidden = !show; } catch (e) { }
+    });
+  }
+
+  function manualCloudRefresh() {
+    if (!inCompanySession()) {
+      toast("🔒 سجّل دخولك على الشركة الأول، وبعدين تقدر تجيب أحدث بيانات من السحابة.", "warning");
+      return Promise.resolve(false);
+    }
+    if (!A.online || !window.CLOUD || !window.CLOUD.pullLazyTable) {
+      announceOfflinePull();
+      return Promise.resolve(false);
+    }
+    if (syncPullBusy) {
+      toast("⏳ فيه تحديث شغال دلوقتي، واللي طلبته هيحصل بعده على طول.", "info");
+      return Promise.resolve(false);
+    }
+    lastPullSummary = null;
+    setSyncBtnBusy("btnCloudPull", "⏳ جارٍ التحديث من السحابة...");
+    return Promise.resolve(syncPullInvoices(true, true)).then(function () {
+      clearSyncBtnBusy("btnCloudPull");
+      return !!(lastPullSummary && lastPullSummary.ok);
+    }, function (e) {
+      clearSyncBtnBusy("btnCloudPull");
+      console.warn("manualCloudRefresh:", e);
+      return false;
+    });
+  }
+
+  /* 🧱 بناء 247: «تصدير كل العمليات» = كل الطوابير (١٥) + عائلتي الأصناف والحسابات القديمة،
+     بعد مصالحة ترجّع أي صف محلي مش موجود هناك (`healUnsynced(true)` — نفس اللي بيحصل بعد أي
+     دمج سحابي). النجاح ما يتقالش غير لما `uploadsPendingCount()` يوصل صفر **مقيسًا** من state
+     الطوابير، مش من قيمة رجوع `flush` — ونفس الدرس اللي خلّى توست 244 الكدّاب يتشال. */
+  let manualPushBusy = false;
+  function manualCloudPush() {
+    if (!inCompanySession()) {
+      toast("🔒 سجّل دخولك على الشركة الأول، وبعدين تقدر تصدّر شغلك للسحابة.", "warning");
+      return Promise.resolve(false);
+    }
+    if (manualPushBusy) {
+      toast("⏳ فيه تصدير شغال دلوقتي وبيخلص عادة في ثواني.", "info");
+      return Promise.resolve(false);
+    }
+    const pending = function () {
+      let n = 0;
+      try { n = uploadsPendingCount(); } catch (e) { }
+      return n;
+    };
+    const had = pending();
+    if (!isUpOnline()) {
+      toast(had
+        ? "📡 الشبكة مقفولة دلوقتي — " + had + " عملية محفوظة على جهازك، وتنزل السحابة لحالها أول ما النت يرجع."
+        : "📡 الشبكة مقفولة دلوقتي — شغلك كله على جهازك وهيطلع للسحابة لحاله أول ما النت يرجع.", "warning");
+      return Promise.resolve(false);
+    }
+    manualPushBusy = true;
+    setSyncBtnBusy("btnCloudPush", "⏳ جارٍ التصدير للسحابة...");
+    // المصالحة محصورة في نفس سقف النبضة (`HEAL_MS`) ⇒ ضغطات ورا بعض ما تزحمش سقف الباقة المجانية.
+    const healFirst = had > 0 || (Date.now() - lastHealAt >= HEAL_MS);
+    const heal = healFirst
+      ? Promise.resolve().then(function () { return healUnsynced(true); }).catch(function () { return 0; })
+      : Promise.resolve(0);
+    const round = function () {
+      const jobs = ALL_ROW_PUSHERS.map(function (p) {
+        return Promise.resolve().then(function () { return p.flush(); }).catch(function () { return false; });
+      });
+      jobs.push(Promise.resolve().then(function () {
+        if (typeof productsDirty !== "undefined" && (productsDirty.size || productsRemoved.size)) return productsFlush();
+        return true;
+      }).catch(function () { return false; }));
+      jobs.push(Promise.resolve().then(function () {
+        if (typeof accountsDirty !== "undefined" && (accountsDirty.size || accountsRemoved.size)) return accountsFlush();
+        return true;
+      }).catch(function () { return false; }));
+      return Promise.all(jobs);
+    };
+    const wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+    let startedWith = had;
+    return heal.then(function (back) {
+      startedWith = Math.max(had, pending());
+      return round();
+    }).then(function () {
+      if (pending() === 0) return true;
+      return wait(800).then(round).then(function () {
+        if (pending() === 0) return true;
+        return wait(1200).then(round).then(function () { return pending() === 0; });
+      });
+    }).then(function (ok) {
+      const left = pending();
+      manualPushBusy = false;
+      clearSyncBtnBusy("btnCloudPush");
+      try { updateUpPendingBanner(); } catch (e) { }
+      if (ok && left === 0) {
+        if (!startedWith) toast("☁️ مافيش حاجة معلّقة — كل شغلك على السحابة بالظبط.", "success");
+        else toast("☁️ وصل كل شغلك للسحابة: " + startedWith + " عملية.", "success");
+      } else if (left > 0) {
+        toast("🔄 " + left + " عملية لسه في سببها للسحابة وهتوصل لوحدها — تقدر تضغط تاني بعد شوية.", "warning");
+      } else {
+        toast("⚠️ ماقدرناش نكمل التصدير دلوقتي — شغلك على جهازك، والطابور هيكمل لحاله.", "warning");
+      }
+      return ok && left === 0;
+    }).catch(function (e) {
+      manualPushBusy = false;
+      clearSyncBtnBusy("btnCloudPush");
+      console.warn("manualCloudPush:", e);
+      try { updateUpPendingBanner(); } catch (e2) { }
+      toast("⚠️ ماقدرناش نكمل التصدير دلوقتي — شغلك على جهازك، والطابور هيكمل لحاله.", "warning");
+      return false;
     });
   }
 
@@ -22378,6 +22638,14 @@ id: nextVoucherId(),
     ["dtpFromS", "dtpToS", "txtSearchInvS"].forEach((id) => $("#" + id).addEventListener("input", renderInvoiceQuery));
     ["dtpFromP", "dtpToP", "txtSearchInvP"].forEach((id) => $("#" + id).addEventListener("input", renderInvoiceQuery));
     $("#btnRefreshInvoices").addEventListener("click", () => syncPullInvoices(true));
+    // 🧱 بناء 247: زرارَي السحابة في الشريط العلوي (اللوحة + كل الشاشات) — بيعدّوا من نفس
+    //    مصدر القرار: manualCloudRefresh = سحب كامل، manualCloudPush = تصدير كل معلّق.
+    //    syncBtn بترجّع null بأمان، فمستحيل أي شاشة تقع لو الزرار مش موجود.
+    const pullBtn = syncBtn("btnCloudPull");
+    if (pullBtn) pullBtn.addEventListener("click", function () { manualCloudRefresh(); });
+    const pushBtn = syncBtn("btnCloudPush");
+    if (pushBtn) pushBtn.addEventListener("click", function () { manualCloudPush(); });
+    try { refreshSyncButtons(); } catch (e) { }
     $("#dgvInvS tbody").addEventListener("click", (e) => {
       const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"]');
       if (!btn) return;
@@ -22782,6 +23050,8 @@ id: nextVoucherId(),
     $("#loginScreen").hidden = false;
     $("#orgScreen").hidden = true;
     $("#memberScreen").hidden = true;
+    // 🧱 بناء 247: بلا شركة = بلا زرارَي سحابة (النداء برّه الشركة = صفر كتابة وصفر طلب).
+    try { refreshSyncButtons(); } catch (e) { }
   }
   function showOrgScreen() {
     hideLoginExpiry();
@@ -23149,6 +23419,8 @@ const pwEye = document.getElementById("btnShowPass");
         if (changed && changed.length) changed.forEach((t) => { if (t !== "products" && t !== "accounts" && t !== "sales" && t !== "journal_entries" && rowPushers.every((p) => p.name !== t)) pushTable(t); });
         syncInvoiceSeqFromCloud();
         $("#btnLogout").hidden = false;
+        // 🧱 بناء 247: الزرارين يبانوا لحظة الدخول (مش بعد النبضة) — نفس مصدر القرار inCompanySession().
+        try { refreshSyncButtons(); } catch (e) { }
         // لا نُظهره هنا: يُتحكم فيه داخل proceedOnline
         // (لصاحب الشركة والسوبر أدمن فقط، لا للموظفين العاديين)
         $("#btnChangePw").hidden = true;
