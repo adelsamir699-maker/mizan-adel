@@ -883,7 +883,7 @@
         return;
       }
       if (legacy.length > 1) return;
-      vouchers.push({
+      const _hvC = {
         id: nextVoucherId(),
         type: "in",
         treasuryId: targetTr.id,
@@ -892,7 +892,9 @@
         desc: "تحصيل من عميل: " + (cust ? cust.nameAr : "") + (t.desc ? " (" + t.desc + ")" : ""),
         refType: "customer_tx",
         refId: t.id
-      });
+      };
+      vouchers.push(_hvC);
+      t.voucherId = _hvC.id;   // 🧱 بناء 257 (بند #31): ربط صريح لسطر الطرف
       changed = true;
     });
 
@@ -941,7 +943,7 @@
         return;
       }
       if (legacy.length > 1) return;
-      vouchers.push({
+      const _hvS = {
         id: nextVoucherId(),
         type: "out",
         treasuryId: targetTr.id,
@@ -950,7 +952,9 @@
         desc: "سداد لمورد: " + (supp ? supp.nameAr : "") + (t.desc ? " (" + t.desc + ")" : ""),
         refType: "supplier_tx",
         refId: t.id
-      });
+      };
+      vouchers.push(_hvS);
+      t.voucherId = _hvS.id;   // 🧱 بناء 257 (بند #31): ربط صريح لسطر المورد
       changed = true;
     });
 
@@ -4881,7 +4885,9 @@
       credit: amount
     };
     txs.push(txRow);
-    vouchers.push({
+    /* 🧱 بناء 257 (بند #31): رقم السند بيتسجّل **على سطر الطرف** نفسه (`voucherId`) ⇒ الحذف
+       بيلاقي سنده بالمعرّف مش بنص الوصف. الحقل محلي ومحفوظ عبر السحب (بناء 256/#15). */
+    const _vRow = {
       id: nextVoucherId(),
       type: "in",
       treasuryId: tr ? tr.id : trId,
@@ -4890,7 +4896,9 @@
       desc: "تحصيل من عميل: " + (cust ? cust.nameAr : "") + (notes ? " (" + notes + ")" : ""),
       refType: "customer_tx",
       refId: txId
-    });
+    };
+    vouchers.push(_vRow);
+    txRow.voucherId = _vRow.id;
     saveCustomers();
     saveTxs();
     saveVouchers();
@@ -5273,28 +5281,52 @@
     // السند المرتبط بنفس الحركة (customer_tx / supplier_tx)
     // 🆕 بناء 151: الشغل عدّى على نقطة الارتكاز — لو للسند قيد (`VC:`+id) بيرجع قبل ما السند يتشال
     const vBefore = vouchers.length;
-    let vList = vouchers.filter((v) => v.refType === (isSup ? "supplier_tx" : "customer_tx") && Number(v.refId) === Number(tx.id));
-    // 🆕 بناء 199 (بند #15ب): المطابقة الأدق — نفس الخزينة المسجّلة على الحركة + نفس المبلغ + نفس
-    // التاريخ + نفس الاتجاه (قبض للعميل / صرف للمورد). دي بتمنع «تصحيح الرصيد على الخزينة الغلط».
     const _wantType = isSup ? "out" : "in";
     const _cents = Math.round(amount * 100);
     const _tid = (tx.treasuryId == null || tx.treasuryId === "") ? null : Number(tx.treasuryId);
+    /* 🧱 بناء 257 (بند #31): الترتيب بقى **معرّف صريح أولًا**:
+       ١) `tx.voucherId` (رقم سند الحركة محفوظ على سطر الطرف — بناء 257).
+       ٢) وسم الربط `refType/refId` (بناء 184/199).
+       ٣) نفس الخزينة + المبلغ + التاريخ + الاتجاه (بناء 199) — **فريد بس**.
+       ٤) نص الوصف (بناء 181، للسطور القديمة) — **فريد بس**، وأكتر من واحد = غامض ⇒ توقف. */
+    let vList = [];
+    if (tx.voucherId != null) {
+      const vx = vouchers.find((v) => v && Number(v.id) === Number(tx.voucherId));
+      if (vx && String(vx.type || vx.kind || "") === _wantType &&
+        Math.round((Number(vx.amount) || 0) * 100) === _cents) vList = [vx];
+    }
+    if (!vList.length) {
+      vList = vouchers.filter((v) => v.refType === (isSup ? "supplier_tx" : "customer_tx") && Number(v.refId) === Number(tx.id));
+    }
+    // 🆕 بناء 199 (بند #15ب): المطابقة الأدق — نفس الخزينة المسجّلة على الحركة + نفس المبلغ + نفس
+    // التاريخ + نفس الاتجاه (قبض للعميل / صرف للمورد). دي بتمنع «تصحيح الرصيد على الخزينة الغلط».
     if (!vList.length && _tid != null) {
-      vList = vouchers.filter((v) => Number(v.treasuryId) === _tid
+      const byKey = vouchers.filter((v) => Number(v.treasuryId) === _tid
         && String(v.type || v.kind || "") === _wantType
         && Math.round((Number(v.amount) || 0) * 100) === _cents
-        && String(v.date || "") === String(tx.date || "")).slice(0, 1);
+        && String(v.date || "") === String(tx.date || ""));
+      if (byKey.length === 1) vList = byKey;
+      else if (byKey.length > 1) {
+        // 🧱 بناء 257: أكتر من سند مطابق ⇒ ممنوع التخمين (كان بياخد الأول ويحذف سند غلط)
+        toast("⚠️ الحركة ليها أكتر من سند مطابق ومش مربوطة برقم سند — الحذف اتوقف. احذف السند الصحيح من شاشة الخزينة.", "warning");
+        return;
+      }
     }
     // 🆕 بناء 181: السند كمان ما بيشيلش ref_type/ref_id على السحابة (مقاس في cloud.js) ⇒ لو
     // الحركة نازلة من السحابة بقت بلا ربط، فنتعرّف على سندها من بيانه + تاريخه + مبلغه.
     // **سند واحد بس** — عشان تحصيلان متطابقان في نفس اليوم ما يلغاش الاتنين.
     if (!vList.length) {
       const vPrefix = (isSup ? "سداد لمورد: " : "تحصيل من عميل: ") + partyName;
-      vList = vouchers.filter((v) => !v.refType &&
+      const byDesc = vouchers.filter((v) => !v.refType &&
         String(v.desc || v.notes || "").indexOf(vPrefix) === 0 &&
         String(v.type || v.kind || "") === _wantType &&
         Math.round((Number(v.amount) || 0) * 100) === _cents &&
-        String(v.date || "") === String(tx.date || "")).slice(0, 1);
+        String(v.date || "") === String(tx.date || ""));
+      if (byDesc.length === 1) vList = byDesc;
+      else if (byDesc.length > 1) {
+        toast("⚠️ الحركة ليها أكتر من سند بنفس الوصف/المبلغ/التاريخ ومش مربوطة برقم سند — الحذف اتوقف لحماية الخزينة.", "warning");
+        return;
+      }
     }
     // 🆕 بناء 203 (بند #3): الشيك المتحصّل — سند التحصيل (`CHC:` + معرّف الشيك) يتشال مع حركته
     const chkCollected0 = chkRec0 || chkKept0;
@@ -8716,6 +8748,29 @@
     return invNextNumber(kind || "sale_return", todayISO());
   }
 
+  /* 🧱 بناء 257 (بند #9): حارس تفرّد رقم الفاتورة قبل أي أثر.
+     العلة المقاسة: الحفظ بينجح والطباعة بعده بتفشل (أو المستخدم يقفل النافذة) ⇒ النموذج
+     بيفضل بنفس الرقم، وضغطة تانية بتحفظ **فاتورة تانية بنفس الرقم** (مخزون وخزينة
+     مضاعفين + قيد ناقص) — مافيش أي فحص تفرّد على `invoiceNumber`. */
+  function invoiceNoTaken(kind, no, skipId) {
+    const n = String(no == null ? "" : no).trim();
+    if (!n) return null;
+    const arr = kind === "purchase" ? purchases : sales;
+    return (arr || []).find(function (r) {
+      return r && String(invNoOf(r) || "").trim() === n &&
+        Number(r.id) !== Number(skipId || 0);
+    }) || null;
+  }
+  function invoiceNoGuard(kind, no, skipId) {
+    const dup = invoiceNoTaken(kind, no, skipId);
+    if (!dup) return true;
+    const next = invNextNumber(kind, todayISO());
+    toast("🚫 رقم الفاتورة " + no + " مستخدم بالفعل (فاتورة #" + dup.id + " — " +
+      (dup.invoiceDate || dup.date || "") + ").\nاقتراح: " + next +
+      " — أو اضغط «فاتورة جديدة» لتصفير النموذج قبل الحفظ.", "error");
+    return false;
+  }
+
   function activeDiscountPct(p) {
     const pct = Number(p.discountPercent) || 0;
     if (pct <= 0) return 0;
@@ -10092,6 +10147,8 @@
     // 🆕 بناء 191: آجل + «مدفوع» = سؤال صريح قبل أي أثر (بلاغ شركة محمد رافت)
     if (payment === "آجل" && !ajalPaidGate("sale", t)) return;
     const invNo = $("#txtInvoiceNo").value || nextInvoiceNumber();
+    // 🧱 بناء 257 (بند #9): الفحص **قبل أي أثر** (مخزون/خزينة/قيد) — رقم مستخدم = رفض برسالة
+    if (!invoiceNoGuard("sale", invNo)) return;
     const invDate = $("#dtpDate").value || todayISO();
     const invoice = {
       // 🟥 بناء 240 (F2): رقم الفاتورة من الأرضية الدائمة `idFloorTake` — ممنوع
@@ -10240,9 +10297,16 @@
     toast("تم حفظ وتأكيد فاتورة المبيعات بنجاح برقم (" + invoice.invoiceNumber + ")" +
       (postedJ && postedJ.j ? " وترحيلها للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
     /* 🆕 T3: صاحب الشركة يختار — «نعم» نفتح نافذة الطباعة زي الأول، «لا» رسالة وسط الشاشة بس. */
-    if (autoPrintSaleInvoice()) printInvoice(invoice);
-    else flashCenter("🧾 تم حفظ الفاتورة " + invoice.invoiceNumber + " بنجاح");
-    fillPosDatalist();
+    /* 🧱 بناء 257 (بند #9): فشل الطباعة كان بيوقف `posNewInvoice()` ⇒ النموذج يفضل بنفس الرقم
+       المحفوظ وضغطة تانية تحفظ نسخة تانية. الطباعة آخر خطوة وما ينفعش تمنع التصفير. */
+    try {
+      if (autoPrintSaleInvoice()) printInvoice(invoice);
+      else flashCenter("🧾 تم حفظ الفاتورة " + invoice.invoiceNumber + " بنجاح");
+    } catch (e) {
+      console.error("printInvoice:", e);
+      toast("⚠️ الفاتورة اتحفظت، لكن الطباعة فشلت — تقدر تطبعها من «استعلام الفواتير».", "warning");
+    }
+    try { fillPosDatalist(); } catch (e) { }
     posNewInvoice();
   }
 
@@ -10790,6 +10854,8 @@
     // 🆕 بناء 191: آجل + «مدفوع» = سؤال صريح قبل أي أثر (نفس البيع)
     if (payment === "آجل" && !ajalPaidGate("purchase", t)) return;
     const invNo = $("#txtPInvNo").value || nextPurchaseInvoiceNumber();
+    // 🧱 بناء 257 (بند #9): نفس حارس البيع — الفحص قبل أي أثر على المخزون/الخزينة/القيد
+    if (!invoiceNoGuard("purchase", invNo)) return;
     const invDate = $("#dtpPDate").value || todayISO();
     const invoice = {
       // 🟥 بناء 240 (F2): رقم من الأرضية الدائمة (شوف فاتورة البيع)
@@ -10959,8 +11025,13 @@
 
     toast("تم حفظ وتأكيد فاتورة المشتريات بنجاح برقم (" + invoice.invoiceNumber + ")" +
       (postedJ && postedJ.j ? " وترحيلها للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
-    printPurchaseInvoice(invoice);
-    fillPPDatalist();
+    /* 🧱 بناء 257 (بند #9): نفس درس فاتورة البيع — فشل الطباعة ما يمنعش `ppNewInvoice()`. */
+    try { printPurchaseInvoice(invoice); }
+    catch (e) {
+      console.error("printPurchaseInvoice:", e);
+      toast("⚠️ الفاتورة اتحفظت، لكن الطباعة فشلت — تقدر تطبعها من «استعلام الفواتير».", "warning");
+    }
+    try { fillPPDatalist(); } catch (e) { }
     ppNewInvoice();
   }
 
@@ -11347,7 +11418,8 @@
       credit: amount
     };
     supplierTxs.push(txRow);
-    vouchers.push({
+    /* 🧱 بناء 257 (بند #31): نفس ربط التحصيل — رقم السند على سطر المورد بالمعرّف. */
+    const _vRowP = {
       id: nextVoucherId(),
       type: "out",
       treasuryId: tr ? tr.id : trId,
@@ -11356,7 +11428,9 @@
       desc: "سداد لمورد: " + (supp ? supp.nameAr : "") + " (" + ($("#psNotes").value.trim() || "سداد مستحقات") + ")",
       refType: "supplier_tx",
       refId: txId
-    });
+    };
+    vouchers.push(_vRowP);
+    txRow.voucherId = _vRowP.id;
     saveSuppliers();
     saveSupplierTxs();
     saveVouchers();
@@ -11592,8 +11666,8 @@
     { name: "treasury", ls: LS_TREASURY, get: function () { return treasury; }, set: function (v) { treasury = v; }, fix: keepTreasuryOpening },
     { name: "customers", ls: LS_CUSTOMERS, get: function () { return customers; }, set: function (v) { customers = v; } },
     { name: "suppliers", ls: LS_SUPPLIERS, get: function () { return suppliers; }, set: function (v) { suppliers = v; } },
-    { name: "customer_txs", ls: LS_TXS, get: function () { return txs; }, set: function (v) { txs = v; } },
-    { name: "supplier_txs", ls: LS_SUP_TXS, get: function () { return supplierTxs; }, set: function (v) { supplierTxs = v; } },
+    { name: "customer_txs", ls: LS_TXS, get: function () { return txs; }, set: function (v) { txs = v; }, fix: keepLocalOnly },
+    { name: "supplier_txs", ls: LS_SUP_TXS, get: function () { return supplierTxs; }, set: function (v) { supplierTxs = v; }, fix: keepLocalOnly },
     { name: "journal_entries", ls: LS_JOURNAL, get: function () { return journalEntries; }, set: function (v) { journalEntries = v; }, fix: keepJournalLines },
     { name: "accounts", ls: LS_ACCOUNTS, get: function () { return accounts; }, set: function (v) { accounts = v; } },
     { name: "vouchers", ls: LS_VOUCHERS, get: function () { return vouchers; }, set: function (v) { vouchers = v; } },
@@ -14203,7 +14277,10 @@ id: nextVoucherId(),
       : (unap
         ? accByCode(out ? "2.1.1" : "1.1.5", out ? "مستحقات الموردين" : "مديونيات العملاء")
         : (out ? checksPayableAcc() : checksAcc()));
-    try { postVoucherJournal(v, t, counterAcc); } catch (e) { }
+    /* 🧱 بناء 257 (بند #10): كان النداء جوه try/catch فاضي — سند التحصيل والخزينة بيتحفظوا
+       والقيد يضيع بلا رسالة. دلوقتي الفشل يتعلن ويُسجَّل (jrnFailNotify). */
+    try { postVoucherJournal(v, t, counterAcc); }
+    catch (e) { jrnFailNotify((out ? "صرف" : "تحصيل") + " شيك #" + (c.checkNo || c.id), e); }
     if (unap && amount > 0) {
       if ((c.partyKind || "customer") === "supplier" && c.supplierId) {
         const txKeepId = nextSupplierTxId();
@@ -14245,7 +14322,9 @@ id: nextVoucherId(),
         : "الشيك اترجع (ومافيش قيد — فاتورته كانت محذوفة والمديونية أصلًا مسجّلة).", "success");
       return { ok: true };
     }
-    try { postCheckReturnJrn(c); } catch (e) { }
+    /* 🧱 بناء 257 (بند #10): كان `try { postCheckReturnJrn(c); } catch (e) { }` — قيد الشيك
+       المرتجع يضيع بصمت والشيك/الخزينة محفوظين. دلوقتي الفشل يتعلن ويُسجَّل. */
+    try { postCheckReturnJrn(c); } catch (e) { jrnFailNotify("إرجاع الشيك #" + (c.checkNo || c.id), e); }
     // 🆕 بناء 203 (بند #19): رجوع المديونية يتسجّل **بحركة حقيقية** (مدين) مش بزيادة يدوية على
     // الرصيد — الزيادة اليدوية كانت بتتمسح من أول إعادة حساب (الرصيد في النظام = مجموع الحركات)
     // ⇒ كشف العميل يناقض القيد. الحركة دي بتحقّق الاتنين: الكشف والرصيد.
@@ -14418,13 +14497,52 @@ id: nextVoucherId(),
       breakdown: { cash: 0, bank: 0, wallet: 0, credit: 0 }
     };
     shifts.push(s);
-    // 🧾 بناء 176: الرقاقة الافتتاحية تتحفظ كسند قبض على صندوق الوردية ⇒ رصيد الصندوق
-    // بيبدأ من الرقاقة + مبيعات النقد للوردية (نفس مسار recalculateTreasuryBalances).
+    /* 🧱 بناء 257 (بند #11): الرقاقة الافتتاحية كانت بتتحفظ كسند قبض على صندوق الوردية **بلا
+       مصدر** ⇒ مجموع الخزائن يتضخّم بقيمتها من الهوا (المقاس: خزينة 1,000 + رقاقة 500 = 1,500
+       وهو مش موجود). الصح المحاسبي واحد من اتنين:
+         (أ) صندوق الوردية **هو** الصندوق النقدي الرئيسي (أو الصندوق النقدي الوحيد) ⇒ الرقاقة
+             مجرد عدّ لما هو موجود فعلًا في الصندوق ⇒ **مافيش سند** (وإلا الفلوس تتحسب مرتين).
+         (ب) صندوق الوردية مختلف ⇒ تحويل حقيقي من الصندوق الرئيسي: سند صرف + سند قبض بنفس المبلغ
+             (نفس عرف `settleShiftEngine`) ⇒ مجموع الخزائن يفضل ثابت. القيد المحاسبي بس لو
+             الحسابان مختلفان (كل الصناديق النقدية على 1.1.1 ⇒ تحويل داخلي بلا أثر). */
     if (s.openingFloat > 0) {
-      const baseId = nextVoucherId() - 1;
-      vouchers.push({ id: baseId + 1, type: "in", treasuryId: tr.id, date: shiftNowISO().slice(0, 10), amount: round2(s.openingFloat), desc: "رقاقة افتتاحية — وردية #" + s.id + " — " + s.cashierName, refType: "وردية فتح — #" + s.id });
-      try { saveVouchers(); } catch (e) {}
-      try { recalculateTreasuryBalances(); } catch (e) {}
+      const main = getMainTreasury();
+      const mainId = main ? Number(main.id) : 0;
+      const cashBoxes = (treasury || []).filter((x) => x && x.type === "cash").length;
+      const sameBox = !main || mainId === Number(tr.id) || cashBoxes <= 1;
+      if (!sameBox) {
+        const amt = round2(s.openingFloat);
+        const date = shiftNowISO().slice(0, 10);
+        const tag = "رقاقة افتتاحية — وردية #" + s.id + " — " + s.cashierName;
+        const baseId = nextVoucherId() - 1;
+        vouchers.push({
+          id: baseId + 1, type: "out", treasuryId: main.id, date: date, amount: amt,
+          desc: tag + " (من " + main.name + ")", refType: "وردية فتح — #" + s.id, refId: "SHO:" + s.id
+        });
+        vouchers.push({
+          id: baseId + 2, type: "in", treasuryId: tr.id, date: date, amount: amt,
+          desc: tag + " (إلى " + tr.name + ")", refType: "وردية فتح — #" + s.id, refId: "SHO:" + s.id
+        });
+        try { saveVouchers(); } catch (e) { }
+        try { recalculateTreasuryBalances(); } catch (e) { }
+        // قيد فقط لو الحسابان مختلفان (مثال: تحويل من بنك لصندوق نقدي)
+        try {
+          const aFrom = accForTreasuryAcc(main), aTo = accForTreasuryAcc(tr);
+          if (aFrom && aTo && Number(aFrom.id) !== Number(aTo.id)) {
+            ensureJrnStd();
+            const lines = [{ accountId: aTo.id, debit: amt, credit: 0 }, { accountId: aFrom.id, debit: 0, credit: amt }];
+            const j = {
+              id: nextJournalId(), number: jrnNo(), date: date,
+              desc: tag + " — " + fmt(amt) + " ج.م", ref: "رقاقة وردية", refType: "رقاقة وردية", refId: "SHO:" + s.id,
+              debit: amt, credit: amt, lines: lines
+            };
+            settleJrnLines(lines, 1);
+            journalEntries.push(j);
+            persistJournal();
+            saveAccounts();
+          }
+        } catch (e) { jrnFailNotify("رقاقة وردية #" + s.id, e); }
+      }
     }
     try { saveShifts(); } catch (e) {}
     try { addActivity("فتح وردية", "وردية #" + s.id + " - كاشير " + s.cashierName + " - صندوق " + s.treasuryName + " + رقاقة " + fmt(s.openingFloat) + " ج.م"); } catch (e) {}
@@ -14505,9 +14623,31 @@ id: nextVoucherId(),
   }
 
   // إغلاق الوردية: عدّ (أعمى أو ظاهر) → المتوقّع → الفرق → قيد «عجز/زيادة».
+  /* 🧱 بناء 257 (بند #14): حماية تكرار عبر الأجهزة. الحالة `status` محلية، فجهاز تاني لسه
+     شايف الوردية «مفتوحة» كان يقدر يقفلها/يسلّمها تاني ⇒ سند وقيد مكرر ونفس الفلوس تتحرك
+     مرتين. الفحص هنا **على المستند نفسه** (سند/قيد الوردية موجود؟) مش على الحالة المحلية. */
+  function shiftClosePosted(shift) {
+    const id = Number(shift && shift.id) || 0;
+    if (!id) return false;
+    const tag = "وردية تسوية — #" + id;
+    const hasV = (vouchers || []).some((v) => v && String(v.refType || "") === tag);
+    const hasJ = (journalEntries || []).some((j) => j && String(j.refId || "") === "SH:" + id);
+    return hasV || hasJ;
+  }
+  function shiftSettlePosted(shift) {
+    const id = Number(shift && shift.id) || 0;
+    if (!id) return false;
+    const tag = "وردية تسليم — #" + id;
+    const hasV = (vouchers || []).some((v) => v && String(v.refType || "") === tag);
+    const hasJ = (journalEntries || []).some((j) => j && String(j.refId || "") === "SHX:" + id);
+    return hasV || hasJ;
+  }
   function closeShiftEngine(shift, countedCash, denoms, notes) {
     if (!shift) return { ok: false, msg: "الوردية مش موجودة." };
     if (shift.status !== "open") return { ok: false, msg: "الوردية دي مش مفتوحة." };
+    if (shiftClosePosted(shift)) {
+      return { ok: false, msg: "الوردية دي اتقفلت بالفعل على جهاز تاني (سند/قيد التسوية موجود) — اعمل تحديث للصفحة قبل أي إجراء." };
+    }
     const box = treasury.find((x) => Number(x.id) === Number(shift.treasuryId));
     if (!box) return { ok: false, msg: "صندوق الوردية مش موجود في الخزينة." };
     ensureJrnStd();
@@ -14532,7 +14672,7 @@ id: nextVoucherId(),
       vouchers.push({
         id: baseId + 1, type: isOver ? "in" : "out", treasuryId: box.id, date: date, amount: amt,
         desc: (isOver ? "زيادة" : "عجز") + " وردية #" + shift.id + " — " + shift.cashierName,
-        refType: "وردية تسوية — #" + shift.id
+        refType: "وردية تسوية — #" + shift.id, refId: "SHS:" + shift.id
       });
       saveVouchers();
       // (٢) القيد المحاسبي: العجز مصروف / الزيادة إيراد — على حساب مستقل لكل صندوق
@@ -14574,6 +14714,9 @@ id: nextVoucherId(),
   function settleShiftEngine(shift, mainTreasuryId) {
     if (!shift) return { ok: false, msg: "الوردية مش موجودة." };
     if (shift.status !== "closed") return { ok: false, msg: "لازم تقفل الوردية الأول، وبعدها تسلّم." };
+    if (shiftSettlePosted(shift)) {
+      return { ok: false, msg: "الوردية دي اتسلّمت بالفعل على جهاز تاني (سند/قيد التسليم موجود) — اعمل تحديث للصفحة قبل أي إجراء." };
+    }
     const box = treasury.find((x) => Number(x.id) === Number(shift.treasuryId));
     const main = treasury.find((x) => Number(x.id) === Number(mainTreasuryId));
     if (!box) return { ok: false, msg: "صندوق الوردية مش موجود." };
@@ -14591,8 +14734,8 @@ id: nextVoucherId(),
     // الرقم بيتولّد تاني، و`detUuid("vouchers", id)` على السحابة ثابت من الرقم المحلي
     // ⇒ السندان الجديدان **يكتبان فوق صفّين قديمين**. دلوقتي بناخد الأرضية زي باقي المسارات.
     const baseId = nextVoucherId() - 1;
-    vouchers.push({ id: baseId + 1, type: "out", treasuryId: box.id, date: date, amount: amt, desc: tag + " (من " + box.name + ")", refType: "وردية تسليم — #" + shift.id });
-    vouchers.push({ id: baseId + 2, type: "in", treasuryId: main.id, date: date, amount: amt, desc: tag + " (إلى " + main.name + ")", refType: "وردية تسليم — #" + shift.id });
+    vouchers.push({ id: baseId + 1, type: "out", treasuryId: box.id, date: date, amount: amt, desc: tag + " (من " + box.name + ")", refType: "وردية تسليم — #" + shift.id, refId: "SHX:" + shift.id });
+    vouchers.push({ id: baseId + 2, type: "in", treasuryId: main.id, date: date, amount: amt, desc: tag + " (إلى " + main.name + ")", refType: "وردية تسليم — #" + shift.id, refId: "SHX:" + shift.id });
     saveVouchers();
     recalculateTreasuryBalances();
     // قيد فقط لو الحسابان مختلفان (كل الصناديق النقدية على 1.1.1 ⇒ تحويل داخلي بلا أثر محاسبي)
@@ -16016,24 +16159,39 @@ id: nextVoucherId(),
   // التحويل = سند صرف + سند قبض بنفس المبلغ/اليوم ووصف «تحويل من «X» إلى «Y»» + قيد واحد «TF:».
   // التعرف: بالوسم (refType/refId) لو وصل من السحابة (ترحيل ٥٦)، وإلا بالوصف — عشان يشتغل
   // على أي جهاز حتى قبل ما الوسم يتزامن. الحذف يعدّي على `dropVouchersWithJournal` (نقطة ارتكاز 151).
+  /* 🧱 بناء 257 (بند #13): التعرف على التحويل كان فضفاضًا:
+       `rt.indexOf("تحويل")` ⇒ أي وسم فيه كلمة «تحويل» (مثل «تحويل بنكي») يبقى تحويلًا،
+       و`d.indexOf("تحويل بين الحسابات")` ⇒ أي سند يدوي بيانه فيه العبارة دي يظهر له زرار حذف
+       تحويل. والـfallback كان بياخد **أول** مرشح بالتاريخ+المبلغ حتى لو فيه أكتر من واحد
+       ⇒ حذف ساق تحويل تانية. التشديد: الوسم الصريح أو نمط `TFV:`/`TF:` أو وصف فيه
+       «تحويل من «X» إلى «Y»» بالحرف — وبلا أي مطابقة نصية حرّة. */
+  const TR_MOVE_TOKEN = /تحويل من «([^»]*)» إلى «([^»]*)»/;
   function trMoveIsTransfer(v) {
     if (!v) return false;
-    const rt = String(v.refType || ""), rid = String(v.refId || "");
-    if (rt.indexOf("تحويل") !== -1) return true;
-    if (rid.indexOf("TFV") === 0 || rid.indexOf("TF") === 0) return true;
-    const d = String(v.desc || "");
-    return d.indexOf("تحويل من «") !== -1 || d.indexOf("تحويل بين الحسابات") !== -1;
+    const rt = String(v.refType || "").trim();
+    const rid = String(v.refId || "").trim();
+    if (rt === "تحويل بين الحسابات") return true;
+    if (/^TFV?:\d+$/.test(rid)) return true;
+    return TR_MOVE_TOKEN.test(String(v.desc || ""));
   }
   // الساق التانية للنقل: بالمفتاح المشترك أولًا، وإلا (نفس اليوم + نفس المبلغ + اتجاه معاكس + خزينة مختلفة)
   // 🆕 بناء 188: الـfallback كان ياخد أول سطر مطابق باليوم+المبلغ بس ⇒ **تحويلان بنفس المبلغ نفس اليوم**
   // كان يتيمه يلقط **الساق الغلط** (شريك تحويل تاني). التشديد: نطابق كمان **وصف التحويل** (نفس «من X إلى Y»).
-  const TR_MOVE_TOKEN = /تحويل من «([^»]*)» إلى «([^»]*)»/;
+  /* 🧱 بناء 257 (بند #13): الدالة بقت ترجّع **الزوج المؤكد فقط**. لو الساق التانية مش مؤكدة
+     (مفتاح مشترك لسند واحد · لا تجاور · وصف متطابق مش فريد · أكتر من مرشح) ترجّع `[v]` وحدها،
+     و`deleteTreMove` بيوقف الحذف برسالة — بدل ما يخمّن ويشيل ساق غلط. */
   function trMovePairOf(v) {
     if (!v) return [];
     const rid = String(v.refId || "");
     if (rid) {
-      const same = vouchers.filter((x) => x && String(x.refId || "") === rid);
-      if (same.length >= 2) return same;
+      const same = vouchers.filter((x) => x && String(x.refId || "") === rid && trMoveIsTransfer(x));
+      // المفتاح المشترك لازم يحدد **ساقين بالظبط** باتجاهين متعاكسين — غير كده غامض
+      if (same.length === 2) {
+        const t1 = String(same[0].type || same[0].kind), t2 = String(same[1].type || same[1].kind);
+        if (t1 !== t2 && Math.round((Number(same[0].amount) || 0) * 100) === Math.round((Number(same[1].amount) || 0) * 100)) {
+          return same;
+        }
+      }
     }
     const d0 = String(v.date || "").slice(0, 10), amt = Number(v.amount) || 0;
     const kin = String(v.type || v.kind) === "in" ? "in" : "out";
@@ -16051,20 +16209,26 @@ id: nextVoucherId(),
     // (١) الشريك الملاصق بالأرقام: ساقا التحويل **دائمًا متتاليتان** (الصرف = القبض−1) ⇒ أدق مرشّح
     const wantId = kin === "out" ? Number(v.id) + 1 : Number(v.id) - 1;
     const adj = cand.filter((x) => Number(x.id) === wantId);
-    if (adj.length) return [v, adj[0]];
-    // (٢) نفس وصف «من X إلى Y» (يمنع مطابقة تحويل تاني بنفس المبلغ/اليوم)
+    if (adj.length === 1) return [v, adj[0]];
+    // (٢) نفس وصف «من X إلى Y» — **لازم مرشح واحد بس** وإلا غامض
     if (tok) {
       const tokCand = cand.filter((x) => { const mx = TR_MOVE_TOKEN.exec(String(x.desc || "")); return mx && mx[0] === tok; });
-      if (tokCand.length) return [v, tokCand[0]];
+      if (tokCand.length === 1) return [v, tokCand[0]];
+      if (tokCand.length > 1) return [v];
     }
-    return [v].concat(cand.slice(0, 1));
+    return [v];
   }
   function deleteTreMove(vId) {
     if (typeof simpleGate === "function" && !simpleGate()) return;
     const v = vouchers.find((x) => Number(x.id) === Number(vId));
     if (!v) return;
     const pair = trMovePairOf(v);
-    if (!pair.length) return;
+    /* 🧱 بناء 257 (بند #13): الساق التانية مش مؤكدة ⇒ **ممنوع الحذف** (كان بيشيل ساق واحدة
+       أو يخمّن شريكًا غلط). */
+    if (pair.length < 2) {
+      toast("⚠️ مش قادر أحدد الساق التانية للتحويل بشكل قاطع — الحذف اتوقف لحماية أرصدة الخزائن. راجع السند من شاشة الخزينة/القيود.", "warning");
+      return;
+    }
     const amt = fmt(Number(v.amount) || 0);
     if (!confirm("حذف التحويل بين الحسابات بمبلغ " + amt + " ج.م؟\nهيتشال " + pair.length +
       " سند + القيد المحاسبي المرتبط، وترجع أرصدة الخزائن زي ما كانت قبل التحويل.")) return;
@@ -17199,6 +17363,21 @@ id: nextVoucherId(),
     } else {
       toast(transferLabel + " اتحفظ على الجهاز فقط؛ ما اترفعش للسحابة.", "warning");
     }
+  }
+
+  /* 🧱 بناء 257 (بند #10): القيد كان بيتبلع بصمت في مساري الشيك (`returnCheck` و`collectCheck`)
+     — السند/الخزينة بيتحفظوا والقيد يضيع بلا أي رسالة، فالدفتر يتخلف عن المستند من غير ما حد
+     يعرف. الإشعار هنا **مقيس**: كونسول + توست خطأ + سطر في سجل النشاط، وما بيرجّعش استثناء
+     عشان ما يمنعش باقي الحفظ. (بره بلوك 134 عن قصد: حارس 134 بيمنع أي لوج تقني جوّه البلوك.) */
+  function jrnFailNotify(what, e) {
+    const msg = (e && e.message) ? String(e.message) : "خطأ غير معروف";
+    try { console.error("[بناء 257] فشل ترحيل قيد " + what + ":", e); } catch (_) { }
+    try {
+      toast("⚠️ " + what + " اتحفظ، لكن **قيده المحاسبي ما اترحّلش** (" + msg +
+        ") — الدفتر مش هيطابق المستند. راجعه من «القيود اليومية».", "error");
+    } catch (_) { }
+    try { addActivity("قيد مفقود", what + " — " + msg); } catch (_) { }
+    return false;
   }
 
   /* ================== 🆕 بناء 134: الفواتير تترحّل أوتوماتيك للقيود ==================
@@ -24085,6 +24264,32 @@ const pwEye = document.getElementById("btnShowPass");
     return { merged: cloudArr.concat(extras), extras: extras.length };
   }
 
+  /* 🧱 بناء 257 (بند #14): حالة الوردية ما ترجعش لورا بعد الدمج.
+     السحابة ممكن ترجّع نسخة قديمة «مفتوحة» لوردية قافلها/سلّمها الجهاز ده (رفعة متأخرة
+     أو جهاز تاني ما زال شايفها مفتوحة) ⇒ الوردية تتفتح تاني وتتسوّى مرتين. الترتيب:
+     open < closed < settled، والأعلى هو اللي يحكم — مع كل حقوله المرتبطة. */
+  const SHIFT_RANK = { open: 0, closed: 1, settled: 2 };
+  function shiftRankOf(s) {
+    const k = String((s && s.status) || "");
+    return Object.prototype.hasOwnProperty.call(SHIFT_RANK, k) ? SHIFT_RANK[k] : -1;
+  }
+  const SHIFT_STATE_FIELDS = ["status", "closedAt", "closedBy", "expectedCash", "countedCash",
+    "difference", "denoms", "breakdown", "settledAt", "settledBy", "mainTreasuryId", "settledAmount"];
+  function mergeShiftsCloud(cloudArr, localArr) {
+    const m = mergeCloudLocal(cloudArr, localArr);
+    const byId = new Map();
+    (localArr || []).forEach(function (r) { if (r && r.id != null) byId.set(Number(r.id), r); });
+    m.merged = m.merged.map(function (row) {
+      if (!row || row.id == null) return row;
+      const loc = byId.get(Number(row.id));
+      if (!loc || shiftRankOf(loc) <= shiftRankOf(row)) return row;
+      const out = Object.assign({}, row);
+      SHIFT_STATE_FIELDS.forEach(function (k) { if (loc[k] !== undefined) out[k] = loc[k]; });
+      return out;
+    });
+    return m;
+  }
+
   // الفواتير القديمة على السحابة كانت بتتخزن باسم العميل/المورد من غير رقمه → الجهاز التاني
   // بيشوف الاسم بس فترابط الفاتورة بصاحها يضيع (والمتاح للرجوع ووسم المرتجع بيتعطلوا).
   // إلحقها بالاسم دلوقتي، وأول حفظ جاي يبعت الرقم ويصلح السحابة نفسها.
@@ -24136,7 +24341,10 @@ const pwEye = document.getElementById("btnShowPass");
     step("fixed_assets", S.fixed_assets, fixedAssets, function (v) { fixedAssets = v; });
     step("vouchers", S.vouchers, vouchers, function (v) { vouchers = v; });
     // 🧾 بناء 176: ورديات الكاشير — دمج بنفس الهوية (local_id) مثل باقي الجداول
-    step("cashier_shifts", S.cashier_shifts, shifts, function (v) { shifts = v; });
+    // 🧱 بناء 257 (بند #14): بدمج **حامي للحالة** — الوردية ما ترجعش من «مسوّاة» لـ«مفتوحة»
+    const ms = mergeShiftsCloud(S.cashier_shifts, shifts);
+    shifts = ms.merged;
+    if (ms.extras > 0) changed.push("cashier_shifts");
     // 🚚 بناء 178: رحلات سيارات المناديب
     step("car_trips", S.car_trips, carTrips, function (v) { carTrips = v; });
     // 🧾 بناء 190: الشيكات — دمج بنفس الهوية (local_id)
