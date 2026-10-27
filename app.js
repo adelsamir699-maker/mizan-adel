@@ -10295,6 +10295,9 @@
     commitInvoiceSeq("sale", invEncodedOf(invNoOf(invoice)));
     // 🆕 بناء 134: الفاتورة تترحّل أوتوماتيك للقيود اليومية (قيد متزن، بلا سند — انظر رأس القسم)
     const postedJ = postInvoiceJournal("sale", invoice, paidTreasury);
+    /* 🔧 بناء 259 (بند #16): قيد تكلفة المبيعات بعد قيد الفاتورة — مستقل عشان حراس الفاتورة
+       ما يتغيّروش، ومحمي بـ try عشان أي فشل ما يمنعش حفظ البيع. */
+    try { postCogsJournal(invoice); } catch (e) { }
     // 🧱 بناء 245: التأكيد بعد الترحيل — بندفع الفاتورة + الخزينة + الأطراف + القيود + الحسابات معًا.
     // (شال توست 244 اللي كان بيعلن «وصلت» بمجرد رفع الفاتورة وقبل الترحيل أصلًا.)
     if (A.online) {
@@ -12329,6 +12332,8 @@
     }
     // 🆕 بناء 134: القيد اللي اتترحّل مع الفاتورة بيرجع معاه (تسوية الأرصدة بتلغى سطر-سطر)
     const goneJ = removeInvoiceJournal(isSales ? "sale" : "purchase", inv);
+    // 🔧 بناء 259 (بند #16): حذف فاتورة البيع يشيل قيد تكلفتها (تراجع كامل للمخزون والدليل)
+    if (isSales) { try { removeCogsJournal(cogsKeyOf(inv)); } catch (e) { } }
     /* 🧾 بناء 210 (قرار المالك 20/10): حذف الفاتورة **مايشيلش الشيك** — الشيك ورقة مستقلة
        يمكن تفضل قابلة للتحصيل على المديونية السابقة. اللي بيتشال هو **أثر الارتجاع** بس،
        والشيك المعلّق يبقى «غير مخصص» (unapplied) ⇒ عند تحصيله لاحقًا يُقيَّد على مديونية
@@ -13052,7 +13057,9 @@
       unit: lineUnit(l.line),        // 🆕 المرتجع ياخد نفس وحدة سطر الفاتورة (متحلة من الصنف لو فاضية)
       qty: l.qty,
       price: l.price,
-      total: retLineValue(inv, l.line, l.qty)
+      total: retLineValue(inv, l.line, l.qty),
+      // 🔧 بناء 259 (بند #16): لقطة تكلفة السطر المرتجع — أساس قيد عكس التكلفة (بلا تخمين)
+      costTotal: retLineCost(inv, l.line, l.qty)
     }));
     const amt = Math.round(items.reduce((s, x) => s + (Number(x.total) || 0), 0) * 100) / 100;
     if (amt <= 0) { toast("قيمة المرتجع طلعت صفر — راجع أسعار الأصناف.", "warning"); return; }
@@ -13188,6 +13195,8 @@ id: nextVoucherId(),
 
     // 🆕 بناء 149 (سطر ٣): المرتجع يترحّل بقيد عكسي — نفس أطراف فاتورته ونسبة ضريبتها بالحرف
     postReturnJournal(isSales ? "sale" : "purchase", rec, inv, tr);
+    // 🔧 بناء 259 (بند #16): مرتجع البيع يرجّع تكلفة البضاعة للمخزون (عكس قيد التكلفة)
+    if (isSales) { try { postCogsReturnJournal(rec); } catch (e) { } }
     // 🆕 بناء 208: مرتجع المشتريات بيخرّج كمية من المخزن ⇒ بتنقص من كمية ما قبل آخر شراء
     if (!isSales) consumeAvgForItems(items);
 
@@ -13290,6 +13299,8 @@ id: nextVoucherId(),
     }
     // 🆕 بناء 149 (سطر ٣): حذف المرتجع بيرجع قيده هو كمان (تراجع كامل — نفس عرف الفاتورة)
     const retJrnRemoved = removeReturnJournal(isSales ? "sale" : "purchase", r.id);
+    // 🔧 بناء 259 (بند #16): حذف مرتجع البيع يشيل قيد تكلفته العكسي كمان (تراجع كامل)
+    if (isSales) { try { removeCogsJournal(cogsReturnKeyOf(r.id)); } catch (e) { } }
     if (retJrnRemoved) { renderJournal(); renderLedger(); }
     /* 🧱 بناء 216: حذف المرتجع يرجّع الشيك لمبلغه/حالته قبل الخصم — الشيك نفسه محفوظ دايمًا. */
     if (Array.isArray(r.checkDeductions) && r.checkDeductions.length) restoreCheckDeductions(r.checkDeductions);
@@ -15806,6 +15817,8 @@ id: nextVoucherId(),
     saveSales();
     commitInvoiceSeq("sale", invEncodedOf(invNoOf(invoice)));
     const postedJ = postInvoiceJournal("sale", invoice, null);
+    // 🔧 بناء 259 (بند #16): تكلفة مبيعات بيع السيارة (نفس قيد البيع العادي بالحرف)
+    try { postCogsJournal(invoice); } catch (e) { }
     consumeAvgForItems(vanSaleDraft.items);
     try { addActivity("بيع من سيارة", "سيارة " + trip.carName + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + pay + ")" + (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : "")); } catch (e) {}
     toast("تم حفظ البيع (" + invNo + ")" + (postedJ && postedJ.j ? " وترحيله للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
@@ -17422,6 +17435,144 @@ id: nextVoucherId(),
     return false;
   }
 
+  /* ================== 🔧 بناء 259 (بند #16): قيد تكلفة المبيعات (COGS) ==================
+     **بره بلوك 134 عن قصد**: حارس 134 بيحقن كسور في أول `settleJrnLines(j.lines, 1)`
+     وأول `JRN_ID_FLOOR` جوه البلوك — فلو دالات التكلفة جواه، الحقن بيضرب المكان الغلط
+     والمعايرة السلبية بتطمّ على كود سليم. نفس سبب خروج jrnFailNotify (بناء 257). ==================
+     المشكلة المقيسة: المشتريات بتزيد «1.1.4 المخزون» والبيع ما بينقصهوش خالص ⇒ الدليل بيقول
+     إن المخزون بيكبر للأبد، وقائمة المركز المالي ما بتعكسش البضاعة اللي اتباعت.
+     الحل: قيد **مستقل** لكل فاتورة بيع: مدين «5.3 تكلفة المبيعات» / دائن «1.1.4 المخزون»
+     بقيمة `costTotal` المسجّلة على سطور الفاتورة وقت البيع (بناء 208) — **نفس رقم هامش
+     الربح بالحرف**، فمافيش رقمين لتكلفة واحدة.
+       • مفتاح `CG:<مفتاح الفاتورة>` ⇒ منع التكرار عبر الأجهزة والسحب.
+       • مرتجع البيع: قيد عكسي `CGR:<id>` (مدين المخزون / دائن التكلفة) بقيمة السطور المرتجعة.
+       • حذف الفاتورة/المرتجع: القيد بيتشال (تراجع كامل — نفس عرف بناء 149).
+       • **بلا ترحيل بأثر رجعي**: الفواتير القديمة اللي مالهاش `costTotal` ما بتترحّلش — القيد
+         بيتكتب لحظة البيع بس (نفس قاعدة «لا نصحّح الماضي»). */
+  const COGS_REF = "تكلفة المبيعات";
+  const COGS_RET_REF = "مرتجع تكلفة مبيعات";
+
+  // حساب مخصص (مش من الدليل القياسي) — ينشأ مرة واحدة عند أول احتياج، بلا أي ترقية SQL
+  function ensureCustomAcc(code, name, parentCode, type) {
+    let a = accounts.find((x) => x && String(x.code) === String(code));
+    if (a) { if (a.isActive === false) a.isActive = true; return a; }
+    a = accByCode(code, name);
+    if (a) { if (a.isActive === false) a.isActive = true; return a; }
+    const parent = ensureJrnAccount(parentCode) || accounts.find((x) => x && String(x.code) === String(parentCode));
+    a = {
+      id: nextAccountId(), code: String(code), nameAr: name, type: type,
+      parentId: parent ? parent.id : 0, openingBalance: 0, isActive: true
+    };
+    accounts.push(a);
+    saveAccounts();
+    return a;
+  }
+  function cogsAcc() { return ensureCustomAcc("5.3", "تكلفة المبيعات", "5", "expense"); }
+  function stockAcc() { return accByCode("1.1.4", "المخزون") || ensureJrnAccount("1.1.4"); }
+
+  function cogsKeyOf(inv) {
+    const k = invoiceJrnKey("sale", inv);
+    return k ? "CG:" + k : "";
+  }
+  function cogsReturnKeyOf(id) { return Number(id) > 0 ? "CGR:" + Number(id) : ""; }
+  function cogsJrnOf(key) {
+    if (!key) return null;
+    return journalEntries.find((j) => j && String(j.refId || "") === key) || null;
+  }
+  // تكلفة البيع = مجموع `costTotal` على السطور. السطر اللي مالوش لقطة تكلفة **ما بيتحسبش**
+  // (صفر) — عشان فاتورة قديمة ما تترحّلش بتكلفة مخمّنة.
+  function cogsAmountOf(inv) {
+    let t = 0;
+    (inv && inv.items || []).forEach((it) => {
+      if (!it || it.costTotal == null) return;
+      const v = Number(it.costTotal);
+      if (Number.isFinite(v)) t += v;
+    });
+    return round2(t);
+  }
+  function cogsWriteJrn(refId, ref, date, desc, amt, debitAccId, creditAccId) {
+    if (!(amt > 0) || !debitAccId || !creditAccId) return null;
+    const lines = [
+      { accountId: Number(debitAccId), debit: amt, credit: 0 },
+      { accountId: Number(creditAccId), debit: 0, credit: amt }
+    ];
+    const j = {
+      id: nextJournalId(),
+      number: jrnNo(),
+      date: date || todayISO(),
+      desc: desc,
+      ref: ref,
+      refType: ref,
+      refId: refId,
+      debit: amt,
+      credit: amt,
+      lines: lines
+    };
+    settleJrnLines(j.lines, 1);
+    journalEntries.push(j);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    return j;
+  }
+  function postCogsJournal(inv) {
+    const key = cogsKeyOf(inv);
+    if (!key || cogsJrnOf(key)) return null;
+    const amt = cogsAmountOf(inv);
+    if (!(amt > 0)) return null;
+    const cost = cogsAcc(), stock = stockAcc();
+    if (!cost || !stock) return null;
+    const no = String((inv && (inv.invoiceNumber || inv.invoiceNo)) || "");
+    return cogsWriteJrn(key, COGS_REF, (inv && (inv.invoiceDate || inv.date)) || todayISO(),
+      "تكلفة مبيعات فاتورة " + no + " — " + fmt(amt) + " ج.م", amt, cost.id, stock.id);
+  }
+  // تكلفة سطر المرتجع = حصّته من تكلفة سطر الفاتورة الأصلي (بالكمية) — بلا أي رقم مخمّم
+  function retLineCost(inv, line, qty) {
+    const q = Number(qty) || 0;
+    if (!(q > 0) || !line) return 0;
+    const src = (inv && inv.items || []).find((x) => x && line.id != null && x.id != null &&
+      String(x.id) === String(line.id)) ||
+      (inv && inv.items || []).find((x) => x && Number(x.productId) === Number(line.productId));
+    const srcQty = Number(src && src.qty) || 0;
+    const srcCost = Number(src && src.costTotal);
+    if (srcQty > 0 && src && src.costTotal != null && Number.isFinite(srcCost)) {
+      return round2(srcCost * q / srcQty);
+    }
+    return 0;   // مفيش لقطة تكلفة ⇒ ما بنخمّنش (نفس قاعدة الفاتورة)
+  }
+  function cogsReturnAmountOf(rec) {
+    let t = 0;
+    (rec && rec.items || []).forEach((it) => {
+      if (!it || it.costTotal == null) return;
+      const v = Number(it.costTotal);
+      if (Number.isFinite(v)) t += v;
+    });
+    return round2(t);
+  }
+  function postCogsReturnJournal(rec) {
+    const key = cogsReturnKeyOf(rec && rec.id);
+    if (!key || cogsJrnOf(key)) return null;
+    const amt = cogsReturnAmountOf(rec);
+    if (!(amt > 0)) return null;
+    const cost = cogsAcc(), stock = stockAcc();
+    if (!cost || !stock) return null;
+    const no = String((rec && (rec.returnNumber || rec.returnNo)) || "");
+    return cogsWriteJrn(key, COGS_RET_REF, (rec && (rec.date || rec.returnDate)) || todayISO(),
+      "مرتجع مبيعات رقم (" + no + ") — رجوع تكلفة " + fmt(amt) + " ج.م", amt, stock.id, cost.id);
+  }
+  function removeCogsJournal(key) {
+    const j = cogsJrnOf(key);
+    if (!j) return null;
+    settleJrnLines(j.lines, -1);
+    const i = journalEntries.findIndex((x) => x === j);
+    if (i >= 0) journalEntries.splice(i, 1);
+    JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(j.id) || 0);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) { }
+    return j;
+  }
+
   /* ================== 🆕 بناء 134: الفواتير تترحّل أوتوماتيك للقيود ==================
      أمر المالك الحرفي (04/10): «وبعدها تبدأ بترحيل المبيعات و المشتريات اللى كنا قلنا
      عليها الفواتير تترحّل أوتوماتيك للقيود».
@@ -18983,6 +19134,74 @@ id: nextVoucherId(),
     if (dep > cost) return "—";            // رفضنا نقصّ في صمت: السالب المخبّى ما يطلعش رقم
     return fmt(faNet(a));
   };
+
+  /* ===== 🔧 بناء 259 (بند #16): قيد الإهلاك =====
+     سجل الأصول بيحمل «الإهلاك التراكمي» يدويًا، وكان بيظهر في المركز المالي بس — مافيش قيد
+     في الدليل خالص، فمصروف الإهلاك مش موجود في قائمة الدخل ولا في ميزان المراجعة.
+     دلوقتي لحظة حفظ الأصل بنرحّل **الفرق** بين الإهلاك التراكمي المكتوب والمُرحّل فعلًا:
+       مدين «5.4 مصروف الإهلاك» / دائن «1.3.2 إهلاك متراكم» (حساب مقابل للأصل غير المتداول)،
+       أو «1.3.3 إهلاك متراكم — أصول غير ملموسة» للأصول غير الملموسة.
+     • «المرحّل» بيتقاس من القيود نفسها (`DEP:<id>:`) — مش من خانة جديدة ⇒ **بلا ترقية SQL**.
+     • الفرق سالب (تصحيح لتحت) ⇒ قيد عكسي بالمبلغ، فالرصيد يفضل مطابق للسجل بالحرف.
+     • صفر فرق ⇒ مفيش قيد (idempotent على كل الأجهزة).
+     • حذف الأصل بيشيل كل قيود إهلاكه (تراجع كامل — نفس عرف حذف الفاتورة). */
+  function depAccumMeta(asset) {
+    return faClass(asset) === "intangible"
+      ? { code: "1.3.3", name: "إهلاك متراكم — أصول غير ملموسة" }
+      : { code: "1.3.2", name: "إهلاك متراكم — أصول غير متداولة" };
+  }
+  function depAccumFind(asset) {
+    const meta = depAccumMeta(asset);
+    return accounts.find((x) => x && String(x.code) === meta.code) || null;
+  }
+  function depPostedOf(asset) {
+    if (!asset || asset.id == null) return 0;
+    const acc = depAccumFind(asset);
+    if (!acc) return 0;
+    const pre = "DEP:" + String(asset.id) + ":";
+    let t = 0;
+    journalEntries.forEach((j) => {
+      if (!j || String(j.refId || "").indexOf(pre) !== 0) return;
+      (j.lines || []).forEach((l) => {
+        if (Number(l.accountId) === Number(acc.id)) t += (Number(l.credit) || 0) - (Number(l.debit) || 0);
+      });
+    });
+    return round2(t);
+  }
+  function postAssetDepreciation(asset) {
+    if (!asset || asset.id == null) return null;
+    const target = round2(Number(asset.accumDep) || 0);
+    const posted = depPostedOf(asset);
+    const delta = round2(target - posted);
+    if (Math.abs(delta) < 0.005) return null;
+    const exp = ensureCustomAcc("5.4", "مصروف الإهلاك", "5", "expense");
+    const meta = depAccumMeta(asset);
+    const acc = ensureCustomAcc(meta.code, meta.name, "1.3", "asset");
+    if (!exp || !acc) return null;
+    const amt = Math.abs(delta);
+    const pre = "DEP:" + String(asset.id) + ":" + target.toFixed(2) + ":";
+    const seq = journalEntries.filter((j) => j && String(j.refId || "").indexOf(pre) === 0).length + 1;
+    return cogsWriteJrn(pre + seq, "إهلاك أصول", todayISO(),
+      (delta > 0 ? "إهلاك " : "تصحيح إهلاك (عكسي) ") + (asset.nameAr || "أصل") + " — " + fmt(amt) + " ج.م",
+      amt, delta > 0 ? exp.id : acc.id, delta > 0 ? acc.id : exp.id);
+  }
+  function removeAssetDepreciation(assetId) {
+    if (assetId == null) return 0;
+    const pre = "DEP:" + String(assetId) + ":";
+    const list = journalEntries.filter((j) => j && String(j.refId || "").indexOf(pre) === 0);
+    list.forEach((j) => {
+      settleJrnLines(j.lines, -1);
+      const k = journalEntries.indexOf(j);
+      if (k >= 0) journalEntries.splice(k, 1);
+      JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(j.id) || 0);
+    });
+    if (list.length) {
+      persistJournal();
+      saveAccounts();
+      try { renderJournal(); } catch (e) { }
+    }
+    return list.length;
+  }
   function faTotals(cls) {
     const l = faLive().filter((a) => faClass(a) === cls);
     return {
@@ -19132,19 +19351,29 @@ id: nextVoucherId(),
       isActive: $("#fxFActive").value !== "0",
       notes: String($("#fxFNotes").value || "").trim()
     };
+    let savedAsset = null;
     if (editingFixedId != null) {
       const a = faById(editingFixedId);
       if (!a) { toast("لم يتم العثور على الأصل — ممكن اتحذف.", "error"); return; }
       Object.keys(rec).forEach((k) => { a[k] = rec[k]; });
+      savedAsset = a;
       addActivity("تعديل أصل ثابت", rec.nameAr + " — صافي " + faNetText(a));
       toast("✔ تم حفظ بيانات «" + rec.nameAr + "»", "success");
     } else {
       rec.id = faNextLocalId();
       fixedAssets.push(rec);
+      savedAsset = rec;
       addActivity("إضافة أصل ثابت", rec.nameAr + " (" + FA_CLASS_TITLES[rec.assetClass] + ") — " + fmt(rec.cost));
       toast("✔ تمت إضافة «" + rec.nameAr + "» وصافي دفتره " + fmt(faNet(rec)) + " ج.م", "success");
     }
     saveFixedAssets();
+    /* 🔧 بناء 259 (بند #16): ترحيل فرق الإهلاك للدليل بعد الحفظ — idempotent (صفر فرق = لا قيد) */
+    let depJ = null;
+    try { depJ = postAssetDepreciation(savedAsset); } catch (e) { depJ = null; }
+    if (depJ) {
+      addActivity("قيد إهلاك", (savedAsset.nameAr || "") + " — " + fmt(depJ.debit) + " ج.م (قيد " + depJ.number + ")");
+      toast("✔ " + (savedAsset.nameAr || "") + " — واترحّل قيد إهلاك " + fmt(depJ.debit) + " ج.م", "success");
+    }
     closeFixedModal();
     renderFixedAssets();
   }
@@ -19157,8 +19386,13 @@ id: nextVoucherId(),
       "الصافي " + faNetText(a) + " ج.م هيتشيل من قائمة المركز المالي.")) return;
     fixedAssets = fixedAssets.filter((x) => String(x.id) !== String(a.id));
     saveFixedAssets();
-    addActivity("حذف أصل ثابت", (a.nameAr || "") + " (" + fmt(Number(a.cost) || 0) + ")");
-    toast("🗑 تم حذف «" + (a.nameAr || "") + "» — راجع قائمة المركز المالي", "success");
+    // 🔧 بناء 259 (بند #16): حذف الأصل بيشيل قيود إهلاكه (مفيش مصروف إهلاك لأصل مش موجود)
+    let depGone = 0;
+    try { depGone = removeAssetDepreciation(a.id); } catch (e) { depGone = 0; }
+    addActivity("حذف أصل ثابت", (a.nameAr || "") + " (" + fmt(Number(a.cost) || 0) + ")" +
+      (depGone ? " — وشيلنا " + depGone + " قيد إهلاك" : ""));
+    toast("🗑 تم حذف «" + (a.nameAr || "") + "»" + (depGone ? " وشيلنا " + depGone + " قيد إهلاك" : "") +
+      " — راجع قائمة المركز المالي", "success");
     if (String(editingFixedId) === String(a.id)) closeFixedModal();
     renderFixedAssets();
   }
