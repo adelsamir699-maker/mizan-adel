@@ -158,7 +158,11 @@ function docRoutes(req, res, urlPath) {
       const folderName = partyType === "supplier" ? "Suppliers" : "Clients";
       // رقم الجهة من الكود (CUST-1258 أو SUPP-007 أو 1258) — أرقام فقط
       const num = String(b.partyCode || "").replace(/^[A-Za-z]+-/, "").replace(/[^0-9]/g, "") || String(b.partyCode || "0").replace(/[^A-Za-z0-9_-]/g, "");
-      const dir = path.join(r.root, folderName, num);
+      /* 🔧 بناء 258 (بند #18): معرّف الشركة أول مقطع في المسار — على جهاز مشترك شركتان
+         لهما عميل بنفس الكود كانوا بيتشاركوا نفس المجلد. بلا orgId (طلبات قديمة) المسار القديم. */
+      const orgSeg = String(b.orgId || "").replace(/[^A-Za-z0-9_-]/g, "");
+      const baseDir = orgSeg ? path.join(r.root, orgSeg) : r.root;
+      const dir = path.join(baseDir, folderName, num);
       try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { return done(200, { ok: false, error: "تعذّر إنشاء مجلد الجهة: " + e.message }); }
       // تسلسل تلقائي: 001, 002, ...
       let seq = 1;
@@ -172,7 +176,7 @@ function docRoutes(req, res, urlPath) {
       try { buf = Buffer.from(String(b.base64 || ""), "base64"); if (!buf.length) throw new Error("الملف فارغ"); } catch (e) { return done(200, { ok: false, error: "تعذّر قراءة الملف: " + e.message }); }
       const full = path.join(dir, name);
       try { fs.writeFileSync(full, buf); } catch (e) { return done(200, { ok: false, error: "فشل حفظ الملف على القرص: " + e.message }); }
-      const rel = folderName + "\\" + num + "\\" + name;
+      const rel = (orgSeg ? orgSeg + "\\" : "") + folderName + "\\" + num + "\\" + name;
       done(200, { ok: true, rel, name, originalName: b.fileName || name, size: buf.length, root: r.root });
     }).catch((e) => done(400, { ok: false, error: e.message }));
     return true;

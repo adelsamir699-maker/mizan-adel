@@ -224,15 +224,28 @@ declare
   v_org uuid;
   v_target_org uuid;
   v_role text;
+  v_blocked boolean;
 begin
-  select org_id, role into v_org, v_role
+  select org_id, role, coalesce(blocked, false)
+    into v_org, v_role, v_blocked
   from public.profiles where id = auth.uid();
+
   if v_org is null then raise exception 'لا يوجد حساب مرتبط بشركة'; end if;
+  if v_blocked then raise exception 'حسابك محظور'; end if;
 
   select org_id into v_target_org from public.profiles where id = p_user_id;
   if v_target_org is null then raise exception 'المستخدم غير موجود'; end if;
-  if v_target_org <> v_org and v_role <> 'admin'
-     and not exists (select 1 from public.profiles where id = auth.uid() and is_superadmin is true) then
+
+  -- 🔧 بناء 258 (بند #19): الشرط القديم في هذا الملف كان معكوس المنطق:
+  --   if v_target_org <> v_org and v_role <> 'admin' ... then raise
+  --   ⇒ أي حساب دورُه 'admin' كان يقدر يعدّل صلاحيات حساب في شركة تانية.
+  -- النسخة الحيّة على Supabase اتصحّحت بالفعل (مسجّلة أدناه ومُثبتة باختبار
+  -- سلبي داخل معاملة مُرجَعة: أدمن شركة A ⇒ حساب شركة B = مرفوض).
+  -- المسموح الآن: السوبر أدمن، أو مدير ('admin') نفس الشركة فقط.
+  if not (
+       exists (select 1 from public.profiles where id = auth.uid() and is_superadmin is true)
+    or (v_target_org = v_org and coalesce(v_role, '') = 'admin')
+  ) then
     raise exception 'غير مصرح: الحساب ليس ضمن شركتك';
   end if;
 

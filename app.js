@@ -740,8 +740,12 @@
       const custTxs = txs.filter((t) => Number(t.customerId) === Number(c.id));
       let bal = 0;
       const hasOpeningTx = custTxs.some(isPartyOpeningTx);
-      if (!hasOpeningTx && Number(c.openingBalance || 0) > 0) {
-        bal += Number(c.openingBalance || 0);
+      /* 🔧 بناء 258 (بند #20): الافتتاحي السالب رصيد حقيقي (دفعة مقدمة/رصيد لصالح الطرف).
+         الشرط القديم `> 0` كان بيشيله من الرصيد الرسمي بينما الكشف (`|| 0`) بيشمله ⇒ فرق
+         = 2× الافتتاحي بين الشاشة والرصيد. الشرط الصح: أي قيمة غير صفر. */
+      const ob = Number(c.openingBalance) || 0;
+      if (!hasOpeningTx && ob !== 0) {
+        bal += ob;
       }
       custTxs.forEach((t) => {
         bal += (Number(t.debit) || 0) - (Number(t.credit) || 0);
@@ -758,8 +762,10 @@
       const sTxs = supplierTxs.filter((t) => Number(t.supplierId) === Number(s.id));
       let bal = 0;
       const hasOpeningTx = sTxs.some(isPartyOpeningTx);
-      if (!hasOpeningTx && Number(s.openingBalance || 0) > 0) {
-        bal += Number(s.openingBalance || 0);
+      /* 🔧 بناء 258 (بند #20): نفس قرار العميل — الافتتاحي السالب رصيد حقيقي، مش صفر. */
+      const ob = Number(s.openingBalance) || 0;
+      if (!hasOpeningTx && ob !== 0) {
+        bal += ob;
       }
       sTxs.forEach((t) => {
         bal += (Number(t.debit) || 0) - (Number(t.credit) || 0);
@@ -3048,6 +3054,9 @@
   function parseMoney(s) {
     const t = String(s == null ? "" : s)
       .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+      /* 🔧 بناء 258 (بند #24): الأرقام الفارسية (۰-۹) زي العربية-الهندية — لوحة مفاتيح
+         بلغة تانية كانت بتتحوّل صفر بصمت. */
+      .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
       .replace(/[\s,\u060C\u202B\u202C]/g, "")
       .replace(/[^\d.\-]/g, "")
       .trim();
@@ -3530,9 +3539,11 @@
     const taxLabel = String(orgSettValue("tax_title", "") || "ضريبة القيمة المضافة").trim() || "ضريبة القيمة المضافة";
     const rows = [{ label: "المجموع", value: fmt(inv.subTotal) + " ج.م" }];
     if (Number(inv.discountAmount)) rows.push({ label: "الخصم الإضافي", value: fmt(inv.discountAmount) + " ج.م" });
-    const taxOn = isSale ? TAX.enabled : TAX.buyEnabled;
-    const taxRate = isSale ? TAX.rate : TAX.rateBuy;
-    if ((inv.taxAmount > 0) || (taxOn && (Number(TAX.rateBuy) >= 0) && (isSale ? TAX.rate : TAX.rateBuy) > 0)) rows.push({ label: taxLabel, value: fmt(inv.taxAmount) + " ج.م" });
+    /* 🔧 بناء 258 (بند #23): سطر الضريبة يظهر لو الفاتورة **فيها ضريبة فعلًا**.
+       قبل كده كان بيظهر لمجرد إن الضريبة مفعّلة في الإعدادات — حتى لو `taxAmount = 0`
+       (فواتير قديمة قبل تفعيل الضريبة) ⇒ ورقة الفاتورة تعرض بند «ضريبة 0.00» غير موجود. */
+    const taxAmt = round2(inv.taxAmount != null ? inv.taxAmount : inv.tax);
+    if (taxAmt > 0) rows.push({ label: taxLabel, value: fmt(taxAmt) + " ج.م" });
     const rt = retTotalsFor(isSale, inv);
     if (rt.count) {
       rows.push({ label: "الصافي النهائي", value: fmt(inv.grandTotal) + " ج.م" });
@@ -12238,6 +12249,9 @@
        أي خزينة. الفواتير القديمة اللي مالهاش `payments` بتمشي على المسار القديم زي ما هو. */
     let refundedCash = 0;
     let refundedAccount = 0;
+    /* 🔧 بناء 258 (بند #25): سطر سداد مالوش خزينة معروفة (جهاز بلا خزائن) كان بيختفي
+       بصمت — لا بيرجع ولا بيتقال. بنجمعه هنا عشان يظهر في رسالة الحذف. */
+    let refundSkipped = 0;
     const refundByPayments = (inv2, sales2) => {
       let sum = 0;
       (inv2.payments || []).forEach((p) => {
@@ -12252,7 +12266,7 @@
           const want = mode.isBank ? "bank" : mode.isWallet ? "wallet" : mode.isInsta ? "instapay" : "cash";
           tr2 = treasury.find((x) => x.type === want) || treasury.find((x) => x.type === "cash") || treasury[0] || null;
         }
-        if (!tr2) return;
+        if (!tr2) { refundSkipped = r2n(refundSkipped + a); return; }
         tr2.balance = r2n((Number(tr2.balance) || 0) + (sales2 ? -a : a));
         syncTreasuryItemToSett(tr2);
         sum = r2n(sum + a);
@@ -12334,6 +12348,9 @@
       if (ptr) bits.push((isSales ? "وطلعنا " : "وردّينا ") + fmt(refundedCash) + " ج.م " + (isSales ? "من" : "لـ") + " «" + ptr.name + "»");
       else if (ptrNotTreasury) bits.push("ورجّعنا دفعة " + fmt(refundedCash) + " ج.م على حسابها اللي اتدفعت منه (مش صندوق)");
       else bits.push("وردّينا " + fmt(refundedCash) + " ج.م للخزائن اللي اتدفع منها");
+    }
+    if (refundSkipped > 0.0001) {
+      bits.push("وسيبنا " + fmt(refundSkipped) + " ج.م من سطر سداد من غير خزينة معروفة على الجهاز — راجع إعدادات الخزائن");
     }
     if (costBack > 0) bits.push("ورجّعنا أسعار التكلفة لـ " + costBack + " صنف");
     if (chkSettle && chkSettle.cancelled > 0) bits.push("وألغينا " + chkSettle.cancelled + " شيك مرتبط بها");
@@ -12911,7 +12928,9 @@
       const i = Number(inp.dataset.idx);
       const l = retDraft.lines[i];
       if (!l) return;
-      let v = parseFloat(String(inp.value).replace(/,/g, "")) || 0;
+      // 🔧 بناء 258 (بند #24): نفس قارئ المبالغ المركزي — الأرقام العربية/الفارسية والفواصل
+      // كانت بتتحوّل صفرًا صامتًا مع parseFloat.
+      let v = parseMoney(inp.value);
       if (v < 0) { v = 0; inp.value = 0; }   // السالب مالوش معنى — يتصفّر من غير رسالة
       // بناء 113: الكمية الزيادة ما تتقصّش في صمت — بتفضل زي ما كتبها المستخدم،
       // والتحذير + قفل زرار الحفظ هما اللي بيمنعوا التنفيذ لحد ما يعدّلها بنفسه.
@@ -14425,8 +14444,10 @@ id: nextVoucherId(),
     const nm = kind + " - " + tn + " - " + cn;
     let a = accounts.find(x => x.isActive !== false && String(x.nameAr) === nm);
     if (a) return a;
-    // اعمل حساب فرعي تحت 5.1 للمصروفات (عجز) أو تحت 4.1 للإيرادات (زيادة) حسب الحاجة
-    const parentCode = side === 'over' ? "4.1" : "5.1";
+    // اعمل حساب فرعي تحت 5.1 للمصروفات (عجز) أو تحت جذر الإيرادات «4» للزيادة (بناء 258 — بند #27)
+    /* 🔧 بناء 258 (بند #27): الزيادة كانت بتتعمل تحت «4.1 إيرادات المبيعات» ⇒ تلوّث تقرير
+       المبيعات برقم مش بيع. الحساب دلوقتي فرع مباشر من جذر الإيرادات (4.xx) مش من 4.1. */
+    const parentCode = side === 'over' ? "4" : "5.1";
     const parent = ensureJrnAccount(parentCode) || accounts.find(x => x.code === parentCode && x.isActive !== false) || accounts.find(x => x.code === parentCode);
     if (parent && parent.isActive === false) parent.isActive = true;
     // توليد كود فرعي بسيط
@@ -15885,6 +15906,25 @@ id: nextVoucherId(),
     if (trip.status !== "open") { toast("ما ينفعش تحذف رحلة مقفولة.", "warning"); return; }
     if (vanTripSales(trip).length) { toast("الرحلة فيها مبيعات — صفّها بدل حذفها.", "warning"); return; }
     if (!confirm("متأكد إنك عايز تحذف رحلة السيارة #" + trip.id + "؟ هيرجّع الحمولة للمخزن.")) return;
+    /* 🔧 بناء 258 (بند #26): مصروفات الرحلة قيودها VEX لازم تتراجع معاها — قبل كده القيود
+       كانت تفضل متوازنة ومعلّقة بلا مستند بعد حذف الرحلة. */
+    (trip.expenses || []).forEach((exp) => {
+      try { removeVanExpenseJrn(trip, exp); } catch (e) {}
+    });
+    // شبكة أمان: أي قيد VEX للرحلة مالهوش سطر مصروف (بيانات قديمة/جزئية) بيتشال كمان
+    const vexKey = "VEX:" + trip.id + ":";
+    const orphans = journalEntries.filter((j) => j && String(j.refId || "").indexOf(vexKey) === 0);
+    if (orphans.length) {
+      orphans.forEach((j) => {
+        settleJrnLines(j.lines, -1);
+        const k = journalEntries.indexOf(j);
+        if (k >= 0) journalEntries.splice(k, 1);
+        bumpIdFloor("journal", j.id);
+      });
+      persistJournal();
+      saveAccounts();
+      try { renderJournal(); } catch (e) {}
+    }
     (trip.loaded || []).forEach((l) => {
       const p = products.find((x) => Number(x.id) === Number(l.productId));
       if (p) vanMoveStock(p, trip.carName, trip.loadWarehouse, Number(l.qty) || 0);
@@ -16513,7 +16553,9 @@ id: nextVoucherId(),
     const rev = {
       id: nextJournalId(),
       number: jrnNo(),
-      date: todayISO(),
+      /* 🔧 بناء 258 (بند #28): القيد العكسي بياخد **تاريخ الأصل** مش تاريخ اليوم، عشان
+         التراجع يفضل في نفس الفترة المحاسبية وما يهربش منها. */
+      date: j.date || todayISO(),
       desc: "قيد عكسي للقيد " + j.number + " — " + (j.desc || ""),
       ref: "قيد عكسي",
       refType: "قيد عكسي",
@@ -18324,15 +18366,21 @@ id: nextVoucherId(),
      ما يُترحّلش أصلاً (وإلا تتكرر للأبد)؛ (٤) تصحيح **صامت** بلا رسائل — أي مستند حسابه الناقص
      يُتخطّى بلا إزعاج، والفاتورة نفسها ما تتأثرش. */
   function jrnHealTreasury(o) {
-    if (!o) return treasury.find((x) => x.type === "cash") || treasury[0] || null;
-    if (o.treasuryId) {
-      const tr = treasury.find((x) => Number(x.id) === Number(o.treasuryId));
-      if (tr) return tr;
+    /* 🔧 بناء 258 (بند #29): التصحيح الذاتي ما يخمّنش الخزينة من نص وسيلة الدفع.
+       قبل كده «تحويل بنكي» كان بياخد أول بنك، و«محفظة» أول محفظة — ممكن يترحّل الجزء
+       النقدي على حساب دليل غير الأصلي بلا أي تنبيه. القاعدة الجديدة:
+       ١) `treasuryId` موجود وصالح ⇒ هو بالذات.
+       ٢) غير كده: نقدي فقط و**خزينة نقدية واحدة** على الجهاز ⇒ هي؛ أكتر من واحدة = غموض ⇒ نتخطّى.
+       ٣) آجل/شيك/بنك/محفظة بلا معرّف ⇒ نتخطّى (مفيش تخمين). */
+    if (!o) return null;
+    if (o.treasuryId != null && o.treasuryId !== "") {
+      return treasury.find((x) => Number(x.id) === Number(o.treasuryId)) || null;
     }
     const pm = String(o.paymentMethod || "");
-    if (pm.includes("بنكي")) { const b = treasury.find((x) => x.type === "bank"); if (b) return b; }
-    if (pm.includes("محفظة") || pm.includes("محافظ")) { const w = treasury.find((x) => x.type === "wallet"); if (w) return w; }
-    return treasury.find((x) => x.type === "cash") || treasury[0] || null;
+    if (pm === "آجل" || pm.indexOf("شيك") >= 0 || pm.indexOf("بنك") >= 0 ||
+        pm.indexOf("محفظ") >= 0 || pm.indexOf("إنستا") >= 0 || pm.indexOf("انستا") >= 0) return null;
+    const cashBoxes = treasury.filter((x) => x && x.type === "cash");
+    return cashBoxes.length === 1 ? cashBoxes[0] : null;
   }
   function jrnHealEntry(desc, date, ref, refId, plan) {
     return {
@@ -19437,9 +19485,21 @@ id: nextVoucherId(),
     const o = vatOutAcc(), cashAcc = accForTreasuryAcc(t);
     if (!o) { toast("حساب «ض.ق.م المحصّلة» (2.1.2) مش موجود في دليل حساباتك.", "warning"); return; }
     if (!cashAcc) { toast("حساب الخزينة مش موجود في الدليل.", "warning"); return; }
+    const date = (vatEl("vatPayDate") || {}).value || todayISO();
+    /* 🔧 بناء 258 (بند #22): سداد الضريبة بسقف المستحق الفعلي حتى تاريخ الدفعة.
+       قبل كده أي مبلغ كان بيتقبل، والزيادة كانت بتعمل رصيدًا دائنًا وهميًا على 2.1.2
+       (كأن المصلحة مدينة لنا). السقف = نفس رقم «المستحق» اللي في الشاشة. */
+    const dueNow = round2(vatPosition("", date).dueToDate);
+    if (!(dueNow > 0)) {
+      toast("مافيش ض.ق.م مستحق حتى " + date + " — مفيش حاجة تتسدّد.", "warning");
+      return;
+    }
+    if (amount > dueNow + 0.005) {
+      toast("المبلغ أكبر من المستحق: المستحق حتى " + date + " هو " + fmt(dueNow) + " ج.م — اكتب مبلغًا في حدوده.", "warning");
+      return;
+    }
     // 🚫 بناء 226: سداد الضريبة ممنوع لو رصيد الحساب مش كافي
     if (fundsBlocked(t, amount, { focusSel: "#vatPayTreasury" })) return;
-    const date = (vatEl("vatPayDate") || {}).value || todayISO();
     const note = ((vatEl("vatPayNote") || {}).value || "").trim();
     const amt = round2(amount);
     const vRow = {
@@ -20303,7 +20363,11 @@ id: nextVoucherId(),
     }
 
     const moves = [];
-    moves.push({ date: "بداية", desc: "الرصيد الافتتاحي", in: t.openingBalance > 0 ? t.openingBalance : 0, out: 0 });
+    /* 🔧 بناء 258 (بند #21): الافتتاحي السالب معناه رصيد لصالح الخزينة (سحب/عجز سابق) —
+       لازم يظهر في عمود «صادر» عشان آخر سطر في الكشف يساوي «الرصيد الحالي» المطبوع.
+       قبل كده كان بيتصفّر في السطر ويفضل محسوبًا في `t.balance` ⇒ السطر الأخير يخالف الرصيد. */
+    const treOpen = Number(t.openingBalance) || 0;
+    moves.push({ date: "بداية", desc: "الرصيد الافتتاحي", in: treOpen > 0 ? treOpen : 0, out: treOpen < 0 ? -treOpen : 0 });
     sales.filter((s) => Number(s.treasuryId) === Number(tid) && s.paymentMethod !== "آجل").forEach((s) => moves.push({ date: s.invoiceDate || s.date || "—", desc: "فاتورة مبيعات " + (s.invoiceNumber || s.invoiceNo), in: s.grandTotal, out: 0 }));
     purchases.filter((p) => Number(p.treasuryId) === Number(tid) && p.paymentMethod !== "آجل").forEach((p) => moves.push({ date: p.invoiceDate || p.date || "—", desc: "فاتورة مشتريات " + (p.invoiceNumber || p.invoiceNo), in: 0, out: p.grandTotal }));
     vouchers.filter((v) => Number(v.treasuryId) === Number(tid)).forEach((v) => moves.push({ date: v.date, desc: v.desc || (v.type === "in" ? "سند قبض" : "سند صرف"), in: (v.type === "in" || v.kind === "in") ? v.amount : 0, out: (v.type === "out" || v.kind === "out") ? v.amount : 0 }));
@@ -20381,8 +20445,10 @@ id: nextVoucherId(),
         (inv.items || []).forEach((it) => {
           const key = it.nameAr;
           const cur = map.get(key) || { qty: 0, val: 0 };
-          cur.qty += it.qty;
-          cur.val += it.total;
+          /* 🔧 بناء 258 (بند #30): تحويل رقمي صريح — بيانات قديمة ممكن تكون نصًا،
+             و`+=` عليها بيعمل دمج نصي (0 + "5" = "05") ويشوّه سطر التقرير. */
+          cur.qty += Number(it.qty) || 0;
+          cur.val += Number(it.total) || 0;
           map.set(key, cur);
         });
       });
@@ -20403,7 +20469,8 @@ id: nextVoucherId(),
         const name = isSales ? inv.customerName : inv.supplierName;
         const cur = map.get(name) || { count: 0, val: 0 };
         cur.count += 1;
-        cur.val += inv.grandTotal;
+        /* 🔧 بناء 258 (بند #30): نفس التحويل الرقمي — منع الدمج النصي في تقرير الأطراف. */
+        cur.val += Number(inv.grandTotal) || 0;
         map.set(name, cur);
       });
       rp.forEach((back, name) => {
@@ -22934,8 +23001,8 @@ id: nextVoucherId(),
       const tr = inp.closest("tr");
       const idx = parseInt(tr.dataset.idx, 10);
       const f = inp.dataset.f;
-      const v = parseFloat(String(inp.value).replace(/,/g, ""));
-      posItems[idx][f] = isNaN(v) ? 0 : v;
+      const v = parseMoney(inp.value);
+      posItems[idx][f] = v;
       posCalcRow(idx);
       tr.querySelector(".c-tax").textContent = fmt(posItems[idx].tax);
       tr.querySelector(".c-total").textContent = fmt(posItems[idx].total);
@@ -23017,8 +23084,8 @@ id: nextVoucherId(),
       const tr = inp.closest("tr");
       const idx = parseInt(tr.dataset.idx, 10);
       const f = inp.dataset.f;
-      const v = parseFloat(String(inp.value).replace(/,/g, ""));
-      ppItems[idx][f] = isNaN(v) ? 0 : v;
+      const v = parseMoney(inp.value);
+      ppItems[idx][f] = v;
       ppCalcRow(idx);
       tr.querySelector(".c-tax").textContent = fmt(ppItems[idx].tax);
       tr.querySelector(".c-total").textContent = fmt(ppItems[idx].total);
@@ -25384,6 +25451,25 @@ const pwEye = document.getElementById("btnShowPass");
     }
     return "";
   }
+  /* 🔧 بناء 258 (بند #17): مفاتيح تفرّد استيراد Excel — نفس مفاتيح الدليل بالترتيب:
+     العميل/المورد/الحساب = الكود ثم الاسم · الصنف = الكود ثم الباركود ثم الاسم ·
+     الخزينة = رقم الحساب ثم الاسم. المفتاح بياخد أول حقل موجود فقط (مش أي حقل) عشان
+     ما نعتبرش صنفين مختلفين متطابقين لمجرد تشابه الاسم مع كود التاني. */
+  function adminExcelDedupeFields(tableKey) {
+    if (tableKey === "products") return ["code", "barcode", "name_ar"];
+    if (tableKey === "treasury") return ["account_no", "name"];
+    if (tableKey === "accounts") return ["code", "name_ar"];
+    return ["code", "name_ar"];   // customers / suppliers
+  }
+  function adminExcelRowKey(row, fields) {
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      const v = row ? row[f] : "";
+      const s = normalizeAr(String(v == null ? "" : v)).replace(/\s+/g, " ").trim();
+      if (s) return f + ":" + s;
+    }
+    return "";
+  }
   function adminExcelRenderPreview(plan) {
     const box = document.getElementById("adminExcelPreview");
     const upload = document.getElementById("btnAdminExcelUpload");
@@ -25728,6 +25814,49 @@ const pwEye = document.getElementById("btnShowPass");
         return;
       }
     }
+    /* 🔧 بناء 258 (بند #17): وضع «إضافة» كان بيستورد نفس الملف تاني بعملاء/أصناف مكرّرين
+       بمعرّفات جديدة. قبل الرفع بنقارن كل صف بمفاتيح التفرّد في الجدول الحالي **ومنعنا
+       التكرار داخل الملف نفسه** كمان، وبنقول للمالك كم صف اتجاهل. */
+    let toUpload = plan.rows;
+    let dedupeNote = "";
+    if (plan.mode === "add") {
+      const fields = adminExcelDedupeFields(plan.table.key);
+      let currentRows = null;
+      try {
+        const current = await DATA.adminExportOne(plan.orgId);
+        currentRows = (current && Array.isArray(current[plan.table.key])) ? current[plan.table.key] : null;
+      } catch (error) {
+        currentRows = null;
+      }
+      if (!currentRows) {
+        adminExcelSetStatus("تعذّر قراءة الجدول الحالي للتأكد من عدم تكرار الصفوف — لم يتم رفع أي صف. جرّب تاني.", true);
+        return;
+      }
+      const existingKeys = new Set();
+      currentRows.forEach((row) => {
+        const k = adminExcelRowKey(row, fields);
+        if (k) existingKeys.add(k);
+      });
+      const fileKeys = new Set();
+      const kept = [];
+      let dupExisting = 0, dupFile = 0;
+      plan.rows.forEach((row) => {
+        const k = adminExcelRowKey(row, fields);
+        if (k && existingKeys.has(k)) { dupExisting++; return; }
+        if (k && fileKeys.has(k)) { dupFile++; return; }
+        if (k) fileKeys.add(k);
+        kept.push(row);
+      });
+      toUpload = kept;
+      const notes = [];
+      if (dupExisting) notes.push(adminExcelNumber(dupExisting) + " صف موجود بالفعل في الجدول");
+      if (dupFile) notes.push(adminExcelNumber(dupFile) + " صف مكرر داخل الملف نفسه");
+      if (notes.length) dedupeNote = " — واتجاهل " + notes.join(" و") + ".";
+      if (!toUpload.length) {
+        adminExcelSetStatus("مفيش جديد: كل الصفوف (" + adminExcelNumber(plan.rows.length) + ") موجودة بالفعل في الجدول — ما اتغيرش أي حاجة." + dedupeNote + failedNote, false);
+        return;
+      }
+    }
     if (!DATA.adminImportExcel) {
       adminExcelSetStatus("خدمة الرفع غير جاهزة؛ لم يتم تغيير أي بيانات.", true);
       return;
@@ -25735,11 +25864,11 @@ const pwEye = document.getElementById("btnShowPass");
     if (button) button.disabled = true;
     adminExcelSetStatus("جارٍ رفع الصفوف للشركة والجدول المختارين...");
     try {
-      const result = await DATA.adminImportExcel(plan.orgId, plan.table.key, plan.mode, plan.rows);
+      const result = await DATA.adminImportExcel(plan.orgId, plan.table.key, plan.mode, toUpload);
       const removed = Number(result && result.removed) || 0;
       const inserted = Number(result && result.inserted) || 0;
       adminExcelSetStatus("تمت العملية: أُضيف " + inserted + " سجلًا" +
-        (plan.mode === "replace" ? " بعد تفريغ " + removed + " سجل قديم." : " دون تعديل أو حذف السجلات الموجودة.") + failedNote);
+        (plan.mode === "replace" ? " بعد تفريغ " + removed + " سجل قديم." : " دون تعديل أو حذف السجلات الموجودة.") + dedupeNote + failedNote);
       toast("اكتمل رفع بيانات Excel", "success");
       adminExcelPlan = null;
       adminExcelBackup = null;
@@ -26585,6 +26714,15 @@ const pwEye = document.getElementById("btnShowPass");
   // ============================================================
   const DOC_ROOT_NAME = "MizanDocuments";
   const DOC_TOPS = ["Clients", "Suppliers", "Scans"];
+  /* 🔧 بناء 258 (بند #18): معرّف الشركة أول مقطع في مسار المستندات — على جهاز مشترك
+     شركتان لهما عميل بنفس الكود/الاسم كانوا بيتشاركوا نفس المجلد (حذف/إضافة عند الطرفين).
+     الملفات القديمة بمساراتها المخزّنة تفضل شغالة زي ما هي (بلا ترحيل). */
+  function docOrgSeg() {
+    let id = "";
+    try { id = String((window.DATA && DATA.orgId && DATA.orgId()) || ""); } catch (e) { id = ""; }
+    id = id.replace(/[^A-Za-z0-9_-]/g, "");
+    return id || "local";
+  }
   const DOC_IDB = { name: "mizan_doc_store", ver: 1, store: "handles" };
   let docRootH = null;    // مرجع فولدر المستندات على جهاز المستخدم
   let docStoreSt = null;  // آخر حالة: {ok,name} / {needPick} / {needGesture,name} / {unsupported}
@@ -26755,7 +26893,14 @@ const pwEye = document.getElementById("btnShowPass");
   function docRelParts(rel) {
     const parts = String(rel || "").replace(/\//g, "\\").split("\\").filter(Boolean);
     if (!parts.length || parts.indexOf("..") >= 0) return null;
-    if (DOC_TOPS.indexOf(parts[0]) < 0) return null;
+    /* 🔧 بناء 258 (بند #18): المسار ممكن يبدأ بمعرّف الشركة (مقطع أول مش من DOC_TOPS،
+       طوله ≥ ٣) زي <orgId>\Clients\<folder>\<file>. المسارات القديمة (Clients\...) تفضل مقبولة. */
+    let top = 0;
+    if (DOC_TOPS.indexOf(parts[0]) < 0) {
+      if (parts.length < 3 || String(parts[0]).length < 3) return null;
+      top = 1;
+    }
+    if (DOC_TOPS.indexOf(parts[top]) < 0) return null;
     return parts;
   }
   async function docDirOf(parts, create) {
@@ -26799,11 +26944,14 @@ const pwEye = document.getElementById("btnShowPass");
   // ---- حفظ ملف جوه فولدر الجهة على القرص (بيستقبل File أو Blob) ----
   async function docSaveToParty(file, ctx, typeLabel) {
     if (!docRootH) throw new Error("الفولدر مش مربوط");
+    const org = docOrgSeg();
     const top = docPartyTop(ctx.type);
     const folder = docPartyFolder(ctx);
     let dir;
     try {
-      dir = await docRootH.getDirectoryHandle(top, { create: true });
+      // 🔧 بناء 258 (بند #18): <orgId>\Clients\<folder> — عزل الشركات على الجهاز المشترك
+      dir = await docRootH.getDirectoryHandle(org, { create: true });
+      dir = await dir.getDirectoryHandle(top, { create: true });
       dir = await dir.getDirectoryHandle(folder, { create: true });
     } catch (e) { throw new Error("تعذّر تجهيز فولدر الجهة: " + ((e && e.message) || e)); }
     // ترقيم مستمر: أقصى رقم في الفولدر الجديد + الفولدر القديم «الرقم» لو موجود (منع تكرار 001)
@@ -26823,7 +26971,7 @@ const pwEye = document.getElementById("btnShowPass");
     await w.write(file);
     await w.close();
     return {
-      rel: top + "\\" + folder + "\\" + name, name: name,
+      rel: org + "\\" + top + "\\" + folder + "\\" + name, name: name,
       originalName: file.name || name, size: file.size || 0,
       docType: typeLabel || "مستند عام", rootName: docRootH.name || DOC_ROOT_NAME
     };
