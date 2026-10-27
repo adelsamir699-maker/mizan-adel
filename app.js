@@ -3371,10 +3371,12 @@
   // لو الكشف نفسه مرفوض أو الطرف محمي ⇒ رجوع لسلوك 199 (بلا كسر للطباعة وبلا أي اختراع رقم).
   function partyBalForPrint(isSale, inv) {
     const due = round2(Number(inv.dueAmount) || 0);
-    // اصطلاح الكشف: **موجب = الطرف مديون لينا** (عميل). عند المورد المستحق عليه = **سالب**،
-    // فـ«الديون» (اللي بيحدّد اللون) = curr × الإشارة، مش curr الخام. الطبعة بتطبع **الرقم زي ما
-    // هو في الكشف** (طلب المالك الحرفي: «مطابق للرصيد الموجود في كشف الحساب النهائي»).
-    const sgn = isSale ? 1 : -1;
+    /* 🔧 بناء 253 (بند #1): اصطلاح كشف الحساب بقى **موحّد للطرفين**: موجب = مستحق على الطرف
+       (عميل مدين لينا / مورد مستحق له علينا) — نفس `currentBalance` بالحرف. قبل كده كان كشف
+       المورد بالإشارة المقلوبة (−600 لفاتورة 1,000 وسداد 400) بينما بطاقة المورد والأستاذ
+       المساعد +600 ⇒ الطبعة كانت بتطبع رقم يخالف الكشف اللي بيقرأه المالك.
+       `prevDebt/debt` = المستحق على الطرف (موجب ⇒ أحمر)، و`prev/curr` = الرقم المطبوع زي الكشف. */
+    const sgn = 1;
     // اللقطة القديمة (partyPrevBalance) كانت بيتحفظ فيها «المستحق على الطرف» بصفله المعتاد
     // (موجب عند العميل والمورد معًا) ⇒ هناك الديون = curr بالحرف، بلا قلب.
     const legacy = () => (inv.partyPrevBalance == null ? null : (() => {
@@ -11073,7 +11075,16 @@
         const nm = String(s.supplierName || s.supplier || "").trim();
         return !!nm && normalizeAr(nm) === normalizeAr(String(sup.nameAr || "").trim());
       })
-      .flatMap((s) => partyInvoiceDisplayRows(s, "purchase", ""));
+      /* 🔧 بناء 253 (بند #1 — مؤكد بالمراجعة): `partyInvoiceDisplayRows` بتحط الفاتورة **دائن**
+         والمسدد **مدين** (اصطلاح العميل: موجب = مديون لينا). أما المورد في البرنامج كله بالعكس:
+         موجب = **مستحق للمورد** — الرصيد الافتتاحي (`debit`)، فاتورة الآجل (`debit`)، سداد المورد
+         (`credit`)، و`recalculateSupplierBalances` (debit − credit). فسطور العرض كانت بتتحسب
+         بالإشارة المقلوبة: فاتورة 1,000 آجلة + سداد 400 تطلع **−1,400** بدل **+600**،
+         والرصيد الرسمي `currentBalance` سليم ⇒ العيب في طبقة العرض بس. القلب هنا (بلا أي ترحيل)
+         بيوحّد الكشف مع بطاقة المورد ومع الأستاذ المساعد. */
+      .flatMap((s) => partyInvoiceDisplayRows(s, "purchase", "").map((r) => ({
+        date: r.date, desc: r.desc, debit: r.credit, credit: r.debit, id: r.id, invoiceRow: r.invoiceRow
+      })));
     const partyTxs = supplierTxs
       .filter((t) => Number(t.supplierId) === Number(sup.id))
       .filter((t) => !STM_INVOICE_TX_RE.test(String(t.desc || "")));
