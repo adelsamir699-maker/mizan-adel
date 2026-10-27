@@ -12177,19 +12177,44 @@
     if (!items.length) return false;
     return items.every((it) => returnableQty(isSales, inv, it) <= 0);
   }
-  // قيمة المرتجع: نصيب الكمية من إجمالي الصنف (شامل خصمه وضريبته) − نصيبه من خصم الفاتورة
+  /* 🔧 بناء 252 (بند #5): نسبة ضريبة الفاتورة الفعلية — تُشتق من حقولها المخزّنة
+     (`taxAmount`/`grandTotal`) مش من إعدادات اليوم؛ لأن النسبة ممكن تتغيّر بعد الفاتورة،
+     والمرتجع لازم يردّ **ضريبة الفاتورة نفسها**. صفر ضريبة أو إجمالي صفر ⇒ صفر (سلوك ما قبل الإصلاح). */
+  function invTaxRateOf(inv) {
+    if (!inv) return 0;
+    const g = Number(inv.grandTotal != null ? inv.grandTotal : inv.total) || 0;
+    const t = Number(inv.taxAmount != null ? inv.taxAmount : inv.tax) || 0;
+    const net = g - t;
+    if (!(g > 0) || !(t > 0) || !(net > 0)) return 0;
+    return t / net;
+  }
+  /* 🔧 بناء 252 (بند #5 — مؤكد بالمراجعة): قيمة المرتجع كانت بتطرح خصم الفاتورة من مبلغ **شامل
+     الضريبة**، والفاتورة خصمته من الوعاء **قبل** الضريبة ⇒ كل مرتجع على فاتورة فيها خصم إضافي
+     كان يردّ زيادة = الخصم × نسبة الضريبة (مثال: صنف 100 بخصم فاتورة 10 وض.ق.م 14% ⇒ المدفوع
+     102.60 والمرتجع 104.00). الحساب الجديد في فضاء **قبل الضريبة** ثم تُضاف ضريبة الفاتورة مرة
+     واحدة في الآخر:
+       net   = (line.total ÷ (1+rate)) × ratio
+       share = خصم الفاتورة × نصيب السطر من صافي الفاتورة
+       value = (net − share) + (net − share) × rate
+     يعمل على الفواتير القديمة بلا أي ترحيل (كل الأرقام من حقول موجودة)، و`rate = 0` = السلوك القديم. */
   function retLineValue(inv, line, qty) {
     const sold = Number(line.qty) || 0;
     const q = Number(qty) || 0;
     if (!sold || !q) return 0;
     const ratio = Math.min(q / sold, 1);
+    const rate = invTaxRateOf(inv);
     const lineTotal = Number(line.total) || ((Number(line.price) || 0) * sold);
-    const base = lineTotal * ratio;
+    const lineNet = rate > 0 ? lineTotal / (1 + rate) : lineTotal;
+    const net = lineNet * ratio;
     const items = (inv && inv.items) || [];
-    const invGross = items.reduce((s, x) => s + (Number(x.total) || ((Number(x.price) || 0) * (Number(x.qty) || 0))), 0);
+    const invNet = items.reduce((s, x) => {
+      const t = Number(x.total) || ((Number(x.price) || 0) * (Number(x.qty) || 0));
+      return s + (rate > 0 ? t / (1 + rate) : t);
+    }, 0);
     const extra = Number(inv && (inv.discountAmount != null ? inv.discountAmount : inv.discount)) || 0;
-    const share = (invGross > 0 && extra > 0) ? (base * extra) / invGross : 0;
-    return Math.max(0, Math.round((base - share) * 100) / 100);
+    const share = (invNet > 0 && extra > 0) ? (net * extra) / invNet : 0;
+    const after = Math.max(0, net - share);
+    return Math.max(0, Math.round((after + after * rate) * 100) / 100);
   }
   // 🆕 بناء 172: حصة الخزينة وحصة حساب الطرف لأي مرتجع (توافق خلفي مع refund/balance)
   function retCashOf(r) {
@@ -12527,16 +12552,27 @@
     });
     saveChecks();
   }
-  // حصة الخزينة (الكاش) حسب الوضع المختار أو الكتابة اليدوية — بعد استبعاد حصة الشيك
+  /* 🔧 بناء 252 (بند #32 — مؤكد بالمراجعة): سقف الرد النقدي = **المدفوع فعلًا** في الفاتورة.
+     قبل الإصلاح كان زر «كله كاش» بيردّ قيمة المرتجع كاملة حتى لو الفاتورة آجلة **بلا أي سداد**
+     ⇒ العميل يستلم كاش ويفضل مدينًا بالفاتورة (خسارة = ضعف المبلغ). السقف مشتق من `paidRatio`
+     المحسوبة عند فتح المرتجع (نقدًا/بنكيًا/محفظة فقط؛ الشيك بره لأنه بيتسوّى بإلغائه). */
+  function retCashCeiling() {
+    if (!retDraft) return 0;
+    const total = round2(retDraft.total || 0);
+    const ratio = Math.min(1, Math.max(0, Number(retDraft.paidRatio) || 0));
+    return Math.max(0, Math.min(total, round2(total * ratio)));
+  }
+  // حصة الخزينة (الكاش) حسب الوضع المختار أو الكتابة اليدوية — بعد استبعاد حصة الشيك، وبسقف المدفوع
   function retCashPart() {
     if (!retDraft) return 0;
     const total = round2(retDraft.total || 0);
     const room = Math.max(0, round2(total - retCheckPart()));
+    const cap = Math.min(room, retCashCeiling());
     if (retDraft.cashMode === "balance" || retDraft.cashMode === "check") return 0;
-    if (retDraft.cashMode === "cash") return room;
-    if (retDraft.cashMode === "paid") return Math.min(room, round2(total * (Number(retDraft.paidRatio) || 0)));
+    if (retDraft.cashMode === "cash") return cap;
+    if (retDraft.cashMode === "paid") return Math.min(cap, round2(total * (Number(retDraft.paidRatio) || 0)));
     const inp = $("#retCashAmount");
-    return Math.min(room, retClampCash(inp ? inp.value : 0));
+    return Math.min(cap, retClampCash(inp ? inp.value : 0));
   }
   function retBalancePart() {
     const total = round2((retDraft && retDraft.total) || 0);
@@ -12588,8 +12624,21 @@
       if (cash > 0.0001) parts.push(fmt(cash) + " ج.م " + (isSales ? "هتخرج من" : "هتدخل في") + " الحساب اللي هتختاره");
       if (check > 0.0001) parts.push(fmt(check) + " ج.م هتتخصم من الشيك" + (retDraft.fullReturn ? " ويتلغي الشيك تلقائيًا" : ""));
       if (bal > 0.0001) parts.push(fmt(bal) + " ج.م هتتسوّى على حساب " + partyLbl);
+      // 🔧 بناء 252 (بند #32): لو الفاتورة مش مسددة كاش، نوضّح السقف صراحةً قبل الحفظ
+      if (retCashCeiling() + 0.005 < total && cash > 0.0001) {
+        parts.push("أقصى رد نقدي " + fmt(retCashCeiling()) + " ج.م (المدفوع فعلًا في الفاتورة)");
+      }
       if (!parts.length) hint.textContent = "اكتب الكمية المرتجعة الأول عشان نحسب قيمة التسوية.";
       else hint.textContent = parts.join("  •  ") + ".";
+    }
+    // 🔧 بناء 252 (بند #32): زر «كاش المدفوع فقط» يتعطّل لو الفاتورة بلا سداد نقدي
+    const cashPreset = document.querySelector('#mRetAddBox .ret-preset[data-retmode="cash"]');
+    if (cashPreset) {
+      const capNow = retCashCeiling();
+      cashPreset.disabled = !(capNow > 0.0001);
+      cashPreset.title = capNow > 0.0001
+        ? ("أقصى رد نقدي " + fmt(capNow) + " ج.م — المدفوع فعلًا في الفاتورة")
+        : "الفاتورة بلا سداد نقدي — الباقي بيتخصم من حساب الطرف";
     }
     paintRetModes();
   }
@@ -12755,6 +12804,14 @@
     let checkAmt = Math.max(0, Math.min(round2(retCheckPart()), amt));
     let cashAmt = Math.max(0, Math.min(round2(retCashPart()), round2(amt - checkAmt)));
     let balAmt = round2(amt - cashAmt - checkAmt);
+    /* 🔧 بناء 252 (بند #32): حصانة ثانية عند الحفظ — لو أي مسار (كتابة يدوية/بيانات قديمة/نص)
+       عدّى السقف، الكاش يتقصّ عند **المدفوع فعلًا** والباقي إجباريًا على حساب الطرف.
+       ممنوع ردّ نقدي فوق المدفوع: العميل ما يستلمش فلوس ويبقى مدينًا بنفس الفاتورة. */
+    const cashCap = round2(amt * Math.min(1, Math.max(0, Number(retDraft.paidRatio) || 0)));
+    if (cashAmt > cashCap + 0.005) {
+      cashAmt = cashCap;
+      balAmt = round2(amt - cashAmt - checkAmt);
+    }
     let tr = null;
     if (cashAmt > 0.0001) {
       // 🔄 بناء 226: نعيد حساب الأرصدة **قبل** البوابة — التحذير القديم كان ممكن يقرأ رقمًا قديمًا.
