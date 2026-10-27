@@ -8532,6 +8532,10 @@
     return m ? { digit: m[1], stamp: m[2], seq: parseInt(m[3], 10) || 0 } : null;
   }
   // الرقم المركّب المخزّن سحابيًا = التاريخ×10000 + الرقم اليومي (يصفّر يوميًا)
+  /* 🔧 بناء 254 (بند #2 — مؤكد بالمراجعة): المدخل **نص رقم المستند** (`invNoOf(inv)` أو رقم صريح)،
+     مش كائن الفاتورة. تمرير الكائن كان بيتحوّل "[object Object]" ⇒ `invParseNew` ترجّع null ⇒ صفر
+     ⇒ `commitInvoiceSeq` ما بترفعش العدّاد المحلي ولا السحابي أبدًا، والحماية من تصادم الأرقام بين
+     أجهزة نفس الشركة تبقى وهمية (كل جهاز يعتمد على بياناته المحلية بس). أي منادٍ جديد يمرّر النص. */
   function invEncodedOf(s) {
     const p = invParseNew(s);
     return p ? (Number(p.stamp) * 10000 + p.seq) : 0;
@@ -10095,7 +10099,7 @@
 
     sales.push(invoice);
     saveSales();
-    commitInvoiceSeq("sale", invEncodedOf(invoice));
+    commitInvoiceSeq("sale", invEncodedOf(invNoOf(invoice)));
     // 🆕 بناء 134: الفاتورة تترحّل أوتوماتيك للقيود اليومية (قيد متزن، بلا سند — انظر رأس القسم)
     const postedJ = postInvoiceJournal("sale", invoice, paidTreasury);
     // 🧱 بناء 245: التأكيد بعد الترحيل — بندفع الفاتورة + الخزينة + الأطراف + القيود + الحسابات معًا.
@@ -10817,7 +10821,7 @@
 
     purchases.push(invoice);
     savePurchases();
-    commitInvoiceSeq("purchase", invEncodedOf(invoice));
+    commitInvoiceSeq("purchase", invEncodedOf(invNoOf(invoice)));
     // 🆕 بناء 134: فاتورة المشتريات تترحّل أوتوماتيك للقيود (مخزون + ضريبة مقابل الحساب/المورد)
     const postedJ = postInvoiceJournal("purchase", invoice, paidTreasury);
     // 🧱 بناء 245: نفس تأكيد البيع — الفاتورة + المخزون + المورد + القيود + الخزينة/الحسابات
@@ -15476,7 +15480,7 @@ id: nextVoucherId(),
     }
     sales.push(invoice);
     saveSales();
-    commitInvoiceSeq("sale", invEncodedOf(invoice));
+    commitInvoiceSeq("sale", invEncodedOf(invNoOf(invoice)));
     const postedJ = postInvoiceJournal("sale", invoice, null);
     consumeAvgForItems(vanSaleDraft.items);
     try { addActivity("بيع من سيارة", "سيارة " + trip.carName + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + pay + ")" + (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : "")); } catch (e) {}
