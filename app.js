@@ -65,6 +65,16 @@
      موصلتش للاب توب»). المفتاح ده **بره LS_ALL_KEYS** ومتقسّم لكل شركة لوحدها، فما يلوثش
      شركة ببيانات شركة تانية، وما يتمسحش عند تبديل الشركة. */
   const LS_OUTBOX = "mizan_outbox_v1";
+  /* 🧱 بناء 256 (بند #3 — عودة المحذوف من جهاز تاني): «بصمة الصف اللي وصل السحابة فعلًا».
+     العلة المقاسة (تقارير 27/10): الجهاز A بيحذف فاتورة ويرفع الحذف، والجهاز B — اللي عنده
+     نسخة محلية — بيسأل السحابة «الأرقام دي عندك؟» فيلاقيها مش موجودة ⇒ يفترض إنها «لسه ما
+     وصلتش» ويعيد رفعها بقيدها، بينما ردّ المخزون وردّ النقدية اتنفّذوا على A بس ⇒ اختلال ميزان.
+     الحل **بلا أي ترقية SQL**: بنسجّل لكل صف اتأكد وصوله للسحابة (رفعة ناجحة أو سحب رآه هناك)
+     علامة دائمة. فالصف الغايب من السحابة وعليه علامة = **اتحذف من جهاز تاني** ⇒ يتشال محليًا
+     ولا يترفعش تاني. الصف الغايب بلا علامة = «لسه ما وصلش» ⇒ يفضل الشفاء الذاتي كما هو.
+     المفتاح بره LS_ALL_KEYS ومتقسّم لكل شركة (نفس عرف LS_OUTBOX) ⇒ ما يلوثش شركة بشركة. */
+  const LS_SYNCED = "mizan_synced_rows_v1";
+  const SYNCED_MAX_PER_TABLE = 4000;
   /* 🧮 بناء 145 → 146: ورق «الجرد بالباركود» على جهاز العميل بس (مافيش جدول سحابي ومافيش ترقية).
      ⚠️ المفتاح **بره** `LS_ALL_KEYS` عندنا عمدًا، والسبب مقاس حيًّا (طلب المالك 06/10 ≈23:50:
      «مش بيحفظ ورقة الجرد»): `guardOrgSwitch()` بينادي `wipeLocalTables()` اللي بتمسح **كل**
@@ -2297,6 +2307,61 @@
     };
   }
 
+  /* ===== 🧱 بناء 256 (بند #3): سجل «الصفوف اللي وصلت السحابة فعلًا» ===== */
+  function syncedKey() {
+    try {
+      const o = (typeof DATA !== "undefined" && DATA.orgId && DATA.orgId()) || null;
+      return o ? LS_SYNCED + ":" + String(o) : null;
+    } catch (e) { return null; }
+  }
+  function syncedAll() {
+    const k = syncedKey(); if (!k) return null;
+    try { return JSON.parse(localStorage.getItem(k) || "{}") || {}; } catch (e) { return null; }
+  }
+  function syncedSave(all) {
+    const k = syncedKey(); if (!k || !all) return;
+    try { localStorage.setItem(k, JSON.stringify(all)); } catch (e) { }
+  }
+  function syncedHas(name, id) {
+    const n = Number(id); if (!(n > 0)) return false;
+    const all = syncedAll(); if (!all) return false;
+    const arr = all[name];
+    return Array.isArray(arr) && arr.indexOf(n) >= 0;
+  }
+  function syncedAdd(name, ids) {
+    const list = Array.isArray(ids) ? ids : [];
+    if (!list.length) return;
+    const all = syncedAll(); if (!all) return;
+    const arr = Array.isArray(all[name]) ? all[name] : [];
+    const seen = new Set(arr.map(Number));
+    let added = false;
+    list.forEach(function (raw) {
+      const n = Number(raw);
+      if (n > 0 && !seen.has(n)) { seen.add(n); arr.push(n); added = true; }
+    });
+    if (!added) return;
+    while (arr.length > SYNCED_MAX_PER_TABLE) arr.shift();
+    all[name] = arr;
+    syncedSave(all);
+  }
+  /* الصف اللي السحابة ما بقتش شايفاه وعليه علامة «وصل قبل كده» = **محذوف من جهاز تاني**.
+     بنشيله من القائمة المحلية ومن بصمة الطابور ومن القرص — وما بنحطّهوش في «مطلوب حذف»
+     (السحابة حذفته خلاص). */
+  function syncedDropLocal(name, listFn, ids) {
+    const list = listFn() || [];
+    const drop = new Set((ids || []).map(Number).filter(function (n) { return n > 0; }));
+    if (!drop.size) return 0;
+    let n = 0;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const r = list[i];
+      if (r && r.id != null && drop.has(Number(r.id))) { list.splice(i, 1); n++; }
+    }
+    if (!n) return 0;
+    const ls = outboxLsKey(name);
+    if (ls) { try { localStorage.setItem(ls, JSON.stringify(list)); } catch (e) { } }
+    return n;
+  }
+
   function makeRowPusher(name, listFn, sigFn) {
     const st = {
       snap: null, dirty: new Set(), removed: new Set(), timer: null,
@@ -2414,6 +2479,9 @@
         if (gen === st.gen && effectiveOk) {
           sentSigs.forEach(function (sig, id) { st.snap.set(id, sig); });
           removed.forEach(function (id) { st.snap.delete(id); });
+          /* 🧱 بناء 256 (#3): الرفعة نجحت فعلًا ⇒ الصف «وصل السحابة» ويتختم — أساس التفريق
+             بين «لسه ما وصلش» و«اتحذف من جهاز تاني» في reconcile. */
+          syncedAdd(name, Array.from(sentSigs.keys()));
           st.fails = 0;
         } else if (gen === st.gen) {
           // 🧱 إعادة المحاولة مش عمياء: الصنف اللي لسه في القائمة يرجع «مطلوب رفع»،
@@ -2421,6 +2489,7 @@
           //    ويتبعت كأبسيرت لسطر مش موجود ⇒ **شبح على السحابة ما لوش صاحب**.
           const nowList = listFn() || [];
           if (failedSet) {
+            const okIds = [];
             ids.forEach(function (id) {
               const n = Number(id);
               if (failedSet.has(n)) {
@@ -2429,12 +2498,14 @@
                 return;
               }
               const sig = sentSigs.get(n);
-              if (sig !== undefined) st.snap.set(n, sig);      // الناجح يتختم مرفوع
+              if (sig !== undefined) { st.snap.set(n, sig); okIds.push(n); }   // الناجح يتختم مرفوع
             });
             removed.forEach(function (id) {
               if (failedSet.has(Number(id))) st.removed.add(id);
               else st.snap.delete(Number(id));
             });
+            /* 🧱 بناء 256 (#3): الناجح فعلًا بس (مش اللي فشل) بيتختم «وصل». */
+            if (okIds.length) syncedAdd(name, okIds);
             if (failedSet.size) st.fails++;
           } else {
             ids.forEach(function (id) {
@@ -2479,12 +2550,33 @@
         const gen = st.gen;
         let added = 0;
         if (gen === st.gen) {
+          /* 🧱 بناء 256 (#3): «الموجود على السحابة» بيتختم «وصل» فورًا — والصف الغايب اللي
+             عليه الختم ده **محذوف من جهاز تاني** (مش لسه ما وصلش) ⇒ يتشال محليًا ولا يترفعش
+             تاني. الصف الغايب بلا ختم يفضل «مطلوب رفع» زي الشفاء الذاتي القديم بالحرف. */
+          const present = [];
+          const ghosts = [];
+          /* قراءة واحدة للسجل لكل جدول (مش لكل صف) — reconcile بيلف على كل الصفوف كل ٣٠ ثانية. */
+          let syncSet = new Set();
+          try {
+            const allSync = syncedAll() || {};
+            syncSet = new Set((Array.isArray(allSync[name]) ? allSync[name] : []).map(Number));
+          } catch (e) { syncSet = new Set(); }
           (listFn() || []).forEach(function (r) {
             if (!r || r.id == null) return;
             const id = Number(r.id);
-            if (have[id] || st.dirty.has(id)) return;
+            if (have[id]) { present.push(id); return; }
+            if (syncSet.has(id)) { ghosts.push(id); return; }
+            if (st.dirty.has(id)) return;
             st.dirty.add(id); added++;
           });
+          if (present.length) syncedAdd(name, present);
+          if (ghosts.length) {
+            Array.from(st.dirty).forEach(function (id) { if (ghosts.indexOf(Number(id)) >= 0) st.dirty.delete(Number(id)); });
+            Array.from(st.removed).forEach(function (id) { if (ghosts.indexOf(Number(id)) >= 0) st.removed.delete(Number(id)); });
+            ghosts.forEach(function (id) { if (st.snap) st.snap.delete(Number(id)); });
+            const dropped = syncedDropLocal(name, listFn, ghosts);
+            if (dropped) { try { outboxSave(name, st.dirty, st.removed); } catch (e) { } }
+          }
           /* 🧱 بناء 243: «مطلوب حذف» لسطر مش موجود على السحابة = اتنفّذ فعلًا
              (الرفع اللي قبله نجح أو السطر ما وصلش أصلًا) ⇒ يتشال من الطابور.
              قبل كده كان بيفضل معلّق للأبد فيخلّي الشريط ما يصفّاش أبدًا. */
@@ -3149,12 +3241,23 @@
 
   // 🧱 بناء 199: الاحترام لأرضية الرقم — بعد أي حذف حركة، رقمها مايتولّدش تاني
   // (وإلا `detUuid("customer_txs", id)` يرجّع نفس الـuuid ⇒ السطر الجديد يكتب فوق القديم على السحابة).
+  // 🧱 بناء 256 (#4): الرقم **بيتحجز فورًا** في الأرضية (زي idFloorTake بالحرف) — قبل كده كان
+  // «أكبر رقم موجود + 1» بلا حجز، فجهازان أوفلاين يولّدوا نفس الرقم ⇒ نفس الـuuid ⇒ صف يمسح
+  // التاني صامتًا. والحجز بيتبعت للسحابة فورًا (بلا تأجيل 1.2 ثانية) عشان الجهاز التاني يشوفه.
   function nextTxId() {
-    return Math.max(TX_ID_FLOOR, txs.reduce((m, t) => Math.max(m, Number(t.id) || 0), 0)) + 1;
+    const id = Math.max(TX_ID_FLOOR, rowsMaxId(txs)) + 1;
+    TX_ID_FLOOR = id;
+    idFloorsPersist();
+    idFloorsPush(true);
+    return id;
   }
   // حركات الموردين لها مساحة أرقام مستقلة ⇒ أرضية مستقلة
   function nextSupplierTxId() {
-    return Math.max(STX_ID_FLOOR, (supplierTxs || []).reduce((m, t) => Math.max(m, Number(t.id) || 0), 0)) + 1;
+    const id = Math.max(STX_ID_FLOOR, rowsMaxId(supplierTxs)) + 1;
+    STX_ID_FLOOR = id;
+    idFloorsPersist();
+    idFloorsPush(true);
+    return id;
   }
 
   function nextCustomerCode() {
@@ -11459,11 +11562,33 @@
     return row;
   }
 
+  /* 🧱 بناء 256 (#15): الحقول المحلية اللي مالهاش عمود سحابي بتضيع بعد أول سحب — لأن
+     `fromCloud` بيرجّع الصف المبني من أعمدة السحابة بس، والدمج كان بيحل محل المحلي كله.
+     الأثر المقاس: تقرير الوردية بيعدّ صفر فواتير (shiftId) · حذف فاتورة شراء ما يرجّعش
+     التكلفة (costBefore) · حذف بيع مندوب بيردّ للخزينة بدل ذمم المندوب (isVan) ·
+     وحذف مرتجع مختلط (كاش + رصيد) بيفقد تقسيم المبلغ (cashAmount/balanceAmount/checkAmount).
+     الحل: أي حقل محلي موجود والصف النازل من السحابة مالوش قيمة ⇒ ناخده من المحلي. */
+  const LOCAL_ONLY_FIELDS = [
+    "shiftId", "isVan", "vanTripId", "repName", "vanRepAccountId", "costBefore",
+    "cashAmount", "balanceAmount", "checkAmount", "checkDeductions", "txId", "voucherId"
+  ];
+  function keepLocalOnly(c, loc) {
+    const row = Object.assign({}, c);
+    if (!loc) return row;
+    LOCAL_ONLY_FIELDS.forEach(function (k) {
+      if (row[k] === undefined && loc[k] !== undefined) row[k] = loc[k];
+    });
+    return row;
+  }
+  function keepLocalOnlyWithItems(c, loc) {
+    return keepLocalOnly(keepInvoiceItems(c, loc), loc);
+  }
+
   const PULL_TABLES = [
-    { name: "sales", ls: LS_SALES, get: function () { return sales; }, set: function (v) { sales = v; }, fix: keepInvoiceItems },
-    { name: "purchases", ls: LS_PURCHASES, get: function () { return purchases; }, set: function (v) { purchases = v; }, fix: keepInvoiceItems },
-    { name: "sale_returns", ls: LS_SALE_RETURNS, get: function () { return saleReturns; }, set: function (v) { saleReturns = v; }, fix: keepInvoiceItems },
-    { name: "purchase_returns", ls: LS_PURCHASE_RETURNS, get: function () { return purchaseReturns; }, set: function (v) { purchaseReturns = v; }, fix: keepInvoiceItems },
+    { name: "sales", ls: LS_SALES, get: function () { return sales; }, set: function (v) { sales = v; }, fix: keepLocalOnlyWithItems },
+    { name: "purchases", ls: LS_PURCHASES, get: function () { return purchases; }, set: function (v) { purchases = v; }, fix: keepLocalOnlyWithItems },
+    { name: "sale_returns", ls: LS_SALE_RETURNS, get: function () { return saleReturns; }, set: function (v) { saleReturns = v; }, fix: keepLocalOnlyWithItems },
+    { name: "purchase_returns", ls: LS_PURCHASE_RETURNS, get: function () { return purchaseReturns; }, set: function (v) { purchaseReturns = v; }, fix: keepLocalOnlyWithItems },
     { name: "treasury", ls: LS_TREASURY, get: function () { return treasury; }, set: function (v) { treasury = v; }, fix: keepTreasuryOpening },
     { name: "customers", ls: LS_CUSTOMERS, get: function () { return customers; }, set: function (v) { customers = v; } },
     { name: "suppliers", ls: LS_SUPPLIERS, get: function () { return suppliers; }, set: function (v) { suppliers = v; } },
@@ -11581,6 +11706,8 @@
         const sets = pullKeepSets(t.name);
         const m = mergePulled(cloud, t.get() || [], sets, t.fix);
         t.set(m.merged);
+        /* 🧱 بناء 256 (#3): كل صف رجع من السحابة = «وصل» (سواء اترفع من الجهاز ده أو من غيره). */
+        syncedAdd(t.name, cloud.map(function (c) { return c && c.id; }).filter(function (x) { return x != null; }));
         touched[t.name] = true;
         try { localStorage.setItem(t.ls, JSON.stringify(m.merged)); } catch (e) { }
         const p = PULL_PUSHERS[t.name];
@@ -11609,6 +11736,9 @@
       if (Object.keys(touched).length) {
         try { linkInvoiceParties(); } catch (e) { }
         if (typeof idFloorsLoad === "function") { try { idFloorsLoad(); } catch (e) { } }
+        /* 🧱 بناء 256 (#4): أرضيات الأرقام على السحابة بتتدمج (max فقط) بعد كل سحب — قبل كده
+           كانت بتتقرأ عند الدخول بس، فجهاز مفتوح بيولّد أرقام أقل من أرقام الجهاز التاني. */
+        if (typeof idFloorsPull === "function") { try { idFloorsPull(); } catch (e) { } }
         if (touched["customer_txs"] && typeof recalculateCustomerBalances === "function") {
           try { recalculateCustomerBalances(); } catch (e) { }
         }
@@ -13052,14 +13182,14 @@ id: nextVoucherId(),
       if (isSales) {
         let i = txs.findIndex((t) => Number(t.id) === Number(r.txId));
         if (i === -1) i = txs.findIndex((t) => Number(t.customerId) === Number(r.customerId) && String(t.desc || "").includes("مرتجع مبيعات رقم " + no));
-        if (i !== -1) txs.splice(i, 1);
+        if (i !== -1) { r._delTxId = txs[i].id; txs.splice(i, 1); }
         recalculateCustomerBalances();
         saveCustomers();
         saveTxs();
       } else {
         let i = supplierTxs.findIndex((t) => Number(t.id) === Number(r.txId));
         if (i === -1) i = supplierTxs.findIndex((t) => Number(t.supplierId) === Number(r.supplierId) && String(t.desc || "").includes("مرتجع مشتريات رقم " + no));
-        if (i !== -1) supplierTxs.splice(i, 1);
+        if (i !== -1) { r._delTxId = supplierTxs[i].id; supplierTxs.splice(i, 1); }
         recalculateSupplierBalances();
         saveSuppliers();
         saveSupplierTxs();
@@ -13072,6 +13202,13 @@ id: nextVoucherId(),
     if (Array.isArray(r.checkDeductions) && r.checkDeductions.length) restoreCheckDeductions(r.checkDeductions);
 
     // 3) حذف السطر نفسه
+    /* 🧱 بناء 256 (#12): حذف المرتجع بيرفع أرضية كل رقم استخدمه (حركة الطرف، السند، القيد،
+       والمرتجع نفسه) — قبل كده الرقم كان يتولّد تاني بعد الحذف ⇒ نفس الـuuid ⇒ الكتابة فوق
+       صف سحابي قديم (نفس علّة #4 بالحرف). */
+    if (r.txId != null || r._delTxId != null) bumpIdFloor(isSales ? "tx" : "stx", r._delTxId != null ? r._delTxId : r.txId);
+    if (r.voucherId != null) bumpIdFloor("voucher", r.voucherId);
+    if (retJrnRemoved && retJrnRemoved.id != null) bumpIdFloor("journal", retJrnRemoved.id);
+    bumpIdFloor(isSales ? "saleReturns" : "purchaseReturns", r.id);
     if (isSales) { saleReturns = saleReturns.filter((x) => x.id !== r.id); saveSaleReturns(); }
     else { purchaseReturns = purchaseReturns.filter((x) => x.id !== r.id); savePurchaseReturns(); }
     addActivity("حذف مرتجع", "حذف مرتجع " + retWord(isSales) + " رقم (" + no + ") - " + retParty(r, isSales) + " - بقيمة " + fmt(amt) + " ج.م (تراجع كامل)");
@@ -17091,6 +17228,10 @@ id: nextVoucherId(),
   function nextJournalId() {
     const id = Math.max(JRN_ID_FLOOR, journalEntries.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
     __jrnLastId = id;
+    // 🧱 بناء 256 (#4): حجز فوري + دفع الأرضية للسحابة فورًا (نفس علاج nextTxId).
+    JRN_ID_FLOOR = id;
+    idFloorsPersist();
+    idFloorsPush(true);
     return id;
   }
   // رقم القيد المعروض/المطبوع/المرفوع — مشتق من الـ id (فريد أبدًا بعد أي حذف)، أو من id صريح.
@@ -17099,7 +17240,12 @@ id: nextVoucherId(),
     return "JRN-" + String(n || 0).padStart(4, "0");
   }
   function nextVoucherId() {
-    return Math.max(VOU_ID_FLOOR, vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
+    const id = Math.max(VOU_ID_FLOOR, vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
+    // 🧱 بناء 256 (#4): حجز فوري + دفع الأرضية للسحابة فورًا.
+    VOU_ID_FLOOR = id;
+    idFloorsPersist();
+    idFloorsPush(true);
+    return id;
   }
   /* 🧱 بناء 240 (باگ الموبايل): أرضيات دائمة لباقي الجداول — نفس علة build 186/199 بالحرف.
      أي جدول بيرقّم سطره بـ`reduce(max)+1` على المصفوفة الحالية وحدها ⇒ بعد مسح الحالة
@@ -17134,7 +17280,7 @@ id: nextVoucherId(),
     const n = base + 1;
     X_ID_FLOOR[kind] = Math.max(xFloorOf(kind), n);
     idFloorsPersist();
-    idFloorsPush();
+    idFloorsPush(true);   // 🧱 بناء 256 (#4): الحجز بيتبعت للسحابة فورًا
     return n;
   }
   // رفع «الأرضية» عند الحذف (قبل ما الرقم يتاح للتوليد تاني) + تثبيتها على القرص
@@ -17145,7 +17291,10 @@ id: nextVoucherId(),
     else if (kind === "stx") { if (n > STX_ID_FLOOR) STX_ID_FLOOR = n; }
     else if (Object.prototype.hasOwnProperty.call(X_ID_FLOOR, kind)) { if (n > xFloorOf(kind)) X_ID_FLOOR[kind] = n; }
     else { if (n > JRN_ID_FLOOR) JRN_ID_FLOOR = n; }
-    idFloorsSave();
+    // 🧱 بناء 256 (#4): رفع الأرضية بعد الحذف بيتبعت فورًا — الرقم المحذوف ما يرجعش يتولّد
+    // على جهاز تاني قبل ما السحابة تشوف الأرضية الجديدة.
+    idFloorsPersist();
+    idFloorsPush(true);
   }
   function idFloorsLoad() {
     let o = {};
@@ -17179,9 +17328,19 @@ id: nextVoucherId(),
     xFloorsMerge(s.others);   // 🧱 بناء 240: باقي الجداول بنفس قانون max
     __jrnLastId = Math.max(__jrnLastId, JRN_ID_FLOOR);
   }
-  function idFloorsPush() {
+  function idFloorsPush(now) {
     if (!A.online || A.adopting || A.cleaning) return;
     if (!(window.DATA && DATA.saveClientSett)) return;
+    /* 🧱 بناء 256 (#4): الحجز (`now=true`) بيتبعت **فورًا** — التأجيل 1.2 ثانية كان بيخلّي
+       الجهاز التاني يشوف الأرضية القديمة ويولّد نفس الرقم. التأجيل باقي للكتابات المجمّعة. */
+    if (now) {
+      if (idFloorsPushTimer) { clearTimeout(idFloorsPushTimer); idFloorsPushTimer = null; }
+      try {
+        const p0 = DATA.saveClientSett({ org: { settings: { idFloors: idFloorsObj() } } });
+        if (p0 && p0.catch) p0.catch(() => { });
+      } catch (e) { }
+      return;
+    }
     if (idFloorsPushTimer) clearTimeout(idFloorsPushTimer);
     idFloorsPushTimer = setTimeout(() => {
       idFloorsPushTimer = null;
