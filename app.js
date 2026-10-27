@@ -955,8 +955,12 @@
     if (!inv || !Array.isArray(inv.payments) || !inv.payments.length) return null;
     let sum = 0;
     inv.payments.forEach((p) => {
-      const m = String((p && p.method) || "").toLowerCase();
-      if (m === "ajal" || m === "check") return;
+      /* 🔧 بناء 255 (بند #7): مصدر واحد لتصنيف وسيلة الدفع (`posPayMode`) بدل مقارنة
+         النص الإنجليزي لوحده. السطور المحفوظة إنجليزي (ajal/check)، لكن الفواتير
+         القديمة/المستوردة ممكن تكون عربي («آجل»/«شيك») ⇒ المقارنة القديمة كانت
+         بتعتبر «آجل» العربي مدفوعًا نقدًا فتحرّك الخزينة بالغلط. */
+      const mode = posPayMode(p && p.method);
+      if (mode.isAjal || mode.isCheck) return;
       const amt = Number((p && p.amount) || 0);
       if (!(amt > 0)) return;
       if (p.treasuryId != null && Number(p.treasuryId) === Number(tid)) sum += amt;
@@ -977,14 +981,26 @@
 
       // 🆕 بناء 199: لو الفاتورة فيها سطور سداد مفصّلة ⇒ كل سطر بيتوزّع على خزينته هو
       // (والسطر «آجل»/«شيك» مايدخلش خزينة أصلًا: الآجل على حساب الطرف والشيك على 1.1.7).
+      /* 🔧 بناء 255 (بند #6 — مؤكد بالمراجعة): المسار القديم (فاتورة بلا `payments[]`) كان
+         بيحسب **الإجمالي** `grandTotal` على الخزينة مش **المدفوع فعلًا** ⇒ فاتورة 1,000
+         مدفوع منها 400 كانت بتحقن 1,000 في الخزينة (600 فلوس وهمية)، والفارق بيظهر في كل
+         إعادة حساب. وكمان كان بيستثني «آجل» العربي بس (بند #7) فالشيك كان بيتحسب نقدية.
+         الصح: `partyInvoicePaidOf` (نفس مصدر كشف الطرف) + استبعاد الآجل والشيك (الشيك
+         على حساب 1.1.7 مش الخزينة). بلا أي ترحيل — الحساب بيتعاد من نفس البيانات. */
       (sales || []).forEach((s) => {
         if (recalcLinesIn(s, tid) != null) { bal += recalcLinesIn(s, tid); return; }
-        if (Number(s.treasuryId) === tid && s.paymentMethod !== "آجل") bal += Number(s.grandTotal || 0);
+        if (Number(s.treasuryId) !== tid) return;
+        const mode = posPayMode(s.paymentMethod);
+        if (mode.isAjal || mode.isCheck) return;
+        bal += partyInvoicePaidOf(s, s.grandTotal);
       });
 
       (purchases || []).forEach((p) => {
         if (recalcLinesIn(p, tid) != null) { bal -= recalcLinesIn(p, tid); return; }
-        if (Number(p.treasuryId) === tid && p.paymentMethod !== "آجل") bal -= Number(p.grandTotal || 0);
+        if (Number(p.treasuryId) !== tid) return;
+        const mode = posPayMode(p.paymentMethod);
+        if (mode.isAjal || mode.isCheck) return;
+        bal -= partyInvoicePaidOf(p, p.grandTotal);
       });
 
       (vouchers || []).filter((v) => Number(v.treasuryId) === tid).forEach((v) => {
@@ -4844,15 +4860,16 @@
       paid = round2(tot - (Number(inv.dueAmount) || 0));
     } else if (inv && Array.isArray(inv.payments) && inv.payments.length) {
       paid = round2(inv.payments.reduce((m, p) => {
-        const isAjal = String((p && p.method) || "") === "ajal";
+        const isAjal = posPayMode(p && p.method).isAjal; // 🔧 بناء 255 (بند #7): عربي + إنجليزي
         return m + (isAjal ? 0 : (Number(p && p.amount) || 0));
       }, 0));
     } else {
-      paid = (String((inv && inv.paymentMethod) || "") === "آجل") ? 0 : tot;
+      // 🔧 بناء 255 (بند #7): «آجل» عربي أو ajal إنجليزي — نفس التصنيف الموحّد.
+      paid = posPayMode(inv && inv.paymentMethod).isAjal ? 0 : tot;
     }
     if (inv && Array.isArray(inv.payments) && inv.payments.length) {
       const byPay = round2(inv.payments.reduce((m, p) => {
-        const isAjal = String((p && p.method) || "") === "ajal";
+        const isAjal = posPayMode(p && p.method).isAjal;
         return m + (isAjal ? 0 : (Number(p && p.amount) || 0));
       }, 0));
       if (byPay > paid) paid = byPay;
@@ -9406,6 +9423,11 @@
   function posCalcRow(idx) {
     const it = posItems[idx];
     const sub = Math.max(it.qty * it.price - it.discount, 0);
+    /* 🔧 بناء 255 (بند #8): `sub` المقصوص عند الصفر هو **مرجع السطر** (اللي بيظهر في عمود
+       الإجمالي)، فلازم يتخزّن ويتجمّع هو نفسه في إجمالي الفاتورة. قبل كده `posRecalc` كان
+       بيجمع `qty×price − discount` الخام ⇒ خصم سطر أكبر من قيمته كان بيعمل سطر بإجمالي صفر
+       بينما الإجمالي الفرعي بيقلّ (وربما يبقى سالبًا) ⇒ مجموع السطور ≠ إجمالي الفاتورة. */
+    it.sub = sub;
     it.tax = TAX.enabled ? Math.round(sub * TAX.rate * 100) / 100 : 0;
     it.total = Math.round((sub + it.tax) * 100) / 100;
   }
@@ -9844,7 +9866,7 @@
     let sub = 0, tax = 0;
     posItems.forEach((it, i) => {
       posCalcRow(i);
-      sub += it.qty * it.price - it.discount;
+      sub += it.sub; // 🔧 بناء 255 (بند #8): نفس الرقم المقصوص اللي في السطر
       tax += it.tax;
     });
     sub = Math.round(sub * 100) / 100;
@@ -10567,6 +10589,7 @@
   function ppCalcRow(idx) {
     const it = ppItems[idx];
     const sub = Math.max(it.qty * it.price - it.discount, 0);
+    it.sub = sub; // 🔧 بناء 255 (بند #8): مرجع السطر المقصوص — نفس منطق البيع بالحرف
     it.tax = TAX.buyEnabled ? Math.round(sub * TAX.rateBuy * 100) / 100 : 0;
     it.total = Math.round((sub + it.tax) * 100) / 100;
   }
@@ -10575,7 +10598,7 @@
     let sub = 0, tax = 0;
     ppItems.forEach((it, i) => {
       ppCalcRow(i);
-      sub += it.qty * it.price - it.discount;
+      sub += it.sub; // 🔧 بناء 255 (بند #8): نفس الرقم المقصوص اللي في السطر
       tax += it.tax;
     });
     sub = Math.round(sub * 100) / 100;
@@ -12014,15 +12037,15 @@
     const refundByPayments = (inv2, sales2) => {
       let sum = 0;
       (inv2.payments || []).forEach((p) => {
-        const code = String(p.method || "").toLowerCase();
-        if (code === "ajal" || code === "check") return;
+        const mode = posPayMode(p && p.method); // 🔧 بناء 255 (بند #7): عربي + إنجليزي
+        if (mode.isAjal || mode.isCheck) return;
         const a = r2n(p.amount);
         if (!(a > 0.0001)) return;
         let tr2 = (p.treasuryId != null && p.treasuryId !== "")
           ? treasury.find((x) => Number(x.id) === Number(p.treasuryId)) : null;
         if (!tr2) tr2 = treasury.find((x) => Number(x.id) === Number(inv2.treasuryId)) || null;
         if (!tr2) {
-          const want = code === "bank" ? "bank" : code === "wallet" ? "wallet" : code === "instapay" ? "instapay" : "cash";
+          const want = mode.isBank ? "bank" : mode.isWallet ? "wallet" : mode.isInsta ? "instapay" : "cash";
           tr2 = treasury.find((x) => x.type === want) || treasury.find((x) => x.type === "cash") || treasury[0] || null;
         }
         if (!tr2) return;
@@ -16582,13 +16605,13 @@ id: nextVoucherId(),
     const pm = String(inv.paymentMethod || "");
     if (Array.isArray(inv.payments) && inv.payments.length) {
       inv.payments.forEach((p) => {
-        const code = String((p && p.method) || "").toLowerCase();
-        if (code === "ajal" || code === "check") return;
+        const mode = posPayMode(p && p.method); // 🔧 بناء 255 (بند #7): عربي + إنجليزي
+        if (mode.isAjal || mode.isCheck) return;
         const a = round2(p.amount);
         if (!(a > 0)) return;
         let tr = (p.treasuryId != null && p.treasuryId !== "") ? treasury.find((x) => Number(x.id) === Number(p.treasuryId)) : null;
         if (!tr) tr = treasury.find((x) => Number(x.id) === Number(inv.treasuryId)) || null;
-        if (!tr) tr = trOfType(code === "bank" ? "bank" : code === "wallet" ? "wallet" : code === "instapay" ? "instapay" : "cash");
+        if (!tr) tr = trOfType(mode.isBank ? "bank" : mode.isWallet ? "wallet" : mode.isInsta ? "instapay" : "cash");
         add(tr, a);
       });
       return plan;
@@ -16611,7 +16634,8 @@ id: nextVoucherId(),
         if (cand >= 0 && cand <= round2(inv.grandTotal)) paid = cand;
       }
     }
-    if (paid == null) paid = pm === "آجل" ? 0 : round2(inv.grandTotal);
+    const pmMode = posPayMode(pm); // 🔧 بناء 255 (بند #7): تصنيف موحّد عربي/إنجليزي
+    if (paid == null) paid = pmMode.isAjal ? 0 : round2(inv.grandTotal);
     const linkedChecks = (typeof checksOfInvoice === "function" ? checksOfInvoice(inv) : [])
       .filter((c) => c && String(c.status || "pending") !== "cancelled");
     const linked = round2(linkedChecks.reduce((m, c) => m + (Number(c.amount) || 0), 0));
@@ -16619,7 +16643,7 @@ id: nextVoucherId(),
     let tr = null;
     if (inv.treasuryId != null && inv.treasuryId !== "") tr = treasury.find((x) => Number(x.id) === Number(inv.treasuryId)) || null;
     if (!tr) {
-      const want = pm.includes("بنك") || pm.includes("تحويل") ? "bank" : pm.includes("محفظ") ? "wallet" : "cash";
+      const want = pmMode.isBank ? "bank" : pmMode.isWallet ? "wallet" : pmMode.isInsta ? "instapay" : "cash";
       tr = trOfType(want);
     }
     add(tr, cash);
