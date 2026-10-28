@@ -19964,11 +19964,18 @@ id: nextVoucherId(),
     const capital = bsRound(bsLeaves("equity", ["3.1"], ["3.2", "3.3"]).reduce((m, r) => m + r[1], 0));
     const retained = bsRound(bsLeaves("equity", ["3.2"], null).reduce((m, r) => m + r[1], 0));
     const drawings = bsRound(bsLeaves("equity", ["3.3"], null).reduce((m, r) => m + r[1], 0));
-    // 🆕 استثناء سندات الشريك (رأس المال/المسحوبات) وسندات التحويلات الداخلية بين الخزائن من معادلة الربح
-    // (طلب المالك: «مسحوبات الشركاء خصم من الأرباح مش مصروف» والتحويل بين الخزائن حركة أصول لا تمس الأرباح)
-    const nonEqOut = vouchers.filter((v) => v.type === "out" && !voucherIsEquityCounterpart(v) && !isMoveVoucher(v)).reduce((m, v) => m + v.amount, 0);
-    const nonEqIn = vouchers.filter((v) => v.type === "in" && !voucherIsEquityCounterpart(v) && !isMoveVoucher(v)).reduce((m, v) => m + v.amount, 0);
-    const profits = bsRound(sales.reduce((m, s) => m + (s.grandTotal || 0), 0) - purchases.reduce((m, p2) => m + (p2.grandTotal || 0), 0) - nonEqOut + nonEqIn);
+    // 🧱 بناء 261 — «الميزان متوازن» من أول فاتورة: الربح من الدليل نفسه = إيرادات (4) − مصروفات (5).
+    // المعادلة القديمة (إجمالي المبيعات − إجمالي المشتريات ± السندات) كان فيها خللان مقاسان:
+    //   (١) المشتريات في البرنامج **أصل** (مدين 1.1.4 «المخزون») مش مصروف ⇒ خصمها كان بيخصم بضاعة
+    //       لسه في المخزن + ضريبة المدخلات كأنها مصروف.
+    //   (٢) تكلفة المبيعات (5.3) اللي بتترحّل قيدًا مع كل فاتورة **ما كانتش بتتخصم** ⇒ ربح مبالغ فيه،
+    //       والفرق كان بيظهر كـ«غير متوازن» في المركز المالي بعد كل بيع.
+    // سندات القبض/الصرف بتترحّل قيودًا (VC:) على حساب الطرف أو حساب إيراد/مصروف ⇒ الدليل بيغطيها،
+    // فمافيش عد مرتين ولا استثناء يدوي. الدالة بتشتغل على دليل بالنقاط أو بلا نقاط (النوع هو الحاكم).
+    const bsTypeTotal = (t) => bsRound(accounts
+      .filter((a) => a && a.isActive !== false && a.type === t && !bsHasChild(a))
+      .reduce((m, a) => m + bsLedgerValue(a), 0));
+    const profits = bsRound(bsTypeTotal("revenue") - bsTypeTotal("expense"));
     // 🆕 مهمة 98: سجل الأصول الثابتة لو فيه بيانات هو المرجع لقسميه؛ ولو فاضي يرجع لحسابات الدليل (سلوك 97)
     const faFix = faBalanceRows("noncurrent");
     const faInt = faBalanceRows("intangible");
