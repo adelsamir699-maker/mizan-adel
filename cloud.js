@@ -546,7 +546,12 @@
           settled_at: r.settledAt || null, settled_by: r.settledBy || null,
           counted_cash: (r.countedCash != null ? Number(r.countedCash) : null),
           expected_cash: (r.expectedCash != null ? Number(r.expectedCash) : null),
-          difference: (r.difference != null ? Number(r.difference) : null),
+          // 🆕 بناء 262: العمود السحابي اسمه `difference` والحقل المحلي `diff` —
+          // قبل كده كان `r.difference` (مش موجود محليًا) ⇒ فرق التصفية كان بيضيع في الرفع.
+          difference: (r.diff != null ? Number(r.diff) : (r.difference != null ? Number(r.difference) : null)),
+          odo_start: (r.odoStart != null ? Number(r.odoStart) : null),
+          odo_end: (r.odoEnd != null ? Number(r.odoEnd) : null),
+          km: (r.km != null ? Number(r.km) : null),
           treasury_id: (r.treasuryId != null ? Number(r.treasuryId) : null),
           settle_warehouse: r.settleWarehouse || "",
           notes: r.notes || "", deleted: false };
@@ -564,6 +569,11 @@
           countedCash: (r.counted_cash != null ? Number(r.counted_cash) : null),
           expectedCash: (r.expected_cash != null ? Number(r.expected_cash) : null),
           difference: (r.difference != null ? Number(r.difference) : null),
+          diff: (r.difference != null ? Number(r.difference) : null),
+          // 🆕 بناء 262: العدّاد والمسافة (ترقية ٦٣)
+          odoStart: (r.odo_start != null ? Number(r.odo_start) : null),
+          odoEnd: (r.odo_end != null ? Number(r.odo_end) : null),
+          km: (r.km != null ? Number(r.km) : null),
           treasuryId: (r.treasury_id != null ? Number(r.treasury_id) : null),
           settleWarehouse: r.settle_warehouse || "",
           notes: r.notes || "" };

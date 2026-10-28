@@ -3822,6 +3822,8 @@
     "chartTree", "salesTax", "glLedger", "subLedger", "cashierShifts",
     // 🚚 بناء 178: «سيارات مندوبين المبيعات» — لنفس القائمة (وإلا الزرار يرمي «قيد التطوير»).
     "vanSales",
+    // 📡 بناء 262: «متابعة مناديب السيارات» (صاحب الشركة فقط)
+    "vanMonitor",
     // 🧾 بناء 190: تبويب «الشيكات» — لنفس القائمة.
     "checks"];
 
@@ -4031,6 +4033,11 @@
       if (isSuperAcct() || isCompanyOwnerAcct()) return true;
       if (!DE.featureFlag) return false;
       return DE.featureFlag("vanSales") === true;
+    }
+    // 📡 بناء 262: «متابعة مناديب السيارات» — صاحب الشركة/المالك فقط (بيانات كل المناديب)
+    if (name === "vanMonitor") {
+      if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+      return false;
     }
     // 🧾 بناء 190: تبويب «الشيكات» — المالك/صاحب الشركة دائمًا، والعضو عند التفعيل الصريح
     if (name === "checks") {
@@ -4297,6 +4304,8 @@
     // 🧱 بناء 132: بعد ما الأزرار اتحدّدت، الأقسام اللي شاشاتها كلها مقفولة تتشال من
     // الشريط العلوي (طلب المالك: «متظهرش من الأساس، ولا مكانها فاضي»).
     applySectionVisibility();
+    // 🚚 بناء 262: وضع المندوب — يخفي شاشة البيع العامة ويُظهر شاشته
+    try { vanApplyRepMode(); } catch (e) {}
   }
 
   let viewBackStack = [];
@@ -4363,6 +4372,17 @@
     // 🆕 بناء 115: «القيود اليومية» لصاحب الشركة والمالك فقط (طلب المالك: مش أي حد يسجل قيود)
     if (name === "journal" && !canUseView("journal")) {
       toast("شاشة «القيود اليومية» متاحة لصاحب الشركة والمالك فقط", "error");
+      name = "dashboard";
+    }
+    // 🚚 بناء 262: المندوب المعيَّن على سيارة — شاشة البيع العامة مقفولة عليه،
+    // ومخزونه المتاح للبيع هو مخزون سيارته فقط.
+    if (name === "sales" && vanIsRepUser()) {
+      toast("مخزونك هو مخزون سيارتك بس — البيع من شاشة «سيارات مندوبين المبيعات».", "warning");
+      name = canUseView("vanSales") ? "vanSales" : "dashboard";
+    }
+    // 📡 بناء 262: «متابعة مناديب السيارات» لصاحب الشركة/المالك فقط
+    if (name === "vanMonitor" && !vanCanManage()) {
+      toast("شاشة «متابعة مناديب السيارات» لصاحب الشركة فقط.", "error");
       name = "dashboard";
     }
     // 🛡 بناء 131 (طلب المالك: «بحدد لهم صلاحيات بترجع تانى كل الصلاحيات لهم»):
@@ -4436,6 +4456,9 @@
     if (name === "cashierShifts") { shiftBindOnce(); renderShifts(); }
     // 🚚 بناء 178: سيارات مندوبين المبيعات — الربط مرة واحدة ثم الرسم
     if (name === "vanSales") { vanBindOnce(); renderVanSales(); }
+    // 📡 بناء 262: شاشة متابعة المناديب — تبدأ العدّاد (كل 15 ثانية) وتقف لو خرجت
+    if (name === "vanMonitor") { try { vanMonitorStart(); } catch (e) {} }
+    else { try { vanMonitorStop(); } catch (e) {} }
     // 🧾 بناء 190: تبويب الشيكات — الربط مرة واحدة ثم الرسم
     if (name === "checks") { checksBindOnce(); renderChecks(); }
     // 🧮 بناء 145: الجرد بالباركود — المخزن + الورقة الحالية + حساب الفروق، وكلها من الجهاز
@@ -11731,7 +11754,10 @@
      الحل: أي حقل محلي موجود والصف النازل من السحابة مالوش قيمة ⇒ ناخده من المحلي. */
   const LOCAL_ONLY_FIELDS = [
     "shiftId", "isVan", "vanTripId", "repName", "vanRepAccountId", "costBefore",
-    "cashAmount", "balanceAmount", "checkAmount", "checkDeductions", "txId", "voucherId"
+    "cashAmount", "balanceAmount", "checkAmount", "checkDeductions", "txId", "voucherId",
+    // 🚚 بناء 262: عدّاد البنزين/المسافة/فرق التصفية — مالهاش أعمدة سحابية بعد،
+    // فممنوع السحب يمسحها من الجهاز اللي سجّلها.
+    "odoStart", "odoEnd", "km", "diff", "custodyLeft", "savedAt"
   ];
   function keepLocalOnly(c, loc) {
     const row = Object.assign({}, c);
@@ -11758,7 +11784,10 @@
     { name: "journal_entries", ls: LS_JOURNAL, get: function () { return journalEntries; }, set: function (v) { journalEntries = v; }, fix: keepJournalLines },
     { name: "accounts", ls: LS_ACCOUNTS, get: function () { return accounts; }, set: function (v) { accounts = v; } },
     { name: "vouchers", ls: LS_VOUCHERS, get: function () { return vouchers; }, set: function (v) { vouchers = v; } },
-    { name: "checks", ls: LS_CHECKS, get: function () { return checks; }, set: function (v) { checks = v; } }
+    { name: "checks", ls: LS_CHECKS, get: function () { return checks; }, set: function (v) { checks = v; } },
+    // 🚚 بناء 262: رحلات سيارات المناديب كانت بتترفع للسحابة وما بتنزلش أبدًا بعد الدخول،
+    // فشاشة «متابعة مناديب السيارات» ما كانتش هتشوف حركة جهاز تاني (تحميل/مصروف/عداد).
+    { name: "car_trips", ls: LS_CAR_TRIPS, get: function () { return carTrips; }, set: function (v) { carTrips = v; } }
   ];
 
   /* 🧱 بناء 247: «كل الموجود على السحابة» لازم يلمّ الأصناف كمان — قبل كده الدليل كان
@@ -15173,7 +15202,7 @@ id: nextVoucherId(),
       const k = normalizeAr(n);
       if (seen[k]) return;
       seen[k] = 1;
-      out.push({ id: c.id, name: n, driver: c.driver || "", phone: c.phone || "" });
+      out.push({ id: c.id, name: n, driver: c.driver || "", phone: c.phone || "", repUser: String(c.rep_user || "").trim(), repFull: String(c.rep_full || "").trim() });
     });
     return out;
   }
@@ -15191,6 +15220,159 @@ id: nextVoucherId(),
     if (!(q > 0)) return;
     setStockAt(p, from, vanStockAt(p, from) - q);
     setStockAt(p, to, vanStockAt(p, to) + q);
+  }
+
+  /* ================== 🆕 بناء 262 — عهدة البضاعة على حساب المندوب ==================
+     الموديل المعتمد (B): حساب المندوب = بضاعة + نقد، وبيتصفّر لما يرجّع الباقي ويورّد النقد.
+       تحميل بضاعة للسيارة    : مدين ذمم المندوب (بالتكلفة) / دائن المخزون
+       تكلفة البيع من السيارة : مدين تكلفة المبيعات        / دائن ذمم المندوب
+       رجوع الباقي للمخزن     : مدين المخزون               / دائن ذمم المندوب
+       توريد النقد            : مدين الخزينة               / دائن ذمم المندوب  (موجود من 178)
+     البضاعة تُقيَّم بالتكلفة (avgPriceOf) — نفس تقييم شاشة المركز المالي بالحرف.
+     الرحلات المفتوحة قبل 262 مالهاش قيد تحميل ⇒ بتفضل على سلوكها القديم (بلا رجعي). */
+  function vanLoadKey(trip) { return "VL:" + (trip && trip.id); }
+  function vanReturnKey(trip) { return "VR:" + (trip && trip.id); }
+  function vanJrnOf(key) {
+    const k = String(key || "");
+    return (journalEntries || []).find((j) => j && String(j.refId || "") === k) || null;
+  }
+  function vanTripHasLoadJrn(trip) { return !!vanJrnOf(vanLoadKey(trip)); }
+  function vanLoadedCost(trip) {
+    return round2(((trip && trip.loaded) || []).reduce((m, l) => m + (Number(l.costTotal) || 0), 0));
+  }
+  function vanWriteJrn(key, ref, date, desc, amt, debitAccId, creditAccId) {
+    if (!(amt > 0)) return null;
+    if (vanJrnOf(key)) return null;
+    const j = {
+      id: nextJournalId(), number: jrnNo(), date: date || todayISO(), desc: desc,
+      ref: ref, refType: ref, refId: key, debit: amt, credit: amt,
+      lines: [
+        { accountId: Number(debitAccId), debit: amt, credit: 0 },
+        { accountId: Number(creditAccId), debit: 0, credit: amt }
+      ]
+    };
+    settleJrnLines(j.lines, 1);
+    journalEntries.push(j);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) {}
+    return j;
+  }
+  function vanRemoveJrn(key) {
+    const j = vanJrnOf(key);
+    if (!j) return null;
+    settleJrnLines(j.lines, -1);
+    const i = journalEntries.indexOf(j);
+    if (i >= 0) journalEntries.splice(i, 1);
+    bumpIdFloor("journal", j.id);
+    persistJournal();
+    saveAccounts();
+    try { renderJournal(); } catch (e) {}
+    return j;
+  }
+  // قيد التحميل: مدين ذمم المندوب / دائن المخزون
+  function postVanLoadJournal(trip) {
+    if (!trip) return null;
+    const amt = vanLoadedCost(trip);
+    if (!(amt > 0)) return null;
+    const rep = vanRepAcc(trip.repName);
+    const stock = stockAcc();
+    if (!rep || !stock) return null;
+    return vanWriteJrn(vanLoadKey(trip), "عهدة بضاعة سيارة", trip.date || todayISO(),
+      "تحميل عهدة سيارة " + trip.carName + " — مندوب " + trip.repName + " — رحلة #" + trip.id + " — " + fmt(amt) + " ج.م",
+      amt, rep.id, stock.id);
+  }
+  // الباقي في السيارة بالتكلفة اللي اتحمّلت بيها بالحرف (مش بمتوسط النهاردة)
+  function vanReturnedCost(trip) {
+    return round2(((trip && trip.loaded) || []).reduce((acc, l) => {
+      const rem = Math.max(0, round2((Number(l.qty) || 0) - vanTripSoldQty(trip, l.productId)));
+      return acc + rem * (Number(l.cost) || 0);
+    }, 0));
+  }
+  // قيد رجوع الباقي: مدين المخزون / دائن ذمم المندوب
+  function postVanReturnJournal(trip, wh) {
+    if (!trip) return null;
+    const amt = vanReturnedCost(trip);
+    if (!(amt > 0)) return null;
+    const rep = vanRepAcc(trip.repName);
+    const stock = stockAcc();
+    if (!rep || !stock) return null;
+    return vanWriteJrn(vanReturnKey(trip), "رجوع عهدة سيارة", trip.date || todayISO(),
+      "رجوع باقي عهدة سيارة " + trip.carName + " — مندوب " + trip.repName + " — رحلة #" + trip.id +
+      " إلى " + (wh || "-") + " — " + fmt(amt) + " ج.م",
+      amt, stock.id, rep.id);
+  }
+  /* تكلفة البيع من السيارة = من طبقات الحمولة نفسها (cost المسجّل وقت التحميل).
+     كده حساب المندوب يقفل بصفر بالحرف: تحميل − بيع − رجوع. */
+  function vanSaleCostAlloc(trip, items) {
+    if (!trip) return;
+    const used = {};
+    // الكميات المبيعة قبل الفاتورة دي على نفس الرحلة
+    vanTripSales(trip).forEach((s) => (s.items || []).forEach((it) => {
+      const k = String(it.productId);
+      used[k] = round2((used[k] || 0) + (Number(it.qty) || 0));
+    }));
+    (items || []).forEach((it) => {
+      const k = String(it.productId);
+      const layers = ((trip.loaded) || []).filter((l) => Number(l.productId) === Number(it.productId));
+      let need = Number(it.qty) || 0;
+      let skip = used[k] || 0;
+      let done = 0;
+      layers.forEach((l) => {
+        if (!(need > 0)) return;
+        let avail = Number(l.qty) || 0;
+        if (skip > 0) { const t = Math.min(skip, avail); skip = round2(skip - t); avail = round2(avail - t); }
+        if (!(avail > 0)) return;
+        const take = Math.min(need, avail);
+        done += take * (Number(l.cost) || 0);
+        need = round2(need - take);
+      });
+      it.costTotal = round2(done);
+      used[k] = round2((used[k] || 0) + (Number(it.qty) || 0));
+    });
+  }
+  // رصيد عهدة المندوب في الرحلة = (تكلفة الحمولة − تكلفة المبيع − تكلفة الرجوع) + (نقد المبيع − المورَّد)
+  function vanTripCustodyBalance(trip) {
+    if (!trip) return 0;
+    const goods = round2(vanLoadedCost(trip) - vanTripSoldCost(trip) - vanReturnedCost(trip));
+    const cash = round2(vanTripCashSales(trip) - vanTripExpensesTotal(trip) - (Number(trip.countedCash) || 0));
+    return round2(goods + cash);
+  }
+  function vanTripSoldCost(trip) {
+    let c = 0;
+    vanTripSales(trip).forEach((s) => (s.items || []).forEach((it) => { c += Number(it.costTotal) || 0; }));
+    return round2(c);
+  }
+
+  /* ---- 🧑‍💼 بناء 262: مندوب بحساب مستقل مربوط بالسيارة ---- */
+  function vanCarOfName(name) {
+    const n = normalizeAr(name);
+    return vanCarsAll().find((c) => normalizeAr(c.name) === n) || null;
+  }
+  function vanRepCarsOfMe() {
+    const mine = vanIdentityKeys();
+    if (!mine.length) return [];
+    return vanCarsAll().filter((c) => {
+      const k = String(c.repUser || "").trim().toLowerCase();
+      return !!k && mine.indexOf(k) >= 0;
+    });
+  }
+  // «أنا مندوب» = فيه سيارة متعيّن عليها حسابي، وأنا مش مالك/سوبر أدمن
+  function vanIsRepUser() {
+    if (vanCanManage()) return false;
+    return vanRepCarsOfMe().length > 0;
+  }
+  function vanRepCarNames() { return vanRepCarsOfMe().map((c) => c.name); }
+  function vanApplyRepMode() {
+    try {
+      if (!vanIsRepUser()) return;
+      // شاشة البيع العامة مقفولة على المندوب — مخزون سيارته هو المتاح له فقط
+      const sb = document.querySelector('.nav-btn[data-view="sales"]');
+      if (sb) sb.hidden = true;
+      const vb = document.querySelector('.nav-btn[data-view="vanSales"]');
+      if (vb) vb.hidden = false;
+      const nw = $("#btnVanNew"); if (nw) nw.hidden = true;
+    } catch (e) {}
   }
 
   /* ---- حسابات المناديب: مراقبة 1.1.6 + حساب لكل مندوب ---- */
@@ -15219,7 +15401,7 @@ id: nextVoucherId(),
   }
 
   /* ---- 💸 مصروفات السيارة (بنزين/صيانة/زيت/كاوتش...): يدفعها المندوب من نقدية عهدته ---- */
-  const VAN_EXP_CATS = ["بنزين سيارة", "صيانة سيارة", "تغيير زيت", "إصلاح كاوتش", "مصروفات أخرى"];
+  const VAN_EXP_CATS = ["بنزين سيارة", "صيانة سيارة", "تغيير زيت", "إصلاح كاوتش", "نثريات", "مصروفات أخرى"];
   function vanExpenseControl() {
     let a = accounts.find((x) => x && String(x.code) === "5.3" && x.isActive !== false);
     if (a) return a;
@@ -15296,6 +15478,8 @@ id: nextVoucherId(),
     sel.innerHTML = "";
     VAN_EXP_CATS.forEach((c) => { const o = document.createElement("option"); o.value = c; o.textContent = c; sel.appendChild(o); });
     const amt = $("#vanExpAmount"); if (amt) amt.value = "";
+    const ltr = $("#vanExpLiters"); if (ltr) ltr.value = "";
+    const prc = $("#vanExpPrice"); if (prc) prc.value = "";
     const nt = $("#vanExpNote"); if (nt) nt.value = "";
     const m = $("#mVanExpense"); if (m) m.dataset.tid = String(tid);
     renderVanExpenseList(trip);
@@ -15310,7 +15494,9 @@ id: nextVoucherId(),
     const list = vanTripExpenses(trip);
     if (!list.length) { box.innerHTML = '<p class="login-sub">لا توجد مصروفات مسجّلة على الرحلة دي.</p>'; return; }
     box.innerHTML = list.map((e) =>
-      '<div class="van-exp-row"><span>' + esc(e.category) + (e.note ? " — " + esc(e.note) : "") + '</span>' +
+      '<div class="van-exp-row"><span>' + esc(e.category) +
+      (Number(e.liters) > 0 ? " — " + fmt(e.liters) + " لتر × " + fmt(e.literPrice) : "") +
+      (e.note ? " — " + esc(e.note) : "") + '</span>' +
       '<b>' + fmt(e.amount) + ' ج.م</b>' +
       '<button class="btn small red" type="button" data-vexdel="' + esc(e.id) + '">❌</button></div>'
     ).join("");
@@ -15320,10 +15506,15 @@ id: nextVoucherId(),
     const trip = vanTripById(m && m.dataset.tid);
     if (!trip || trip.status !== "open") { toast("الرحلة مقفولة.", "warning"); return; }
     const cat = $("#vanExpCat").value || "مصروفات أخرى";
-    const amount = Math.round((parseMoney(($("#vanExpAmount") && $("#vanExpAmount").value) || 0) || 0) * 100) / 100;
+    const liters = Math.round((parseMoney(($("#vanExpLiters") && $("#vanExpLiters").value) || 0) || 0) * 100) / 100;
+    const literPrice = Math.round((parseMoney(($("#vanExpPrice") && $("#vanExpPrice").value) || 0) || 0) * 100) / 100;
+    let amount = Math.round((parseMoney(($("#vanExpAmount") && $("#vanExpAmount").value) || 0) || 0) * 100) / 100;
+    // ⛽ بناء 262: لو كتب اللترات وسعر اللتر ⇒ المبلغ بيتحسب تلقائي (liters × price)
+    if (liters > 0 && literPrice > 0) amount = round2(liters * literPrice);
     const note = ($("#vanExpNote") && $("#vanExpNote").value) || "";
     if (!(amount > 0)) { toast("اكتب مبلغ المصروف.", "warning"); return; }
     const exp = { id: nextVanExpenseId(trip), category: cat, amount: amount, note: note, at: shiftNowISO(), by: activityUser() };
+    if (liters > 0) { exp.liters = liters; exp.literPrice = literPrice; }
     if (!Array.isArray(trip.expenses)) trip.expenses = [];
     trip.expenses.push(exp);
     const j = postVanExpenseJrn(trip, exp);
@@ -15331,6 +15522,8 @@ id: nextVoucherId(),
     try { addActivity("مصروف سيارة", "سيارة " + trip.carName + " - " + cat + " - " + fmt(amount) + " ج.م" + (j ? " - قيد " + j.number : "")); } catch (e) {}
     $("#vanExpAmount").value = "";
     $("#vanExpNote").value = "";
+    const lf = $("#vanExpLiters"); if (lf) lf.value = "";
+    const pf = $("#vanExpPrice"); if (pf) pf.value = "";
     renderVanExpenseList(trip);
     toast("اتسجّل مصروف " + cat + " بمبلغ " + fmt(amount) + " ج.م — هيُخصم من نقد عهدة المندوب.", "success");
   }
@@ -15465,7 +15658,7 @@ id: nextVoucherId(),
     try { if (!csetData && A.online) ensureSettData().catch(() => {}); } catch (e) {}
     const body = $("#vanTripBody");
     if (!body) return;
-    const carNames = vanCarNames();
+    const carNames = vanIsRepUser() ? vanRepCarNames() : vanCarNames();
     // فلتر السيارات
     const cf = $("#vanCarFilter");
     if (cf) {
@@ -15488,6 +15681,8 @@ id: nextVoucherId(),
     }
     const rows = (carTrips || []).filter((t) => {
       if (!t) return false;
+      // 🚚 بناء 262: المندوب يشوف رحلاته هو بس
+      if (vanIsRepUser() && !vanTripIsMine(t)) return false;
       if (fstatus !== "all" && String(t.status || "open") !== fstatus) return false;
       if (fcar && normalizeAr(t.carName) !== normalizeAr(fcar)) return false;
       return true;
@@ -15576,6 +15771,7 @@ id: nextVoucherId(),
     add("btnVanSettleCancel", "click", () => hideModal("mVanSettle"));
     add("btnVanSettleSave", "click", saveVanSettle);
     const cs = $("#vanSettleCounted"); if (cs) cs.addEventListener("input", updateVanSettleSummary);
+    const sod = $("#vanSettleOdo"); if (sod) sod.addEventListener("input", updateVanSettleSummary);
     const bms = $("#btnVanSettleExp"); if (bms) bms.addEventListener("click", () => {
       const m = $("#mVanSettle"); hideModal("mVanSettle"); openVanExpenseDialog(m && m.dataset.tid);
     });
@@ -15586,6 +15782,16 @@ id: nextVoucherId(),
       if (m && !m.hidden) updateVanSettleSummary();
     });
     add("btnVanExpAdd", "click", saveVanExpense);
+    // ⛽ بناء 262: لترات × سعر اللتر ⇒ المبلغ تلقائي
+    const vanFuelAuto = () => {
+      const l = parseMoney(($("#vanExpLiters") && $("#vanExpLiters").value) || 0) || 0;
+      const p = parseMoney(($("#vanExpPrice") && $("#vanExpPrice").value) || 0) || 0;
+      if (l > 0 && p > 0) { const a = $("#vanExpAmount"); if (a) a.value = String(round2(l * p)); }
+    };
+    ["vanExpLiters", "vanExpPrice"].forEach((id) => {
+      const el = $("#" + id);
+      if (el) el.addEventListener("input", vanFuelAuto);
+    });
     const ebox = $("#vanExpList");
     if (ebox) ebox.addEventListener("click", (ev) => {
       const b = ev.target.closest("[data-vexdel]");
@@ -15594,10 +15800,26 @@ id: nextVoucherId(),
     // نافذة التقرير
     add("btnVanReportClose", "click", () => hideModal("mVanReport"));
     add("btnVanReportPrint", "click", () => { const m = $("#mVanReport"); const tid = m ? Number(m.dataset.tid) : 0; vanPrintReport(tid); });
+    // ⛽ بناء 262: شاشة استهلاك البنزين
+    add("btnVanFuel", "click", openVanFuelDialog);
+    add("btnVanFuelClose", "click", () => hideModal("mVanFuel"));
+    ["vanFuelCar", "vanFuelFrom", "vanFuelTo"].forEach((id) => {
+      const el = $("#" + id);
+      if (el) el.addEventListener("change", renderVanFuel);
+    });
+    // 📡 بناء 262: زرار تحديث شاشة المتابعة
+    add("btnVanMonRefresh", "click", () => { renderVanMonitor(); vanMonitorTick(); });
+    const monBody = $("#vanMonBody");
+    if (monBody) monBody.addEventListener("click", (ev) => {
+      const b = ev.target.closest("[data-monreport]");
+      if (b) openVanReportDialog(Number(b.getAttribute("data-monreport")));
+    });
   }
 
   /* ==================== نافذة التحميل (فتح رحلة) ==================== */
   function openVanLoadDialog() {
+    // 🚚 بناء 262: فتح الرحلات وتحميل البضاعة للمالك/صاحب الشركة بس
+    if (vanIsRepUser()) { toast("فتح الرحلات وتحويل العهدة بصلاحية صاحب الشركة.", "warning"); return; }
     if (!vanCarsAll().length && !csetData && A.online) {
       // لوح الإعدادات مش محمّل لسه — نجيبه الأول
       ensureSettData().then(() => openVanLoadDialog()).catch(() => openVanLoadDialog());
@@ -15612,6 +15834,21 @@ id: nextVoucherId(),
       cs.innerHTML = "";
       vanCarNames().forEach((n) => { const o = document.createElement("option"); o.value = n; o.textContent = n; cs.appendChild(o); });
       fillVanRepOptions($("#vanLoadRep"), "");
+      // 🆕 262: لو السيارة متعيّن عليها مندوب بحساب مستقل ⇒ يتحدّد تلقائيًا وميقدرش يتغيّر
+      const syncRepOfCar = () => {
+        const rec = vanCarOfName(cs.value);
+        const rs = $("#vanLoadRep");
+        if (!rs) return;
+        if (rec && rec.repUser) {
+          const own = vanRepList().find((r) => String(r.user || "").trim().toLowerCase() === rec.repUser.toLowerCase());
+          if (own) rs.value = own.name;
+          rs.disabled = true;
+        } else {
+          rs.disabled = false;
+        }
+      };
+      cs.onchange = syncRepOfCar;
+      syncRepOfCar();
       const d = $("#vanLoadDate"); if (d) d.value = todayISO();
       const wh = $("#vanLoadWh");
       wh.innerHTML = "";
@@ -15675,28 +15912,49 @@ id: nextVoucherId(),
       if (avail + 0.0001 < pk.qty) short.push(p.nameAr + " (المتاح " + fmt(avail) + ")");
     });
     if (short.length) { toast("الرصيد مش كافي:\n" + short.join("\n"), "warning"); return; }
-    const rep = vanRepList().find((r) => r.name === repName) || { name: repName, user: "", full: "" };
+    const carRec = vanCarOfName(car);
+    const rep = Object.assign({ name: repName, user: "", full: "" }, vanRepList().find((r) => r.name === repName) || {});
+    // 🆕 بناء 262: لو السيارة متعيّن عليها مندوب بحساب مستقل ⇒ حسابه هو اللي يتربط بالرحلة
+    if (carRec && carRec.repUser) {
+      const own = vanRepList().find((r) => String(r.user || "").trim().toLowerCase() === carRec.repUser.toLowerCase());
+      rep.user = carRec.repUser;
+      rep.full = carRec.repFull || (own && own.full) || rep.full;
+      if (own && own.name) rep.name = own.name;
+    }
     const loaded = picks.map((pk) => {
       const p = products.find((x) => Number(x.id) === pk.pid);
-      return { productId: pk.pid, code: p ? p.code : "", nameAr: p ? p.nameAr : "", unit: p ? p.unit : "", qty: pk.qty, price: p ? (Number(p.salePrice) || 0) : 0 };
+      // 🆕 262: التكلفة تُجمَّد وقت التحميل (avgPriceOf = نفس تقييم المركز المالي)
+      const cost = p ? round2(avgPriceOf(p)) : 0;
+      return {
+        productId: pk.pid, code: p ? p.code : "", nameAr: p ? p.nameAr : "", unit: p ? p.unit : "",
+        qty: pk.qty, price: p ? (Number(p.salePrice) || 0) : 0,
+        cost: cost, costTotal: round2(pk.qty * cost)
+      };
     });
     picks.forEach((pk) => {
       const p = products.find((x) => Number(x.id) === pk.pid);
       if (p) vanMoveStock(p, wh, car, pk.qty);
     });
     saveProducts();
+    const odoStart = Math.round((parseMoney(($("#vanLoadOdo") && $("#vanLoadOdo").value) || 0) || 0) * 100) / 100;
     const trip = {
       id: nextCarTripId(), carName: car, repName: rep.name, repUser: rep.user, repFull: rep.full,
       date: date, status: "open", loadWarehouse: wh, loaded: loaded,
+      odoStart: odoStart, odoEnd: null, km: null,
       openedAt: shiftNowISO(), openedBy: activityUser(),
       settledAt: null, settledBy: null, countedCash: null, expectedCash: null, diff: null,
       treasuryId: null, settleWarehouse: null, notes: "", expenses: []
     };
     carTrips.push(trip);
+    // 🆕 262: قيد العهدة — مدين ذمم المندوب (بالتكلفة) / دائن المخزون
+    let lj = null;
+    try { lj = postVanLoadJournal(trip); } catch (e) {}
     saveCarTrips();
-    try { addActivity("فتح رحلة سيارة", "سيارة " + car + " - مندوب " + rep.name + " - تحميل " + picks.length + " صنف من " + wh); } catch (e) {}
+    try { addActivity("فتح رحلة سيارة", "سيارة " + car + " - مندوب " + rep.name + " - تحميل " + picks.length + " صنف من " + wh + (lj ? " - قيد عهدة " + lj.number : "")); } catch (e) {}
     hideModal("mVanLoad");
-    toast("اتفتحت رحلة السيارة " + car + " للمندوب " + rep.name + ".", "success");
+    toast("اتفتحت رحلة السيارة " + car + " للمندوب " + rep.name +
+      " — عهدة بضاعة " + fmt(vanLoadedCost(trip)) + " ج.م على حسابه" +
+      (lj ? " (قيد " + lj.number + ")" : "") + ".", "success");
     renderVanSales();
   }
 
@@ -15874,7 +16132,12 @@ id: nextVoucherId(),
     const invNo = nextInvoiceNumber();
     const paid = pay === "نقدي" ? t.grand : 0;
     const due = Math.round((t.grand - paid) * 100) / 100;
-    try { saleCostAlloc(vanSaleDraft.items); } catch (e) {}
+    // 🆕 بناء 262: تكلفة البيع من السيارة تُخصم من طبقات الحمولة نفسها (بالتكلفة المسجّلة
+    // وقت التحميل) لو الرحلة محمّلة بقيد عهدة — كده حساب المندوب يقفل بصفر بالحرف.
+    try {
+      if (vanTripHasLoadJrn(trip)) vanSaleCostAlloc(trip, vanSaleDraft.items);
+      else saleCostAlloc(vanSaleDraft.items);
+    } catch (e) {}
     const invoice = {
       // 🧱 بناء 240: رقم فاتورة السيارة كمان من الأرضية الدائمة (نفس علة sales/purchases)
       id: idFloorTake("sales", sales),
@@ -15888,6 +16151,7 @@ id: nextVoucherId(),
       subTotal: t.sub, grandTotal: t.grand,
       paidAmount: paid, dueAmount: due,
       isVan: true, vanTripId: trip.id, repName: trip.repName, vanRepAccountId: repAcc.id,
+      savedAt: shiftNowISO(),
       partyPrevBalance: cust.protected ? null : (Math.round((Number(cust.currentBalance) || 0) * 100) / 100),
       items: vanSaleDraft.items.map((it, idx) => ({
         id: idx + 1, productId: it.productId, code: it.code, nameAr: it.nameAr, unit: it.unit,
@@ -15948,6 +16212,7 @@ id: nextVoucherId(),
       " · نقد المبيعات: " + fmt(vanTripCashSales(trip)) + " ج.م · مصروفات: <b>" + fmt(vanTripExpensesTotal(trip)) +
       "</b> ج.م · المتوقّع تسليمه: <b>" + fmt(expected) + " ج.م</b> · آجل: " + fmt(vanTripCredit(trip)) + " ج.م";
     const ns = $("#vanSettleNotes"); if (ns) ns.value = "";
+    const od = $("#vanSettleOdo"); if (od) od.value = "";
     const m = $("#mVanSettle"); if (m) m.dataset.tid = String(tid);
     updateVanSettleSummary();
     showModal("mVanSettle");
@@ -15960,11 +16225,27 @@ id: nextVoucherId(),
     const expected = vanTripExpectedCash(trip);
     const counted = Math.round((parseMoney(($("#vanSettleCounted") && $("#vanSettleCounted").value) || 0) || 0) * 100) / 100;
     const diff = Math.round((counted - expected) * 100) / 100;
-    box.innerHTML = '<div class="shift-kv"><span>نقد مبيعات اليوم</span><b>' + fmt(vanTripCashSales(trip)) + ' ج.م</b></div>' +
-      '<div class="shift-kv"><span>مصروفات السيارة (بنزين/صيانة...)</span><b>− ' + fmt(vanTripExpensesTotal(trip)) + ' ج.م</b></div>' +
+    // 🆕 262: كشف حساب العهدة — بضاعة + نقد
+    const loadCost = vanLoadedCost(trip);
+    const soldCost = vanTripSoldCost(trip);
+    const goodsLeft = vanReturnedCost(trip);
+    const left = round2(-diff);   // موجب = عليه · سالب = له
+    const odoEnd = Math.round((parseMoney(($("#vanSettleOdo") && $("#vanSettleOdo").value) || 0) || 0) * 100) / 100;
+    const km = (Number(trip.odoStart) > 0 && odoEnd > 0 && odoEnd >= Number(trip.odoStart)) ? round2(odoEnd - Number(trip.odoStart)) : null;
+    box.innerHTML =
+      '<div class="shift-kv"><span>عهدة البضاعة المحمّلة (بالتكلفة)</span><b>' + fmt(loadCost) + ' ج.م</b></div>' +
+      '<div class="shift-kv"><span>تكلفة البضاعة المبيعة</span><b>' + fmt(soldCost) + ' ج.م</b></div>' +
+      '<div class="shift-kv"><span>باقي بضاعة بالسيارة (يرجع للمخزن)</span><b>' + fmt(goodsLeft) + ' ج.م</b></div>' +
+      '<div class="shift-kv"><span>نقد المبيعات</span><b>' + fmt(vanTripCashSales(trip)) + ' ج.م</b></div>' +
+      '<div class="shift-kv"><span>مصروفات الرحلة (بنزين/صيانة/نثريات...)</span><b>− ' + fmt(vanTripExpensesTotal(trip)) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>المتوقّع تسليمه</span><b>' + fmt(expected) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>المعدود فعليًا</span><b>' + fmt(counted) + ' ج.م</b></div>' +
-      '<div class="shift-kv"><span>' + (diff >= 0 ? "زيادة" : "عجز") + '</span><b>' + fmt(Math.abs(diff)) + ' ج.م</b></div>';
+      '<div class="shift-kv"><span>' + (diff >= 0 ? "زيادة" : "عجز") + '</span><b>' + fmt(Math.abs(diff)) + ' ج.م</b></div>' +
+      '<div class="shift-kv"><span>رصيد العهدة المتبقي على المندوب</span><b>' +
+        (left >= 0 ? fmt(left) + ' عليه' : fmt(Math.abs(left)) + ' له') + '</b></div>' +
+      '<div class="shift-kv"><span>عداد أول الرحلة</span><b>' + (Number(trip.odoStart) > 0 ? fmt(trip.odoStart) : "—") + '</b></div>' +
+      '<div class="shift-kv"><span>عداد آخر الرحلة / المسافة</span><b>' +
+        (odoEnd > 0 ? fmt(odoEnd) + (km != null ? " · " + fmt(km) + " كم" : "") : "—") + '</b></div>';
   }
   function saveVanSettle() {
     const m = $("#mVanSettle");
@@ -15985,6 +16266,9 @@ id: nextVoucherId(),
       if (rem > 0) { vanMoveStock(p, trip.carName, wh, rem); returned++; }
     });
     saveProducts();
+    // 🆕 262: قيد رجوع الباقي — مدين المخزون / دائن ذمم المندوب (بالتكلفة المسجّلة وقت التحميل)
+    let rj = null;
+    try { rj = postVanReturnJournal(trip, wh); } catch (e) {}
     // 2) توريد النقدية: سند قبض Dr خزينة / Cr ذمم المندوب
     const repAcc = vanRepAcc(trip.repName);
     if (counted > 0) {
@@ -15999,16 +16283,24 @@ id: nextVoucherId(),
     trip.status = "settled";
     trip.settledAt = shiftNowISO();
     trip.settledBy = activityUser();
+    // 🆕 262: عداد آخر الرحلة + المسافة المقطوعة
+    const odoEnd = Math.round((parseMoney(($("#vanSettleOdo") && $("#vanSettleOdo").value) || 0) || 0) * 100) / 100;
+    trip.odoEnd = odoEnd > 0 ? odoEnd : null;
+    trip.km = (Number(trip.odoStart) > 0 && odoEnd > 0 && odoEnd >= Number(trip.odoStart))
+      ? round2(odoEnd - Number(trip.odoStart)) : null;
     trip.expectedCash = expected;
     trip.countedCash = counted;
     trip.diff = Math.round((counted - expected) * 100) / 100;
+    trip.custodyLeft = vanTripCustodyBalance(trip);
     trip.treasuryId = tid || null;
     trip.settleWarehouse = wh;
     trip.notes = notes;
     saveCarTrips();
     try { addActivity("تصفية رحلة سيارة", "سيارة " + trip.carName + " - مندوب " + trip.repName + " - نقد " + fmt(counted) + " ج.م" + (trip.diff ? " (فرق " + fmt(trip.diff) + ")" : "")); } catch (e) {}
     hideModal("mVanSettle");
-    toast("اتصفّت رحلة السيارة " + trip.carName + " — رجع " + returned + " صنف للمخزن واتورّد " + fmt(counted) + " ج.م.", "success");
+    toast("اتصفّت رحلة السيارة " + trip.carName + " — رجع " + returned + " صنف للمخزن واتورّد " + fmt(counted) + " ج.م" +
+      (rj ? " — قيد رجوع العهدة " + rj.number : "") +
+      (trip.km != null ? " — مسافة " + fmt(trip.km) + " كم" : "") + ".", "success");
     renderVanSales();
   }
 
@@ -16041,6 +16333,8 @@ id: nextVoucherId(),
       const p = products.find((x) => Number(x.id) === Number(l.productId));
       if (p) vanMoveStock(p, trip.carName, trip.loadWarehouse, Number(l.qty) || 0);
     });
+    // 🆕 262: عكس قيد العهدة — الرحلة بلا مبيعات، فكل الحمولة راجعة للمخزن
+    try { vanRemoveJrn(vanLoadKey(trip)); } catch (e) {}
     saveProducts();
     const i = carTrips.findIndex((t) => Number(t.id) === Number(tid));
     if (i >= 0) carTrips.splice(i, 1);
@@ -16061,11 +16355,13 @@ id: nextVoucherId(),
     sales0.forEach((s) => { if (s.customerName) custNames[s.customerName] = (custNames[s.customerName] || 0) + 1; });
     let h = '<div class="van-rep-head"><h3>تقرير رحلة سيارة ' + esc(trip.carName) + '</h3>' +
       '<p>المندوب: <b>' + esc(trip.repName) + '</b> · التاريخ: ' + esc(trip.date) + ' · الحالة: ' + esc(vanStatusLabel(trip.status)) + '</p></div>';
-    h += '<table class="dgv"><thead><tr><th>الكود</th><th>الصنف</th><th>محّمّل</th><th>مبيع</th><th>باقي</th></tr></thead><tbody>';
+    h += '<table class="dgv"><thead><tr><th>الكود</th><th>الصنف</th><th>محّمّل</th><th>مبيع</th><th>باقي</th><th>سعر البيع</th><th>قيمة المبيع</th></tr></thead><tbody>';
     (trip.loaded || []).forEach((l) => {
       const sold = vanTripSoldQty(trip, l.productId);
       const rem = Math.max(0, Math.round((Number(l.qty) - sold) * 100) / 100);
-      h += '<tr><td>' + esc(l.code) + '</td><td style="text-align:right">' + esc(l.nameAr) + '</td><td>' + fmt(l.qty) + '</td><td>' + fmt(sold) + '</td><td>' + fmt(rem) + '</td></tr>';
+      // 🆕 262: بيان عددي + سعر البيع فقط — **ممنوع** يظهر سعر الشراء/المتوسط للمندوب
+      const sp = Number(l.price) || 0;
+      h += '<tr><td>' + esc(l.code) + '</td><td style="text-align:right">' + esc(l.nameAr) + '</td><td>' + fmt(l.qty) + '</td><td>' + fmt(sold) + '</td><td>' + fmt(rem) + '</td><td>' + fmt(sp) + '</td><td>' + fmt(round2(sold * sp)) + '</td></tr>';
     });
     h += '</tbody></table>';
     h += '<div class="van-rep-sum">' +
@@ -16076,15 +16372,24 @@ id: nextVoucherId(),
       '<div class="shift-kv"><span>نقدي (على ذمة المندوب)</span><b>' + fmt(vanTripCashSales(trip)) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>آجل (على حساب العملاء)</span><b>' + fmt(credit) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>مصروفات السيارة</span><b>− ' + fmt(vanTripExpensesTotal(trip)) + ' ج.م</b></div>' +
-      '<div class="shift-kv"><span>المتوقّع تسليمه من المندوب</span><b>' + fmt(cash) + ' ج.م</b></div>';
+      '<div class="shift-kv"><span>المتوقّع تسليمه من المندوب</span><b>' + fmt(cash) + ' ج.م</b></div>' +
+      // 🆕 262: عداد البنزين
+      '<div class="shift-kv"><span>عداد أول الرحلة</span><b>' + (Number(trip.odoStart) > 0 ? fmt(trip.odoStart) : "—") + '</b></div>' +
+      '<div class="shift-kv"><span>عداد آخر الرحلة</span><b>' + (Number(trip.odoEnd) > 0 ? fmt(trip.odoEnd) : "—") + '</b></div>' +
+      '<div class="shift-kv"><span>المسافة المقطوعة</span><b>' + (trip.km != null ? fmt(trip.km) + ' كم' : "—") + '</b></div>';
     const vexp = vanTripExpenses(trip);
     if (vexp.length) {
       h += '</div><div class="van-exp-block"><b>تفاصيل مصروفات السيارة:</b>' +
-        vexp.map((e) => '<div class="van-exp-row"><span>' + esc(e.category) + (e.note ? " — " + esc(e.note) : "") + '</span><b>' + fmt(e.amount) + ' ج.م</b></div>').join("") + '</div><div class="van-rep-sum">';
+        vexp.map((e) => '<div class="van-exp-row"><span>' + esc(e.category) +
+          (Number(e.liters) > 0 ? " — " + fmt(e.liters) + " لتر × " + fmt(e.literPrice) : "") +
+          (e.note ? " — " + esc(e.note) : "") + '</span><b>' + fmt(e.amount) + ' ج.م</b></div>').join("") + '</div><div class="van-rep-sum">';
     }
     if (trip.status === "settled") {
+      const leftR = round2(-(Number(trip.diff) || 0));
       h += '<div class="shift-kv"><span>المعدود عند التصفية</span><b>' + fmt(trip.countedCash) + ' ج.م</b></div>' +
-        '<div class="shift-kv"><span>' + ((trip.diff || 0) >= 0 ? "زيادة" : "عجز") + '</span><b>' + fmt(Math.abs(trip.diff || 0)) + ' ج.م</b></div>';
+        '<div class="shift-kv"><span>' + ((trip.diff || 0) >= 0 ? "زيادة" : "عجز") + '</span><b>' + fmt(Math.abs(trip.diff || 0)) + ' ج.م</b></div>' +
+        '<div class="shift-kv"><span>رصيد العهدة المتبقي على المندوب</span><b>' +
+          (leftR >= 0 ? fmt(leftR) + ' عليه' : fmt(Math.abs(leftR)) + ' له') + '</b></div>';
     }
     h += '</div>';
     const custs = Object.keys(custNames);
@@ -16109,6 +16414,241 @@ id: nextVoucherId(),
     sec.innerHTML = '<div class="van-print">' + vanReportHtml(trip) + '</div>';
     document.body.appendChild(sec);
     printSection(sec);
+  }
+
+  /* ==================== ⛽ بناء 262 — استهلاك البنزين ====================
+     القاعدة (طلب المالك): المسافة من عدّاد أول/آخر الرحلة، واللترات المسجّلة **داخل الفترة بس**.
+     أي لتر مسجّل قبل تاريخ بداية البحث **مستبعد تمامًا** من الحساب (لا بيزوّد اللترات ولا بينقص المسافة). */
+  function vanFuelExps(trip) {
+    return vanTripExpenses(trip).filter((e) => e && String(e.category || "").indexOf("بنزين") >= 0);
+  }
+  function vanFuelLitersOfTrip(trip) {
+    return round2(vanFuelExps(trip).reduce((m, e) => m + (Number(e.liters) || 0), 0));
+  }
+  function vanFuelCostOfTrip(trip) {
+    return round2(vanFuelExps(trip).reduce((m, e) => m + (Number(e.amount) || 0), 0));
+  }
+  function vanKmOfTrip(t) {
+    const s = Number(t && t.odoStart), e = Number(t && t.odoEnd);
+    if (s > 0 && e > 0 && e >= s) return round2(e - s);
+    return null;
+  }
+  function vanFuelTripsOf(car, from, to, inside) {
+    const c = normalizeAr(car);
+    return (carTrips || []).filter((t) => {
+      if (!t || normalizeAr(t.carName) !== c) return false;
+      const d = String(t.date || "");
+      const inRange = (!from || d >= from) && (!to || d <= to);
+      return inside ? inRange : !inRange;
+    }).sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || (Number(a.id) || 0) - (Number(b.id) || 0));
+  }
+  function openVanFuelDialog() {
+    const cs = $("#vanFuelCar");
+    if (cs) {
+      cs.innerHTML = "";
+      vanCarNames().forEach((n) => { const o = document.createElement("option"); o.value = n; o.textContent = n; cs.appendChild(o); });
+    }
+    const f = $("#vanFuelFrom"), t = $("#vanFuelTo");
+    if (f && !f.value) f.value = todayISO().slice(0, 8) + "01";
+    if (t && !t.value) t.value = todayISO();
+    renderVanFuel();
+    showModal("mVanFuel");
+  }
+  function renderVanFuel() {
+    const body = $("#vanFuelBody");
+    if (!body) return;
+    const car = ($("#vanFuelCar") && $("#vanFuelCar").value) || vanCarNames()[0] || "";
+    const from = ($("#vanFuelFrom") && $("#vanFuelFrom").value) || "";
+    const to = ($("#vanFuelTo") && $("#vanFuelTo").value) || "";
+    const rows = vanFuelTripsOf(car, from, to, true);
+    let km = 0, liters = 0, cost = 0, nKm = 0;
+    body.innerHTML = "";
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="8" class="login-sub" style="text-align:center">لا توجد رحلات للسيارة في الفترة دي.</td></tr>';
+    }
+    rows.forEach((tr) => {
+      const k = vanKmOfTrip(tr);
+      const l = vanFuelLitersOfTrip(tr);
+      const c = vanFuelCostOfTrip(tr);
+      const per = l > 0 ? round2(c / l) : 0;
+      if (k != null) { km += k; nKm++; }
+      liters += l; cost += c;
+      const row = document.createElement("tr");
+      row.innerHTML =
+        '<td>' + esc(tr.date || "-") + '</td>' +
+        '<td>' + (Number(tr.odoStart) > 0 ? fmt(tr.odoStart) : "—") + '</td>' +
+        '<td>' + (Number(tr.odoEnd) > 0 ? fmt(tr.odoEnd) : "—") + '</td>' +
+        '<td>' + (k != null ? fmt(k) : "—") + '</td>' +
+        '<td>' + (l > 0 ? fmt(l) : "—") + '</td>' +
+        '<td>' + (per > 0 ? fmt(per) : "—") + '</td>' +
+        '<td>' + (c > 0 ? fmt(c) : "—") + '</td>' +
+        '<td>' + (k != null && l > 0 ? fmt(round2(k / l)) + ' كم/لتر' : "—") + '</td>';
+      body.appendChild(row);
+    });
+    km = round2(km); liters = round2(liters); cost = round2(cost);
+    const avg = liters > 0 ? round2(km / liters) : 0;
+    const outside = vanFuelTripsOf(car, from, to, false);
+    const outsideLiters = round2(outside.reduce((m, t) => m + vanFuelLitersOfTrip(t), 0));
+    const sum = $("#vanFuelSummary");
+    if (sum) {
+      sum.innerHTML =
+        '<div class="shift-kv"><span>عدد الرحلات في الفترة</span><b>' + rows.length + ' (' + nKm + ' بمسافة)</b></div>' +
+        '<div class="shift-kv"><span>إجمالي المسافة</span><b>' + fmt(km) + ' كم</b></div>' +
+        '<div class="shift-kv"><span>إجمالي اللترات (داخل الفترة)</span><b>' + fmt(liters) + ' لتر</b></div>' +
+        '<div class="shift-kv"><span>قيمة البنزين</span><b>' + fmt(cost) + ' ج.م</b></div>' +
+        '<div class="shift-kv"><span>متوسط الاستهلاك</span><b>' + (avg > 0 ? fmt(avg) + ' كم / لتر' : "—") + '</b></div>' +
+        '<div class="shift-kv"><span>لترات قبل الفترة (مستبعدة)</span><b>' + fmt(outsideLiters) + ' لتر</b></div>';
+    }
+  }
+
+  /* ==================== 📡 بناء 262 — متابعة مناديب السيارات (لصاحب الشركة فقط) ====================
+     شاشة واحدة بيشوف فيها المالك **كل لحظة**: كل رحلة مفتوحة، باقي بضاعتها بالسيارة، النقدية اللي
+     مع المندوب، إجمالي عهدته، وكل حركة بيع/مصروف/تحميل/تصفية. بتسحب من السحابة كل ١٥ ثانية. */
+  const VAN_MON_MS = 15000;
+  let vanMonTimer = null;
+  let vanMonBusy = false;
+
+  function vanTripRemainQty(trip) {
+    return round2(((trip && trip.loaded) || []).reduce((m, l) =>
+      m + Math.max(0, round2((Number(l.qty) || 0) - vanTripSoldQty(trip, l.productId))), 0));
+  }
+  function vanTripRemainSaleValue(trip) {
+    return round2(((trip && trip.loaded) || []).reduce((m, l) => {
+      const rem = Math.max(0, round2((Number(l.qty) || 0) - vanTripSoldQty(trip, l.productId)));
+      return m + rem * (Number(l.price) || 0);
+    }, 0));
+  }
+  // النقدية اللي مع المندوب دلوقتي = نقد المبيع − مصروفات الرحلة (رحلات مفتوحة بس)
+  function vanTripCashOnHand(trip) {
+    if (!trip || trip.status !== "open") return 0;
+    return vanTripExpectedCash(trip);
+  }
+  function vanTripCustodyNow(trip) {
+    if (!trip) return 0;
+    if (trip.status !== "open") return round2(-(Number(trip.diff) || 0));
+    return round2(vanReturnedCost(trip) + vanTripCashOnHand(trip));
+  }
+  function vanMonMovements() {
+    const out = [];
+    const push = (at, kind, car, rep, desc, amount) => {
+      out.push({ at: String(at || ""), kind: kind, car: car || "", rep: rep || "", desc: desc || "", amount: Number(amount) || 0 });
+    };
+    (carTrips || []).forEach((t) => {
+      if (!t) return;
+      if (t.openedAt) push(t.openedAt, "تحميل", t.carName, t.repName,
+        "تحميل " + ((t.loaded || []).length) + " صنف — " + fmt(vanTripLoadedCount(t)) + " وحدة", vanLoadedCost(t));
+      vanTripExpenses(t).forEach((e) => push(e.at, "مصروف", t.carName, t.repName,
+        e.category + (e.note ? " — " + e.note : "") + (Number(e.liters) > 0 ? " (" + fmt(e.liters) + " لتر)" : ""), e.amount));
+      vanTripSales(t).forEach((s) => push(s.savedAt || (s.invoiceDate || t.date) + "T23:59:59", "بيع", t.carName, t.repName,
+        "فاتورة " + (s.invoiceNumber || s.invoiceNo || "") + " — " + (s.customerName || ""), s.grandTotal));
+      if (t.settledAt) push(t.settledAt, "تصفية", t.carName, t.repName,
+        "توريد نقد " + fmt(t.countedCash || 0) + (Number(t.diff) ? " — فرق " + fmt(t.diff) : ""), t.countedCash || 0);
+    });
+    return out.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 60);
+  }
+  function vanMonTime(at) {
+    const s = String(at || "");
+    if (!s) return "—";
+    return s.replace("T", " ").slice(0, 16);
+  }
+  function renderVanMonitor() {
+    const body = $("#vanMonBody");
+    if (!body) return;
+    const open = (carTrips || []).filter((t) => t && t.status === "open");
+    // الملخص
+    const sum = $("#vanMonSummary");
+    if (sum) {
+      const goods = round2(open.reduce((m, t) => m + vanTripRemainSaleValue(t), 0));
+      const cash = round2(open.reduce((m, t) => m + vanTripCashOnHand(t), 0));
+      const cust = round2(open.reduce((m, t) => m + vanTripCustodyNow(t), 0));
+      sum.innerHTML =
+        '<div class="shift-kv"><span>رحلات مفتوحة</span><b>' + open.length + '</b></div>' +
+        '<div class="shift-kv"><span>بضاعة بالسيارات (سعر البيع)</span><b>' + fmt(goods) + ' ج.م</b></div>' +
+        '<div class="shift-kv"><span>نقدية مع المناديب</span><b>' + fmt(cash) + ' ج.م</b></div>' +
+        '<div class="shift-kv"><span>إجمالي العهدة (بضاعة + نقد)</span><b>' + fmt(cust) + ' ج.م</b></div>';
+    }
+    // جدول الرحلات
+    body.innerHTML = "";
+    if (!open.length) {
+      body.innerHTML = '<tr><td colspan="10" class="login-sub" style="text-align:center">لا توجد رحلات مفتوحة دلوقتي.</td></tr>';
+    }
+    open.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || (Number(b.id) || 0) - (Number(a.id) || 0));
+    open.forEach((t) => {
+      const tr = document.createElement("tr");
+      const cash = vanTripCashOnHand(t);
+      const km = vanKmOfTrip(t);
+      tr.innerHTML =
+        '<td>' + esc(t.carName) + '</td>' +
+        '<td>' + esc(t.repName) + '</td>' +
+        '<td>' + esc(t.date) + '</td>' +
+        '<td>' + fmt(vanTripLoadedCount(t)) + '</td>' +
+        '<td>' + fmt(vanTripRemainQty(t)) + '<br><span class="login-sub">' + fmt(vanTripRemainSaleValue(t)) + ' ج.م</span></td>' +
+        '<td>' + fmt(vanTripSales(t).reduce((m, s) => m + (Number(s.grandTotal) || 0), 0)) + '</td>' +
+        '<td>' + fmt(cash) + '</td>' +
+        '<td>' + fmt(vanTripCustodyNow(t)) + '</td>' +
+        '<td>' + (Number(t.odoStart) > 0 ? fmt(t.odoStart) : "—") + (km != null ? '<br><span class="login-sub">' + fmt(km) + ' كم</span>' : '') + '</td>' +
+        '<td><button class="btn small gray" type="button" data-monreport="' + esc(t.id) + '">📄</button></td>';
+      body.appendChild(tr);
+    });
+    // سجل الحركات
+    const feed = $("#vanMonFeed");
+    if (feed) {
+      const mv = vanMonMovements();
+      if (!mv.length) { feed.innerHTML = '<p class="login-sub">لا توجد حركات مسجّلة بعد.</p>'; }
+      else {
+        feed.innerHTML = mv.map((m) => {
+          const cls = m.kind === "بيع" ? "mon-sale" : m.kind === "مصروف" ? "mon-exp" : "mon-load";
+          return '<div class="van-exp-row ' + cls + '"><span><b>' + esc(m.kind) + '</b> · ' + esc(m.car) + ' · ' + esc(m.rep) +
+            ' — ' + esc(m.desc) + '<br><span class="login-sub">' + esc(vanMonTime(m.at)) + '</span></span>' +
+            '<b>' + fmt(m.amount) + ' ج.م</b></div>';
+        }).join("");
+      }
+    }
+    const st = $("#vanMonStatus");
+    if (st) st.textContent = "آخر تحديث: " + vanMonTime(shiftNowISO()) + " · تحديث تلقائي كل 15 ثانية";
+  }
+  /* سحب خفيف مخصوص للشاشة: الرحلات + المبيعات بس (مش الـ13 جدول) */
+  function vanMonitorPull() {
+    if (!A.online || !window.CLOUD || !window.CLOUD.pullLazyTable) return Promise.resolve(false);
+    if (syncPullBusy) return Promise.resolve(false);
+    const tabs = PULL_TABLES.filter((t) => t.name === "car_trips" || t.name === "sales");
+    if (!tabs.length) return Promise.resolve(false);
+    syncPullBusy = true;
+    return Promise.all(tabs.map((t) =>
+      Promise.resolve().then(() => window.CLOUD.pullLazyTable(t.name))
+        .then((rows) => ({ t: t, rows: rows }))
+        .catch(() => ({ t: t, rows: null }))
+    )).then((res) => {
+      res.forEach((one) => {
+        if (!Array.isArray(one.rows)) return;
+        const sets = pullKeepSets(one.t.name);
+        const m = mergePulled(one.rows, one.t.get() || [], sets, one.t.fix);
+        one.t.set(m.merged);
+        try { localStorage.setItem(one.t.ls, JSON.stringify(m.merged)); } catch (e) {}
+        try { syncedAdd(one.t.name, one.rows.map((c) => c && c.id).filter((x) => x != null)); } catch (e) {}
+      });
+      try { mirror(); } catch (e) {}
+      try { syncToLocalDisk(); } catch (e) {}
+      return true;
+    }).catch(() => false).finally(() => { syncPullBusy = false; });
+  }
+  function vanMonitorTick() {
+    if (vanMonBusy) return;
+    vanMonBusy = true;
+    vanMonitorPull().then(() => { vanMonBusy = false; try { renderVanMonitor(); } catch (e) {} },
+      () => { vanMonBusy = false; });
+  }
+  function vanMonitorStart() {
+    try { vanBindOnce(); } catch (e) {}
+    renderVanMonitor();
+    if (vanMonTimer) return;
+    vanMonTimer = setInterval(() => {
+      if (ownerCurrentView !== "vanMonitor") { vanMonitorStop(); return; }
+      vanMonitorTick();
+    }, VAN_MON_MS);
+  }
+  function vanMonitorStop() {
+    if (vanMonTimer) { clearInterval(vanMonTimer); vanMonTimer = null; }
   }
 
   // 🛡 بناء 119: جزّة «إعدادات مؤسستك» (بنوك/محافظ) مع نفس رقم الخزينة.
@@ -17621,9 +18161,19 @@ id: nextVoucherId(),
     if (!(amt > 0)) return null;
     const cost = cogsAcc(), stock = stockAcc();
     if (!cost || !stock) return null;
+    // 🆕 بناء 262: بيع من سيارة محمّلة بقيد عهدة ⇒ التكلفة تخصم من **ذمم المندوب**
+    // (البضاعة بقت على ذمته يوم التحميل). الرحلات القديمة (بلا قيد تحميل) تفضل على المخزون.
+    let creditAccId = stock.id;
+    if (inv && inv.isVan && inv.vanTripId) {
+      const vTrip = vanTripById(inv.vanTripId);
+      if (vTrip && vanTripHasLoadJrn(vTrip)) {
+        const vRep = vanRepAcc(vTrip.repName);
+        if (vRep) creditAccId = vRep.id;
+      }
+    }
     const no = String((inv && (inv.invoiceNumber || inv.invoiceNo)) || "");
     return cogsWriteJrn(key, COGS_REF, (inv && (inv.invoiceDate || inv.date)) || todayISO(),
-      "تكلفة مبيعات فاتورة " + no + " — " + fmt(amt) + " ج.م", amt, cost.id, stock.id);
+      "تكلفة مبيعات فاتورة " + no + " — " + fmt(amt) + " ج.م", amt, cost.id, creditAccId);
   }
   // تكلفة سطر المرتجع = حصّته من تكلفة سطر الفاتورة الأصلي (بالكمية) — بلا أي رقم مخمّم
   function retLineCost(inv, line, qty) {
@@ -21094,7 +21644,9 @@ id: nextVoucherId(),
     // 🚚 بناء 178: «سيارات مناديب البيع» — سجل السيارات اللي المالك بيكتبها (رقم/اسم السيارة).
     // كل سيارة بتبقى **مخزن داخلي مخفي**: رصيدها في products[].stock[<اسم السيارة>] ومش
     // بتظهر في أي قائمة مستودعات عادية (لأن السجل ده مش مصدر warehouseList()).
-    car: { key: "cars", title: "سيارة مندوب", fields: [["name", "رقم / اسم السيارة"], ["is_active", "نشط (checkbox)"]] }
+    // 🆕 بناء 262: «يوزر نيم المندوب» — تعيين مندوب بحساب مستقل على السيارة.
+    // لما المندوب يفتح حسابه من الموبايل يشوف بضاعة سيارته بس، وشاشة البيع العامة مقفولة عليه.
+    car: { key: "cars", title: "سيارة مندوب", fields: [["name", "رقم / اسم السيارة"], ["rep_user", "يوزر نيم المندوب (حسابه المستقل)"], ["is_active", "نشط (checkbox)"]] }
   };
   const SETT_HEADERS = {
     categories: [["name", "الاسم"], ["description", "الوصف"]],
@@ -21103,7 +21655,7 @@ id: nextVoucherId(),
     wallets: [["name", "الشركة / المحفظة"], ["account_no", "رقم المحفظة"], ["balance", "الرصيد"]],
     banks: [["name", "اسم البنك"], ["account_no", "رقم الحساب"], ["balance", "الرصيد"]],
     owners: [["name", "الاسم"], ["phone", "الهاتف"], ["capital", "رأس المال"], ["withdrawals", "المسحوبات"], ["is_active", "الحالة"]],
-    cars: [["name", "رقم / اسم السيارة"], ["is_active", "الحالة"]]
+    cars: [["name", "رقم / اسم السيارة"], ["rep_user", "مندوب السيارة"], ["is_active", "الحالة"]]
   };
 
   function settPayload(prefix) { return prefix === "c" ? csetData : ssetData; }
@@ -21184,6 +21736,15 @@ id: nextVoucherId(),
       if (f === "is_active") {
         const on = val === false || val === "false" || val === undefined ? "1" : "0";
         h += '<label>' + label + ':</label><select id="setF_is_active"><option value="1">🟢 نشط</option><option value="0">🔴 موقف</option></select>';
+      } else if (f === "rep_user") {
+        // 🆕 بناء 262: يوزر نيم المندوب — كتابة حرة + اقتراحات من حسابات الشركة.
+        // (datalist مش select: لو حساب المندوب لسه ما نزلش من السحابة، المالك يكتبه بإيده)
+        const reps = (function () { try { return vanRepList(); } catch (e) { return []; } })();
+        h += '<label>' + label + ':</label><input id="setF_rep_user" class="inp" list="settRepUsers" autocomplete="off" value="' +
+          esc(String(val == null ? "" : val)) + '" placeholder="اتركه فاضي لو السيارة للمالك" />' +
+          '<datalist id="settRepUsers">' +
+          reps.map((r) => '<option value="' + esc(r.user || r.name) + '">' + esc(r.name + (r.user ? " — " + r.user : "")) + '</option>').join("") +
+          '</datalist>';
       } else {
         h += '<label>' + label + ':</label><input id="setF_' + f + '" class="inp" autocomplete="off" value="' + esc(String(val == null ? "" : val)) + '" />';
       }
@@ -22264,6 +22825,10 @@ id: nextVoucherId(),
     // 🧾 ترقية ٦٢ (الشيكات + إنستا باي + حساب 1.1.7) — في الحزمة كسجل، والتنفيذ على
     // السحابة بأمر المالك الصريح (لحد ما يتنفّذ المزامنة محمية بـprobeChecksTable).
     "db/supabase-upgrade-62-checks.sql",
+    // 🧾 ترقية ٦٢-ب (بناء 262): القيد الافتتاحي التلقائي للمخزون عند استيراد Excel
+    // (`mizan_admin_opening_inventory_journal` + النداء من `mizan_admin_import_excel`).
+    // **اتنفّذت على القاعدة الحيّة 28/10** ومُتحقَّق منها 10/10 داخل معاملة ثم rollback.
+    "db/supabase-upgrade-62-opening-inventory-journal.sql",
     "db/supabase-upgrade-63-party-tx-receipt.sql",
     "db/supabase-upgrade-64-org-settings.sql",
     "db/supabase-upgrade-65-invoice-paid.sql",
@@ -22279,6 +22844,9 @@ id: nextVoucherId(),
     // mizan_client_sett_save + إدراج paid_amount/due_amount/payments في دالتَي الاستعادة
     // + تصحيح فواتير اتفرّغت بالاستعادة القديمة. **اتنفّذت 25/10** (guardedRun + ١٨ فحصًا).
     "db/supabase-upgrade-70-idfloors-others.sql",
+    // 🚚 ترقية ٧١ (بناء 262): أعمدة عدّاد البنزين/المسافة على car_trips (odo_start/odo_end/km).
+    // ⚠️ لسه ما اتنفّذتش على السحابة وقت كتابة السطر — هتتنفّذ بأمر المالك قبل النشر.
+    "db/supabase-upgrade-71-car-trip-odometer.sql",
     // 🔐 ترقية ٥٨ (بند المراجعة #17 — إخفاء كلمات المرور الصريحة): تعيد تعريف ٧ دوال بلا حفظ
     // الصريح، وتحذف mizan_admin_get_password، وتحذف عمودَي plain_password/password_plain.
     "db/supabase-upgrade-58-hide-plain-passwords.sql"];

@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4.1"; // رقم المنتج (داخلي — قرار المالك ما بيتغيرش كل نشر)
-    window.MIZAN_BUILD = 261;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
+    window.MIZAN_BUILD = 262;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
 
     /* 🆕 بناء 185: تنظيف الكاش القديم تلقائيًا أول ما البرنامج يفتح — بلا مسّ الجلسة
        (مهم: ما نلمسش mizan_session_v1 ولا مفاتيح بيانات المستخدم). لما رقم البناء يتغيّر
@@ -81,7 +81,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=261" />
+  <link rel="stylesheet" href="styles.css?v=262" />
 </head>
 <body>
 
@@ -137,6 +137,8 @@
       <button class="nav-btn" data-view="returnsReg" hidden>🔁  المرتجعات</button>
       <!-- 🚚 بناء 178: شاشة مستقلة لسيارات مناديب المبيعات (فتح رحلة/تحميل، بيع من السيارة، تصفية آخر اليوم). -->
       <button class="nav-btn" data-view="vanSales" hidden>🚚  سيارات مندوبين المبيعات</button>
+  <!-- 📡 بناء 262: متابعة مناديب السيارات (صاحب الشركة فقط) — كل حركة بيع/مصروف لحظة بلحظة -->
+  <button class="nav-btn" data-view="vanMonitor" hidden>📡  متابعة مناديب السيارات</button>
       </div>
     </div>
 
@@ -1380,6 +1382,7 @@
         <div class="view-header">
           <div class="view-actions">
             <button id="btnVanNew" class="btn green" type="button">➕ فتح رحلة سيارة (تحميل)</button>
+            <button id="btnVanFuel" class="btn sky" type="button">⛽ استهلاك البنزين</button>
             <button id="btnVanRefresh" class="btn gray" type="button">تحديث 🔄</button>
           </div>
           <h1 class="view-title">🚚 سيارات مندوبين المبيعات</h1>
@@ -1414,6 +1417,39 @@
             </thead>
             <tbody id="vanTripBody"></tbody>
           </table>
+        </div>
+      </section>
+
+      <!-- 📡 بناء 262: متابعة مناديب السيارات (صاحب الشركة فقط) — تحديث تلقائي كل 15 ثانية -->
+      <section class="view" id="viewVanMonitor" data-id="vanMonitor" hidden>
+        <div class="view-header">
+          <div class="view-actions">
+            <button id="btnVanMonRefresh" class="btn gray" type="button">🔄 تحديث الآن</button>
+          </div>
+          <h1 class="view-title">📡 متابعة مناديب السيارات</h1>
+        </div>
+        <p class="login-sub" id="vanMonStatus">جارٍ التحميل…</p>
+        <div class="sett-box"><div class="van-info" id="vanMonSummary"></div></div>
+        <div class="table-wrap">
+          <table class="dgv">
+            <thead><tr>
+              <th style="width:11%">السيارة</th>
+              <th style="width:11%">المندوب</th>
+              <th style="width:9%">التاريخ</th>
+              <th style="width:7%">حمولة</th>
+              <th style="width:13%">باقي بضاعة بالسيارة</th>
+              <th style="width:9%">مبيع</th>
+              <th style="width:10%">نقدية معه الآن</th>
+              <th style="width:10%">إجمالي العهدة</th>
+              <th style="width:9%">العداد</th>
+              <th style="width:5%"></th>
+            </tr></thead>
+            <tbody id="vanMonBody"></tbody>
+          </table>
+        </div>
+        <div class="sett-box">
+          <div class="panel-title">🕒 آخر الحركات (بيع / مصروف / تحميل / تصفية)</div>
+          <div id="vanMonFeed" class="van-exp-list"></div>
         </div>
       </section>
 
@@ -2830,6 +2866,9 @@
         </div>
         <label class="filter-label" for="vanLoadWh">المصدر (المخزن اللي بتُحمّل منه)</label>
         <select id="vanLoadWh"></select>
+        <!-- 🆕 بناء 262: عدّاد البنزين أول الرحلة -->
+        <label class="filter-label" for="vanLoadOdo">عدّاد البنزين أول الرحلة (كم)</label>
+        <input type="text" id="vanLoadOdo" inputmode="decimal" autocomplete="off" placeholder="مثال: 154320" />
         <label class="filter-label" for="vanLoadSearch">بحث عن صنف (كود/اسم)</label>
         <input type="text" id="vanLoadSearch" autocomplete="off" placeholder="اكتب كود أو اسم الصنف..." />
       </div>
@@ -2907,6 +2946,9 @@
         <select id="vanSettleTreasury"></select>
         <label class="filter-label" for="vanSettleCounted">النقدية المعدودة فعليًا مع المندوب (ج.م)</label>
         <input type="text" id="vanSettleCounted" inputmode="decimal" autocomplete="off" placeholder="0.00" />
+        <!-- 🆕 بناء 262: عدّاد البنزين آخر الرحلة -->
+        <label class="filter-label" for="vanSettleOdo">عدّاد البنزين آخر الرحلة (كم)</label>
+        <input type="text" id="vanSettleOdo" inputmode="decimal" autocomplete="off" placeholder="مثال: 154465" />
         <label class="filter-label" for="vanSettleNotes">ملاحظات (اختياري)</label>
         <input type="text" id="vanSettleNotes" autocomplete="off" placeholder="أي ملاحظة على التصفية..." />
       </div>
@@ -2967,8 +3009,20 @@
       <div class="sett-box">
         <label class="filter-label" for="vanExpCat">نوع المصروف</label>
         <select id="vanExpCat"></select>
-        <label class="filter-label" for="vanExpAmount">المبلغ (ج.م)</label>
-        <input type="text" id="vanExpAmount" inputmode="decimal" autocomplete="off" placeholder="0.00" />
+        <div class="van-grid3">
+          <div>
+            <label class="filter-label" for="vanExpLiters">لترات البنزين (لو بنزين)</label>
+            <input type="text" id="vanExpLiters" inputmode="decimal" autocomplete="off" placeholder="0" />
+          </div>
+          <div>
+            <label class="filter-label" for="vanExpPrice">سعر اللتر (ج.م)</label>
+            <input type="text" id="vanExpPrice" inputmode="decimal" autocomplete="off" placeholder="0.00" />
+          </div>
+          <div>
+            <label class="filter-label" for="vanExpAmount">المبلغ (ج.م)</label>
+            <input type="text" id="vanExpAmount" inputmode="decimal" autocomplete="off" placeholder="0.00" />
+          </div>
+        </div>
         <label class="filter-label" for="vanExpNote">بيان المصروف (اختياري)</label>
         <input type="text" id="vanExpNote" autocomplete="off" placeholder="مثال: بنزين محطة ... / تغيير زيت ..." />
       </div>
@@ -2976,6 +3030,43 @@
       <div class="modal-actions">
         <button id="btnVanExpClose" class="btn gray" type="button">إغلاق</button>
         <button id="btnVanExpAdd" class="btn green" type="button">➕ أضف المصروف</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⛽ بناء 262: استهلاك البنزين — تختار السيارة والفترة، يحسب المسافة واللترات ومتوسط كم/لتر -->
+  <div class="modal-overlay" id="mVanFuel" hidden>
+    <div class="modal m720" id="mVanFuelBox">
+      <h3>⛽ استهلاك البنزين</h3>
+      <p class="login-sub">المسافة من عدّاد أول/آخر كل رحلة، واللترات المسجّلة <b>داخل الفترة بس</b>. أي لتر مسجّل قبل تاريخ البداية <b>مستبعد تمامًا</b> من الحساب.</p>
+      <div class="sett-box">
+        <div class="van-grid3">
+          <div>
+            <label class="filter-label" for="vanFuelCar">السيارة</label>
+            <select id="vanFuelCar"></select>
+          </div>
+          <div>
+            <label class="filter-label" for="vanFuelFrom">من تاريخ</label>
+            <input type="date" id="vanFuelFrom" />
+          </div>
+          <div>
+            <label class="filter-label" for="vanFuelTo">إلى تاريخ</label>
+            <input type="date" id="vanFuelTo" />
+          </div>
+        </div>
+      </div>
+      <div class="van-list-wrap">
+        <table class="dgv">
+          <thead><tr>
+            <th>التاريخ</th><th>عداد أول</th><th>عداد آخر</th><th>كم</th>
+            <th>لترات</th><th>سعر اللتر</th><th>قيمة البنزين</th><th>كم/لتر</th>
+          </tr></thead>
+          <tbody id="vanFuelBody"></tbody>
+        </table>
+      </div>
+      <div id="vanFuelSummary" class="van-info"></div>
+      <div class="modal-actions">
+        <button id="btnVanFuelClose" class="btn gray" type="button">إغلاق</button>
       </div>
     </div>
   </div>
@@ -3816,14 +3907,14 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=261"></script>
-  <script src="supabase.config.js?v=261"></script>
-  <script src="data.js?v=261"></script>
-  <script src="cloud.js?v=261"></script>
-  <script src="install.js?v=261"></script>
-  <script src="vendor/exceljs.min.js?v=261"></script>
-  <script src="excel_import.js?v=261"></script>
-  <script src="app.js?v=261"></script>
+  <script src="lib_supabase.js?v=262"></script>
+  <script src="supabase.config.js?v=262"></script>
+  <script src="data.js?v=262"></script>
+  <script src="cloud.js?v=262"></script>
+  <script src="install.js?v=262"></script>
+  <script src="vendor/exceljs.min.js?v=262"></script>
+  <script src="excel_import.js?v=262"></script>
+  <script src="app.js?v=262"></script>
   <script>
     /* كاشف أخطاء على الشاشة — بقى **للمالك بس** (طلب المالك الحرفي 07/10: رسالة إنجليزية
        حمراء `TypeError …` ظهرت للبائع وهو بيكتب صنف في الفاتورة، وقاعدته السارية
