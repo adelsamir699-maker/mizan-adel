@@ -18289,10 +18289,20 @@ id: nextVoucherId(),
      الفاتورة في نفس اللحظة ⇒ المفتاح مش موجود في الذاكرة ⇒ قيد تاني.
      القاعدة هنا: **مفتاح المرجع هو الحقيقة** — أي قيدين بنفس المفتاح
      (S:/P:/CG:/CGR:/CT:/ST:/VC:/VL:/VR:/VREC:/RV:/SR:/PR:/OPENINV) واحد
-     منهم بس يفضل (الأقدم = الأصغر id)، والباقي بيتشال بأثر عكسي كامل
-     (settleJrnLines(-1)) ويتبعت حذفه للسحابة. والأرقام المكرّرة تترقّم
-     من id القيد نفسه. الشفاء ده **مش بأثر رجعي على فواتير**: هو إزالة
-     ترحيل مكرّر لنفس المستند — الرقم الصافي ما بيتغيّرش.
+     منهم بس يفضل (الأقدم = الأصغر id)، والباقي بيتشال ويتبعت حذفه للسحابة،
+     والأرقام المكرّرة تترقّم من id القيد نفسه. الشفاء ده **مش بأثر رجعي
+     على فواتير**: هو إزالة ترحيل مكرّر لنفس المستند — الرقم الصافي ما بيتغيّرش.
+
+     ⚠️ أثر الحذف على رصيد الحساب بيتظبّط **بالقياس مش بالطرح الأعمى**:
+     رصيد الحساب الجاري في ميزان = مجموع أسطر قيوده (نفس اللي بيقيسه حارس 149).
+     فبعد ما القيد المكرر يتشال:
+       • الرصيد الحالي = مجموع الأسطر الباقية + أثر القيد المحذوف ⇒ الحساب كان
+         شايل الأثر مرتين ⇒ نرجّعه لمجموع الأسطر الباقية.
+       • الرصيد الحالي = مجموع الأسطر الباقية بالفعل ⇒ الحساب سليم أصلًا ⇒ **ما نلمسوش**
+         (الطرح الأعمى هنا كان هيخليه أقل من الحقيقة بالفرق = خطأ حسابي جديد).
+       • أي رقم تالت = فرق قديم مش من القيد ده ⇒ ما نخمّنش ونسيبه زي ما هو.
+     القياس الحيّ 28/10 (القاهرة): الحساب 1.1.5 = 3,730 ومجموع أسطره 3,790 — الفرق
+     بالظبط أثر القيد المكرر (60) ⇒ بعد الحذف بقى 3,730 = 3,730 (سليم، ما اتعملوش طرح).
      ══════════════════════════════════════════════════════════════════ */
   const JRN_DEDUPE_PREFIXES = ["S:", "P:", "CG:", "CGR:", "CT:", "ST:", "VC:", "VL:", "VR:", "VREC:", "RV:", "SR:", "PR:", "OPENINV"];
   function jrnDedupeKeyOf(j) {
@@ -18302,6 +18312,28 @@ id: nextVoucherId(),
     const up = id.toUpperCase();
     const hit = JRN_DEDUPE_PREFIXES.some((p) => up === p || up.indexOf(p) === 0);
     return hit ? up : "";
+  }
+  // أثر قيد محذوف على أرصدة حساباته — بالقياس، ومش بيلمس حسابًا سليمًا أصلًا
+  function jrnHealAccountEffects(dropped) {
+    const nets = {};
+    (dropped || []).forEach((j) => (j.lines || []).forEach((l) => {
+      const id = Number(l.accountId);
+      if (!id) return;
+      nets[id] = round2((nets[id] || 0) + ((Number(l.debit) || 0) - (Number(l.credit) || 0)));
+    }));
+    const fixed = [];
+    Object.keys(nets).forEach((k) => {
+      const a = accounts.find((x) => Number(x.id) === Number(k));
+      if (!a) return;
+      let glSum = 0;
+      journalEntries.forEach((e) => (e.lines || []).forEach((l) => {
+        if (Number(l.accountId) === Number(k)) glSum += (Number(l.debit) || 0) - (Number(l.credit) || 0);
+      }));
+      glSum = round2(glSum);
+      const cur = round2(Number(a.openingBalance) || 0);
+      if (Math.abs(cur - round2(glSum + nets[k])) < 0.005) { a.openingBalance = glSum; fixed.push(k); }
+    });
+    return fixed;
   }
   function jrnDedupeHeal(opts) {
     const silent = !!(opts && opts.silent);
@@ -18315,11 +18347,12 @@ id: nextVoucherId(),
       drop.push(j);
     });
     drop.forEach((j) => {
-      try { settleJrnLines(j.lines, -1); } catch (e) { }
       const i = journalEntries.findIndex((x) => x === j);
       if (i >= 0) journalEntries.splice(i, 1);
       JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(j.id) || 0);
     });
+    // الأرصدة بعد الحذف (القياس على الأسطر الباقية)
+    const fixedAccs = drop.length ? jrnHealAccountEffects(drop) : [];
     // أرقام مكرّرة أو ناقصة ⇒ تتشتق من id القيد (فريد أبدًا)
     let renumbered = 0;
     const used = {};
@@ -18341,7 +18374,7 @@ id: nextVoucherId(),
         } catch (e) { }
       }
     }
-    return { dropped: drop.length, renumbered: renumbered };
+    return { dropped: drop.length, renumbered: renumbered, fixed: fixedAccs.length };
   }
   function nextVoucherId() {
     const id = Math.max(VOU_ID_FLOOR, vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
