@@ -1625,6 +1625,8 @@
     idFloorsLoad();
     // 🆕 بناء 214: حسابا الشيكات (1.1.7 و2.1.4) موجودان في الشجرة دايمًا
     ensureChecksAccounts();
+    // 🧹 بناء 264: شفاء أي ترحيل مكرّر لنفس المستند في القيود المحمّلة من القرص
+    try { jrnDedupeHeal({ silent: true }); } catch (e) { }
   }
 
   // 🆕 بناء 232: بصمة الصف = الحقول اللي فعلاً بتترفع للسحابة (بدون حقول محلية).
@@ -15343,6 +15345,22 @@ id: nextVoucherId(),
     vanTripSales(trip).forEach((s) => (s.items || []).forEach((it) => { c += Number(it.costTotal) || 0; }));
     return round2(c);
   }
+  /* 🆕 بناء 264: تكلفة بضاعة المناديب اللي لسه معاهم (باقي **الرحلات المفتوحة** اللي ليها
+     قيد تحميل فعلي). بتُخصم من بند «المخزون» في المركز المالي لأنها بقت «ذمم مناديب» (1.1.6)
+     بقيد التحميل — من غير الخصم ده البضاعة بتتعدّ مرتين والمركز المالي يطلع غير متوازن بقيمتها.
+     ⚠️ الرحلة **المقفولة** ما تتخصمش: التصفية بترجّع الباقي للمخزن (حركة كمية) وبتعمل قيد
+     رجوع (Dr المخزون / Cr ذمم المندوب) ⇒ البضاعة رجعت للمخزون فعلًا ورصيد المندوب اتصفّر. */
+  function vanCustodyGoodsCost() {
+    if (!Array.isArray(carTrips)) return 0;
+    let t = 0;
+    carTrips.forEach((tr) => {
+      if (!tr || tr.status !== "open") return;
+      try {
+        if (vanTripHasLoadJrn(tr)) t += vanReturnedCost(tr);
+      } catch (e) { }
+    });
+    return round2(t);
+  }
 
   /* ---- 🧑‍💼 بناء 262: مندوب بحساب مستقل مربوط بالسيارة ---- */
   function vanCarOfName(name) {
@@ -18260,6 +18278,71 @@ id: nextVoucherId(),
     const n = (id != null) ? Number(id) : __jrnLastId;
     return "JRN-" + String(n || 0).padStart(4, "0");
   }
+
+  /* ══════════════════════════════════════════════════════════════════
+     🧹 بناء 264 — شفاء القيود المكرّرة (منع الخطأ الحسابي المزدوج)
+     القياس الحيّ 28/10 (شركة «القاهرة لقطع غيار السيارات»): فاتورة
+     `S:220261016001` اترحّلت **مرتين** (JRN-0003 و JRN-0005) ⇒ مديونية
+     العميل +60 والإيراد +60 زيادة، ورقم JRN-0005 اتكرر على قيدين.
+     السبب الجذري: `postInvoiceJournal` بيمنع التكرار بمفتاح refId، لكن
+     لو الجهاز لسه ما نزّلش جدول القيود (LAZY) أو جهاز تاني رحّل نفس
+     الفاتورة في نفس اللحظة ⇒ المفتاح مش موجود في الذاكرة ⇒ قيد تاني.
+     القاعدة هنا: **مفتاح المرجع هو الحقيقة** — أي قيدين بنفس المفتاح
+     (S:/P:/CG:/CGR:/CT:/ST:/VC:/VL:/VR:/VREC:/RV:/SR:/PR:/OPENINV) واحد
+     منهم بس يفضل (الأقدم = الأصغر id)، والباقي بيتشال بأثر عكسي كامل
+     (settleJrnLines(-1)) ويتبعت حذفه للسحابة. والأرقام المكرّرة تترقّم
+     من id القيد نفسه. الشفاء ده **مش بأثر رجعي على فواتير**: هو إزالة
+     ترحيل مكرّر لنفس المستند — الرقم الصافي ما بيتغيّرش.
+     ══════════════════════════════════════════════════════════════════ */
+  const JRN_DEDUPE_PREFIXES = ["S:", "P:", "CG:", "CGR:", "CT:", "ST:", "VC:", "VL:", "VR:", "VREC:", "RV:", "SR:", "PR:", "OPENINV"];
+  function jrnDedupeKeyOf(j) {
+    if (!j) return "";
+    const id = String(j.refId || "").trim();
+    if (!id) return "";
+    const up = id.toUpperCase();
+    const hit = JRN_DEDUPE_PREFIXES.some((p) => up === p || up.indexOf(p) === 0);
+    return hit ? up : "";
+  }
+  function jrnDedupeHeal(opts) {
+    const silent = !!(opts && opts.silent);
+    const seen = {};
+    const drop = [];
+    // الأقدم أولًا (id الأصغر) — هو اللي بيفضل
+    journalEntries.slice().sort((a, b) => (Number(a && a.id) || 0) - (Number(b && b.id) || 0)).forEach((j) => {
+      const k = jrnDedupeKeyOf(j);
+      if (!k) return;
+      if (!seen[k]) { seen[k] = j; return; }
+      drop.push(j);
+    });
+    drop.forEach((j) => {
+      try { settleJrnLines(j.lines, -1); } catch (e) { }
+      const i = journalEntries.findIndex((x) => x === j);
+      if (i >= 0) journalEntries.splice(i, 1);
+      JRN_ID_FLOOR = Math.max(JRN_ID_FLOOR, Number(j.id) || 0);
+    });
+    // أرقام مكرّرة أو ناقصة ⇒ تتشتق من id القيد (فريد أبدًا)
+    let renumbered = 0;
+    const used = {};
+    journalEntries.forEach((j) => {
+      if (!j) return;
+      const no = String(j.number || "").trim();
+      if (no && !used[no]) { used[no] = 1; return; }
+      const fresh = jrnNo(j.id);
+      if (String(j.number || "") !== fresh) { j.number = fresh; renumbered++; }
+      used[fresh] = 1;
+    });
+    if (drop.length || renumbered) {
+      try { persistJournal(); } catch (e) { }
+      try { saveAccounts(); } catch (e) { }
+      try { renderJournal(); } catch (e) { }
+      if (!silent && drop.length) {
+        try {
+          toast("🧹 اتشال " + drop.length + " قيد مكرّر لنفس المستند — الأرصدة اتظبطت تلقائيًا.", "warning");
+        } catch (e) { }
+      }
+    }
+    return { dropped: drop.length, renumbered: renumbered };
+  }
   function nextVoucherId() {
     const id = Math.max(VOU_ID_FLOOR, vouchers.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0)) + 1;
     // 🧱 بناء 256 (#4): حجز فوري + دفع الأرضية للسحابة فورًا.
@@ -20498,7 +20581,14 @@ id: nextVoucherId(),
     const bank = bsRound(treasury.filter((t) => t.type === "bank").reduce((m, t) => m + (t.balance || 0), 0));
     const wallet = bsRound(treasury.filter((t) => t.type === "wallet").reduce((m, t) => m + (t.balance || 0), 0));
     const custDebts = bsRound(customers.reduce((m, c) => m + Math.max(c.currentBalance || 0, 0), 0));
-    const invValue = bsRound(products.reduce((m, pr) => m + (pr.qty || 0) * avgPriceOf(pr), 0));
+    /* 🆕 بناء 264 — البضاعة المحمّلة على سيارة مندوب **مش مخزون**، هي ذمة على المندوب (1.1.6).
+       قيد التحميل بينقلها من «1.1.4 المخزون» إلى «1.1.6 ذمم مناديب البيع» بالتكلفة المجمَّدة،
+       فلو حسبناها في بند المخزون كمان بتتعدّ مرتين ويطلع المركز المالي غير متوازن بقيمتها.
+       القياس 28/10: تحميل 20 وحدة بتكلفة 160 ⇒ المخزون 160 + ذمم المناديب 160 = 320 مقابل ملكية 160.
+       الحل: نخصم من بند المخزون **باقي بضاعة الرحلات اللي ليها قيد تحميل فعلي** بنفس التكلفة
+       المجمَّدة اللي اترحّلت (vanReturnedCost) ⇒ بند المخزون + بند ذمم المناديب = القيمة الحقيقية. */
+    const vanGoods = (typeof vanCustodyGoodsCost === "function") ? vanCustodyGoodsCost() : 0;
+    const invValue = bsRound(products.reduce((m, pr) => m + (pr.qty || 0) * avgPriceOf(pr), 0) - vanGoods);
     const suppDebts = bsRound(suppliers.reduce((m, s) => m + Math.max(s.currentBalance || 0, 0), 0));
     // 🧾 بناء 223: حساب إجمالي أوراق القبض (شيكات العملاء المعلقة) وأوراق الدفع (شيكات الموردين المعلقة)
     const kChecks = bsRound(checksPendingTotalOf(null, "customer"));
@@ -25384,6 +25474,18 @@ const pwEye = document.getElementById("btnShowPass");
     if (changed.indexOf("sales") >= 0) salesMarkAllDirty();
     journalSyncInit();
     if (changed.indexOf("journal_entries") >= 0) journalMarkAllDirty();
+    /* 🧹 بناء 264: بعد ما القيود تنزل كاملة، نشيل أي ترحيل مكرّر لنفس المستند (نفس refId)
+       ونصلّح الأرقام المكرّرة. البصمة اتاخدت جوه journalSyncInit **قبل** الشفاء، فـtrackChanges
+       بيلتقط القيد اللي اتشال كـ«مطلوب حذفه من السحابة» (ويلتقط القيد اللي اتغيّر رقمه كـdirty)،
+       وبنكتب الطابور على القرص (outbox) فالطلب بيعيد نفسه لو النت وقع — وإلا القيد المكرر
+       كان هيرجع مع أول سحب ونخصم أثره تاني. */
+    try {
+      const healed = jrnDedupeHeal({ silent: true });
+      if (healed && (healed.dropped || healed.renumbered)) {
+        journalTrackChanges();
+        if (journalPusher.state.dirty.size || journalPusher.state.removed.size) journalQueuePush(100);
+      }
+    } catch (e) { }
     rowPushersMarkChanged(changed);
     // 🧱 بناء 241: الدمج خلّص ⇒ ساعته تقدر تقارن «اللي على الجهاز» بـ«اللي فعليًا على السحابة»
     //    (قبل الدمج المقارنة غلط لأن الصفوف لسه نازلة). force=true لأن ده أنضف وقت للمقارنة.
