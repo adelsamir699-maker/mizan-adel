@@ -1,4 +1,4 @@
-﻿/* ===== نظام ألوان برنامج ميزان (UITheme) ===== */
+/* ===== نظام ألوان برنامج ميزان (UITheme) ===== */
 /* مهما كان الاختيار، خاصية hidden لازم تنتصر: لو العنصر فيه hidden يختفي، ولا صندوق الدخول ولا شاشاتها تظهر */
 [hidden] { display: none !important; }
 :root {
@@ -2864,4 +2864,30 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 
   /* (ي) تنفس أقل حواف + احترام نتافة الموبايل تحت (النوتش/شريط الأزرار) */
   .content { padding: 10px 8px calc(14px + env(safe-area-inset-bottom)); }
+}
+
+/* ================= 🆕 بناء 266: زرار «قفل وتصفية الرحلة» يبان =================
+   كان العمود 8% و.dgv tbody td بـ white-space:nowrap + overflow:hidden، فالأزرار
+   الخمسة كانت بتتقص و«تصفية» مش بتظهر خالص (بلاغ المالك: «فى الجنب أوى مش ظاهر»).
+   الحل: عمود الإجراءات ياخد مساحة أكبر + يلتف على سطرين + مفيش قص. */
+#dgvVanTrips .cell-actions {
+  white-space: normal;
+  overflow: visible;
+  max-width: none;
+  min-width: 180px;
+  line-height: 1.9;
+}
+#dgvVanTrips .cell-actions .btn.small {
+  margin: 2px 3px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+}
+#dgvVanTrips .cell-actions .btn.small.van-settle-btn {
+  background: #0d9488;
+  color: #fff;
+  font-weight: 800;
+}
+@media (max-width: 760px) {
+  #dgvVanTrips .cell-actions { min-width: 130px; }
+  #dgvVanTrips .cell-actions .btn.small { padding: 4px 6px; font-size: 11px; margin: 2px; }
 }

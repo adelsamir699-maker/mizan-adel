@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4.1"; // رقم المنتج (داخلي — قرار المالك ما بيتغيرش كل نشر)
-    window.MIZAN_BUILD = 265;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
+    window.MIZAN_BUILD = 266;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
 
     /* 🆕 بناء 185: تنظيف الكاش القديم تلقائيًا أول ما البرنامج يفتح — بلا مسّ الجلسة
        (مهم: ما نلمسش mizan_session_v1 ولا مفاتيح بيانات المستخدم). لما رقم البناء يتغيّر
@@ -81,7 +81,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=265" />
+  <link rel="stylesheet" href="styles.css?v=266" />
 </head>
 <body>
 
@@ -907,6 +907,7 @@
             <button id="btnAddTreasury" class="btn blue" type="button">➕ إضافة خزينة / حساب</button>
             <button id="btnVoucherIn" class="btn green" type="button">➕ سند قبض (إيراد)</button>
             <button id="btnVoucherOut" class="btn red" type="button">➖ سند صرف (مصروف)</button>
+            <button id="btnTreTransfer" class="btn blue" type="button">🔁 تحويل بين الحسابات</button>
           </div>
           <h1 class="view-title">💵 الخزينة والمصروفات وسندات القبض والصرف</h1>
         </div>
@@ -2901,14 +2902,43 @@
         </div>
         <div>
           <label class="filter-label" for="vanSalePay">طريقة الدفع</label>
+          <!-- 🆕 بناء 266 (طلب المالك: «نفس شكل شاشة البيع بكل وسائل الدفع»):
+               نفس وسائل الدفع الستة اللي في شاشة نقاط البيع بالحرف. -->
           <select id="vanSalePay">
-            <option value="نقدي">نقدي (على ذمة المندوب)</option>
+            <option value="نقداً">نقداً (على ذمة المندوب)</option>
             <option value="آجل">آجل (على حساب العميل)</option>
+            <option value="تحويل بنكي">تحويل بنكي</option>
+            <option value="محافظ إلكترونية">محافظ إلكترونية</option>
+            <option value="إنستا باي">إنستا باي</option>
+            <option value="شيك">شيك</option>
           </select>
         </div>
         <div>
           <label class="filter-label" for="vanSaleSearch">بحث عن صنف بالسيارة</label>
           <input type="text" id="vanSaleSearch" autocomplete="off" placeholder="كود/اسم..." />
+        </div>
+      </div>
+      <!-- 🆕 بناء 266: خزائن وسائل الدفع (بنك/محفظة/إنستا باي) + بيانات الشيك -->
+      <div class="van-grid3" id="vanSalePayExtra">
+        <div id="vanSaleBankField" hidden>
+          <label class="filter-label" for="vanSaleBank">البنك المستلم</label>
+          <select id="vanSaleBank"></select>
+        </div>
+        <div id="vanSaleWalletField" hidden>
+          <label class="filter-label" for="vanSaleWallet">المحفظة الإلكترونية</label>
+          <select id="vanSaleWallet"></select>
+        </div>
+        <div id="vanSaleInstaField" hidden>
+          <label class="filter-label" for="vanSaleInsta">حساب إنستا باي</label>
+          <select id="vanSaleInsta"></select>
+        </div>
+      </div>
+      <div id="vanSaleCheckField" hidden>
+        <label class="filter-label" for="vanSaleCheckBank">بيانات الشيك (يقف على حساب «شيكات العملاء» لحد التحصيل)</label>
+        <div class="pos-check-row">
+          <input id="vanSaleCheckBank" type="text" placeholder="اسم البنك" autocomplete="off" />
+          <input id="vanSaleCheckNo" type="text" placeholder="رقم الشيك" autocomplete="off" />
+          <input id="vanSaleCheckDue" type="date" />
         </div>
       </div>
       <div class="van-sale-cols">
@@ -2926,7 +2956,9 @@
           </div>
         </div>
       </div>
-      <div class="van-totals"><span>الإجمالي:</span> <b id="vanSaleTotal">0.00 ج.م</b></div>
+      <div class="van-totals"><span>الإجمالي:</span> <b id="vanSaleTotal">0.00 ج.م</b>
+        <span id="vanSaleDueWrap" hidden> · الآجل على العميل: <b id="vanSaleDue">0.00 ج.م</b></span>
+      </div>
       <div class="modal-actions">
         <button id="btnVanSaleCancel" class="btn gray" type="button">إلغاء</button>
         <button id="btnVanSaleSave" class="btn green" type="button">💾 حفظ البيع</button>
@@ -3907,14 +3939,14 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=265"></script>
-  <script src="supabase.config.js?v=265"></script>
-  <script src="data.js?v=265"></script>
-  <script src="cloud.js?v=265"></script>
-  <script src="install.js?v=265"></script>
-  <script src="vendor/exceljs.min.js?v=265"></script>
-  <script src="excel_import.js?v=265"></script>
-  <script src="app.js?v=265"></script>
+  <script src="lib_supabase.js?v=266"></script>
+  <script src="supabase.config.js?v=266"></script>
+  <script src="data.js?v=266"></script>
+  <script src="cloud.js?v=266"></script>
+  <script src="install.js?v=266"></script>
+  <script src="vendor/exceljs.min.js?v=266"></script>
+  <script src="excel_import.js?v=266"></script>
+  <script src="app.js?v=266"></script>
   <script>
     /* كاشف أخطاء على الشاشة — بقى **للمالك بس** (طلب المالك الحرفي 07/10: رسالة إنجليزية
        حمراء `TypeError …` ظهرت للبائع وهو بيكتب صنف في الفاتورة، وقاعدته السارية

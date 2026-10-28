@@ -466,8 +466,12 @@
         // ترحيل ٣٤: السطر اللي فقد local_id على السحابة يسترجعه من الـ uuid بدل ما يتشال
         // من القائمة ويعاد ترقيمه من جديد في كل تحميل (ده كان بيولّد التكرار).
         var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("treasury", r.id);
+        var op = Number(r.opening_balance || 0);
+        var curBal = Number(r.balance || 0);
+        // 🛡 بناء 266: لو الرصيد الافتتاحي على السحابة 0 بس فيه رصيد مسجل > 0، احتفظ به كافتتاحي عشان إعادة الحساب ما تصفروش
+        if (op === 0 && curBal > 0) op = curBal;
         return { id: lid, name: r.name, type: r.type || "cash", accountNo: r.account_no || "",
-          openingBalance: Number(r.opening_balance || 0), balance: Number(r.balance || 0),
+          openingBalance: op, balance: curBal,
           isActive: r.is_active !== false };
       }
     },

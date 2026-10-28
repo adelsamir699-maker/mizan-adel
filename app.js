@@ -994,11 +994,26 @@
     if (!Array.isArray(treasury)) return;
     reconcileTreasuryWithTxs();
     treasury.forEach((tr) => {
-      if (tr.openingBalance == null) {
+      if (tr.openingBalance == null || (Number(tr.openingBalance) === 0 && Number(tr.balance || 0) > 0)) {
         tr.openingBalance = Number(tr.balance || 0);
       }
       const tid = Number(tr.id);
       let bal = Number(tr.openingBalance || 0);
+
+      // 🆕 بناء 266: لو الرصيد صفر ومافيش حركات، استرجع الرصيد من شجرة الحسابات لو متاح
+      if (bal === 0 && typeof accForTreasuryAcc === "function" && Array.isArray(accounts)) {
+        const a = accForTreasuryAcc(tr);
+        if (a) {
+          const aBal = Number(a.openingBalance || a.balance || 0);
+          if (aBal > 0) {
+            const othersOfSameType = treasury.filter((x) => x.type === tr.type && Number(x.id) !== tid && Number(x.balance || 0) > 0);
+            if (!othersOfSameType.length) {
+              bal = aBal;
+              tr.openingBalance = aBal;
+            }
+          }
+        }
+      }
 
       // 🆕 بناء 199: لو الفاتورة فيها سطور سداد مفصّلة ⇒ كل سطر بيتوزّع على خزينته هو
       // (والسطر «آجل»/«شيك» مايدخلش خزينة أصلًا: الآجل على حساب الطرف والشيك على 1.1.7).
@@ -3932,6 +3947,22 @@
   function chooserFeatures() {
     return ADMIN_FEATURES.filter(function (row) { return OWNER_ONLY_FEATS.indexOf(row[0]) === -1; });
   }
+  /* 🆕 بناء 266 — صلاحيات **العضو** (مش مزايا الشركة):
+     - شاشات صاحب المؤسسة/المالك الحصرية مش في القائمة أصلًا (منحها ما يفتحهاش).
+     - «فاتورة مبيعات» هي البيت المفتوح دايمًا ⇒ بتظهر معلّمة ومقفولة.
+     - الباقي **مقفول افتراضيًا** لحد ما صاحب المؤسسة يعلّم عليه. */
+  const MEMBER_ALWAYS_VIEWS = ["sales"];
+  const MEMBER_NEVER_VIEWS = ["dashboard", "users", "audit", "settings", "admin",
+    "vanMonitor", "accStatement", "journal", "glLedger", "subLedger"];
+  function memberChooserFeatures() {
+    return chooserFeatures().filter(function (row) {
+      return MEMBER_NEVER_VIEWS.indexOf(row[0]) === -1;
+    });
+  }
+  function memberFeatChecked(feats, k) {
+    if (MEMBER_ALWAYS_VIEWS.indexOf(k) !== -1) return true;
+    return !!(feats && feats[k] === true);
+  }
   // أي حفظ جديد لازم يعدي المفتاح المحفوظ زي ما هو (صفر تغيير في بيانات موجودة)
   function carryOwnerOnlyFeats(target, stored) {
     var s = (stored && typeof stored === "object") ? stored : {};
@@ -4005,6 +4036,29 @@
     }
   }
 
+  /* 🆕 بناء 266 — «لوحة التحكم لصاحب المؤسسة فقط، والباقي يبدأ من فاتورة مبيعات»:
+     قرار المالك الحرفي: غير صاحب المؤسسة أول ما يدخل يلاقي شاشة إنشاء فاتورة مبيعات،
+     وأي شاشة تانية **مقفولة افتراضيًا** لحد ما صاحب المؤسسة يمنحها له من
+     «المستخدمون والصلاحيات». المصدر الوحيد للشاشة الرئيسية = `homeViewOf()`.
+     (المندوب المعيَّن على سيارة: بيته شاشة سيارته لأنه مقفول عليه البيع العام أصلًا.) */
+  function homeViewOf() {
+    if (ownerHasAllAccess() || isCompanyOwnerAcct()) return "dashboard";
+    try { if (vanIsRepUser()) return "vanSales"; } catch (e) { }
+    return "sales";
+  }
+  // 🆕 بناء 266: الصلاحية لازم تكون **صريحة** في بروفايل الحساب نفسه (true).
+  // `featureFlag` مش كفاية لأنها بتدمج مزايا الشركة (الافتراضي فيها مفتوح) ⇒ عضو
+  // مالوش قرار شخصي كان هياخد كل الشاشات. صاحب المؤسسة هو اللي بيكتب القرار ده.
+  function memberFeatureGranted(viewName) {
+    var DE = window.DATA || {};
+    var k = featKeyOf(viewName);
+    if (DE.featureEnabled && DE.featureEnabled(k) === false) return false; // ميزة الشركة مقفولة
+    var prof = null;
+    try { prof = DE.getProfile ? DE.getProfile() : null; } catch (e) { prof = null; }
+    var own = (prof && prof.features) || {};
+    return own[k] === true;
+  }
+
   // هل يُسمح بعرض هذه الشاشة لهذا الحساب؟
   // «إعدادات مؤسستك» و«المرتجعات» استثناءً: يجب أن يفعّلها صاحب الشركة **صريحًا** (opt-in).
   // المالك العام وصاحب الشركة مسموح لهما دائمًا لأن البيانات شركتهما.
@@ -4016,6 +4070,11 @@
     // قرار صاحب الشركة؛ الحساب اللي شركة اسمها «ميزان» يفتحها، وغير كده لأ (source of truth
     // واحد: `ownerSettingsAllowed()`) — علشان كده الفحص ده **قبل** `permExplicitlyOff`.
     if (name === "settings") return ownerSettingsAllowed();
+    // 🆕 بناء 266: لوحة التحكم + المستخدمون + سجل العمليات = صاحب المؤسسة/المالك فقط.
+    // (حتى لو فُعّلت للحساب بالغلط، البوابة دي هي الحقيقة الوحيدة.)
+    if (name === "dashboard" || name === "users" || name === "audit") return isCompanyOwnerAcct();
+    // 🆕 بناء 266: شاشة إنشاء فاتورة مبيعات = بيت كل الأعضاء ومفتوحة دائمًا.
+    if (name === "sales") return true;
     // 🆕 بناء 131: أي «لأ» صريحة (من مستوى الشركة أو مستوى الحساب) بتقطع هنا —
     // قبل أي اختصار «صاحب الشركة»، فقرار التحديد ما بيرجعش «كل الصلاحيات».
     if (permExplicitlyOff(name)) return false;
@@ -4033,6 +4092,8 @@
     // 🚚 بناء 178: «سيارات مندوبين المبيعات» — المالك/صاحب الشركة دائمًا، والعضو عند التفعيل الصريح
     if (name === "vanSales") {
       if (isSuperAcct() || isCompanyOwnerAcct()) return true;
+      // 🆕 266: المندوب المعيَّن على سيارة = شاشته الأساسية، مالهاش معنى إنها تتقفل عليه
+      try { if (vanIsRepUser()) return true; } catch (e) { }
       if (!DE.featureFlag) return false;
       return DE.featureFlag("vanSales") === true;
     }
@@ -4070,7 +4131,10 @@
     // لوحة الإدارة = لحساب المالك (سوبر أدمن) **حصريًا** — لا قائمة مزايا الشركة
     // ولا دور «مالك شركة» ولا تفعيل صريح يقدر يفتحها لغيره. (المالك وصلها فوق بـ ownerHasAllAccess)
     if (name === "admin") return isSuperAcct();
-    return DE.featureEnabled ? DE.featureEnabled(name) : true;
+    // 🆕 بناء 266: صاحب المؤسسة بيفتح كل شاشات شركته؛ العضو **ما بيفتحش** أي شاشة
+    // إلا بمنح صريح (`true`) من صاحب المؤسسة في «المستخدمون والصلاحيات».
+    if (isCompanyOwnerAcct()) return true;
+    return memberFeatureGranted(name);
   }
 
   // صلاحية تسجيل/حذف المرتجعات (نفس بوابة الشاشة + فحص ثانٍ جوه الدوال)
@@ -4301,7 +4365,7 @@
       if (svO && own) svO.hidden = false;
       // لو الشاشة الحالية أصبحت معطّلة → عد للوحة
       const cur = document.querySelector(".view:not([hidden])");
-      if (cur && !canUseView(cur.dataset.id)) showView("dashboard");
+      if (cur && !canUseView(cur.dataset.id)) showView(homeViewOf());
     }
     // 🧱 بناء 132: بعد ما الأزرار اتحدّدت، الأقسام اللي شاشاتها كلها مقفولة تتشال من
     // الشريط العلوي (طلب المالك: «متظهرش من الأساس، ولا مكانها فاضي»).
@@ -4321,7 +4385,7 @@
   function viewBackGo(fallback) {
     const prev = viewBackStack.pop() || null;
     viewBackUpdate();
-    showView(prev && prev.name ? prev.name : (fallback || "dashboard"), { history: false });
+    showView(prev && prev.name ? prev.name : (fallback || homeViewOf()), { history: false });
   }
   function showView(name, opts) {
     opts = opts || {};
@@ -4348,44 +4412,44 @@
     // أي حساب غير المالك — حتى لو نادى showView("admin") برمجيًا أو من الكونسول —
     // بيرجع للوحة التحكم، واللوحة ما بتترسمش أصلًا (openAdmin بيرفض قبل أي نداء).
     if (name === "admin" && !isOwner) {
-      name = "dashboard";
+      name = homeViewOf();
       toast("لوحة الإدارة لحساب المالك فقط", "error");
     }
     // «إعدادات مؤسستك» لا تُفتح إلا لمن فعّلها صاحب الشركة (أو المالك/صاحب الشركة)
     if (name === "clientSettings" && !canUseView("clientSettings")) {
       toast("صلاحية «إعدادات مؤسستك» غير مفعّلة لحسابك", "error");
-      name = "dashboard";
+      name = homeViewOf();
     }
     // 🔁 «المرتجعات» نفس النمط: صلاحية مستقلة opt-in لحساب العضو
     if (name === "returnsReg" && !canManageReturns()) {
       toast("صلاحية «إدارة المرتجعات» غير مفعّلة لحسابك", "error");
-      name = "dashboard";
+      name = homeViewOf();
     }
     // 🆕 مهمة 98: «الأصول الثابتة» — نفس نمط بوابة الحضور
     if (name === "fixedAssets" && !canManageFixedAssets()) {
       toast("صلاحية «الأصول الثابتة» غير مفعّلة لحسابك", "error");
-      name = "dashboard";
+      name = homeViewOf();
     }
     // 🆕 شاشة «كشف حساب الحسابات» — لصاحب الشركة والمالك فقط (زي شاشة القيود)
     if (name === "accStatement" && !canUseView("accStatement")) {
       toast("شاشة «كشف حساب الحسابات» متاحة لصاحب الشركة والمالك فقط", "error");
-      name = "dashboard";
+      name = homeViewOf();
     }
     // 🆕 بناء 115: «القيود اليومية» لصاحب الشركة والمالك فقط (طلب المالك: مش أي حد يسجل قيود)
     if (name === "journal" && !canUseView("journal")) {
       toast("شاشة «القيود اليومية» متاحة لصاحب الشركة والمالك فقط", "error");
-      name = "dashboard";
+      name = homeViewOf();
     }
     // 🚚 بناء 262: المندوب المعيَّن على سيارة — شاشة البيع العامة مقفولة عليه،
     // ومخزونه المتاح للبيع هو مخزون سيارته فقط.
     if (name === "sales" && vanIsRepUser()) {
       toast("مخزونك هو مخزون سيارتك بس — البيع من شاشة «سيارات مندوبين المبيعات».", "warning");
-      name = canUseView("vanSales") ? "vanSales" : "dashboard";
+      name = canUseView("vanSales") ? "vanSales" : homeViewOf();
     }
     // 📡 بناء 262: «متابعة مناديب السيارات» لصاحب الشركة/المالك فقط
     if (name === "vanMonitor" && !vanCanManage()) {
       toast("شاشة «متابعة مناديب السيارات» لصاحب الشركة فقط.", "error");
-      name = "dashboard";
+      name = homeViewOf();
     }
     // 🛡 بناء 131 (طلب المالك: «بحدد لهم صلاحيات بترجع تانى كل الصلاحيات لهم»):
     // البوابات اللي فوقها اسم-بس لكل شاشة على حدة؛ باقي الشاشات (فواتير المبيعات،
@@ -4397,7 +4461,7 @@
       const lbl131 = navLabelOf(name);
       toast((lbl131 ? "شاشة «" + lbl131 + "» " : "الشاشة دي ") +
         "مقفولة على حسابك — صاحب الشركة هو اللي بيحدّد الصلاحيات", "error");
-      name = "dashboard";
+      name = homeViewOf();
     }
     document.querySelectorAll(".view[data-id]").forEach((v) => {
       v.hidden = v.dataset.id !== name;
@@ -11708,6 +11772,10 @@
     if (loc && Number(row.openingBalance || 0) === 0 && Number(loc.openingBalance || 0) !== 0) {
       row.openingBalance = Number(loc.openingBalance) || 0;
     }
+    // 🛡 بناء 266: لو الرصيد الافتتاحي صفر بس فيه رصيد حقيقي مسجل > 0، احفظه
+    if (Number(row.openingBalance || 0) === 0 && Number(row.balance || 0) > 0) {
+      row.openingBalance = Number(row.balance) || 0;
+    }
     return row;
   }
 
@@ -15577,6 +15645,10 @@ id: nextVoucherId(),
     return theirs.some((k) => mine.indexOf(k) >= 0);
   }
   function vanCanManage() { return isSuperAcct() || isCompanyOwnerAcct(); }
+  /* 🆕 بناء 266 (طلب المالك: «محتاج زرار تصفية الرحلة»): المندوب المعيَّن على الرحلة
+     يقفل/يصفّي رحلته هو بنفسه — مالك/مدير يصفّي أي رحلة، والمندوب رحلته بس.
+     (البوابة هنا وفي `openVanSettleDialog` و`saveVanSettle` — مش الزرار بس.) */
+  function vanCanSettle(trip) { return vanCanManage() || (!!trip && vanTripIsMine(trip)); }
 
   /* ---- قوائم المناديب ---- */
   function vanRepList() {
@@ -15694,7 +15766,8 @@ id: nextVoucherId(),
       if (mine) {
         banner.hidden = false;
         banner.innerHTML = '🚚 رحلة سيارتك <b>' + esc(mine.carName) + '</b> مفتوحة النهاردة — ' +
-          '<button class="btn small green" type="button" data-vanact="sell" data-tid="' + esc(mine.id) + '">🧾 ابدأ البيع</button>';
+          '<button class="btn small green" type="button" data-vanact="sell" data-tid="' + esc(mine.id) + '">🧾 ابدأ البيع</button> ' +
+          '<button class="btn small van-settle-btn" type="button" data-vanact="settle" data-tid="' + esc(mine.id) + '">🔒 قفل وتصفية الرحلة</button>';
       } else { banner.hidden = true; banner.innerHTML = ""; }
     }
     const rows = (carTrips || []).filter((t) => {
@@ -15716,7 +15789,7 @@ id: nextVoucherId(),
       const acts = [];
       if (canSell) acts.push('<button class="btn small green" type="button" data-vanact="sell" data-tid="' + esc(t.id) + '">بيع</button>');
       if (t.status === "open") acts.push('<button class="btn small blue" type="button" data-vanact="expense" data-tid="' + esc(t.id) + '">💸 مصروف</button>');
-      if (t.status === "open" && vanCanManage()) acts.push('<button class="btn small teal" type="button" data-vanact="settle" data-tid="' + esc(t.id) + '">تصفية</button>');
+      if (t.status === "open" && vanCanSettle(t)) acts.push('<button class="btn small van-settle-btn" type="button" data-vanact="settle" data-tid="' + esc(t.id) + '">🔒 قفل وتصفية</button>');
       acts.push('<button class="btn small gray" type="button" data-vanact="report" data-tid="' + esc(t.id) + '">📄 تقرير</button>');
       if (t.status === "open" && vanCanManage()) acts.push('<button class="btn small red" type="button" data-vanact="del" data-tid="' + esc(t.id) + '">❌</button>');
       tr.innerHTML =
@@ -15756,7 +15829,11 @@ id: nextVoucherId(),
     const banner = $("#vanRepBanner");
     if (banner) banner.addEventListener("click", (ev) => {
       const b = ev.target.closest("[data-vanact]");
-      if (b && b.getAttribute("data-vanact") === "sell") openVanSaleDialog(Number(b.getAttribute("data-tid")));
+      if (!b) return;
+      const act = b.getAttribute("data-vanact");
+      const tid = Number(b.getAttribute("data-tid"));
+      if (act === "sell") openVanSaleDialog(tid);
+      else if (act === "settle") openVanSettleDialog(tid);
     });
     // نوافذ التحميل
     add("btnVanLoadCancel", "click", () => hideModal("mVanLoad"));
@@ -16213,7 +16290,7 @@ id: nextVoucherId(),
     const trip = vanTripById(tid);
     if (!trip) { toast("الرحلة مش موجودة.", "warning"); return; }
     if (trip.status !== "open") { toast("الرحلة مقفولة بالفعل.", "warning"); return; }
-    if (!vanCanManage()) { toast("التصفية بصلاحية المالك/المدير.", "warning"); return; }
+    if (!vanCanSettle(trip)) { toast("التصفية لصاحب الشركة/المدير أو مندوب الرحلة نفسه.", "warning"); return; }
     const wh = $("#vanSettleWh");
     wh.innerHTML = "";
     warehouseList().forEach((w) => { const o = document.createElement("option"); o.value = w; o.textContent = w; wh.appendChild(o); });
@@ -16235,11 +16312,52 @@ id: nextVoucherId(),
     updateVanSettleSummary();
     showModal("mVanSettle");
   }
+  /* 🆕 بناء 266 (طلب المالك: «عند تصفية الرحلة لا تظهر البضاعة المتبقية في السيارة»):
+     تفصيل الباقي صنفًا صنفًا — الكمية بالسيارة + التكلفة اللي اتحمّلت بيها + إجمالي التكلفة.
+     نفس أرقام `vanReturnedCost` بالحرف (اللي بيتبني عليها قيد الرجوع)، فاللي يظهر = اللي يترحّل. */
+  function vanTripRemainLines(trip) {
+    const out = [];
+    ((trip && trip.loaded) || []).forEach((l) => {
+      const qty = Math.max(0, round2((Number(l.qty) || 0) - vanTripSoldQty(trip, l.productId)));
+      if (!(qty > 0)) return;
+      const p = (products || []).find((x) => Number(x.id) === Number(l.productId));
+      const cost = Number(l.cost) || 0;
+      out.push({
+        productId: l.productId,
+        name: p ? (p.nameAr || p.code || "") : ("صنف #" + l.productId),
+        code: p ? (p.code || "") : "",
+        qty: qty,
+        cost: round2(cost),
+        total: round2(qty * cost)
+      });
+    });
+    out.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "ar"));
+    return out;
+  }
+  function renderVanSettleGoods(trip) {
+    const box = $("#vanSettleGoods");
+    if (!box) return;
+    const rows = vanTripRemainLines(trip);
+    const totalQty = round2(rows.reduce((m, r) => m + r.qty, 0));
+    const totalCost = round2(rows.reduce((m, r) => m + r.total, 0));
+    let html = '<div class="shift-kv strong"><span>📦 باقي البضاعة في السيارة (ترجع للمخزن)</span><b>' +
+      fmt(totalQty) + ' وحدة · ' + fmt(totalCost) + ' ج.م (بالتكلفة)</b></div>';
+    if (!rows.length) {
+      html += '<span class="login-sub">مافيش بضاعة متبقية في السيارة — كل اللي اتحمّل اتباع.</span>';
+    } else {
+      rows.forEach((r) => {
+        html += '<div class="shift-kv"><span>' + esc(r.name) + (r.code ? ' <span class="login-sub">(' + esc(r.code) + ')</span>' : '') +
+          '</span><b>' + fmt(r.qty) + ' × ' + fmt(r.cost) + ' = ' + fmt(r.total) + ' ج.م</b></div>';
+      });
+    }
+    box.innerHTML = html;
+  }
   function updateVanSettleSummary() {
     const m = $("#mVanSettle");
     const trip = vanTripById(m && m.dataset.tid);
     const box = $("#vanSettleSummary");
     if (!trip || !box) return;
+    renderVanSettleGoods(trip);
     const expected = vanTripExpectedCash(trip);
     const counted = Math.round((parseMoney(($("#vanSettleCounted") && $("#vanSettleCounted").value) || 0) || 0) * 100) / 100;
     const diff = Math.round((counted - expected) * 100) / 100;
@@ -16275,6 +16393,7 @@ id: nextVoucherId(),
     const notes = ($("#vanSettleNotes") && $("#vanSettleNotes").value) || "";
     const expected = vanTripExpectedCash(trip);
     if (!wh) { toast("اختر المخزن.", "warning"); return; }
+    if (!vanCanSettle(trip)) { toast("التصفية لصاحب الشركة/المدير أو مندوب الرحلة نفسه.", "warning"); return; }
     // 1) إرجاع الباقي من السيارة للمخزن
     let returned = 0;
     (trip.loaded || []).forEach((l) => {
@@ -16788,6 +16907,10 @@ id: nextVoucherId(),
       treasury.push(t);
       saveTreasury();
       syncTreasuryItemToSett(t);
+      // 🛡 بناء 266: حفظ الرصيد الافتتاحي على السحابة عند إنشاء خزينة جديدة برصيد
+      if (opening > 0 && A.online && window.CLOUD && CLOUD.setTreasuryOpening) {
+        try { CLOUD.setTreasuryOpening(t, opening); } catch (e) { }
+      }
       addActivity("إضافة خزينة", "إضافة خزينة جديدة: " + name);
       // 🛡 بناء 119: الافتتاحي مالوش مكان في الرفع الجماعي ⇒ كتابة مباشرة لسطره هو
       if (A.online && Math.abs(opening) > 0.001) {
@@ -17509,9 +17632,18 @@ id: nextVoucherId(),
       const opt = document.createElement("option");
       opt.value = t.id;
       const typeLbl = t.type === "bank" ? "بنك" : t.type === "instapay" ? "إنستا باي" : t.type === "wallet" ? "محفظة" : "نقدية";
+      let b = round2(t.balance);
+      // 🛡 بناء 266: لو الرصيد صفر في الخزينة، افحص رصيد حساب الدليل المقابل
+      if (b === 0 && typeof accForTreasuryAcc === "function" && Array.isArray(accounts)) {
+        const a = accForTreasuryAcc(t);
+        if (a && Number(a.openingBalance || a.balance || 0) > 0) {
+          const others = treasury.filter((x) => x.type === t.type && Number(x.id) !== Number(t.id) && Number(x.balance || 0) > 0);
+          if (!others.length) b = round2(a.openingBalance || a.balance || 0);
+        }
+      }
       opt.textContent = mainCash && Number(t.id) === Number(mainCash.id)
-        ? "الخزينة — " + t.name + " — رصيد " + fmt(t.balance || 0) + " ج.م"
-        : t.name + " (" + typeLbl + ") — رصيد " + fmt(t.balance || 0) + " ج.م";
+        ? "الخزينة — " + t.name + " — رصيد " + fmt(b) + " ج.م"
+        : t.name + " (" + typeLbl + ") — رصيد " + fmt(b) + " ج.م";
       el.appendChild(opt);
     });
     return list;
@@ -17568,7 +17700,15 @@ id: nextVoucherId(),
   function fundsBlocked(t, amount, opts) {
     if (!t) return false;
     const need = round2(amount);
-    const bal = round2(t.balance);
+    let bal = round2(t.balance);
+    // 🛡 بناء 266: مطابقة الرصيد الفعلي من حساب الدليل لو الخزينة لسه صفر
+    if (bal === 0 && typeof accForTreasuryAcc === "function" && Array.isArray(accounts)) {
+      const a = accForTreasuryAcc(t);
+      if (a && Number(a.openingBalance || a.balance || 0) > 0) {
+        const others = treasury.filter((x) => x.type === t.type && Number(x.id) !== Number(t.id) && Number(x.balance || 0) > 0);
+        if (!others.length) bal = round2(a.openingBalance || a.balance || 0);
+      }
+    }
     if (!(need > 0) || bal >= need) return false;
     const o = opts || {};
     const short = round2(need - bal);
@@ -17681,7 +17821,14 @@ id: nextVoucherId(),
     const tid = parseInt((($(treasurySelId) || {})).value, 10);
     const t = treasury.find((x) => Number(x.id) === tid);
     if (!(amount > 0) || !t) { hint.style.color = ""; hint.textContent = base; return; }
-    const bal = round2(t.balance);
+    let bal = round2(t.balance);
+    if (bal === 0 && typeof accForTreasuryAcc === "function" && Array.isArray(accounts)) {
+      const a = accForTreasuryAcc(t);
+      if (a && Number(a.openingBalance || a.balance || 0) > 0) {
+        const others = treasury.filter((x) => x.type === t.type && Number(x.id) !== Number(t.id) && Number(x.balance || 0) > 0);
+        if (!others.length) bal = round2(a.openingBalance || a.balance || 0);
+      }
+    }
     if (m === "income") {
       hint.style.color = "";
       hint.textContent = "✅ رصيد «" + t.name + "» " + fmt(bal) + " ج.م — بعد القبض يبقى " + fmt(round2(bal + amount)) + " ج.م.";
@@ -17977,6 +18124,8 @@ id: nextVoucherId(),
 
   function openTransferEntry() {
     if (!simpleGate()) return;
+    try { syncTreasuryFromSett(); } catch (e) { }
+    try { recalculateTreasuryBalances(); } catch (e) { }
     $("#trAmount").value = "";
     $("#trNotes").value = "";
     $("#trDate").value = todayISO();
@@ -18066,7 +18215,7 @@ id: nextVoucherId(),
     const cloudSyncRequested = A.online && !A.adopting && !A.cleaning && !!window.CLOUD;
     if (cloudSyncRequested) {
       Promise.all(syncResults).then((results) => {
-        if (results.length === 4 && results.every((ok) => ok === true)) {
+        if (results.every((ok) => ok === true)) {
           toast(transferLabel + " وبياناته اترفعت للسحابة.", "success");
         } else {
           toast(transferLabel + " اتحفظ على الجهاز، لكن رفع بعض بياناته للسحابة ما اكتملش أو ما اتأكدش. راجع تنبيه المزامنة.", "warning");
@@ -22605,7 +22754,7 @@ id: nextVoucherId(),
   function loadSettingsForm() {
     if (!(A.online && DATA && DATA.adminOrgs && DATA.adminSettLoad)) {
       toast("هذه الشاشة للسحابة فقط.", "warning");
-      showView("dashboard");
+      showView(homeViewOf());
       return;
     }
     DATA.adminOrgs().then((orgs) => {
@@ -23663,7 +23812,7 @@ id: nextVoucherId(),
       set(LS_ACTIVITY, o.activity || []);
       loadData();
       toast("تمت استعادة النسخة الاحتياطية بنجاح.", "success");
-      showView("dashboard");
+      showView(homeViewOf());
     } catch (e) {
       toast("الملف غير صالح أو تالف.", "warning");
     }
@@ -23682,7 +23831,7 @@ id: nextVoucherId(),
     LS_ALL_KEYS.forEach((k) => localStorage.removeItem(k));
     loadData();
     toast("تم مسح البيانات والعودة للوضع التجريبي.", "success");
-    showView("dashboard");
+    showView(homeViewOf());
   }
 
   /* ================== الساعة ================== */
@@ -23710,7 +23859,7 @@ id: nextVoucherId(),
     const iso = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
     ["dtpFromS", "dtpFromP", "dtpRepFrom"].forEach((id) => { if ($("#" + id)) $("#" + id).value = iso(d30); });
     ["dtpToS", "dtpToP", "dtpRepTo"].forEach((id) => { if ($("#" + id)) $("#" + id).value = todayISO(); });
-    showView("dashboard");
+    showView(homeViewOf());
 
     $("#btnRefresh").addEventListener("click", renderDashboard);
 
@@ -24408,6 +24557,7 @@ id: nextVoucherId(),
     $("#btnExpEntry").addEventListener("click", () => openSimpleEntry("expense"));
     $("#btnIncEntry").addEventListener("click", () => openSimpleEntry("income"));
     $("#btnTransferEntry").addEventListener("click", openTransferEntry);
+    if ($("#btnTreTransfer")) $("#btnTreTransfer").addEventListener("click", openTransferEntry);
     // 🆕 بناء 159: أزرار «إيداع/سحب أصحاب المؤسسة» — قيد محاسبي أوتوماتيك لغير المحاسب
     $("#btnOwnerDeposit").addEventListener("click", () => openOwnerEntry("deposit"));
     $("#btnOwnerWithdraw").addEventListener("click", () => openOwnerEntry("withdraw"));
@@ -25264,13 +25414,13 @@ const pwEye = document.getElementById("btnShowPass");
   function isOwnerOnlyFeatKey(k) { return OWNER_ONLY_FEATS.indexOf(k) !== -1; }
   function summarizeFeats(feats) {
     const f = feats || {};
-    const off = Object.keys(f).filter((k) => f[k] === false && !isOwnerOnlyFeatKey(k));
-    if (!off.length) return "✅ كل الصلاحيات";
-    let s = off.length > 3 ? off.length + " صلاحيات مغلقة" : off.map((k) => {
-      const found = ADMIN_FEATURES.find((x) => x[0] === k);
-      return found ? found[1] : k;
-    }).join("، ");
-    return "🔒 " + s;
+    // 🆕 بناء 266: الافتراضي بقى «مقفول» ⇒ الملخص يعرض المفتوح، مش المقفول.
+    const list = memberChooserFeatures().filter((row) => MEMBER_ALWAYS_VIEWS.indexOf(row[0]) === -1);
+    const on = list.filter((row) => memberFeatChecked(f, row[0]));
+    if (!on.length) return "🔒 مفيش صلاحيات — فاتورة مبيعات بس";
+    if (on.length === list.length) return "✅ كل الصلاحيات";
+    const names = on.length > 3 ? on.length + " شاشات مفتوحة" : on.map((row) => row[1]).join("، ");
+    return "🔓 " + names;
   }
   // ملخص بسيط للصلاحيات داخل لوحة المالك (نفس الأداة)
   function featsSummary(feats, adminFeats) {
@@ -25290,12 +25440,13 @@ const pwEye = document.getElementById("btnShowPass");
       if (!u) { toast("الحساب غير موجود", "error"); return; }
       let opts = "";
       // 🔑 بناء 133: «الإعدادات (المالك)» مش من الاختيارات دي إطلاقًا (source: `chooserFeatures`)
-      chooserFeatures().forEach(([k, label]) => {
-        // الصلاحيات opt-in: لا تُمنح إلا لو فُعّلت صريحًا (زي إعدادات المؤسسة والمستندات)
-        const on = OPT_IN_FEATS.indexOf(k) !== -1
-          ? (u.features && u.features[k] === true)
-          : !(u.features && u.features[k] === false);
-        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-feat\" value=\"" + k + "\" " + (on ? "checked" : "") + " /> " + label + "</label>";
+      // 🆕 بناء 266: الافتراضي «مقفول» — و«فاتورة مبيعات» مفتوحة دايمًا (بيت العضو).
+      memberChooserFeatures().forEach(([k, label]) => {
+        const on = memberFeatChecked(u.features, k);
+        const lock = MEMBER_ALWAYS_VIEWS.indexOf(k) !== -1;
+        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-feat\" value=\"" + k + "\" " +
+          (on ? "checked" : "") + (lock ? " disabled" : "") + " /> " + label +
+          (lock ? ' <span class="login-sub">(مفتوحة دايمًا)</span>' : "") + "</label>";
       });
       const body = "<div class=\"feat-grid\">" + opts + "</div>" +
         "<div class=\"feat-btns\"><button class=\"btn green\" type=\"button\" id=\"memberFeatSave\">حفظ الصلاحيات</button>" +
@@ -25330,9 +25481,12 @@ const pwEye = document.getElementById("btnShowPass");
       }
       let opts = "";
       // 🔑 بناء 133: حساب فرعي جديد مالوش «إعدادات المالك» في القائمة أصلًا
-      chooserFeatures().forEach(([k, label]) => {
-        const def = OPT_IN_FEATS.indexOf(k) !== -1 ? "" : " checked";
-        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-newfeat\" value=\"" + k + "\"" + def + " /> " + label + "</label>";
+      // 🆕 بناء 266: كل الصلاحيات تبدأ **مقفولة** إلا «فاتورة مبيعات» (بيت الحساب الجديد).
+      memberChooserFeatures().forEach(([k, label]) => {
+        const lock = MEMBER_ALWAYS_VIEWS.indexOf(k) !== -1;
+        opts += "<label class=\"feat-line\"><input type=\"checkbox\" class=\"member-newfeat\" value=\"" + k + "\"" +
+          (lock ? " checked disabled" : "") + " /> " + label +
+          (lock ? ' <span class="login-sub">(مفتوحة دايمًا)</span>' : "") + "</label>";
       });
       const body = "<div class=\"feat-grid\" style=\"grid-template-columns:repeat(3,1fr)\">" +
         "<input id=\"memberNewUser\" class=\"inp\" placeholder=\"يوزر نيم (إنجليزي)\" />" +
@@ -25641,7 +25795,14 @@ const pwEye = document.getElementById("btnShowPass");
     ["cashierShifts", "🧾 ورديات الكاشير"],
     ["carTab", "🚚 تبويب سيارات مناديب البيع"],
     ["vanSales", "🚚 سيارات مندوبين المبيعات"],
-    ["checks", "🧾 الشيكات (أوراق القبض)"]
+    ["checks", "🧾 الشيكات (أوراق القبض)"],
+    // 🆕 بناء 266: شاشات كانت موجودة في الشريط وناقصة من قوائم الصلاحيات
+    // (فصاحب المؤسسة ما كانش يقدر يمنحها لعضو، والعضو ما كانش يفتحها أبدًا).
+    ["chartTree", "🌳 شجرة الحسابات"],
+    ["salesTax", "🧾 ضريبة المبيعات"],
+    ["glLedger", "📚 دفتر الأستاذ العام"],
+    ["subLedger", "📚 دفتر الأستاذ المساعد"],
+    ["stockCount", "🧮 الجرد بالباركود"]
     ];
 
   // صلاحيات opt-in: owner/سوبر أدمن عندهما دائمًا، والعضو ما عندهاش إلا لو فُعّلت صريحًا
@@ -26442,7 +26603,7 @@ const pwEye = document.getElementById("btnShowPass");
     // (مش كفاية إن الزرار مخفي: أي مسار مستقبلي ينادي openAdmin ما يفتحش بيانات الشركات)
     if (!(ownerHasAllAccess() || !!window.__isOwner)) {
       toast("لوحة الإدارة لحساب المالك فقط", "error");
-      showView("dashboard");
+      showView(homeViewOf());
       return;
     }
     hideScreens();
