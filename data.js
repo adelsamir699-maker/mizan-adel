@@ -17,6 +17,90 @@
   var lastEmail = "";
   var lastCreds = null;
 
+  /* ══════════════════════════════════════════════════════════════════
+     🔐 بناء 263 — «الحساب المفتوح على جهاز مينفعش يتفتح على جهاز تاني»
+     الفكرة: معرّف جهاز ثابت في المتصفح + جلسة على السحابة (ترقية ٧٢).
+     الجهاز اللي ماسك الحساب بيبعت نبضة كل ٤٥ ثانية؛ جهاز تاني يحاول يدخل
+     وهو لسه حيّ ⇒ بيرجع busy وتظهر له رسالة «هذا الحساب مفتوح على جهاز اخر الان».
+     الجلسة اللي بلا نبضة ١٢٠ ثانية بتبقى حرّة (تطبيق اتقفل/الشبكة قطعت).
+     فشل الشبكة أو غياب الدالة = **ما نقفلش الباب** (البرنامج يشتغل عادي).
+     ══════════════════════════════════════════════════════════════════ */
+  var DEVICE_KEY = "mizan_device_v1";
+  var BEAT_MS = 45000;
+  var sessionTimer = null;
+  var sessionUser = "";
+  var lastLoginBusy = false;
+  var sessionLostHandler = null;
+
+  function deviceId() {
+    var v = "";
+    try { v = localStorage.getItem(DEVICE_KEY) || ""; } catch (e) { }
+    if (!v) {
+      v = "d" + Date.now().toString(36) + "-" +
+        Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
+      try { localStorage.setItem(DEVICE_KEY, v); } catch (e) { }
+    }
+    return v;
+  }
+  function newSessionId() {
+    return "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  }
+  function usernameOfEmail(em) {
+    return String(em || "").replace(/@mizan\.app$/i, "").trim();
+  }
+  /* خطأ «الدالة مش موجودة» = الترقية ٧٢ لسه ما اتنفّذتش ⇒ ما نعطّلش الدخول */
+  function rpcAbsent(err) {
+    var m = String((err && (err.message || err.details || err.hint)) || "");
+    return (err && (err.code === "PGRST202" || err.code === "42883")) ||
+      /could not find the function|does not exist|schema cache/i.test(m);
+  }
+  function stopSessionBeat() {
+    if (sessionTimer) { clearInterval(sessionTimer); sessionTimer = null; }
+  }
+  function startSessionBeat(user, dev) {
+    stopSessionBeat();
+    sessionUser = user;
+    sessionTimer = setInterval(function () {
+      if (!sb) return;
+      sb.rpc("mizan_session_beat", { p_user: user, p_device: dev }).then(function (r) {
+        if (r.error) return;                       // شبكة/غياب الدالة ⇒ ما نخرجش
+        var v = r.data || {};
+        if (v.lost) {
+          stopSessionBeat();
+          try { if (typeof sessionLostHandler === "function") sessionLostHandler(); } catch (e) { }
+        }
+      }).catch(function () { });
+    }, BEAT_MS);
+  }
+  /* مطالبة بالحساب عند الدخول. بترجع {ok:true} أو {ok:false, busy:true} */
+  function sessionClaim(username) {
+    lastLoginBusy = false;
+    var u = String(username || "").trim();
+    if (!u || !sb) return Promise.resolve({ ok: true, skipped: true });
+    var dev = deviceId();
+    return sb.rpc("mizan_session_claim", { p_user: u, p_device: dev, p_session: newSessionId() })
+      .then(function (r) {
+        if (r.error) {
+          if (!rpcAbsent(r.error)) { try { console.warn("session claim:", r.error.message); } catch (e) { } }
+          return { ok: true, skipped: true };      // ما نقفلش الباب على فشل شبكة
+        }
+        var v = r.data || {};
+        if (v.busy) { lastLoginBusy = true; return { ok: false, busy: true }; }
+        startSessionBeat(u, dev);
+        return { ok: true };
+      })
+      .catch(function () { return { ok: true, skipped: true }; });
+  }
+  /* خروج صريح ⇒ تحرير الحساب فورًا (قبل signOut لأن الدالة محتاجة الجلسة) */
+  function sessionRelease() {
+    stopSessionBeat();
+    var u = sessionUser;
+    sessionUser = "";
+    if (!u || !sb) return Promise.resolve();
+    return sb.rpc("mizan_session_release", { p_user: u, p_device: deviceId() })
+      .then(function () { }, function () { });
+  }
+
   // الجداول الصغيرة اللي تُحمَّل مرة واحدة عند الدخول
   var EAGER = ["customers", "suppliers", "products", "treasury", "accounts",
     "fixed_assets", "cashier_shifts", "car_trips", "checks"]; // 🆕 مهمة 98: الأصول الثابتة · 🧾 بناء 176: ورديات الكاشير · 🚚 بناء 178: رحلات سيارات المناديب · 🧾 بناء 190: الشيكات · 🌉 165: attendance/att_settings خارج المزامنة · 166: employees اتشال
@@ -134,8 +218,14 @@
         if (r.error || !r.data || !r.data.session) { clearSessionTokens(); return false; }
         saveSessionTokens(r.data.session); // التوكنات بتتجدد — نخزن أحدث نسخة
         lastCreds = null; // مش محتاجين باسورد مخزن في الذاكرة
-        return loadProfile().then(function () { return true; })
-          .catch(function () { clearSessionTokens(); return false; });
+        // 🔐 بناء 263: تحديث الصفحة/إعادة الفتح على **نفس الجهاز** يعدّي عادي،
+        // لكن لو الحساب ماسكه جهاز تاني ⇒ ما ندخلش ونرجّع شاشة الدخول بالرسالة.
+        var uname = usernameOfEmail(r.data.session.user && r.data.session.user.email);
+        return sessionClaim(uname).then(function (st) {
+          if (st && st.busy) { clearSessionTokens(); return sb.auth.signOut().then(function () { return false; }, function () { return false; }); }
+          return loadProfile().then(function () { return true; })
+            .catch(function () { clearSessionTokens(); return false; });
+        });
       }).catch(function () { clearSessionTokens(); return false; });
     });
   }
@@ -153,7 +243,17 @@
         if (r.error) throw r.error;
         lastCreds = { username: username, pass: pass };
         saveSessionTokens(r.data.session); // للاسترجاع التلقائي بعد التحديث/إعادة الفتح
-        return loadProfile().then(function () { return true; });
+        // 🔐 بناء 263: نفس الحساب ممنوع يبقى مفتوح على جهازين في نفس الوقت
+        return sessionClaim(username).then(function (st) {
+          if (st && st.busy) {
+            var be = new Error("هذا الحساب مفتوح على جهاز اخر الان");
+            be.busy = true;
+            lastCreds = null;
+            clearSessionTokens();
+            return sb.auth.signOut().then(function () { throw be; }, function () { throw be; });
+          }
+          return loadProfile().then(function () { return true; });
+        });
       });
     });
   }
@@ -252,7 +352,10 @@
   }
 
   function logout() {
-    return (sb ? sb.auth.signOut() : Promise.resolve()).then(function () {
+    // 🔐 بناء 263: تحرير الحساب على السحابة **قبل** إنهاء الجلسة
+    return sessionRelease().then(function () {
+      return (sb ? sb.auth.signOut() : Promise.resolve());
+    }).then(function () {
       // 🛡 تنظيف هوية الحساب بالكامل: ما يفضلش بقايا صلاحيات/باسورد
       // من حساب سابق تُستخدم لو دخل حساب تاني في نفس المتصفح
       profile = null; orgRow = null;
@@ -1026,6 +1129,12 @@ function changeMyPassword(oldPass, newPass) {
     orgId: orgId,
     login: login,
     autoLogin: autoLogin,
+    // 🔐 بناء 263: قفل «حساب واحد على جهاز واحد»
+    sessionClaim: sessionClaim,
+    sessionRelease: sessionRelease,
+    deviceId: deviceId,
+    loginBusy: function () { return lastLoginBusy; },
+    setSessionLostHandler: function (fn) { sessionLostHandler = fn; },
     joinOrg: joinOrg,
     loadProfile: loadProfile,
     email: email,

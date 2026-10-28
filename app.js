@@ -22847,6 +22847,10 @@ id: nextVoucherId(),
     // 🚚 ترقية ٧١ (بناء 262): أعمدة عدّاد البنزين/المسافة على car_trips (odo_start/odo_end/km).
     // ⚠️ لسه ما اتنفّذتش على السحابة وقت كتابة السطر — هتتنفّذ بأمر المالك قبل النشر.
     "db/supabase-upgrade-71-car-trip-odometer.sql",
+    // 🔐 ترقية ٧٢ (بناء 263): جدول mizan_sessions + ثلاث دوال (claim/beat/release) —
+    // حساب واحد على جهاز واحد في نفس الوقت. **اتنفّذت على القاعدة الحيّة 28/10**
+    // ومُتحقَّق منها 12/12 داخل معاملة ثم rollback قبل التنفيذ.
+    "db/supabase-upgrade-72-single-session.sql",
     // 🔐 ترقية ٥٨ (بند المراجعة #17 — إخفاء كلمات المرور الصريحة): تعيد تعريف ٧ دوال بلا حفظ
     // الصريح، وتحذف mizan_admin_get_password، وتحذف عمودَي plain_password/password_plain.
     "db/supabase-upgrade-58-hide-plain-passwords.sql"];
@@ -24558,6 +24562,18 @@ id: nextVoucherId(),
   }
 
   function setupAuth() {
+    // 🔐 بناء 263: لو جهاز تاني خد الحساب، الجهاز ده يخرج ويقول للمستخدم بالحرف.
+    try {
+      if (window.DATA && window.DATA.setSessionLostHandler) {
+        window.DATA.setSessionLostHandler(function () {
+          try { toast("هذا الحساب اتفتح على جهاز اخر — البرنامج هيقفل هنا.", "error"); } catch (e) { }
+          setTimeout(function () {
+            var out = (window.DATA && window.DATA.logout) ? window.DATA.logout() : Promise.resolve();
+            out.catch(function () { }).then(function () { try { location.reload(); } catch (e) { } });
+          }, 2500);
+        });
+      }
+    } catch (e) { }
     const activeLt = () => {
       const b = document.querySelector(".ltab[data-lt].active");
       return b ? b.dataset.lt : "in";
@@ -24634,7 +24650,14 @@ const pwEye = document.getElementById("btnShowPass");
           return;
         }
         proceedOnline(m, username);
-      }).catch((err) => setAuthMsg(m, "خطأ في الدخول: " + (err.message || err), "err"));
+      }).catch((err) => {
+        // 🔐 بناء 263: نفس الحساب مفتوح على جهاز تاني دلوقتي
+        if (err && err.busy) {
+          setAuthMsg(m, "هذا الحساب مفتوح على جهاز اخر الان — اقفل البرنامج على الجهاز التاني أو استنى دقيقتين وحاول تاني.", "err");
+          return;
+        }
+        setAuthMsg(m, "خطأ في الدخول: " + (err.message || err), "err");
+      });
     });
 
     $("#btnWipe").addEventListener("click", () => {
@@ -28572,6 +28595,10 @@ const pwEye = document.getElementById("btnShowPass");
           if (ok && DATA.getProfile()) { proceedOnline(null, null, true); return; }
           setDbStatus("🟡 أونلاين — سجّل الدخول");
           showLogin();
+          // 🔐 بناء 263: الجلسة المحفوظة بتاعة جهاز تاني لسه شغّالة ⇒ نقول السبب
+          if (window.DATA && window.DATA.loginBusy && window.DATA.loginBusy()) {
+            setAuthMsg($("#authMsg"), "هذا الحساب مفتوح على جهاز اخر الان — اقفل البرنامج على الجهاز التاني أو استنى دقيقتين وحاول تاني.", "err");
+          }
         }).catch(function () {
           $("#bootSplash").hidden = true;
           setDbStatus("🟡 أونلاين — سجّل الدخول");
