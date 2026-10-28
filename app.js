@@ -316,7 +316,8 @@
     // 🧾 بناء 215: «شيكات تحت التحصيل» فرع مستقل بره الأصول المتداولة (طلب المالك 21/10)
     { id: 26, code: "1.2", nameAr: "شيكات تحت التحصيل", type: "asset", parentId: 1, openingBalance: 0, isActive: true },
     // 🧾 بناء 190 (ترقية ٦٢): أوراق القبض — الشيك الوارد يقف هنا (أصل) لحد التحصيل
-    { id: 24, code: "1.2.1", nameAr: "شيكات لدى العملاء", type: "asset", parentId: 26, openingBalance: 0, isActive: true },
+    // 🧱 بناء 260: التصحيح باسم المالك الحرفي — «لدى العملاء» مسمى غلط، الصحيح «شيكات العملاء»
+    { id: 24, code: "1.2.1", nameAr: "شيكات العملاء", type: "asset", parentId: 26, openingBalance: 0, isActive: true },
     { id: 8, code: "1.3", nameAr: "الأصول الثابتة", type: "asset", parentId: 1, openingBalance: 0, isActive: true },
     { id: 9, code: "1.3.1", nameAr: "المباني والمعدات", type: "asset", parentId: 8, openingBalance: 0, isActive: true },
     { id: 10, code: "2", nameAr: "الالتزامات", type: "liability", parentId: 0, openingBalance: 0, isActive: true },
@@ -3672,6 +3673,26 @@
      أي استدعاء مباشر من الاختبارات (القفل على مستوى زرار الواجهة بس). */
   let printUiBusy = false;
   let printUiCooldownUntil = 0;
+  /* 🔧 بناء 260 (#342): القفل وحده كان بيكفي — لو الطباعة الأولى ما رجّعتش `afterprint`
+     (تبويب في الخلفية/متصفح بيرجّع الحدث متأخرًا أو أبداً) يفضل printUiBusy=true للأبد وكل
+     طباعة بعدها بتموت بصمت ⇒ المستخدم يضغط Ctrl+P. دول أدوات القفل الجديد:
+     printUiLockSince = لحظة حجز القفل · printCleanupFn = مفكّك القفل الحالي ·
+     printPendingEl = طلب جه والقفل مشغول (خانة واحدة، الأحدث يفوز). */
+  let printUiLockSince = 0;
+  let printCleanupFn = null;
+  let printPendingEl = null;
+  const PRINT_LOCK_STALE_MS = 8000;
+  /* 🆕 بناء 260 (#342): الطابور ما يمتش على مؤقّت واحد بيقع على حدود المهلة.
+     القياس بالزمن الحقيقي (مش افتراض): أول ما الـ cleanup جدّول الطلب المستني عند
+     `cooldown − now` بالحرف، المؤقّت رجع في نفس الملّي ⇒ `Date.now() < cooldown` لسه
+     صحيحة ⇒ الطلب اترجّع للطابور ومحدّش بقى بيفكّه ⇒ **نفس البلع الصامت** اللي بنصلّحه
+     (المقيس في المشهد ح: pending="invoicePage" وبلا طباعة تانية). نفس العطب كان موجود
+     في حالة تانية: طلب جه في مهلة التبريد والقفل **مش** مشغول ⇒ مافيش أي مفكّك أصلًا.
+     الحل: سلسلة إعادة محاولة وحيدة (مؤقّت واحد للحارس كي لا تتراكم) لحد القفل والمهلة
+     يخلصوا فعلًا، وبسقف يمنع أي حلقة أبدية. */
+  let printPendingTimer = 0;
+  const PRINT_RETRY_MS = 150;
+  const PRINT_RETRY_MAX = 80;   // 80 × 150ms = 12 ث ⇒ أكتر من PRINT_LOCK_STALE_MS (8 ث) وبيغطي التفكيك العالق
 
   function uiClickOnce(fn, ms) {
     let busy = false;
@@ -3688,9 +3709,40 @@
     };
   }
 
-  function printSection(el) {
+  /* 🆕 بناء 260 (#342): مفكّك الطابور الوحيد. كل طلب مستني بيادي نفس السلسلة،
+     والسلسلة بتنادي printSection نفسها — فهي اللي بتقرر (تفكيك عالق / إعادة طابور / طباعة).
+     مافيش مؤقتان في وقت واحد: printPendingTimer بيمنع التكرار وبيّتصفّر قبل أي نداء. */
+  function schedulePendingPrint(attempt) {
+    if (printPendingTimer) return;
+    if (!printPendingEl) return;
+    const n = attempt || 0;
+    if (n > PRINT_RETRY_MAX) { printPendingEl = null; return; }
+    printPendingTimer = setTimeout(function () {
+      printPendingTimer = 0;
+      if (!printPendingEl) return;
+      if (!printPendingEl.isConnected) { printPendingEl = null; return; }
+      printSection(printPendingEl, n + 1);
+    }, PRINT_RETRY_MS);
+  }
+
+  function printSection(el, retryNo) {
     if (!el) return;
-    if (printUiBusy || Date.now() < printUiCooldownUntil) return;
+    /* 🔧 بناء 260 (#342): القفل ما يبتلعش طلب طباعة مشروع.
+       (١) قفل عالق (الطباعة ما رجّعتش afterprint) يتفك بالقياس بعد PRINT_LOCK_STALE_MS.
+       (٢) الطلب الجاي والقفل مشغول يقف في طابور خانة واحدة ويطلع أول ما الحالية تخلص —
+           بدل return صامت كان بيسيّب مستند كامل بلا طباعة. */
+    /* القفل العالق يتفك بمهلة تبريد صفر: «عالق» معناه نافذة الطباعة ما رجّعتش afterprint
+       أصلًا — مافيش سباق مع المتصفح، فلو سيبت الـ cleanup يحط 800ms كان الطلب الجاي
+       يقف في الطابور ومحدّش بيفكّه (الـ cleanup اللي طابقت عليه خلّص قبل ما يتسجّل) ⇒
+       نفس البلع الصامت اللي إحنا بنصلّحه. */
+    if (printUiBusy && printCleanupFn && Date.now() - printUiLockSince > PRINT_LOCK_STALE_MS) {
+      printCleanupFn();
+      printUiCooldownUntil = 0;
+    }
+    if (printUiBusy || Date.now() < printUiCooldownUntil) { printPendingEl = el; schedulePendingPrint(retryNo); return; }
+    // الطلب اللي جاي من السلسلة بقى اتلمس دلوقتي ⇒ يتشال من الطابور قبل أي طباعة،
+    // وإلا الـ cleanup الجاي بيلقاه مستني ويعيد طباعة نفس المستند (حلقة طباعة أبدية).
+    if (printPendingEl === el) printPendingEl = null;
     // اسم الشركة من الضبط (لكل شركة على حدة) يظهر في كل صفحات الطباعة
     // ملاحظة: صفحتا الفاتورة (بيع/شراء) تملآن ترويستهما بنفسها احترامًا لصناديق «على الفاتورة».
     const org = invOrgName();
@@ -3730,9 +3782,17 @@
       document.body.classList.remove("printing");
       window.removeEventListener("afterprint", cleanup);
       printUiBusy = false;
+      printUiLockSince = 0;
+      if (printCleanupFn === cleanup) printCleanupFn = null;
       printUiCooldownUntil = Date.now() + 800;
+      /* 🆕 بناء 260 (#342): كان فيه طلب مستني في الطابور؟ سلسلة إعادة المحاولة الوحيدة
+         هي اللي بطلّعه (مش مؤقت بيقع على حدود المهلة بالحرف — المقيس فوق). */
+      if (printPendingEl && !printPendingEl.isConnected) printPendingEl = null;
+      schedulePendingPrint(0);
     };
     printUiBusy = true;
+    printUiLockSince = Date.now();
+    printCleanupFn = cleanup;
     window.addEventListener("afterprint", cleanup);
     try {
       const ae = document.activeElement;
@@ -11626,17 +11686,30 @@
     return row;
   }
 
+  // 🧱 بناء 260: إصلاح صف قيد في مكان واحد — سطور تحت أي اسم (`lines` أو `items` اللي كان
+  // مسار السحب بيلحقها فيه) وبعدين مجاميع محسوبة من السطور نفسها، لأن `journal_entries`
+  // مالهاش أعمدة مبالغ في السحابة. بترجع true لو القيد بقى ليه سطور.
+  function healJournalRow(row) {
+    if (!row) return false;
+    const lines = (Array.isArray(row.lines) && row.lines.length) ? row.lines
+      : ((Array.isArray(row.items) && row.items.length) ? row.items : null);
+    if (!lines) return false;
+    row.lines = lines;
+    if (row.items) delete row.items;
+    let d = 0, cr = 0;
+    lines.forEach(function (l) { d += Number(l.debit) || 0; cr += Number(l.credit) || 0; });
+    row.debit = Math.round(d * 100) / 100;
+    row.credit = Math.round(cr * 100) / 100;
+    return true;
+  }
+
   // أسطر القيود بتيجي ملحقة بالسحب؛ لو رجعت فاضية (سقف الصفحات) نستخدم أسطرنا المحلية.
   function keepJournalLines(c, loc) {
     const row = Object.assign({}, c);
-    let lines = Array.isArray(row.lines) ? row.lines : [];
-    if (!lines.length && loc && Array.isArray(loc.lines) && loc.lines.length) lines = loc.lines;
-    if (lines.length) {
-      row.lines = lines;
-      let d = 0, cr = 0;
-      lines.forEach(function (l) { d += Number(l.debit) || 0; cr += Number(l.credit) || 0; });
-      row.debit = Math.round(d * 100) / 100;
-      row.credit = Math.round(cr * 100) / 100;
+    if (!healJournalRow(row) && loc) {
+      const mine = (Array.isArray(loc.lines) && loc.lines.length) ? loc.lines
+        : ((Array.isArray(loc.items) && loc.items.length) ? loc.items : null);
+      if (mine) { row.lines = mine; healJournalRow(row); }
     }
     return row;
   }
@@ -11793,6 +11866,10 @@
         rowsTotal += cloud.length;
         const sets = pullKeepSets(t.name);
         const m = mergePulled(cloud, t.get() || [], sets, t.fix);
+        /* 🧱 بناء 260: أي صف قيد في النتيجة — حتى اللي عليه تعديل معلّق والمحلي بتاعه
+           طالع من بناء قديم بيلحق السطور تحت `items` — لازم سطورُه تتلمّ ومجاميعه تتحسب،
+           وإلا يفضل «مدين/دائن صفر» في «القيود اليومية» و«لا توجد حركات» في كشف الحساب. */
+        if (t.name === "journal_entries") { try { m.merged.forEach(healJournalRow); } catch (e) { } }
         t.set(m.merged);
         /* 🧱 بناء 256 (#3): كل صف رجع من السحابة = «وصل» (سواء اترفع من الجهاز ده أو من غيره). */
         syncedAdd(t.name, cloud.map(function (c) { return c && c.id; }).filter(function (x) { return x != null; }));
@@ -13938,6 +14015,11 @@ id: nextVoucherId(),
        • الارتجاع ⇒ قيد (مدين 1.1.5 / دائن 1.1.7) ⇒ المديونية ترجع — `returnCheck`
      مفتاح قيد الشيك: «CH:» + id (حماية من التكرار). */
   const CHECKS_ACC_CODE = "1.2.1";
+  /* 🧱 بناء 260 (بلاغ المالك بالحرف: «مسمى «لدى العملاء» ده مسمى غلط، الاسم الصحيح شيكات العملاء»):
+     الاسم الصح + الاسم القديم. OLD بيتقارن **حرفيًا** وبشرط أن السطر من منشآت البرنامج بالكود
+     (1.2.1 / 1.1.7 / 117) — فأي اسم كتبه المستخدم لحسابه ما بيتلمسش أبدًا. */
+  const CHECKS_ACC_NAME = "شيكات العملاء";
+  const CHECKS_ACC_NAME_OLD = "شيكات لدى العملاء";
   /* 🧾 بناء 215 (طلب المالك 21/10): «الشيك تحت التحصيل مش أصل متداول — يتحط في بابه
      شيكات تحت التحصيل، ولما يتحصل يتحوّل لتحصيلات العملاء». فروع مستقلة:
      دليل منقّط: 1.2 «شيكات تحت التحصيل» (أب 1) ← 1.2.1 · دليل مجرّد: 12 (أب 1) ← 117. */
@@ -13971,7 +14053,7 @@ id: nextVoucherId(),
     // من غير ما نحقن كودًا منقّطًا يخلط الدليل ويكسر تجميع الفروع (acsIsDotFreeChart).
     if (acsIsDotFreeChart()) {
       const parent = checksGroupAcc();
-      const ch = { id: nextAccountId(), code: "117", nameAr: "شيكات لدى العملاء", type: "asset", parentId: parent ? parent.id : 0, openingBalance: 0, isActive: true };
+      const ch = { id: nextAccountId(), code: "117", nameAr: CHECKS_ACC_NAME, type: "asset", parentId: parent ? parent.id : 0, openingBalance: 0, isActive: true };
       accounts.push(ch);
       try { saveAccounts(); } catch (e) { }
       return ch;
@@ -14029,9 +14111,26 @@ id: nextVoucherId(),
       if (jrnChanged) persistJournal();
     }
   }
+  /* 🧱 بناء 260: تصحيح **اسم** حساب الشيكات في الأدلة الموجودة فعلًا (مش البذرة الجديدة بس).
+     ضيق مقصود: سطر كوده 1.2.1 / 1.1.7 / 117 واسمه **حرفيًا** الاسم القديم ⇒ يتسمى الاسم الصح.
+     الرصيد والمعرّف وسطور القيود ما تتلمسش (اسم بس) ⇒ آمن ومُعرّف (idempotent): بعد التصحيح
+     مافيش سطر بيطابق فالثانية التانية صفر كتابة على القرص. */
+  function renameChecksAccountInPlace() {
+    if (!Array.isArray(accounts)) return false;
+    let dirty = false;
+    accounts.forEach((a) => {
+      if (!a) return;
+      const c = String(a.code || "");
+      if (c !== CHECKS_ACC_CODE && c !== "1.1.7" && c !== "117") return;
+      if (String(a.nameAr || "").trim() === CHECKS_ACC_NAME_OLD) { a.nameAr = CHECKS_ACC_NAME; dirty = true; }
+    });
+    if (dirty) { try { saveAccounts(); } catch (e) { } }
+    return dirty;
+  }
   function ensureChecksAccounts() {
     try { repairAmanaGhostCheckAdvance(); } catch (e) {}
     try { cleanupDuplicateCheckAccounts(); } catch (e) { }
+    try { renameChecksAccountInPlace(); } catch (e) { }
     try { checksAcc(); } catch (e) { }
     try { checksPayableAcc(); } catch (e) { }
   }
@@ -17854,9 +17953,19 @@ id: nextVoucherId(),
       const chk = checksOfInvoice(inv).find((c) => c && !c.deleted && !c.unapplied &&
         ["pending", "collected"].indexOf(String(c.status || "pending")) !== -1);
       if (!chk) {
-        // 🧱 بناء 248: الشيكات لسه ما نزلتش من السحابة ⇒ نرفض القيد (مؤقت) أفضل ألف مرة من
-        // نحطّ مبلغ الشيك على حساب مديونية الطرف — الغلط ده كان بيقفل نفسه بمفتاح S:.
-        if (!checksInMemory()) return null;
+        if (!checksInMemory()) {
+          /* 🧱 بناء 260 (بلاغ المالك بالحرف: «شيكات لدى العملاء غير موجود بها»): الشيكات لسه
+             ما نزلتش من السحابة (مؤقت) — القرار القديم كان `return null` ⇒ بوابة 248 كانت
+             توقف **قيد الفاتورة كلها** (توست «سطر الشيك لسه ما اترحّلش») والفاتورة تتسجّل
+             بغير ترحيل. صح: سطر «شيك» كتبه المستخدم صراحة ⇒ يروح على **حساب الشيكات نفسه**
+             (1.2.1 / 117 بيع · 2.1.4 / 214 شراء) — وده بيدي المحاسبة الصح لحالها.
+             الحساب نفسه ناقص؟ `return null` زي أول ⇒ تفضّل رسالة «الحساب الناقص» على
+             اختراع رقم على حساب تاني. */
+          const accChk = kind === "sale" ? checksAcc() : checksPayableAcc();
+          if (accChk) return accChk;
+          return null;
+        }
+        // 🧾 بناء 216: الشيك موجود وبقى ملغي/غير مخصص ⇒ المبلغ يرجع لمديونية الطرف (مش ازدواج أصل)
         return accByCode(kind === "sale" ? "1.1.5" : "2.1.1", kind === "sale" ? "مديونيات العملاء" : "مستحقات الموردين");
       }
       return kind === "sale" ? checksAcc() : checksPayableAcc();
@@ -17970,7 +18079,7 @@ id: nextVoucherId(),
     if (err === "1.1.4") return "حساب «المخزون» (1.1.4) مش موجود في دليل حساباتك";
     if (err === "1.1.5") return "حساب «مديونيات العملاء» (1.1.5) مش موجود في دليل حساباتك";
     if (err === "2.1.1") return "حساب «مستحقات الموردين» (2.1.1) مش موجود في دليل حساباتك";
-    if (err === "1.2.1") return "حساب «شيكات لدى العملاء» (1.2.1) مش موجود في دليل حساباتك";
+    if (err === "1.2.1") return "حساب «شيكات العملاء» (1.2.1) مش موجود في دليل حساباتك";
     if (err === "2.1.4") return "حساب «شيكات مستحقة للموردين» (2.1.4) مش موجود في دليل حساباتك";
     if (err === "2.1.2") return "حساب «ضريبة القيمة المضافة المحصلة» (2.1.2) مش موجود في دليل حساباتك";
     if (err === "2.1.3") return "حساب «ضريبة القيمة المضافة المدفوعة» (2.1.3) مش موجود في دليل حساباتك";
@@ -19479,7 +19588,8 @@ id: nextVoucherId(),
     { codes: ["1.1.3", "113"], names: ["المحافظ الإلكترونية"] },
     { codes: ["1.1.4", "114"], names: ["المخزون (بضاعة)", "المخزون"] },
     { codes: ["1.1.5", "115"], names: ["مديونيات العملاء"] },
-    { codes: ["1.2.1", "1.1.7", "121", "117"], names: ["شيكات لدى العملاء", "شيكات تحت التحصيل", "أوراق القبض"] },
+    // 🧱 بناء 260: الاسم الصح «شيكات العملاء» + الاسم القديم (أدلة لسه ما اتسمّتش/مصدر تاني) — الاتنين نفس الدور
+    { codes: ["1.2.1", "1.1.7", "121", "117"], names: ["شيكات العملاء", "شيكات لدى العملاء", "شيكات تحت التحصيل", "أوراق القبض"] },
     { codes: ["2.1.1", "132"], names: ["مستحقات الموردين"] },
     { codes: ["2.1.2", "133"], names: ["ضريبة القيمة المضافة المحصلة", "ضريبة المبيعات المستحقة"] },
     { codes: ["2.1.3"], names: ["ضريبة القيمة المضافة المدفوعة"] },

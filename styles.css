@@ -676,7 +676,16 @@ body {
      مسافة التنفس تبقى جوه المستند نفسه، والحراري سيبناه مظبوط على مقاسه */
   .print-only.print-target { padding-top: 5mm; padding-bottom: 5mm; }
   .print-only.print-target.paper-thermal { padding-top: 0; padding-bottom: 0; }
-  body.printing .view:not(.print-target) { display: none !important; }
+  /* 🔧 بناء 260 (#342): عزل الورقة ما بقاش متوقف على كلاس يضيفه JS.
+     القديمة كانت «body.printing .view:not(.print-target)» — وكلاس printing بيضيفه printSection
+     وحده، فأي طباعة ما عدّتش عليه (Ctrl+P من المتصفح، أو طلب تاني بلعه قفل الطباعة) كانت بترسم
+     شاشات العمل كلها على الورقة: رءوس الجداول وسطورها. بلاغ المالك الحرفي:
+     «سطور طباعة كشف الحساب فى الاستعلام عن الفواتير موجود اسفل الفاتورة و ايضا راس جدول اسفل الكشف».
+     القاعدة الجديدة: في وسائط الطباعة لا يظهر إلا المستند المختار (print-target) — وبلا مستند
+     مختار تبقى الورقة فاضية، بلا أي سطر شاشة ولا راس جدول. (شاشات الدخول/انتهاء الاشتراك مالهاش
+     أي سبب تظهر على ورق أبدًا.) */
+  .view:not(.print-target) { display: none !important; }
+  .login-screen { display: none !important; }
   .statement-page {
     direction: rtl;
     padding: 10px;

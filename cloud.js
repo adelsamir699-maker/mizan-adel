@@ -1199,6 +1199,7 @@
     var byId = {};
     local.forEach(function (p) { if (p && p.id != null) byId[Number(p.id)] = p; });
     var keep = {};
+    var emptyKids = {};   // بناء 260: آباء أسطرهم المحلية فاضية ⇒ صفر مسح سحابي لسطورهم
     (ids || []).forEach(function (raw) {
       var id = Number(raw);
       var p = byId[id];
@@ -1220,6 +1221,11 @@
         rows.push(row);
       });
       keep[id] = Math.min(mapped.length, 999);
+      /* 🧱 بناء 260: أب «مغيّر» بس أسطره المحلية فاضية = السطور ما وصلتارش للجهاز ده
+         (قيد مسحوب من السحابة بلا أسطر)، وده **مش** معناه إن المستخدم مسح أسطره.
+         بلا الوقاية دي الطابور بيمسح كل أسطر الأب من السحابة ⇒ القيد يفقد مبالغه على
+         كل الأجهزة. الحذف الحقيقي بيمشي من `removed` (الأب نفسه راح). */
+      if (!mapped.length) emptyKids[id] = 1;
     });
     var changedParents = {};
     (ids || []).forEach(function (id) { changedParents[Number(id)] = 1; });
@@ -1229,6 +1235,7 @@
       var lid = Number(k);
       if (!lid) return;
       var pid = Math.floor(lid / 1000);
+      if (emptyKids[pid]) return;
       if (!changedParents[pid]) return;
       if (keep[pid] != null && (lid % 1000) <= keep[pid]) return;
       if (itemMap[k]) stale.push(itemMap[k]);
@@ -1391,6 +1398,7 @@
     var byId = {};
     local.forEach(function (p) { if (p && p.id != null) byId[Number(p.id)] = p; });
     var keep = {};
+    var emptyKids = {};   // بناء 260: آباء أسطرهم المحلية فاضية ⇒ صفر مسح سحابي لسطورهم
     (ids || []).forEach(function (raw) {
       var id = Number(raw);
       if (!byId[id]) return;
@@ -1412,6 +1420,11 @@
         itemRows.push(row);
       });
       keep[id] = Math.min(mapped.length, 999);
+      /* 🧱 بناء 260: أب «مغيّر» بس أسطره المحلية فاضية = السطور ما وصلتارش للجهاز ده
+         (قيد مسحوب من السحابة بلا أسطر)، وده **مش** معناه إن المستخدم مسح أسطره.
+         بلا الوقاية دي الطابور بيمسح كل أسطر الأب من السحابة ⇒ القيد يفقد مبالغه على
+         كل الأجهزة. الحذف الحقيقي بيمشي من `removed` (الأب نفسه راح). */
+      if (!mapped.length) emptyKids[id] = 1;
     });
     var changedParents = {};
     (ids || []).forEach(function (id) { changedParents[Number(id)] = 1; });
@@ -1421,6 +1434,7 @@
       var lid = Number(k);
       if (!lid) return;
       var pid = Math.floor(lid / 1000);
+      if (emptyKids[pid]) return;
       if (!changedParents[pid]) return;
       if (keep[pid] != null && (lid % 1000) <= keep[pid]) return;
       if (itemMap[k]) stale.push(itemMap[k]);
@@ -1700,11 +1714,13 @@
     function fail(what, err) { failed = true; syncFailed(what, err); }
     var ids = cloudId || {};
     var items = [];
+    var emptyUuid = {};   // بناء 260: أب سحابي أسطره المحلية فاضية ⇒ سطورُه على السحابة ما تتمسحش
     (meta.local() || []).forEach(function (p) {
       var pUuid = ids[Number(p.id)];
       if (!pUuid) return;                               // أبوه لسه ما اترفعش → نستنى دورته
       var mapped = meta.itemToCloud(p);
       if (!Array.isArray(mapped)) return;
+      if (!mapped.length) emptyUuid[pUuid] = 1;
       mapped.forEach(function (row, idx) {
         if (!row) return;
         row.local_id = Number(p.id) * 1000 + (idx + 1);
@@ -1733,7 +1749,12 @@
       var keep = {};
       items.forEach(function (r) { keep[r.id] = 1; });
       var drop = [];
-      have.forEach(function (r) { if (r && !keep[r.id] && seen[r.id]) drop.push(r.id); });
+      have.forEach(function (r) {
+        if (!r || keep[r.id] || !seen[r.id]) return;
+        // بناء 260: الأب موجود بس أسطره ما وصلتش للجهاز ده = صفر مسح (مش حذف مستخدم)
+        if (r[parentField] && emptyUuid[r[parentField]]) return;
+        drop.push(r.id);
+      });
       if (drop.length && !wipeGuard(itemsTable, items.length, have.length)) drop = [];
       if (drop.length && !capDeletes(itemsTable, drop.length, have.length)) drop = [];
       var chain = Promise.resolve();
@@ -1902,23 +1923,12 @@
           return DATA.loadLazy("journal_lines").then(function (lines) {
             rememberIds("journal_lines", lines);
             W.journalEntries = (rows || []).map(function (r) { return META.journal_entries.fromCloud(r); });
-            // إلحاق الأسطر
+            // إلحاق الأسطر +جامع المجاميع — بناء 260: نفس `attachJournalLines` اللي بيسحب
+            // بيه «تحديث من السحابة»، فمستحيل المسارين يختلفوا (كان كل قيد بيبان «0.00»
+            // بعد إعادة التشغيل لو المجموع اتعمل في مكان واحد بس).
             var byEntry = {};
             (lines || []).forEach(function (l) { byEntry[l.entry_id] = byEntry[l.entry_id] || []; byEntry[l.entry_id].push(l); });
-            W.journalEntries.forEach(function (en) {
-              var eid = (W.idMap.journal_entries || {})[Number(en.id)];
-              bySorted(byEntry[eid] || []).forEach(function (l) { en.lines.push(META.journal_entries.itemFromCloud(l)); });
-            });
-            // 🆕 بناء 134: إجمالي القيد (مدين/دائن) مش عمود في journal_entries — بيطلع من أسطره.
-            // من غير الجمع ده أي قيد (يدوي أو متترحّل من فاتورة) بيبان «0.00» في جدول
-            // «القيود اليومية» بعد أي إعادة تشغيل، لأن fromCloud بيحط debit/credit = صفر
-            // لحد ما تلحق الأسطر. الناحية دي قراءة بس — مافيش أي كتابة على السحابة.
-            W.journalEntries.forEach(function (en) {
-              var d = 0, c = 0;
-              (en.lines || []).forEach(function (l) { d += Number(l.debit) || 0; c += Number(l.credit) || 0; });
-              en.debit = Math.round(d * 100) / 100;
-              en.credit = Math.round(c * 100) / 100;
-            });
+            attachJournalLines(W.journalEntries, byEntry, "journal_entries");
             return;
           });
         }
@@ -1953,6 +1963,32 @@
 
   // ترتيب أسطر الصنف زي ما هي في الفاتورة الأصلية (الأقدم الأول)
 
+  // 🧱 بناء 134 + 260: إجمالي القيد (مدين/دائن) **مش عمود** في `journal_entries` — بيطلع من
+  // أسطر القيد نفسها. المسارين اللي بينزّلوا القيود لازم يمرّوا من هنا، لأن أي واحد فيهم
+  // يلحق السطور تحت اسم تاني (`items`) بيدي قيد صحيح البيان وبالمدين/الدائن **صفر** على
+  // الجهاز اللي سحب — و«كشف حساب الحسابات» يقول «لا توجد حركات على هذا الحساب» لنفس السبب.
+  // الناحية دي قراءة بس: مافيش أي كتابة على السحابة.
+  function sumJournalTotals(en) {
+    var d = 0, c = 0;
+    (en.lines || []).forEach(function (l) { d += Number(l.debit) || 0; c += Number(l.credit) || 0; });
+    en.debit = Math.round(d * 100) / 100;
+    en.credit = Math.round(c * 100) / 100;
+    return en;
+  }
+  // `byEntry` = أسطر مفتّحة بالمفتاح السحابي للأب (uuid) — نفس الشكل اللي بيرجّعه `PARENT_OF`.
+  function attachJournalLines(entries, byEntry, name) {
+    (entries || []).forEach(function (en) {
+      if (!en) return;
+      var pid = (W.idMap[name] || {})[Number(en.id)] || detUuid(name, Number(en.id));
+      en.lines = [];
+      bySorted((byEntry || {})[pid] || []).forEach(function (l) {
+        en.lines.push(META[name].itemFromCloud(l));
+      });
+      sumJournalTotals(en);
+    });
+    return entries;
+  }
+
   // 📥 بناء 243: سحب جدول كسول (فواتير/حركات) بأسطره التابعة لدمجه فوراً دون إعادة تشغيل
   function pullLazyTable(name) {
     var meta = META[name];
@@ -1972,6 +2008,12 @@
           byParent[pid] = byParent[pid] || [];
           byParent[pid].push(ir);
         });
+        if (name === "journal_entries") {
+          // بناء 260: أسطر القيد تدخل `lines` (مش `items`) والمجاميع تتحسب — مسار السحب
+          // بقى زي مسار الدخول بالحرف.
+          attachJournalLines(mapped, byParent, "journal_entries");
+          return mapped;
+        }
         mapped.forEach(function (doc) {
           doc.items = [];
           var pid = (W.idMap[name] || {})[Number(doc.id)] || detUuid(name, doc.id);
