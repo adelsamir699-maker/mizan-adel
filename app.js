@@ -4989,7 +4989,10 @@
   const COMPANY_WALLET_PHONE = "01002655282";
   function companyWalletPhone() {
     try {
-      const w = (treasury || []).find((t) => t && t.type === "wallet" && String(t.accountNo || "").trim());
+      // أول محفظة مسجّلة برقم موبايل صحيح (11 رقم يبدأ 01) — «000000» وأمثاله مجرد حشو
+      const okPhone = (v) => /^01\d{9}$/.test(String(v || "").trim());
+      const ws = (treasury || []).filter((t) => t && t.type === "wallet");
+      const w = ws.find((t) => okPhone(t.accountNo));
       if (w) return String(w.accountNo).trim();
     } catch (e) { }
     return COMPANY_WALLET_PHONE;
