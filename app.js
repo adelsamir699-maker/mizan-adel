@@ -17003,6 +17003,8 @@ id: nextVoucherId(),
       paidAmount: paid, dueAmount: due,
       payments: [{ method: lineMethod, amount: t.grand, treasuryId: (payTr ? payTr.id : null), bankName: checkBank, checkNo: checkNo, dueDate: checkDue }],
       isVan: true, vanTripId: trip.id, repName: trip.repName, vanRepAccountId: repAcc.id,
+      // 🚚 بناء 273: بصمة مخفية تخلّي الفاتورة ترجع «فاتورة سيارة» من السحابة (بلا أعمدة جديدة)
+      notes: "[[VAN|trip=" + Number(trip.id) + "|rep=" + encodeURIComponent(trip.repName || "") + "|acc=" + Number(repAcc.id || 0) + "]]",
       savedAt: shiftNowISO(),
       partyPrevBalance: cust.protected ? null : (Math.round((Number(cust.currentBalance) || 0) * 100) / 100),
       items: vanSaleDraft.items.map((it, idx) => ({

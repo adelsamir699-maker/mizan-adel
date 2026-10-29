@@ -643,10 +643,25 @@
           tax: r.taxAmount || r.tax || 0,
           grand_total: r.grandTotal || 0
         };
+        /* 🚚 بناء 273 (بلاغ المالك: «بيع المندوب مش بيتسجّل في شاشة المناديب — لا خصم من
+           حمولة السيارة ولا زيادة نقدية»): جدول `sales` على السحابة مالوش أعمدة is_van/
+           van_trip_id، فكل فاتورة سيارة كانت ترجع من السحابة كفاتورة عادية ⇒ الحمولة
+           والمبيعات النقدية بيرجعوا صفر على أي جهاز تاني/بعد إعادة تحميل.
+           الحل بلا أي تغيير في قاعدة البيانات: بصمة مخفية في `notes` بتتحفظ وتُقرأ. */
+        var _vn = String(r.notes || "");
+        if (r.isVan && r.vanTripId != null && !/\[\[VAN\|/.test(_vn)) {
+          _vn = (_vn ? _vn + " " : "") + "[[VAN|trip=" + Number(r.vanTripId) +
+            "|rep=" + encodeURIComponent(r.repName || "") + "|acc=" + Number(r.vanRepAccountId || 0) + "]]";
+        }
+        row.notes = _vn;
         if (HAS_INV_PAID) { var _p1 = invPaidCols(r); row.paid_amount = _p1.paid_amount; row.due_amount = _p1.due_amount; row.payments = _p1.payments; }
         return row;
       },
       fromCloud: function (r) {
+        /* 🚚 بناء 273: استرجاع هوية فاتورة السيارة من البصمة المخفية (انظر toCloud). */
+        var _vm = String(r.notes || "").match(/\[\[VAN\|trip=(\d+)\|rep=([^|\]]*)\|acc=(\d+)\]\]/);
+        var _vrep = "";
+        try { _vrep = _vm ? decodeURIComponent(_vm[2]) : ""; } catch (e) { _vrep = ""; }
         return invPaidOut(r, {
           id: r.local_id,
           invoiceNo: r.invoice_no,
@@ -668,6 +683,10 @@
           grandTotal: Number(r.grand_total || 0),
           subTotal: Number(r.grand_total || 0) + Number(r.discount || 0) - Number(r.tax || 0),
           status: "posted",
+          isVan: !!_vm,
+          vanTripId: _vm ? Number(_vm[1]) : undefined,
+          repName: _vrep,
+          vanRepAccountId: _vm ? Number(_vm[3]) : undefined,
           items: []
         });
       },

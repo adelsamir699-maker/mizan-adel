@@ -2923,3 +2923,35 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
   #dgvVanTrips .cell-actions { min-width: 130px; }
   #dgvVanTrips .cell-actions .btn.small { padding: 4px 6px; font-size: 11px; margin: 2px; }
 }
+/* ================= بناء 273 — موبايل المندوب: أزرار كبيرة وواضحة ================= */
+@media (max-width: 760px) {
+  /* شاشة رحلات السيارات: كروت بدل جدول 9 أعمدة — كل زرار بعرض مريح للإصبع */
+  #dgvVanTrips { display: block; width: 100%; }
+  #dgvVanTrips thead { display: none; }
+  #dgvVanTrips tbody, #dgvVanTrips tr, #dgvVanTrips td { display: block; width: 100%; }
+  #dgvVanTrips tr {
+    border: 1px solid var(--border); border-radius: 14px; background: #fff;
+    margin: 0 0 12px; padding: 10px 12px; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  #dgvVanTrips td { border: 0; padding: 5px 2px; text-align: right; font-size: 14px; }
+  #dgvVanTrips td:nth-child(1) { font-weight: 900; font-size: 15px; }
+  #dgvVanTrips td:nth-child(1)::before { content: "رحلة #"; }
+  #dgvVanTrips td:nth-child(2)::before { content: "🚚 "; }
+  #dgvVanTrips td:nth-child(3)::before { content: "🧑‍💼 المندوب: "; color: #64748b; }
+  #dgvVanTrips td:nth-child(4)::before { content: "📅 "; color: #64748b; }
+  #dgvVanTrips td:nth-child(5)::before { content: "📦 الحمولة: "; color: #64748b; }
+  #dgvVanTrips td:nth-child(6)::before { content: "🧾 المبيع: "; color: #64748b; }
+  #dgvVanTrips td:nth-child(7)::before { content: "💵 نقد متوقّع: "; color: #64748b; }
+  #dgvVanTrips td:nth-child(8)::before { content: "الحالة: "; color: #64748b; }
+  #dgvVanTrips .cell-actions {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
+    min-width: 0; overflow: visible;
+  }
+  #dgvVanTrips .cell-actions .btn.small {
+    flex: 1 1 45%; min-height: 44px; font-size: 14px; font-weight: 800;
+    padding: 10px 12px; margin: 0; border-radius: 10px;
+  }
+  #vanRepBanner { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #vanRepBanner .btn { flex: 1 1 100%; min-height: 48px; font-size: 15px; font-weight: 800; }
+  #viewVanSales .view-actions .btn { min-height: 42px; font-size: 13px; }
+}
