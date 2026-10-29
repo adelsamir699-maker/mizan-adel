@@ -10268,6 +10268,8 @@
       const tr = document.createElement("tr");
       tr.dataset.idx = i;
       tr.innerHTML =
+        // 🔢 بناء 270 (طلب المالك): رقم مسلسل للصنف جوه الفاتورة 1-2-3-4 بعدد أصنافها
+        '<td class="c-serial">' + (i + 1) + '</td>' +
         '<td>' + esc(it.code) + '</td>' +
         '<td>' + esc(it.nameAr) + '</td>' +
         '<td>' + esc(lineUnitText(it)) + '</td>' +
@@ -10550,9 +10552,11 @@
     if (thTax) thTax.style.display = hasTax ? "" : "none";
     const tb = $("#invBodyPrint");
     tb.innerHTML = "";
-    inv.items.forEach((it) => {
+    inv.items.forEach((it, i) => {
       const tr = document.createElement("tr");
       tr.innerHTML =
+        // 🔢 بناء 270: الرقم المسلسل مطبوع على الورقة زي الشاشة بالحرف
+        '<td>' + (i + 1) + '</td>' +
         '<td>' + esc(it.code) + '</td>' +
         '<td style="text-align:right">' + esc(it.nameAr) + returnedBadge(true, inv.id, it) + '</td>' +
         '<td>' + esc(lineUnitText(it)) + '</td>' +
@@ -11018,6 +11022,8 @@
       const tr = document.createElement("tr");
       tr.dataset.idx = i;
       tr.innerHTML =
+        // 🔢 بناء 270: رقم مسلسل للصنف جوه فاتورة الشراء
+        '<td class="c-serial">' + (i + 1) + '</td>' +
         '<td>' + esc(it.code) + '</td>' +
         '<td>' + esc(it.nameAr) + '</td>' +
         '<td>' + esc(lineUnitText(it)) + '</td>' +
@@ -11264,9 +11270,11 @@
     if (thTax) thTax.style.display = hasTax ? "" : "none";
     const tb = $("#ppBody");
     tb.innerHTML = "";
-    inv.items.forEach((it) => {
+    inv.items.forEach((it, i) => {
       const tr = document.createElement("tr");
       tr.innerHTML =
+        // 🔢 بناء 270: الرقم المسلسل في ورقة فاتورة الشراء
+        '<td>' + (i + 1) + '</td>' +
         '<td>' + esc(it.code) + '</td>' +
         '<td style="text-align:right">' + esc(it.nameAr) + returnedBadge(false, inv.id, it) + '</td>' +
         '<td>' + esc(lineUnitText(it)) + '</td>' +
@@ -13145,6 +13153,8 @@
       const canPart = l.remaining > 0;
       const tr = document.createElement("tr");
       tr.innerHTML =
+        // 🔢 بناء 270: أسطر المرتجع مرقّمة 1-2-3 بعدد أصناف فاتورتها
+        '<td class="c-serial">' + (i + 1) + '</td>' +
         '<td style="text-align:right">' + esc(l.nameAr) + (l.already > 0 ? ' <span class="ret-tag">↩️ اترجّع ' + Number(l.already).toLocaleString("en-US") + '</span>' : '') + '</td>' +
         '<td>' + Number(l.sold).toLocaleString("en-US") + '</td>' +
         '<td>' + fmt(l.price) + '</td>' +
@@ -16842,6 +16852,8 @@ id: nextVoucherId(),
       const tot = Math.round((Number(it.qty) || 0) * (Number(it.price) || 0) * 100) / 100;
       const tr = document.createElement("tr");
       tr.innerHTML =
+        // 🔢 بناء 270: سطر فاتورة بيع السيارة مرقّم مسلسل
+        '<td class="c-serial">' + (idx + 1) + '</td>' +
         '<td>' + esc(it.nameAr) + '</td>' +
         '<td><input class="cell-input" type="text" inputmode="decimal" data-cf="qty" data-idx="' + idx + '" value="' + esc(it.qty) + '" /></td>' +
         '<td><input class="cell-input" type="text" inputmode="decimal" data-cf="price" data-idx="' + idx + '" value="' + esc(it.price) + '" /></td>' +
@@ -16849,7 +16861,7 @@ id: nextVoucherId(),
         '<td class="cell-actions"><button class="btn small red" type="button" data-cact="del" data-idx="' + idx + '">❌</button></td>';
       body.appendChild(tr);
     });
-    if (!vanSaleDraft.items.length) body.innerHTML = '<tr><td colspan="5" class="login-sub" style="text-align:center">الفاتورة فاضية — اضغط على صنف من الشمال.</td></tr>';
+    if (!vanSaleDraft.items.length) body.innerHTML = '<tr><td colspan="6" class="login-sub" style="text-align:center">الفاتورة فاضية — اضغط على صنف من الشمال.</td></tr>';
     const t = vanSaleTotals();
     const el = $("#vanSaleTotal");
     if (el) el.textContent = fmt(t.grand) + " ج.م" + (TAX.enabled && t.tax > 0 ? " (منها ضريبة " + fmt(t.tax) + ")" : "");

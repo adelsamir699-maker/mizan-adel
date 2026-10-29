@@ -375,6 +375,9 @@ body {
 .dgv tbody tr.selected { background: var(--sel-bg); color: var(--sel-fg); }
 .dgv tbody tr { cursor: pointer; }
 
+/* 🔢 بناء 270 (طلب المالك): رقم الصنف المسلسل جوه الفاتورة — 1-2-3-4 بعدد أصنافها */
+.c-serial { text-align: center; font-weight: 700; color: var(--text-muted); }
+
 /* في فاتورتي المبيعات والمشتريات: تصغير الصفوف ليدخل أكبر عدد ممكن من الأصناف (8 أسطر على الأقل) */
 #viewSales .dgv, #viewPurchases .dgv { font-size: 12px; }
 #viewSales .dgv thead th, #viewPurchases .dgv thead th { padding: 3px 4px; font-size: 12px; }
@@ -2810,7 +2813,7 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
   .inv-entry-row .fld-btn .btn { height: 44px; padding: 0 12px; font-size: 14px; }
   .inv-entry-row .fld-scan .btn { height: 44px; padding: 0 10px; }
 
-  /* (ز) أصناف الفاتورة: ٩ أعمدة على ٣٩٠px = متدهوسة. على الموبايل كل صنف **كارت**
+  /* (ز) أصناف الفاتورة: ١٠ أعمدة على ٣٩٠px = متدهوسة. على الموبايل كل صنف **كارت**
      بعنوان واضح جوه كل خانة (`td::before`) — نفس شكل الفاتورة في تطبيقات المحاسبة. */
   .pos-main .inv-items-wrap { flex: 0 0 auto; min-height: 0; max-height: none; overflow: visible; padding: 6px; }
   .inv-dgv { table-layout: auto; width: 100%; background: transparent; }
@@ -2843,27 +2846,32 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
     text-align: start;
     font-size: 13px;
   }
-  /* مواضع الكارت (محدّدة سطر-سطر ⇒ لو الضريبة اتخفت مكانها فضي وبس) */
-  .inv-dgv tbody td:nth-child(2) { grid-column: 1 / 4; grid-row: 1; font-weight: 800; color: var(--text-primary); }
-  .inv-dgv tbody td:nth-child(9) { grid-column: 4 / 5; grid-row: 1; justify-content: center; }
-  .inv-dgv tbody td:nth-child(1) { grid-column: 1 / 2; grid-row: 2; }
-  .inv-dgv tbody td:nth-child(3) { grid-column: 2 / 3; grid-row: 2; }
-  .inv-dgv tbody td:nth-child(4) { grid-column: 3 / 5; grid-row: 2; }
-  .inv-dgv tbody td:nth-child(5) { grid-column: 1 / 3; grid-row: 3; }
-  .inv-dgv tbody td:nth-child(6) { grid-column: 3 / 5; grid-row: 3; }
-  .inv-dgv tbody td:nth-child(7) { grid-column: 1 / 3; grid-row: 4; }
-  .inv-dgv tbody td:nth-child(8) { grid-column: 3 / 5; grid-row: 4; font-weight: 800; color: var(--inv-ink); font-size: 14px; }
+  /* مواضع الكارت (محدّدة سطر-سطر ⇒ لو الضريبة اتخفت مكانها فضي وبس).
+     🔢 بناء 270: عمود «م» (الرقم المسلسل) بقى أول خانة ⇒ كل المواضع اتزحزحت +1
+     (١ م · ٢ كود · ٣ الصنف · ٤ الوحدة · ٥ الكمية · ٦ السعر · ٧ الخصم · ٨ الضريبة ·
+      ٩ الإجمالي · ١٠ حذف) — أرقام nth-child بتعدّ الخانات المخفية كمان فالمكان بيفضل فاضي. */
+  .inv-dgv tbody td:nth-child(1) { grid-column: 1 / 2; grid-row: 1; justify-content: center; font-weight: 800; color: var(--text-muted); }
+  .inv-dgv tbody td:nth-child(3) { grid-column: 2 / 4; grid-row: 1; font-weight: 800; color: var(--text-primary); }
+  .inv-dgv tbody td:nth-child(10) { grid-column: 4 / 5; grid-row: 1; justify-content: center; }
+  .inv-dgv tbody td:nth-child(2) { grid-column: 1 / 2; grid-row: 2; }
+  .inv-dgv tbody td:nth-child(4) { grid-column: 2 / 3; grid-row: 2; }
+  .inv-dgv tbody td:nth-child(5) { grid-column: 3 / 5; grid-row: 2; }
+  .inv-dgv tbody td:nth-child(6) { grid-column: 1 / 3; grid-row: 3; }
+  .inv-dgv tbody td:nth-child(7) { grid-column: 3 / 5; grid-row: 3; }
+  .inv-dgv tbody td:nth-child(8) { grid-column: 1 / 3; grid-row: 4; }
+  .inv-dgv tbody td:nth-child(9) { grid-column: 3 / 5; grid-row: 4; font-weight: 800; color: var(--inv-ink); font-size: 14px; }
   /* عناوين الخانات اللي اتشال منها رأس الجدول */
-  .inv-dgv tbody td:nth-child(1)::before { content: "كود"; }
-  .inv-dgv tbody td:nth-child(2)::before { content: "الصنف:"; }
-  .inv-dgv tbody td:nth-child(3)::before { content: "الوحدة:"; }
-  .inv-dgv tbody td:nth-child(4)::before { content: "الكمية:"; }
-  .inv-dgv tbody td:nth-child(5)::before { content: "السعر:"; }
-  .inv-dgv tbody td:nth-child(6)::before { content: "الخصم:"; }
-  .inv-dgv tbody td:nth-child(7)::before { content: "الضريبة:"; }
-  .inv-dgv tbody td:nth-child(8)::before { content: "الإجمالي:"; }
+  .inv-dgv tbody td:nth-child(1)::before { content: "#"; }
+  .inv-dgv tbody td:nth-child(2)::before { content: "كود"; }
+  .inv-dgv tbody td:nth-child(3)::before { content: "الصنف:"; }
+  .inv-dgv tbody td:nth-child(4)::before { content: "الوحدة:"; }
+  .inv-dgv tbody td:nth-child(5)::before { content: "الكمية:"; }
+  .inv-dgv tbody td:nth-child(6)::before { content: "السعر:"; }
+  .inv-dgv tbody td:nth-child(7)::before { content: "الخصم:"; }
+  .inv-dgv tbody td:nth-child(8)::before { content: "الضريبة:"; }
+  .inv-dgv tbody td:nth-child(9)::before { content: "الإجمالي:"; }
   .inv-dgv tbody td::before { color: var(--text-muted); font-size: 11.5px; font-weight: 800; white-space: nowrap; flex: 0 0 auto; }
-  .inv-dgv tbody td:nth-child(9)::before { content: ""; }
+  .inv-dgv tbody td:nth-child(10)::before { content: ""; }
   .inv-dgv tbody td .cell-input { flex: 1 1 auto; width: auto; min-width: 0; height: 40px; font-size: 16px; text-align: center; }
   .inv-dgv tbody td .btn.small { height: 40px; padding: 0 10px; font-size: 14px; }
 
