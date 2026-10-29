@@ -1337,6 +1337,8 @@
           hideScreens();
           initApp();
           setDbStatus("🟢 متصل بالسحابة");
+          /* 🛡 بناء 268: فتح بعد انتهاء الاشتراك = إقلاع جديد ⇒ أعِد تقييم هوية المندوب */
+          try { vanRepBootKick(); } catch (e) { }
         });
       }
     }).catch(() => {});
@@ -1511,6 +1513,17 @@
 
   function stockAt(p, wh) {
     if (!p) return 0;
+    /* 🛡 بناء 268 (بلاغ المالك: «لسه المندوب شايف كل الأصناف الموجوده بالمخزن الرئيسى»):
+       مندوب السيارة رصيده = **مخزون عربيته بس** — وممنوع أي رجوع للمخزن العمومي أو
+       للإجمالي. قبل كده كان `stockAt` بيرجع الإجمالي لما كمية المخزن المطلوب صفر،
+       فالمندوب كان بيشوف ويبيع من العمومي. (المالك/صاحب الشركة ملهمش أي تغيير.) */
+    try {
+      if (vanIsRepUser()) {
+        let mine = 0;
+        vanRepCarNames().forEach((n) => { mine += Number(vanStockAt(p, n)) || 0; });
+        return Math.round(mine * 100) / 100;
+      }
+    } catch (e) { }
     if (!p.stock || typeof p.stock !== "object") return Number(p && p.qty) || 0;
     const specific = wh ? (Number(p.stock[wh]) || 0) : NaN;
     if (!isNaN(specific) && specific > 0) return specific;
@@ -7178,6 +7191,13 @@
   }
 
   function warehouseList() {
+    /* 🛡 بناء 268: مندوب السيارة قائمة مخازنه = عربيته بس (مش قابل للتغيير في الرحلة). */
+    try {
+      if (vanIsRepUser()) {
+        const cn = vanRepCarNames();
+        if (cn.length) return cn;
+      }
+    } catch (e) { }
     const l = settListByName("warehouses");
     return l.length ? l : WAREHOUSES.slice();
   }
@@ -7389,7 +7409,10 @@
     const tbody = $("#dgvProducts tbody");
     tbody.innerHTML = "";
 
-    const filtered = productsFilteredList();
+    /* 🛡 بناء 268: شاشة «الأصناف والمخزون» عند المندوب = أصناف عربيته بس،
+       وعمود الرصيد = كمية عربيته، والتفصيل باسم عربيته (مش كل المخازن). */
+    const filtered = vanRepVisibleProducts(productsFilteredList());
+    const repOn = vanIsRepMode();
 
     filtered.forEach((p) => {
       const tr = document.createElement("tr");
@@ -7400,7 +7423,10 @@
       const stBadge = p.isActive
         ? '<span class="badge badge-active">نشط 🟢</span>'
         : '<span class="badge badge-inactive">معطل 🔴</span>';
-      const stockDetail = WAREHOUSES.map((w) => Number(stockAt(p, w)).toLocaleString("en-US") + "@" + w).join("   ");
+      const stockDetail = repOn
+        ? vanRepStockLine(p)
+        : WAREHOUSES.map((w) => Number(stockAt(p, w)).toLocaleString("en-US") + "@" + w).join("   ");
+      const stockQty = repOn ? vanRepStockQty(p) : Number(p.qty);
       tr.innerHTML =
         '<td>' + esc(p.code) + '</td>' +
         '<td class="cell-barcode">' + (bcDigits(p.barcode)
@@ -7409,7 +7435,7 @@
         '<td>' + esc(p.nameAr) + '<div class="stk-mini">' + esc(stockDetail) + '</div></td>' +
         '<td>' + esc(p.category) + '</td>' +
         '<td>' + esc(p.unit) + '</td>' +
-        '<td>' + esc(Number(p.qty).toLocaleString("en-US")) + '</td>' +
+        '<td>' + esc(Number(stockQty).toLocaleString("en-US")) + '</td>' +
         '<td>' + fmt(lastPriceOf(p)) + '</td>' +
         '<td>' + fmt(avgPriceOf(p)) + '</td>' +
         '<td>' + fmt(p.salePrice) + '</td>' +
@@ -9079,7 +9105,8 @@
     /* بناء 220: الترتيب بمخزن الشاشة نفسها (بيع/شراء) — نفس الرصيد اللي المستخدم شايفه. */
     const whSel = kind === "sale" ? $("#cmbPosWarehouse") : $("#cmbPPWarehouse");
     const wh = (whSel && whSel.value) || WAREHOUSES[0];
-    const all = productsByStockQty(wh);
+    /* 🛡 بناء 268: المندوب بيقترحله **أصناف عربيته بس** — كان بيرجع الكتالوج كامل. */
+    const all = vanRepVisibleProducts(productsByStockQty(wh));
     const q = normalizeAr(String(raw || "").trim());
     // فاضي (ضغط على الخانة/السهم) ⇒ كل الأصناف مرتّبة بكمية المخزن المختار
     if (!q) return all;
@@ -9159,7 +9186,14 @@
       hint.title = "";
       return;
     }
-    const wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
+    let wh = $("#cmbPosWarehouse").value || WAREHOUSES[0];
+    /* 🛡 بناء 268: المندوب شارة رصيده باسم عربيته (مش المخزن العمومي). */
+    try {
+      if (vanIsRepUser()) {
+        const cn = vanRepCarNames();
+        if (cn.length) wh = cn.join(" + ");
+      }
+    } catch (e) { }
     /* 🆕 بناء 213 (طلب المالك 21/10): «خلى الجزء اللى بيوضح العدد المتاح يكون عريض علشان
        العدد المتاح غير ظاهر لما بيكون اسم الصنف كبير» — العدد بقى **أول الشارة وغامق**،
        فالقصّ بييجي على الاسم الطويل مش على الرصيد. */
@@ -15455,13 +15489,25 @@ id: nextVoucherId(),
     const n = normalizeAr(name);
     return vanCarsAll().find((c) => normalizeAr(c.name) === n) || null;
   }
-  /* 🛡 بناء 267 (طلب المالك: «المخزن الافتراضي اللي يشوفه إجباري وميقدرش يغيّره خلال
-     الرحلة هو مخزون سيارته فقط»): هوية المندوب كانت بتضيع لو لوح «إعدادات مؤسستك»
-     (سجل السيارات) لسه ما نزلش أو فشل تحميله — فيرجع يفتح شاشة البيع العامة ويبيع من
-     المخزن العمومي. الحل: آخر تعيين مقروء من السجل بيتحفظ على **الجهاز** مخبومًا
-     بشركة + حساب؛ وبيتقرا **بس** لما السجل نفسه مش موجود (مش لما السجل موجود ومفيهوش
-     تعيين — في الحالة دي هو فعلاً مش مندوب). صفر كتابة سحابية. */
+  /* 🛡 بناء 268 (بلاغ المالك الحرفي بعد 267: «لسه المندوب شايف كل الأصناف الموجوده
+     بالمخزن الرئيسى»). العيب المقيس في 267: الهوية كانت بتتقارن **بس** بعمود
+     `rep_user` في سجل السيارات وبنص خام (حساس للهمزات/المسافات)، بينما صاحب الشركة
+     بيعيّن المندوب **على الرحلة** (`#vanLoadRep` ⇒ `trip.repUser`/`repFull`) وسجل
+     السيارة ممكن يكون فاضي ⇒ `vanIsRepUser()` ترجع false ⇒ شاشة البيع العامة +
+     المخزن العمومي كامل. الحل هنا: (١) تطبيع عربي موحّد للهوية، (٢) قراءة التعيين من
+     **الرحلات** كمان (المفتوحة أولًا وإلا الأحدث)، (٣) ضمّ `rep_full`، (٤) كاش الجهاز
+     بيفضل للسيارة-بس لما السجل لسه ما نزلش، (٥) إعادة تقييم على كل مسارات الإقلاع.
+     صفر كتابة سحابية. */
   const LS_VAN_REP = "mizan_van_rep_v1";
+  var VREP_MEMO = null;
+  /* تطبيع هوية واحد: نفس `normalizeAr` + توحيد المسافات (أحمد ≠ احمد قبل كده). */
+  function vanIdNorm(v) {
+    try {
+      return String(normalizeAr(String(v == null ? "" : v))).replace(/\s+/g, " ").trim();
+    } catch (e) {
+      return String(v == null ? "" : v).trim().toLowerCase();
+    }
+  }
   function vanRepCacheOrg() {
     try { const s = localStateOrg(); if (s) return String(s); } catch (e) { }
     try { const o = (typeof DATA !== "undefined" && DATA && DATA.org) ? DATA.org() : null; if (o && o.id) return String(o.id); } catch (e) { }
@@ -15470,7 +15516,7 @@ id: nextVoucherId(),
   function vanRepCacheSave(names) {
     try {
       const org = vanRepCacheOrg();
-      const me = String(activityUser() || "").trim().toLowerCase();
+      const me = vanIdNorm(activityUser());
       if (!org || !me) return;
       localStorage.setItem(LS_VAN_REP, JSON.stringify({ org: org, user: me, cars: (names || []).slice() }));
     } catch (e) { }
@@ -15484,31 +15530,102 @@ id: nextVoucherId(),
       const org = vanRepCacheOrg();
       if (!org || String(o.org || "") !== String(org)) return [];     // شركة تانية ⇒ صفر
       const mine = vanIdentityKeys();
-      if (!mine.length || mine.indexOf(String(o.user || "").trim().toLowerCase()) < 0) return [];
+      if (!mine.length || mine.indexOf(vanIdNorm(o.user)) < 0) return [];
       return o.cars.map((n) => String(n == null ? "" : n).trim()).filter(Boolean);
     } catch (e) { return []; }
   }
-  function vanRepCarsOfMe() {
+  /* سيارة الرحلة المعيّن عليها حسابي — المفتوحة أولًا، وإلا الأحدث (مندوب اتنقل عربية
+     مايفضلش معلّق على القديمة). */
+  function vanRepTripCarsOfMe() {
     const mine = vanIdentityKeys();
     if (!mine.length) return [];
+    let rows = [];
+    try { rows = Array.isArray(carTrips) ? carTrips.slice() : []; } catch (e) { rows = []; }
+    const hits = rows.filter((t) => {
+      if (!t || !String(t.carName || "").trim()) return false;
+      const theirs = [t.repUser, t.repFull, t.repName].map(vanIdNorm).filter(Boolean);
+      return theirs.some((k) => mine.indexOf(k) >= 0);
+    });
+    if (!hits.length) return [];
+    const open = hits.filter((t) => String(t.status || "") === "open");
+    const pick = (open.length ? open : hits).slice().sort((a, b) => {
+      const da = String(a.date || ""), db = String(b.date || "");
+      if (da !== db) return db.localeCompare(da);
+      return (Number(b.id) || 0) - (Number(a.id) || 0);
+    })[0];
+    return [{ id: 0, name: String(pick.carName).trim(), driver: "", phone: "", repUser: "", fromTrip: true }];
+  }
+  function vanRepCarsOfMeRaw() {
+    const mine = vanIdentityKeys();
+    if (!mine.length) return [];
+    const out = [];
+    const seen = {};
+    const add = (c) => {
+      if (!c) return;
+      const n = String(c.name || "").trim();
+      if (!n) return;
+      const k = vanIdNorm(n);
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push(c);
+    };
     const haveCfg = !!(csetData && Array.isArray(csetData.cars) && csetData.cars.length);
     if (haveCfg) {
-      const list = vanCarsAll().filter((c) => {
-        const k = String(c.repUser || "").trim().toLowerCase();
-        return !!k && mine.indexOf(k) >= 0;
+      vanCarsAll().forEach((c) => {
+        // التعيين ممكن يكون بالاسم المستخدم أو بالاسم الكامل — الاتنين بيتقارنوا مطبّعين
+        const keys = [c.repUser, c.repFull].map(vanIdNorm).filter(Boolean);
+        if (keys.some((k) => mine.indexOf(k) >= 0)) add(c);
       });
-      vanRepCacheSave(list.map((c) => c.name));
-      return list;
     }
+    vanRepTripCarsOfMe().forEach(add);
+    if (out.length) { vanRepCacheSave(out.map((c) => c.name)); return out; }
+    // سجل السيارات موجود ومفيهوش تعيين ليا ومفيش رحلة بياها ⇒ أنا فعلاً مش مندوب
+    if (haveCfg) return [];
     // السجل مش موجود (لسه بيتحمّل/فشل) ⇒ آخر تعيين محفوظ على الجهاز لنفس الشركة والحساب
     return vanRepCacheRead().map((n) => ({ id: 0, name: n, driver: "", phone: "", repUser: "", cached: true }));
   }
-  // «أنا مندوب» = فيه سيارة متعيّن عليها حسابي، وأنا مش مالك/سوبر أدمن
+  function vanRepSig() {
+    let n = 0, t = 0, me = "";
+    try { n = (csetData && Array.isArray(csetData.cars)) ? csetData.cars.length : 0; } catch (e) { }
+    try { t = Array.isArray(carTrips) ? carTrips.length : 0; } catch (e) { }
+    try { me = vanIdNorm(activityUser()); } catch (e) { }
+    return me + "|" + n + "|" + t;
+  }
+  function vanRepInvalidate() { VREP_MEMO = null; }
+  /* مذكّرة: `stockAt` بيتنادى في حلقات رسم كتير — ممنوع كل نداء يعيد المسح ويكتب localStorage. */
+  function vanRepCarsOfMe() {
+    const sig = vanRepSig();
+    if (VREP_MEMO && VREP_MEMO.sig === sig) return VREP_MEMO.cars.slice();
+    const cars = vanRepCarsOfMeRaw();
+    VREP_MEMO = { sig: sig, cars: cars };
+    return cars.slice();
+  }
+  // «أنا مندوب» = فيه سيارة متعيّن عليها حسابي (سجل أو رحلة)، وأنا مش مالك/سوبر أدمن
   function vanIsRepUser() {
     if (vanCanManage()) return false;
     return vanRepCarsOfMe().length > 0;
   }
   function vanRepCarNames() { return vanRepCarsOfMe().map((c) => c.name); }
+  function vanIsRepMode() { try { return vanIsRepUser(); } catch (e) { return false; } }
+  /* رصيد الصنف عند المندوب = مجموع كميات عربيته بس (صفر لو مش فيها). */
+  function vanRepStockQty(p) {
+    if (!p) return 0;
+    let q = 0;
+    vanRepCarNames().forEach((n) => { q += Number(vanStockAt(p, n)) || 0; });
+    return Math.round(q * 100) / 100;
+  }
+  function vanRepStockLine(p) {
+    try {
+      return vanRepCarNames().map((n) => Number(vanStockAt(p, n)).toLocaleString("en-US") + "@" + n).join("   ");
+    } catch (e) { return ""; }
+  }
+  /* قائمة أصناف المندوب: اللي في عربيته بس. غير المندوب ⇒ القائمة زي ما هي. */
+  function vanRepVisibleProducts(list) {
+    try {
+      if (!vanIsRepUser()) return list;
+      return (list || []).filter((p) => vanRepStockQty(p) > 0);
+    } catch (e) { return list; }
+  }
   function vanApplyRepMode() {
     try {
       if (!vanIsRepUser()) return;
@@ -15518,10 +15635,22 @@ id: nextVoucherId(),
       const vb = document.querySelector('.nav-btn[data-view="vanSales"]');
       if (vb) vb.hidden = false;
       const nw = $("#btnVanNew"); if (nw) nw.hidden = true;
-      // 🛡 بناء 267: لو كان واقف على «البيع العام» وقت ما عرفنا إنه مندوب (دخل قبل ما
-      // سجل السيارات ينزل) → نحوّله لشاشته بدل ما يفضل شايف المخزن العمومي.
-      if (ownerCurrentView === "sales") showView("vanSales", { history: false });
+      // 🛡 بناء 267/268: لو كان واقف على «البيع العام» أو «الأصناف» وقت ما عرفنا إنه
+      // مندوب (دخل قبل ما سجل السيارات/الرحلات تنزل) → نحوّله لشاشته.
+      if (ownerCurrentView === "sales" || ownerCurrentView === "products") showView("vanSales", { history: false });
     } catch (e) {}
+  }
+  /* نقطة إقلاع واحدة: تُنادی بعد وصول أي بيانات ⇒ تعيد تقييم الهوية والبوابات والرسم.
+     (كانت الهوية بتتقيس مرة واحدة قبل نزول السجل ⇒ المندوب يفضل شايف العمومي.) */
+  function vanRepBootKick() {
+    try { vanRepInvalidate(); } catch (e) { }
+    try { applyFeatureGating(); } catch (e) { }
+    try {
+      if (!vanIsRepUser()) return;
+      renderVanSales();
+      const cur = ownerCurrentView;
+      if (cur === "sales" || cur === "products" || !canUseView(cur)) showView("vanSales", { history: false });
+    } catch (e) { }
   }
 
   /* ---- حسابات المناديب: مراقبة 1.1.6 + حساب لكل مندوب ---- */
@@ -15692,19 +15821,31 @@ id: nextVoucherId(),
     toast("اتحذف المصروف.", "success");
   }
 
+  /* 🛡 بناء 268: مفاتيح الهوية كانت ضيّقة/خامّة — المندوب ممكن يكون معرّف بالبريد أو
+     بالاسم الكامل أو بالتليفون، والهمزة/المسافة بتفرق. بقت مطبّعة وبتشمل البريد
+     (وعنوانه قبل @) والتليفون وصفّه في قائمة أعضاء الشركة. */
   function vanIdentityKeys() {
     const keys = [];
-    const push = (v) => { const s = String(v == null ? "" : v).trim().toLowerCase(); if (s && keys.indexOf(s) < 0) keys.push(s); };
+    const push = (v) => { const s = vanIdNorm(v); if (s && keys.indexOf(s) < 0) keys.push(s); };
     try { push(activityUser()); } catch (e) {}
-    try { const m = (DATA && DATA.me && DATA.me()); if (m) { push(m.username); push(m.full_name); push(m.name); } } catch (e) {}
-    try { const cs = currentAcct(); if (cs) { push(cs.username); push(cs.user_id); push(cs.id); } } catch (e) {}
+    try { const m = (DATA && DATA.me && DATA.me()); if (m) { push(m.username); push(m.full_name); push(m.name); push(m.email); push(String(m.email || "").split("@")[0]); } } catch (e) {}
+    try { const cs = currentAcct(); if (cs) { push(cs.username); push(cs.user_id); push(cs.id); push(cs.email); push(cs.full_name); push(cs.name); push(cs.phone); } } catch (e) {}
+    try { if (DATA && DATA.email) push(DATA.email()); } catch (e) {}
+    try {
+      const uname = vanIdNorm(activityUser());
+      (lastOrgMembers || []).forEach((m) => {
+        if (!m) return;
+        if (vanIdNorm(m.username) === uname || (m.email && vanIdNorm(m.email) === vanIdNorm(DATA && DATA.email ? DATA.email() : ""))) {
+          push(m.username); push(m.full_name); push(m.email);
+        }
+      });
+    } catch (e) {}
     return keys;
   }
   function vanTripIsMine(trip) {
     if (!trip) return false;
     const mine = vanIdentityKeys();
-    const theirs = [trip.repUser, trip.repFull, trip.repName]
-      .map((x) => String(x == null ? "" : x).trim().toLowerCase()).filter(Boolean);
+    const theirs = [trip.repUser, trip.repFull, trip.repName].map(vanIdNorm).filter(Boolean);
     return theirs.some((k) => mine.indexOf(k) >= 0);
   }
   function vanCanManage() { return isSuperAcct() || isCompanyOwnerAcct(); }
@@ -24054,6 +24195,9 @@ id: nextVoucherId(),
 
   /* ================== الربط ================== */
   function initApp() {
+    /* 🛡 بناء 268: أي إقلاع = هوية المندوب تتقيّم من جديد (كانت بتتقيّم مرة واحدة
+       قبل نزول سجل السيارات/الرحلات فيفضل شايف المخزن العمومي). */
+    try { vanRepInvalidate(); } catch (e) { }
     applyFeatureGating();
     // 🧭 بناء 212: تاب واحد بس يقود نداءات المتابعة (اشتراك/حضور/لوحة المالك)
     netLeaderInit();
@@ -25443,13 +25587,10 @@ const pwEye = document.getElementById("btnShowPass");
           ensureSettData().finally(() => {
             initApp();
             enforceChangePwBtn();
-            // 🛡 بناء 267: «مندوب السيارة» هويته جاية من سجل السيارات في «إعدادات مؤسستك»
-            // ⇒ بعد ما ينزل نعيد تقييم البوابات: «البيع العام» يتقفل عليه ويفتح له مخزون
-            // سيارته. (كان بيدخل قبل الإعدادات فيشوف المخزن العمومي.)
-            try { applyFeatureGating(); } catch (e) { }
-            if (!A.online || !csetData) return;
-            // 🛡 بناء 267: رحلاته/سيارته كانت مرسومة قبل وصول السجل ⇒ نعيد رسمها
-            try { if (vanIsRepUser()) { renderVanSales(); if (ownerCurrentView === "sales") showView("vanSales", { history: false }); } } catch (e) { }
+            // 🛡 بناء 268: «مندوب السيارة» هويته جاية من سجل السيارات **أو من الرحلات**
+            // ⇒ بعد ما ينزلوا نعيد تقييم البوابات: «البيع العام/الأصناف» يتقفلوا عليه
+            // ويفتح له مخزون سيارته بس. (نقطة إقلاع واحدة بدل تقييم مرة واحدة.)
+            try { vanRepBootKick(); } catch (e) { }
             // أعد ملء قوائم الضبط بعد التحميل حتى تتوفر الوحدات/التصنيفات/المستودعات فورًا
             try {
               if (!document.getElementById("viewClientSettings").hidden || !document.getElementById("viewSettings").hidden) renderAllSettPanes("c");
@@ -25462,6 +25603,8 @@ const pwEye = document.getElementById("btnShowPass");
         setDbStatus("🟠 مشكلة اتصال");
         toast("تعذّر تحميل بيانات السحابة: " + e.message, "error");
         initApp();
+        /* 🛡 بناء 268: البيانات المحلية/السجل ممكن يكونوا وصلوا ⇒ أعِد تقييم هوية المندوب */
+        try { vanRepBootKick(); } catch (e2) { }
       });
     }).catch((err) => {
       // 🛡 إغلاق الفتحة القديمة (fail-open): فشل فحص الصلاحيات = مانفتحش البرنامج
