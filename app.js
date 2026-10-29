@@ -993,27 +993,12 @@
   function recalculateTreasuryBalances() {
     if (!Array.isArray(treasury)) return;
     reconcileTreasuryWithTxs();
+    const moversReady = treasuryMoversReady();
     treasury.forEach((tr) => {
-      if (tr.openingBalance == null || (Number(tr.openingBalance) === 0 && Number(tr.balance || 0) > 0)) {
-        tr.openingBalance = Number(tr.balance || 0);
-      }
       const tid = Number(tr.id);
-      let bal = Number(tr.openingBalance || 0);
-
-      // 🆕 بناء 266: لو الرصيد صفر ومافيش حركات، استرجع الرصيد من شجرة الحسابات لو متاح
-      if (bal === 0 && typeof accForTreasuryAcc === "function" && Array.isArray(accounts)) {
-        const a = accForTreasuryAcc(tr);
-        if (a) {
-          const aBal = Number(a.openingBalance || a.balance || 0);
-          if (aBal > 0) {
-            const othersOfSameType = treasury.filter((x) => x.type === tr.type && Number(x.id) !== tid && Number(x.balance || 0) > 0);
-            if (!othersOfSameType.length) {
-              bal = aBal;
-              tr.openingBalance = aBal;
-            }
-          }
-        }
-      }
+      // 🛡️ بناء 267 (١): الحركة لسه بتنزل ⇒ ممنوع أعيد الحساب على بيانات ناقصة
+      if (!moversReady) { syncTreasuryItemToSett(tr); return; }
+      let txNet = 0;
 
       // 🆕 بناء 199: لو الفاتورة فيها سطور سداد مفصّلة ⇒ كل سطر بيتوزّع على خزينته هو
       // (والسطر «آجل»/«شيك» مايدخلش خزينة أصلًا: الآجل على حساب الطرف والشيك على 1.1.7).
@@ -1024,30 +1009,54 @@
          الصح: `partyInvoicePaidOf` (نفس مصدر كشف الطرف) + استبعاد الآجل والشيك (الشيك
          على حساب 1.1.7 مش الخزينة). بلا أي ترحيل — الحساب بيتعاد من نفس البيانات. */
       (sales || []).forEach((s) => {
-        if (recalcLinesIn(s, tid) != null) { bal += recalcLinesIn(s, tid); return; }
+        const lineIn = recalcLinesIn(s, tid);
+        if (lineIn != null) { txNet += lineIn; return; }
         if (Number(s.treasuryId) !== tid) return;
         const mode = posPayMode(s.paymentMethod);
         if (mode.isAjal || mode.isCheck) return;
-        bal += partyInvoicePaidOf(s, s.grandTotal);
+        txNet += partyInvoicePaidOf(s, s.grandTotal);
       });
 
       (purchases || []).forEach((p) => {
-        if (recalcLinesIn(p, tid) != null) { bal -= recalcLinesIn(p, tid); return; }
+        const lineIn = recalcLinesIn(p, tid);
+        if (lineIn != null) { txNet -= lineIn; return; }
         if (Number(p.treasuryId) !== tid) return;
         const mode = posPayMode(p.paymentMethod);
         if (mode.isAjal || mode.isCheck) return;
-        bal -= partyInvoicePaidOf(p, p.grandTotal);
+        txNet -= partyInvoicePaidOf(p, p.grandTotal);
       });
 
       (vouchers || []).filter((v) => Number(v.treasuryId) === tid).forEach((v) => {
-        if (v.type === "in" || v.kind === "in") bal += Number(v.amount || 0);
-        else bal -= Number(v.amount || 0);
+        if (v.type === "in" || v.kind === "in") txNet += Number(v.amount || 0);
+        else txNet -= Number(v.amount || 0);
       });
 
-      tr.balance = Math.round(bal * 100) / 100;
+      // 🛡️ بناء 267 — قاعدة واحدة للرصيد (مصدر واحد ومستقر):
+      //   الرصيد = الافتتاحي + صافي الحركات، ومفيش أي «رصيد من حساب تاني» أو «الافتتاحي = الرصيد».
+      //   (١) لو جداول الحركة (بيع/شراء/سندات) لسه ما نزلتش كاملة ⇒ الرصيد المحفوظ يتفضل زي ما هو
+      //       — إعادة الحساب على بيانات ناقصة كانت بتصفّر أرصدة حقيقية (نفس درس بناء 118).
+      //   (٢) لو الافتتاحي صفر والرصيد المحفوظ مش صفر ⇒ الافتتاحي = الرصيد − صافي الحركات.
+      //       ده يرجّع نفس الرصيد المحفوظ بالحرف (idempotent) ⇒ صفر تضخّم وصفر تصفير،
+      //       وأي حركة جديدة بعد كده بتتضاف عليه بشكل صحيح.
+      let op = Number(tr.openingBalance || 0);
+      if (op === 0 && Number(tr.balance || 0) !== 0) {
+        op = Math.round((Number(tr.balance) - txNet) * 100) / 100;
+        tr.openingBalance = op;
+      }
+
+      tr.balance = Math.round((op + txNet) * 100) / 100;
       syncTreasuryItemToSett(tr);
     });
     return saveTreasury();
+  }
+
+  /* 🛡️ بناء 267: هل جداول الحركة اللي بتبني رصيد الخزينة نزلت كاملة؟
+     في وضع السحابة بيبقوا LAZY (sales/purchases/vouchers) ⇒ إعادة الحساب قبلهم
+     بتقرأ حركة ناقصة. في وضع الديسك/الأوفلاين البيانات كلها محليّة فالحساب سليم. */
+  function treasuryMoversReady() {
+    const lt = window.MIZAN_STATE && window.MIZAN_STATE.loadedTables;
+    if (!lt) return !(typeof A !== "undefined" && A && A.online);
+    return lt.sales === true && lt.purchases === true && lt.vouchers === true;
   }
 
   let diskSyncTimer = null;
@@ -4074,7 +4083,9 @@
     // (حتى لو فُعّلت للحساب بالغلط، البوابة دي هي الحقيقة الوحيدة.)
     if (name === "dashboard" || name === "users" || name === "audit") return isCompanyOwnerAcct();
     // 🆕 بناء 266: شاشة إنشاء فاتورة مبيعات = بيت كل الأعضاء ومفتوحة دائمًا.
-    if (name === "sales") return true;
+    // 🛡 بناء 267 (طلب المالك): **إلا مندوب السيارة** — مخزونه هو مخزون سيارته بس،
+    // فشاشة «البيع العام» (اللي بتقرا المخزن العمومي) مقفولة عليه. شاشته = «سيارات مندوبين المبيعات».
+    if (name === "sales") { try { if (vanIsRepUser()) return false; } catch (e) { } return true; }
     // 🆕 بناء 131: أي «لأ» صريحة (من مستوى الشركة أو مستوى الحساب) بتقطع هنا —
     // قبل أي اختصار «صاحب الشركة»، فقرار التحديد ما بيرجعش «كل الصلاحيات».
     if (permExplicitlyOff(name)) return false;
@@ -10238,6 +10249,15 @@
   }
 
   function savePosInvoice() {
+    // 🛡 بناء 267 (طلب المالك): مندوب السيارة ممنوع يبيع من المخزن العمومي — حتى لو
+    // الشاشة اتفتحت له بأي طريق (قديم/برمجي)، الحفظ نفسه بيترفض. البيع من شاشة
+    // «سيارات مندوبين المبيعات» ومخزونه هو مخزون سيارته بس.
+    try {
+      if (vanIsRepUser()) {
+        toast("مخزونك هو مخزون سيارتك بس — البيع من شاشة «سيارات مندوبين المبيعات».", "warning");
+        return;
+      }
+    } catch (e) { }
     if (posItems.length === 0) {
       toast("يرجى إضافة أصناف إلى الفاتورة أولاً.", "warning");
       return;
@@ -11772,10 +11792,10 @@
     if (loc && Number(row.openingBalance || 0) === 0 && Number(loc.openingBalance || 0) !== 0) {
       row.openingBalance = Number(loc.openingBalance) || 0;
     }
-    // 🛡 بناء 266: لو الرصيد الافتتاحي صفر بس فيه رصيد حقيقي مسجل > 0، احفظه
-    if (Number(row.openingBalance || 0) === 0 && Number(row.balance || 0) > 0) {
-      row.openingBalance = Number(row.balance) || 0;
-    }
+    // 🛡 بناء 267: شيلنا اختراع «الرصيد الافتتاحي = الرصيد» اللي كان في 266.
+    // السبب المقاس: السحب بيعيد الرصيد الجاي من السحابة، وبعدها `recalculateTreasuryBalances`
+    // بتضيف حركات الخزينة فوقه من جديد ⇒ الرصيد بيتضخّم كل سحب ⇒ التحويل بأكبر من الحقيقي يعدّي.
+    // الأصل: الافتتاحي قيمة مستقلة، والرصيد = الافتتاحي + صافي الحركات (مصدر واحد).
     return row;
   }
 
@@ -15435,13 +15455,53 @@ id: nextVoucherId(),
     const n = normalizeAr(name);
     return vanCarsAll().find((c) => normalizeAr(c.name) === n) || null;
   }
+  /* 🛡 بناء 267 (طلب المالك: «المخزن الافتراضي اللي يشوفه إجباري وميقدرش يغيّره خلال
+     الرحلة هو مخزون سيارته فقط»): هوية المندوب كانت بتضيع لو لوح «إعدادات مؤسستك»
+     (سجل السيارات) لسه ما نزلش أو فشل تحميله — فيرجع يفتح شاشة البيع العامة ويبيع من
+     المخزن العمومي. الحل: آخر تعيين مقروء من السجل بيتحفظ على **الجهاز** مخبومًا
+     بشركة + حساب؛ وبيتقرا **بس** لما السجل نفسه مش موجود (مش لما السجل موجود ومفيهوش
+     تعيين — في الحالة دي هو فعلاً مش مندوب). صفر كتابة سحابية. */
+  const LS_VAN_REP = "mizan_van_rep_v1";
+  function vanRepCacheOrg() {
+    try { const s = localStateOrg(); if (s) return String(s); } catch (e) { }
+    try { const o = (typeof DATA !== "undefined" && DATA && DATA.org) ? DATA.org() : null; if (o && o.id) return String(o.id); } catch (e) { }
+    return "";
+  }
+  function vanRepCacheSave(names) {
+    try {
+      const org = vanRepCacheOrg();
+      const me = String(activityUser() || "").trim().toLowerCase();
+      if (!org || !me) return;
+      localStorage.setItem(LS_VAN_REP, JSON.stringify({ org: org, user: me, cars: (names || []).slice() }));
+    } catch (e) { }
+  }
+  function vanRepCacheRead() {
+    try {
+      const raw = localStorage.getItem(LS_VAN_REP);
+      if (!raw) return [];
+      const o = JSON.parse(raw);
+      if (!o || !Array.isArray(o.cars) || !o.cars.length) return [];
+      const org = vanRepCacheOrg();
+      if (!org || String(o.org || "") !== String(org)) return [];     // شركة تانية ⇒ صفر
+      const mine = vanIdentityKeys();
+      if (!mine.length || mine.indexOf(String(o.user || "").trim().toLowerCase()) < 0) return [];
+      return o.cars.map((n) => String(n == null ? "" : n).trim()).filter(Boolean);
+    } catch (e) { return []; }
+  }
   function vanRepCarsOfMe() {
     const mine = vanIdentityKeys();
     if (!mine.length) return [];
-    return vanCarsAll().filter((c) => {
-      const k = String(c.repUser || "").trim().toLowerCase();
-      return !!k && mine.indexOf(k) >= 0;
-    });
+    const haveCfg = !!(csetData && Array.isArray(csetData.cars) && csetData.cars.length);
+    if (haveCfg) {
+      const list = vanCarsAll().filter((c) => {
+        const k = String(c.repUser || "").trim().toLowerCase();
+        return !!k && mine.indexOf(k) >= 0;
+      });
+      vanRepCacheSave(list.map((c) => c.name));
+      return list;
+    }
+    // السجل مش موجود (لسه بيتحمّل/فشل) ⇒ آخر تعيين محفوظ على الجهاز لنفس الشركة والحساب
+    return vanRepCacheRead().map((n) => ({ id: 0, name: n, driver: "", phone: "", repUser: "", cached: true }));
   }
   // «أنا مندوب» = فيه سيارة متعيّن عليها حسابي، وأنا مش مالك/سوبر أدمن
   function vanIsRepUser() {
@@ -15458,6 +15518,9 @@ id: nextVoucherId(),
       const vb = document.querySelector('.nav-btn[data-view="vanSales"]');
       if (vb) vb.hidden = false;
       const nw = $("#btnVanNew"); if (nw) nw.hidden = true;
+      // 🛡 بناء 267: لو كان واقف على «البيع العام» وقت ما عرفنا إنه مندوب (دخل قبل ما
+      // سجل السيارات ينزل) → نحوّله لشاشته بدل ما يفضل شايف المخزن العمومي.
+      if (ownerCurrentView === "sales") showView("vanSales", { history: false });
     } catch (e) {}
   }
 
@@ -15745,7 +15808,17 @@ id: nextVoucherId(),
   function renderVanSales() {
     vanBindOnce();
     // لو لوح «إعدادات مؤسستك» مش محمّل، نجيبه عشان سجل السيارات (الاسم/المندوب/الصيانة)
-    try { if (!csetData && A.online) ensureSettData().catch(() => {}); } catch (e) {}
+    // 🛡 بناء 267: ولما ينزل نعيد الرسم — الشاشة كانت بتترسم قبل معرفة سيارات المندوب
+    // (فتبان فاضية أو عامة). إعادة الرسم بتحصل **مرة واحدة** (لو السجل رجع موجود).
+    try {
+      if (!csetData && A.online) {
+        ensureSettData().then(() => {
+          if (!csetData) return;
+          try { applyFeatureGating(); } catch (e) { }
+          renderVanSales();
+        }).catch(() => { });
+      }
+    } catch (e) { }
     const body = $("#vanTripBody");
     if (!body) return;
     const carNames = vanIsRepUser() ? vanRepCarNames() : vanCarNames();
@@ -15838,8 +15911,48 @@ id: nextVoucherId(),
     // نوافذ التحميل
     add("btnVanLoadCancel", "click", () => hideModal("mVanLoad"));
     add("btnVanLoadSave", "click", saveVanLoad);
-    const lwh = $("#vanLoadWh"); if (lwh) lwh.addEventListener("change", renderVanLoadRows);
+    const lwh = $("#vanLoadWh"); if (lwh) lwh.addEventListener("change", vanLoadWhChanged);
     const lsearch = $("#vanLoadSearch"); if (lsearch) lsearch.addEventListener("input", renderVanLoadRows);
+    // 🧱 بناء 267: المخزن (يمين) ⇒ السيارة (شمال) — الكتابة + Enter + زر ⬅ بتحوّل الكمية فورًا
+    // وبتخصمها من «المتاح» في لوحة المخزن قبل الحفظ. المستمع واحد مفوّض على جسم الجدول.
+    const lbody = $("#vanLoadBody");
+    if (lbody) {
+      lbody.addEventListener("keydown", (ev) => {
+        const inp = ev.target.closest("input[data-pid]");
+        if (!inp) return;
+        if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); vanLoadAddFromRow(inp); }
+      });
+      lbody.addEventListener("change", (ev) => {
+        const inp = ev.target.closest("input[data-pid]");
+        if (inp) vanLoadAddFromRow(inp);
+      });
+      lbody.addEventListener("click", (ev) => {
+        const b = ev.target.closest("[data-vanadd]");
+        if (!b) return;
+        ev.preventDefault();
+        const tr = b.closest("tr");
+        vanLoadAddFromRow(tr ? tr.querySelector("input[data-pid]") : null);
+      });
+    }
+    const lcar = $("#vanLoadCarBody");
+    if (lcar) {
+      lcar.addEventListener("keydown", (ev) => {
+        const inp = ev.target.closest("input[data-cqty]");
+        if (!inp) return;
+        if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); vanLoadCarQtyChanged(inp); }
+      });
+      lcar.addEventListener("change", (ev) => {
+        const inp = ev.target.closest("input[data-cqty]");
+        if (inp) vanLoadCarQtyChanged(inp);
+      });
+      lcar.addEventListener("click", (ev) => {
+        const b = ev.target.closest("[data-vandel]");
+        if (!b) return;
+        ev.preventDefault();
+        vanLoadDraftSet(Number(b.getAttribute("data-vandel")), 0);
+        renderVanLoadAll();
+      });
+    }
     // نوافذ البيع
     add("btnVanSaleCancel", "click", () => hideModal("mVanSale"));
     add("btnVanSaleSave", "click", saveVanSale);
@@ -15942,7 +16055,7 @@ id: nextVoucherId(),
           rs.disabled = false;
         }
       };
-      cs.onchange = syncRepOfCar;
+      cs.onchange = () => { syncRepOfCar(); renderVanLoadCar(); };
       syncRepOfCar();
       const d = $("#vanLoadDate"); if (d) d.value = todayISO();
       const wh = $("#vanLoadWh");
@@ -15950,17 +16063,83 @@ id: nextVoucherId(),
       warehouseList().forEach((w) => { const o = document.createElement("option"); o.value = w; o.textContent = w; wh.appendChild(o); });
       wh.value = vanMainWh();
       const s = $("#vanLoadSearch"); if (s) s.value = "";
-      renderVanLoadRows();
+      vanLoadDraft = [];                    // 🧱 بناء 267: كل فتحة تبدأ نضيفة
+      renderVanLoadAll();
       showModal("mVanLoad");
     });
   }
+  /* 🧱 بناء 267 (طلب المالك): شاشة تحميل الرحلة بقت لوحتين — المخزن **يمين** والسيارة
+     **شمال**. اللي بتكتبه جنب الصنف في المخزن بيتحوّل فورًا للسطر الشمال وبيتخصم من
+     «المتاح» في المخزن قبل الحفظ. المسودة دي مصدر واحد للوحتين وللحفظ. */
+  let vanLoadDraft = [];
+  function vanLoadWhOf() { return ($("#vanLoadWh") && $("#vanLoadWh").value) || vanMainWh(); }
+  function vanLoadProductOf(pid) { return (products || []).find((p) => Number(p.id) === Number(pid)) || null; }
+  function vanLoadDraftQty(pid) {
+    const r = vanLoadDraft.find((x) => Number(x.pid) === Number(pid));
+    return r ? Number(r.qty) || 0 : 0;
+  }
+  function vanLoadDraftSet(pid, qty) {
+    const id = Number(pid);
+    const q = Math.round((Number(qty) || 0) * 100) / 100;
+    const i = vanLoadDraft.findIndex((x) => Number(x.pid) === id);
+    if (!(q > 0)) { if (i >= 0) vanLoadDraft.splice(i, 1); return; }
+    if (i >= 0) vanLoadDraft[i].qty = q;
+    else vanLoadDraft.push({ pid: id, qty: q });
+  }
+  function vanLoadAddFromRow(inp) {
+    if (!inp) return;
+    const pid = Number(inp.getAttribute("data-pid"));
+    const qty = Math.round((parseMoney(inp.value) || 0) * 100) / 100;
+    inp.value = "";
+    if (!(qty > 0) || !Number.isFinite(pid)) return;
+    const p = vanLoadProductOf(pid);
+    const wh = vanLoadWhOf();
+    const staged = vanLoadDraftQty(pid);
+    const avail = p ? Math.max(0, round2(stockAt(p, wh) - staged)) : 0;
+    if (qty > avail + 0.0001) {
+      toast("المتاح في «" + wh + "» من «" + (p ? p.nameAr : "") + "» " + fmt(avail) + " بس — اكتب كمية أقل.", "warning");
+      return;
+    }
+    vanLoadDraftSet(pid, staged + qty);
+    renderVanLoadRows();
+    renderVanLoadCar();
+  }
+  function vanLoadCarQtyChanged(inp) {
+    if (!inp) return;
+    const pid = Number(inp.getAttribute("data-cqty"));
+    const p = vanLoadProductOf(pid);
+    const wh = vanLoadWhOf();
+    const avail = p ? stockAt(p, wh) : 0;
+    const q = Math.round((parseMoney(inp.value) || 0) * 100) / 100;
+    if (!(q > 0)) { vanLoadDraftSet(pid, 0); renderVanLoadAll(); return; }
+    if (q > avail + 0.0001) {
+      toast("المتاح في «" + wh + "» من «" + (p ? p.nameAr : "") + "» " + fmt(avail) + " بس — خليتها " + fmt(Math.max(0, avail)) + ".", "warning");
+      vanLoadDraftSet(pid, avail > 0 ? avail : 0);
+      renderVanLoadAll();
+      return;
+    }
+    vanLoadDraftSet(pid, q);
+    renderVanLoadAll();
+  }
+  function vanLoadWhChanged() {
+    // تغيير مخزن المصدر ⇒ نتحقق من كل الكميات المرحّلة ونقصّها للمتاح الجديد
+    const wh = vanLoadWhOf();
+    const keep = [];
+    vanLoadDraft.forEach((r) => {
+      const p = vanLoadProductOf(r.pid);
+      const avail = p ? stockAt(p, wh) : 0;
+      if (avail > 0) keep.push({ pid: r.pid, qty: Math.min(Number(r.qty) || 0, avail) });
+    });
+    vanLoadDraft = keep;
+    renderVanLoadAll();
+  }
+  function renderVanLoadAll() { renderVanLoadRows(); renderVanLoadCar(); }
   function renderVanLoadRows() {
     const body = $("#vanLoadBody");
     if (!body) return;
-    const wh = ($("#vanLoadWh") && $("#vanLoadWh").value) || vanMainWh();
+    const wh = vanLoadWhOf();
+    const wn = $("#vanLoadWhName"); if (wn) wn.textContent = wh ? "— " + wh : "";
     const q = normalizeAr(($("#vanLoadSearch") && $("#vanLoadSearch").value) || "");
-    const keep = {};
-    body.querySelectorAll("input[data-pid]").forEach((inp) => { keep[inp.getAttribute("data-pid")] = inp.value; });
     const list = (products || []).filter((p) => {
       if (!p || p.isActive === false) return false;
       if (!q) return true;
@@ -15968,20 +16147,55 @@ id: nextVoucherId(),
     });
     body.innerHTML = "";
     if (!list.length) {
-      body.innerHTML = '<tr><td colspan="5" class="login-sub" style="text-align:center">لا توجد أصناف.</td></tr>';
+      body.innerHTML = '<tr><td colspan="4" class="login-sub" style="text-align:center">لا توجد أصناف.</td></tr>';
       return;
     }
     list.forEach((p) => {
       const tr = document.createElement("tr");
-      const avail = stockAt(p, wh);
+      const raw = stockAt(p, wh);
+      const staged = vanLoadDraftQty(p.id);
+      const avail = Math.max(0, round2(raw - staged));
+      const badge = staged > 0 ? ' <span class="van-staged">⇦ محوّل: ' + esc(fmt(staged)) + '</span>' : "";
       tr.innerHTML =
         '<td>' + esc(p.code) + '</td>' +
-        '<td style="text-align:right">' + esc(p.nameAr) + '</td>' +
+        '<td style="text-align:right">' + esc(p.nameAr) + badge + '</td>' +
         '<td>' + fmt(avail) + '</td>' +
-        '<td>' + fmt(vanStockAt(p, wh)) + '</td>' +
-        '<td><input class="cell-input" type="text" inputmode="decimal" data-pid="' + esc(p.id) + '" value="' + esc(keep[p.id] || "") + '" placeholder="0" /></td>';
+        '<td><input class="cell-input van-qty-in" type="text" inputmode="decimal" data-pid="' + esc(p.id) + '" value="" placeholder="0" />' +
+        '<button type="button" class="van-add-btn" data-vanadd="' + esc(p.id) + '" title="حوّلها للسيارة">⬅</button></td>';
       body.appendChild(tr);
     });
+  }
+  function renderVanLoadCar() {
+    const body = $("#vanLoadCarBody");
+    const sum = $("#vanLoadCarSummary");
+    const car = ($("#vanLoadCar") && $("#vanLoadCar").value) || "";
+    const cn = $("#vanLoadCarName"); if (cn) cn.textContent = car ? "— " + car : "";
+    const wn = $("#vanLoadWhName"); if (wn) wn.textContent = ($("#vanLoadWh") && $("#vanLoadWh").value) ? "— " + $("#vanLoadWh").value : "";
+    if (!body) return;
+    body.innerHTML = "";
+    let totalQty = 0;
+    let totalCost = 0;
+    if (!vanLoadDraft.length) {
+      body.innerHTML = '<tr><td colspan="3" class="login-sub" style="text-align:center">لسه ما اخترتش أصناف — اكتب الكمية جنب الصنف في المخزن (يمين) وهتنزل هنا.</td></tr>';
+    }
+    vanLoadDraft.forEach((r) => {
+      const p = vanLoadProductOf(r.pid);
+      const cost = p ? round2(avgPriceOf(p)) : 0;
+      totalQty += Number(r.qty) || 0;
+      totalCost += (Number(r.qty) || 0) * cost;
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td style="text-align:right">' + esc(p ? p.nameAr : "—") +
+        ' <span class="van-pane-sub">(' + esc(p ? p.code : "") + ')</span></td>' +
+        '<td><input class="cell-input van-qty-in" type="text" inputmode="decimal" data-cqty="' + esc(r.pid) + '" value="' + esc(String(r.qty)) + '" /></td>' +
+        '<td><button type="button" class="van-del-btn" data-vandel="' + esc(r.pid) + '">حذف</button></td>';
+      body.appendChild(tr);
+    });
+    if (sum) {
+      sum.innerHTML = '<span>عدد الأصناف: <b>' + vanLoadDraft.length + '</b></span>' +
+        '<span>إجمالي الكميات: <b>' + fmt(round2(totalQty)) + '</b></span>' +
+        '<span>تكلفة العهدة: <b>' + fmt(round2(totalCost)) + ' ج.م</b></span>';
+    }
   }
   function saveVanLoad() {
     const car = $("#vanLoadCar").value;
@@ -15993,12 +16207,12 @@ id: nextVoucherId(),
     if (!wh) { toast("اختر المخزن المصدر.", "warning"); return; }
     const existing = vanOpenTripForCarToday(car);
     if (existing) { toast("فيه رحلة مفتوحة النهاردة لنفس السيارة (#" + existing.id + ") — قفلها الأول.", "warning"); return; }
-    const picks = [];
-    $("#vanLoadBody").querySelectorAll("input[data-pid]").forEach((inp) => {
-      const qty = Math.round((parseMoney(inp.value) || 0) * 100) / 100;
-      if (qty > 0) picks.push({ pid: Number(inp.getAttribute("data-pid")), qty: qty });
-    });
-    if (!picks.length) { toast("اكتب الكميات اللي عايز تحمّلها للسيارة.", "warning"); return; }
+    // 🧱 بناء 267: الحفظ بيقرا **المسودة** (نفس مصدر اللوحتين) مش خانات المخزن —
+    // عشان اللي اتحوّل للسيارة اتحذف من «المتاح» ومبقاش في الخانة.
+    const picks = (vanLoadDraft || [])
+      .map((r) => ({ pid: Number(r.pid), qty: Math.round((Number(r.qty) || 0) * 100) / 100 }))
+      .filter((r) => r.qty > 0 && Number.isFinite(r.pid));
+    if (!picks.length) { toast("اختار الأصناف من المخزن الأول — اكتب الكمية جنب الصنف في اللوحة اليمين.", "warning"); return; }
     const short = [];
     picks.forEach((pk) => {
       const p = products.find((x) => Number(x.id) === pk.pid);
@@ -16046,6 +16260,7 @@ id: nextVoucherId(),
     try { lj = postVanLoadJournal(trip); } catch (e) {}
     saveCarTrips();
     try { addActivity("فتح رحلة سيارة", "سيارة " + car + " - مندوب " + rep.name + " - تحميل " + picks.length + " صنف من " + wh + (lj ? " - قيد عهدة " + lj.number : "")); } catch (e) {}
+    vanLoadDraft = [];                     // 🧱 بناء 267: المسودة بتخلص مع الحفظ
     hideModal("mVanLoad");
     toast("اتفتحت رحلة السيارة " + car + " للمندوب " + rep.name +
       " — عهدة بضاعة " + fmt(vanLoadedCost(trip)) + " ج.م على حسابه" +
@@ -17632,15 +17847,7 @@ id: nextVoucherId(),
       const opt = document.createElement("option");
       opt.value = t.id;
       const typeLbl = t.type === "bank" ? "بنك" : t.type === "instapay" ? "إنستا باي" : t.type === "wallet" ? "محفظة" : "نقدية";
-      let b = round2(t.balance);
-      // 🛡 بناء 266: لو الرصيد صفر في الخزينة، افحص رصيد حساب الدليل المقابل
-      if (b === 0 && typeof accForTreasuryAcc === "function" && Array.isArray(accounts)) {
-        const a = accForTreasuryAcc(t);
-        if (a && Number(a.openingBalance || a.balance || 0) > 0) {
-          const others = treasury.filter((x) => x.type === t.type && Number(x.id) !== Number(t.id) && Number(x.balance || 0) > 0);
-          if (!others.length) b = round2(a.openingBalance || a.balance || 0);
-        }
-      }
+      const b = round2(t.balance);
       opt.textContent = mainCash && Number(t.id) === Number(mainCash.id)
         ? "الخزينة — " + t.name + " — رصيد " + fmt(b) + " ج.م"
         : t.name + " (" + typeLbl + ") — رصيد " + fmt(b) + " ج.م";
@@ -17700,15 +17907,7 @@ id: nextVoucherId(),
   function fundsBlocked(t, amount, opts) {
     if (!t) return false;
     const need = round2(amount);
-    let bal = round2(t.balance);
-    // 🛡 بناء 266: مطابقة الرصيد الفعلي من حساب الدليل لو الخزينة لسه صفر
-    if (bal === 0 && typeof accForTreasuryAcc === "function" && Array.isArray(accounts)) {
-      const a = accForTreasuryAcc(t);
-      if (a && Number(a.openingBalance || a.balance || 0) > 0) {
-        const others = treasury.filter((x) => x.type === t.type && Number(x.id) !== Number(t.id) && Number(x.balance || 0) > 0);
-        if (!others.length) bal = round2(a.openingBalance || a.balance || 0);
-      }
-    }
+    const bal = round2(t.balance);
     if (!(need > 0) || bal >= need) return false;
     const o = opts || {};
     const short = round2(need - bal);
@@ -17821,14 +18020,9 @@ id: nextVoucherId(),
     const tid = parseInt((($(treasurySelId) || {})).value, 10);
     const t = treasury.find((x) => Number(x.id) === tid);
     if (!(amount > 0) || !t) { hint.style.color = ""; hint.textContent = base; return; }
-    let bal = round2(t.balance);
-    if (bal === 0 && typeof accForTreasuryAcc === "function" && Array.isArray(accounts)) {
-      const a = accForTreasuryAcc(t);
-      if (a && Number(a.openingBalance || a.balance || 0) > 0) {
-        const others = treasury.filter((x) => x.type === t.type && Number(x.id) !== Number(t.id) && Number(x.balance || 0) > 0);
-        if (!others.length) bal = round2(a.openingBalance || a.balance || 0);
-      }
-    }
+    // 🛡 بناء 267: الرقم اللي بيشوفه العميل = نفس الرقم اللي البوابة بتحكم بيه (`t.balance`)
+    // — شيلنا الرجوع لرصيد حساب الدليل لأنه كان يعرض «فيه فلوس» والحفظ يرفض، فتطلع الرسالة متناقضة.
+    const bal = round2(t.balance);
     if (m === "income") {
       hint.style.color = "";
       hint.textContent = "✅ رصيد «" + t.name + "» " + fmt(bal) + " ج.م — بعد القبض يبقى " + fmt(round2(bal + amount)) + " ج.م.";
@@ -17841,14 +18035,14 @@ id: nextVoucherId(),
       return;
     }
     const f = fundedAccounts(t.id, 3);
-    let msg = "⚠️ «" + t.name + "» رصيدها " + fmt(bal) + " ج.م والمبلغ " + fmt(amount) + " ج.م.";
+    let msg = "🚫 «" + t.name + "» رصيدها " + fmt(bal) + " ج.م والمبلغ " + fmt(amount) + " ج.م — " +
+      (m === "transfer" ? "التحويل ده مش هيتحفظ" : "الصرف ده مش هيتحفظ") + " (ممنوع يبقى الرصيد سالب).";
     if (f.list.length) {
       msg += " أكتر حساب فيه فلوس: «" + f.list[0].name + "» (" + fmt(round2(f.list[0].balance)) + " ج.م) — تقدر تختاره من القائمة.";
     } else {
       msg += " مافيش حساب تاني فيه رصيد حاليًا.";
     }
     msg += " مجموع أرصدة كل الحسابات " + fmt(f.total) + " ج.م.";
-    msg += " ولو كمّلت منها هيكون رصيدها " + fmt(round2(bal - amount)) + " ج.م.";
     hint.style.color = "#c0392b";
     hint.textContent = msg;
   }
@@ -18152,6 +18346,19 @@ id: nextVoucherId(),
     if (!from || !to) { toast("اختار الحساب المنقول منه والحساب المنقول إليه.", "warning"); return; }
     if (Number(from.id) === Number(to.id)) { toast("لا يمكن التحويل من الحساب إلى نفس الحساب.", "warning"); return; }
     if (!(amount > 0)) { toast("اكتب مبلغًا صحيحًا أكبر من الصفر.", "warning"); return; }
+
+    // 🔒 صمام أمان صارم وغير مشروط (بناء 267): رصيد الحساب المنقول منه ممنوع يصبح سالبًا.
+    // قناة واحدة للرسالة (`fundsBlocked`) بتشرح الرصيد والمطلوب والناقص بأرقام — بلا نصّين متكرّرين.
+    const curBal = round2(from.balance);
+    if (curBal <= 0) {
+      fundsBlocked(from, amount, { focusSel: "#trAmount" });
+      return;
+    }
+    if (amount > curBal) {
+      fundsBlocked(from, amount, { focusSel: "#trAmount" });
+      return;
+    }
+
     // 🔒 بناء 187 (استُرجع في 197): حارس «لا ترحيل بلا حساب» — اتشال بالغلط في شغل جوبايلوت (كوميت 52f428c)
     // وخلي التحويل يرفض برسالة «أضف الحساب» بدل ما يعمل الحسابات القياسية الناقصة أوتوماتيك.
     // الحارس ده بيعيد تنشيط 1.1.1/1.1.2/1.1.3 قبل أي فحص، فالخزائن القياسية دايماً تلاقي حسابها.
@@ -18164,8 +18371,8 @@ id: nextVoucherId(),
       return;
     }
     if (jrnBlocked("التحويل", voucherJrnPlan("out", aFrom, aTo, amount))) return;
-    // 🚫 بناء 226: التحويل ممنوع لو رصيد الحساب المصدر مش كافي
-    if (fundsBlocked(from, amount, { focusSel: "#trAccFrom" })) return;
+    // 🚫 بناء 226/267: فحص متبقي السيولة مع رسالة المودال
+    if (fundsBlocked(from, amount, { focusSel: "#trAmount" })) return;
     const note = $("#trNotes").value.trim();
     const tag = "تحويل من «" + from.name + "» إلى «" + to.name + "»" + (note ? " — " + note : "");
     const baseId = nextVoucherId() - 1;   // 🧱 186: سند الصرف = baseId+1، القبض = baseId+2 (أرقام فريدة عبر الأرضية)
@@ -25236,7 +25443,13 @@ const pwEye = document.getElementById("btnShowPass");
           ensureSettData().finally(() => {
             initApp();
             enforceChangePwBtn();
+            // 🛡 بناء 267: «مندوب السيارة» هويته جاية من سجل السيارات في «إعدادات مؤسستك»
+            // ⇒ بعد ما ينزل نعيد تقييم البوابات: «البيع العام» يتقفل عليه ويفتح له مخزون
+            // سيارته. (كان بيدخل قبل الإعدادات فيشوف المخزن العمومي.)
+            try { applyFeatureGating(); } catch (e) { }
             if (!A.online || !csetData) return;
+            // 🛡 بناء 267: رحلاته/سيارته كانت مرسومة قبل وصول السجل ⇒ نعيد رسمها
+            try { if (vanIsRepUser()) { renderVanSales(); if (ownerCurrentView === "sales") showView("vanSales", { history: false }); } } catch (e) { }
             // أعد ملء قوائم الضبط بعد التحميل حتى تتوفر الوحدات/التصنيفات/المستودعات فورًا
             try {
               if (!document.getElementById("viewClientSettings").hidden || !document.getElementById("viewSettings").hidden) renderAllSettPanes("c");

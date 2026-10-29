@@ -429,6 +429,11 @@ body {
   z-index: 3000;
 }
 
+/* 🛡️ بناء 267: نافذة تنبيه نقص السيولة تظهر دائمًا فوق أي نافذة أخرى (بما فيها نافذة التحويل) */
+#mFundsShort {
+  z-index: 4000 !important;
+}
+
 .modal-overlay[hidden] { display: none; }
 
 .modal {
@@ -2427,8 +2432,27 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .van-exp-list { display:flex; flex-direction:column; gap:6px; margin:8px 0; max-height:34vh; overflow:auto; }
 .van-exp-row { display:flex; align-items:center; justify-content:space-between; gap:10px; background:#fff7ed; border:1px solid #fdba74; border-radius:9px; padding:7px 10px; font-size:13px; }
 .van-exp-block { background:#fff7ed; border:1px solid var(--border); border-radius:10px; padding:9px 12px; margin:8px 0; display:flex; flex-direction:column; gap:5px; font-size:13px; }
-@media (max-width: 860px) { .van-grid3, .van-sale-cols { grid-template-columns:1fr; } }
-@media (max-width: 640px) { .modal.m720, .modal.m900 { max-width:96vw; } }
+/* 🧱 بناء 267 (طلب المالك) — شاشة تحميل الرحلة بقرصين: المخزن **يمين** والسيارة **شمال**،
+   والكمية اللي تتكتب في المخزن تتحوّل فورًا لسطر السيارة وتتخصم من «المتاح» يمين. */
+.modal.van-load-modal { width: 1080px; max-width: 96vw; }
+.van-load-2pane { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:8px 0; align-items:start; }
+.van-load-pane { display:flex; flex-direction:column; min-width:0; border:1px solid var(--border); border-radius:10px; background:#fff; overflow:hidden; }
+.van-pane-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 10px; font-weight:800; font-size:13px; background:#f1f5f9; border-bottom:1px solid var(--border); color:#0f172a; }
+.van-load-wh .van-pane-head { background:#e0f2fe; color:#075985; border-bottom-color:#7dd3fc; }
+.van-load-car .van-pane-head { background:#dcfce7; color:#14532d; border-bottom-color:#86efac; }
+.van-load-pane .van-list-wrap { margin:0; border:0; border-radius:0; max-height:46vh; }
+.van-load-pane .dgv { width:100%; }
+.van-pane-sub { font-weight:600; font-size:12px; color:#475569; }
+.van-qty-in { width:78px; text-align:center; }
+.van-add-btn { border:1px solid #0284c7; background:#e0f2fe; color:#075985; border-radius:7px; padding:5px 9px; margin-inline-start:6px; cursor:pointer; font-weight:800; }
+.van-add-btn:hover { background:#bae6fd; }
+.van-del-btn { border:1px solid var(--danger); background:#fef2f2; color:#b91c1c; border-radius:7px; padding:4px 10px; cursor:pointer; font-weight:700; font-size:12px; }
+.van-del-btn:hover { background:#fee2e2; }
+.van-staged { display:inline-block; margin-inline-start:6px; font-size:11px; font-weight:700; color:#0369a1; background:#e0f2fe; border-radius:6px; padding:1px 6px; }
+.van-load-sum { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:center; font-size:12.5px; color:#334155; padding:8px 10px; background:#f8fafc; border-top:1px solid var(--border); }
+.van-load-sum b { color:#0f172a; }
+@media (max-width: 860px) { .van-grid3, .van-sale-cols, .van-load-2pane { grid-template-columns:1fr; } }
+@media (max-width: 640px) { .modal.m720, .modal.m900, .modal.van-load-modal { max-width:96vw; } }
 
 
 

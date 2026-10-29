@@ -468,8 +468,6 @@
         var lid = (r.local_id != null) ? Number(r.local_id) : localIdFromUuid("treasury", r.id);
         var op = Number(r.opening_balance || 0);
         var curBal = Number(r.balance || 0);
-        // 🛡 بناء 266: لو الرصيد الافتتاحي على السحابة 0 بس فيه رصيد مسجل > 0، احتفظ به كافتتاحي عشان إعادة الحساب ما تصفروش
-        if (op === 0 && curBal > 0) op = curBal;
         return { id: lid, name: r.name, type: r.type || "cash", accountNo: r.account_no || "",
           openingBalance: op, balance: curBal,
           isActive: r.is_active !== false };
