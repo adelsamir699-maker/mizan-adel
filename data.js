@@ -258,6 +258,28 @@
     });
   }
 
+  /* 🔐 بناء 269 (طلب المالك: «يطلب الرقم السرى لصاحب المؤسسه للموافقه على تعديل
+     حمولة الرحلة»): تأكيد كلمة السر الحالية للحساب المفتوح — **تأكيد فقط**.
+     - بيستخدم إيميل الحساب الحالي (`lastEmail`) مش أي اسم مستخدم مكتوب في الشاشة
+       ⇒ لو حد كتب كلمة سر حساب تاني، الطلب بيفشل (الإيميل ثابت في النداء).
+     - مفيش تغيير لكلمة السر، ومفيش أي كتابة على أي جدول. التوكنات الجديدة
+       بتتخزن بس عشان الجلسة تفضل شغالة بعد التحديث.
+     - أوفلاين/بلا جلسة ⇒ `{ok:false, offline:true}` (ما بنقبلش تعديل بلا تأكيد). */
+  function verifyPassword(pass) {
+    var p = String(pass == null ? "" : pass);
+    if (!p) return Promise.resolve({ ok: false, empty: true });
+    if (!lastEmail) return Promise.resolve({ ok: false, offline: true });
+    return ensureLib().then(function () {
+      if (!sb) init();
+      if (!sb) return { ok: false, offline: true };
+      return sb.auth.signInWithPassword({ email: lastEmail, password: p }).then(function (r) {
+        if (r.error || !r.data || !r.data.session) return { ok: false, wrong: true };
+        saveSessionTokens(r.data.session);
+        return { ok: true };
+      }, function () { return { ok: false, offline: true }; });
+    }, function () { return { ok: false, offline: true }; });
+  }
+
   /* 🛡 بناء 141 — «مافيش تسجيل ذاتي خالص»: الدالة `signup` (اللي كانت بتنادي `sb.auth.signUp`)
      كانت **ميتة** (صفر نداء في `app.js` — الحسابات بتتعمل من لوحة المالك `mizan_admin_create_user`
      أو من شاشة «حسابات شركتك» لصاحبها)، فتم حذفها من الملف ومن قايمة التصدير:
@@ -1193,6 +1215,8 @@ function changeMyPassword(oldPass, newPass) {
     adminRestoreFull: adminRestoreFull,
     passwordLog: passwordLog,
       changeMyPassword: changeMyPassword,
+      // 🔐 بناء 269: تأكيد كلمة السر قبل أي تعديل حسّاس (تأكيد فقط — مفيش تغيير)
+      verifyPassword: verifyPassword,
       adminPwStore: adminPwStore,
       orgResetMemberPassword: orgResetMemberPassword,
     presenceHeartbeat: presenceHeartbeat,

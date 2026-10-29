@@ -15849,6 +15849,15 @@ id: nextVoucherId(),
     return theirs.some((k) => mine.indexOf(k) >= 0);
   }
   function vanCanManage() { return isSuperAcct() || isCompanyOwnerAcct(); }
+  /* 🆕 بناء 269 (طلب المالك: «زرار لتعديل حمولة الرحلة … صلاحيته مع صاحب المؤسسه
+     فقط … ويطلب الرقم السرى لصاحب المؤسسه للموافقه»):
+     - صاحب الشركة بس (+ مالك البرنامج عادل، التزامًا بقاعدة «مفيش شاشة مقفولة
+       على المالك») — **منفصلة عن `vanCanManage` عمدًا** لأن دي بتشمل البيع
+       والتصفية والحذف؛ تعديل الحمولة أضيق منها.
+     - المندوب صاحب الرحلة **مش** داخل حتى لو الرحلة بتاعته (القرار لصاحب الشركة).
+     - البوابة هنا **وفي** `openVanLoadEditDialog` و`saveVanLoadEdit` — مش على
+       الزرار بس، + كلمة السر بتتأكد سحابيًا قبل أي أثر. */
+  function vanCanEditLoad() { return !vanIsRepUser() && (isCompanyOwnerAcct() || isSuperAcct()); }
   /* 🆕 بناء 266 (طلب المالك: «محتاج زرار تصفية الرحلة»): المندوب المعيَّن على الرحلة
      يقفل/يصفّي رحلته هو بنفسه — مالك/مدير يصفّي أي رحلة، والمندوب رحلته بس.
      (البوابة هنا وفي `openVanSettleDialog` و`saveVanSettle` — مش الزرار بس.) */
@@ -16003,6 +16012,8 @@ id: nextVoucherId(),
       const acts = [];
       if (canSell) acts.push('<button class="btn small green" type="button" data-vanact="sell" data-tid="' + esc(t.id) + '">بيع</button>');
       if (t.status === "open") acts.push('<button class="btn small blue" type="button" data-vanact="expense" data-tid="' + esc(t.id) + '">💸 مصروف</button>');
+      // ✏️ بناء 269: تعديل حمولة الرحلة — صاحب الشركة بس + كلمة سره
+      if (t.status === "open" && vanCanEditLoad()) acts.push('<button class="btn small blue" type="button" data-vanact="loadedit" data-tid="' + esc(t.id) + '">✏️ تعديل الحمولة</button>');
       if (t.status === "open" && vanCanSettle(t)) acts.push('<button class="btn small van-settle-btn" type="button" data-vanact="settle" data-tid="' + esc(t.id) + '">🔒 قفل وتصفية</button>');
       acts.push('<button class="btn small gray" type="button" data-vanact="report" data-tid="' + esc(t.id) + '">📄 تقرير</button>');
       if (t.status === "open" && vanCanManage()) acts.push('<button class="btn small red" type="button" data-vanact="del" data-tid="' + esc(t.id) + '">❌</button>');
@@ -16036,6 +16047,7 @@ id: nextVoucherId(),
       const tid = Number(b.getAttribute("data-tid"));
       if (act === "sell") openVanSaleDialog(tid);
       else if (act === "expense") openVanExpenseDialog(tid);
+      else if (act === "loadedit") openVanLoadEditDialog(tid);
       else if (act === "settle") openVanSettleDialog(tid);
       else if (act === "report") openVanReportDialog(tid);
       else if (act === "del") vanDeleteTrip(tid);
@@ -16092,6 +16104,30 @@ id: nextVoucherId(),
         ev.preventDefault();
         vanLoadDraftSet(Number(b.getAttribute("data-vandel")), 0);
         renderVanLoadAll();
+      });
+    }
+    // ✏️ بناء 269: نافذة تعديل حمولة الرحلة (صاحب الشركة + كلمة سره)
+    add("btnVanLoadEditCancel", "click", () => hideModal("mVanLoadEdit"));
+    add("btnVanLoadEditSave", "click", saveVanLoadEdit);
+    add("btnVanLoadEditAdd", "click", vanLoadEditAdd);
+    const leBody = $("#vanLoadEditBody");
+    if (leBody) {
+      leBody.addEventListener("change", (ev) => {
+        const inp = ev.target.closest("input[data-eqty]");
+        if (inp) vanLoadEditQtyChanged(inp);
+      });
+      leBody.addEventListener("keydown", (ev) => {
+        const inp = ev.target.closest("input[data-eqty]");
+        if (!inp || ev.key !== "Enter") return;
+        ev.preventDefault(); ev.stopPropagation(); inp.blur();
+      });
+      leBody.addEventListener("click", (ev) => {
+        const b = ev.target.closest("[data-edel]");
+        if (!b) return;
+        ev.preventDefault();
+        const pid = Number(b.getAttribute("data-edel"));
+        vanLoadEditRows = (vanLoadEditRows || []).filter((r) => Number(r.pid) !== pid);
+        renderVanLoadEditRows();
       });
     }
     // نوافذ البيع
@@ -16407,6 +16443,266 @@ id: nextVoucherId(),
       " — عهدة بضاعة " + fmt(vanLoadedCost(trip)) + " ج.م على حسابه" +
       (lj ? " (قيد " + lj.number + ")" : "") + ".", "success");
     renderVanSales();
+  }
+
+  /* ==================== ✏️ تعديل حمولة رحلة مفتوحة (بناء 269) ====================
+     طلب المالك: «زرار لتعديل حمولة الرحلة و تكون صلاحيته مع صاحب المؤسسه فقط و من
+     شاشته و يطلب الرقم السرى لصاحب المؤسسه للموافقه على تعديل حمولة الرحلة».
+     - المصدر الواحد للشاشة = `vanLoadEditRows` (نفس فكرة مسودة التحميل في 267).
+     - الزيادة: بشرط المتاح فعلًا في **مخزن الرحلة** (بعد خصم اللي اتحمّل).
+     - النقص: ممنوع تنزل عن الكمية اللي **اتباعت** فعلًا (البيع واقع ومينفعش
+       يتلغى من شاشة الحمولة)؛ المتبقي في السيارة بس هو اللي يرجع للمخزن.
+     - كلمة السر: `DATA.verifyPassword` **قبل** أي أثر على المخزون أو القيود. */
+  let vanLoadEditRows = [];
+  let vanLoadEditTripId = null;
+  let vanLoadEditBusy = false;
+  function vanLoadEditTrip() { return vanTripById(vanLoadEditTripId); }
+  function vanLoadEditWh(trip) { return (trip && trip.loadWarehouse) || vanMainWh(); }
+  function vanLoadEditBaseQty(trip, pid) {
+    const l = ((trip && trip.loaded) || []).find((x) => Number(x.productId) === Number(pid));
+    return l ? Number(l.qty) || 0 : 0;
+  }
+  function vanLoadEditCost(trip, pid) {
+    const l = ((trip && trip.loaded) || []).find((x) => Number(x.productId) === Number(pid));
+    if (l) return round2(Number(l.cost) || 0);
+    const p = vanLoadProductOf(pid);
+    return p ? round2(avgPriceOf(p)) : 0;
+  }
+  function vanLoadEditRowOf(pid) {
+    return (vanLoadEditRows || []).find((r) => Number(r.pid) === Number(pid)) || null;
+  }
+  function vanLoadEditAvail(trip, pid) {
+    const p = vanLoadProductOf(pid);
+    if (!p) return 0;
+    return Math.max(0, round2(stockAt(p, vanLoadEditWh(trip))));
+  }
+  /* كمية مقبولة: ≥ المبيع، والزيادة فوق الأصل ≤ المتاح في مخزن الرحلة */
+  function vanLoadEditClamp(trip, pid, qty) {
+    const q = Math.round((Number(qty) || 0) * 100) / 100;
+    const sold = vanTripSoldQty(trip, pid);
+    if (q < sold) return sold;
+    const base = vanLoadEditBaseQty(trip, pid);
+    if (!vanLoadProductOf(pid)) return base;
+    const maxQty = round2(base + vanLoadEditAvail(trip, pid));
+    return q > maxQty ? maxQty : q;
+  }
+  function fillVanLoadEditAdd() {
+    const sel = $("#vanLoadEditAddPid");
+    if (!sel) return;
+    const trip = vanLoadEditTrip();
+    const wh = vanLoadEditWh(trip);
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— اختر صنف —</option>';
+    (products || []).filter((p) => p && p.isActive !== false).forEach((p) => {
+      const o = document.createElement("option");
+      o.value = String(p.id);
+      o.textContent = (p.code ? p.code + " — " : "") + (p.nameAr || "") + " (متاح " + fmt(stockAt(p, wh)) + ")";
+      sel.appendChild(o);
+    });
+    if (cur) sel.value = cur;
+  }
+  function renderVanLoadEditRows() {
+    const body = $("#vanLoadEditBody");
+    const sum = $("#vanLoadEditSummary");
+    const trip = vanLoadEditTrip();
+    if (!body || !trip) return;
+    const wh = vanLoadEditWh(trip);
+    body.innerHTML = "";
+    let totalQty = 0;
+    let totalCost = 0;
+    if (!vanLoadEditRows.length) {
+      body.innerHTML = '<tr><td colspan="5" class="login-sub" style="text-align:center">مفيش أصناف في الحمولة — أضف صنف من تحت.</td></tr>';
+    }
+    vanLoadEditRows.forEach((r) => {
+      const p = vanLoadProductOf(r.pid);
+      const sold = vanTripSoldQty(trip, r.pid);
+      const avail = p ? Math.max(0, round2(stockAt(p, wh))) : 0;
+      const cost = vanLoadEditCost(trip, r.pid);
+      totalQty += Number(r.qty) || 0;
+      totalCost += (Number(r.qty) || 0) * cost;
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td style="text-align:right">' + esc(p ? p.nameAr : ("صنف #" + r.pid)) +
+        ' <span class="van-pane-sub">(' + esc(p ? p.code : "") + ')</span></td>' +
+        '<td>' + fmt(sold) + '</td>' +
+        '<td><input class="cell-input van-qty-in" type="text" inputmode="decimal" data-eqty="' + esc(r.pid) + '" value="' + esc(String(r.qty)) + '" /></td>' +
+        '<td>' + fmt(avail) + '</td>' +
+        '<td><button type="button" class="van-del-btn" data-edel="' + esc(r.pid) + '">حذف</button></td>';
+      body.appendChild(tr);
+    });
+    if (sum) {
+      sum.innerHTML = '<span>عدد الأصناف: <b>' + vanLoadEditRows.length + '</b></span>' +
+        '<span>إجمالي الكميات: <b>' + fmt(round2(totalQty)) + '</b></span>' +
+        '<span>تكلفة العهدة: <b>' + fmt(round2(totalCost)) + ' ج.م</b></span>';
+    }
+  }
+  function openVanLoadEditDialog(tid) {
+    if (!vanCanEditLoad()) { toast("تعديل حمولة الرحلة بصلاحية صاحب الشركة.", "warning"); return; }
+    const trip = vanTripById(tid);
+    if (!trip) { toast("الرحلة مش موجودة.", "warning"); return; }
+    if (trip.status !== "open") { toast("الرحلة مقفولة — تعديل الحمولة على الرحلات المفتوحة بس.", "warning"); return; }
+    vanLoadEditTripId = Number(trip.id);
+    vanLoadEditBusy = false;
+    vanLoadEditRows = (trip.loaded || []).map((l) => ({ pid: Number(l.productId), qty: Number(l.qty) || 0 }));
+    const ttl = $("#vanLoadEditTitle");
+    if (ttl) ttl.textContent = "✏️ تعديل حمولة الرحلة #" + trip.id + " — " + (trip.carName || "");
+    const inf = $("#vanLoadEditInfo");
+    if (inf) inf.innerHTML =
+      '<span>🚚 السيارة: <b>' + esc(trip.carName || "") + '</b></span>' +
+      '<span>🧑‍💼 المندوب: <b>' + esc(trip.repName || "") + '</b></span>' +
+      '<span>📅 تاريخ الرحلة: <b>' + esc(trip.date || "") + '</b></span>' +
+      '<span>🏬 المخزن اللي بتتحمّل منه: <b>' + esc(vanLoadEditWh(trip)) + '</b></span>';
+    fillVanLoadEditAdd();
+    const aq = $("#vanLoadEditAddQty"); if (aq) aq.value = "";
+    const pw = $("#vanLoadEditPass"); if (pw) pw.value = "";
+    const sv = $("#btnVanLoadEditSave"); if (sv) { sv.disabled = false; sv.textContent = "🔒 حفظ التعديل"; }
+    renderVanLoadEditRows();
+    showModal("mVanLoadEdit");
+  }
+  function vanLoadEditQtyChanged(inp) {
+    if (!inp) return;
+    const trip = vanLoadEditTrip();
+    if (!trip) return;
+    const pid = Number(inp.getAttribute("data-eqty"));
+    const row = vanLoadEditRowOf(pid);
+    if (!row) return;
+    const typed = Math.round((parseMoney(inp.value) || 0) * 100) / 100;
+    const q = vanLoadEditClamp(trip, pid, typed);
+    if (q !== typed) {
+      const nm = (vanLoadProductOf(pid) || {}).nameAr || "";
+      const sold = vanTripSoldQty(trip, pid);
+      if (typed < sold) toast("«" + nm + "» اتباع منه " + fmt(sold) + " — مينفعش الكمية تقل عن كده.", "warning");
+      else toast("المتاح في المخزن من «" + nm + "» " + fmt(vanLoadEditAvail(trip, pid)) + " بس — خليتها " + fmt(q) + ".", "warning");
+    }
+    row.qty = q;
+    renderVanLoadEditRows();
+  }
+  function vanLoadEditAdd() {
+    const trip = vanLoadEditTrip();
+    if (!trip) return;
+    const sel = $("#vanLoadEditAddPid");
+    const qi = $("#vanLoadEditAddQty");
+    const pid = Number(sel && sel.value);
+    const qty = Math.round((parseMoney(qi && qi.value) || 0) * 100) / 100;
+    if (!pid) { toast("اختار الصنف الأول.", "warning"); return; }
+    if (!(qty > 0)) { toast("اكتب الكمية اللي عايز تضيفها.", "warning"); return; }
+    const row = vanLoadEditRowOf(pid);
+    const base = row ? Number(row.qty) || 0 : 0;
+    const q = vanLoadEditClamp(trip, pid, base + qty);
+    const nm = (vanLoadProductOf(pid) || {}).nameAr || "";
+    if (q <= base + 0.0001) {
+      toast("مفيش متاح في المخزن من «" + nm + "» تضيف منه (المتاح " + fmt(vanLoadEditAvail(trip, pid)) + ") — سجّل توريد الأول.", "warning");
+      return;
+    }
+    if (row) row.qty = q; else vanLoadEditRows.push({ pid: pid, qty: q });
+    if (qi) qi.value = "";
+    renderVanLoadEditRows();
+  }
+  /* تطبيق التعديل بعد تأكيد كلمة السر: مخزون + قيد عهدة + حفظ + نشاط */
+  function vanApplyLoadEdit(trip, rows) {
+    if (!trip || !rows || !rows.length) return false;
+    const wh = vanLoadEditWh(trip);
+    const car = trip.carName;
+    if (!wh || !car) return false;
+    const oldMap = {};
+    (trip.loaded || []).forEach((l) => { oldMap[Number(l.productId)] = l; });
+    const moved = [];
+    const nextLoaded = [];
+    rows.forEach((r) => {
+      const p = vanLoadProductOf(r.pid);
+      if (!p) return;
+      const old = oldMap[Number(r.pid)];
+      const base = old ? Number(old.qty) || 0 : 0;
+      const delta = round2(r.qty - base);
+      if (delta > 0) {
+        vanMoveStock(p, wh, car, delta);
+        moved.push({ name: p.nameAr, delta: delta });
+      } else if (delta < 0) {
+        // النقص يرجع للمخزن باللي موجود فعلًا في السيارة (المتبقي بعد البيع)
+        const move = Math.min(-delta, Math.max(0, vanStockAt(p, car)));
+        if (move > 0) { vanMoveStock(p, car, wh, move); moved.push({ name: p.nameAr, delta: -move }); }
+      }
+      const cost = old ? round2(Number(old.cost) || 0) : round2(avgPriceOf(p));
+      nextLoaded.push({
+        productId: Number(r.pid), code: p.code, nameAr: p.nameAr, unit: p.unit,
+        qty: r.qty, price: old ? (Number(old.price) || 0) : (Number(p.salePrice) || 0),
+        cost: cost, costTotal: round2(r.qty * cost)
+      });
+    });
+    if (!nextLoaded.length) return false;
+    // أصناف اتشالت من الحمولة: المتبقي في السيارة (بعد البيع) يرجع للمخزن
+    (trip.loaded || []).forEach((l) => {
+      if (rows.some((r) => Number(r.pid) === Number(l.productId))) return;
+      const p = vanLoadProductOf(l.productId);
+      if (!p) return;
+      const sold = vanTripSoldQty(trip, l.productId);
+      const remain = Math.max(0, round2((Number(l.qty) || 0) - sold));
+      const move = Math.min(remain, Math.max(0, vanStockAt(p, car)));
+      if (move > 0) { vanMoveStock(p, car, wh, move); moved.push({ name: p.nameAr, delta: -move }); }
+    });
+    trip.loaded = nextLoaded;
+    saveProducts();
+    // قيد العهدة يتحدّث بالتكلفة الجديدة (القديم بيتعكس بأسطره ثم يُرحَّل الجديد)
+    if (vanTripHasLoadJrn(trip)) {
+      try { vanRemoveJrn(vanLoadKey(trip)); } catch (e) { }
+      try { postVanLoadJournal(trip); } catch (e) { }
+    }
+    saveCarTrips();
+    const diffTxt = moved.map((m) => m.name + " (" + (m.delta > 0 ? "+" : "") + fmt(m.delta) + ")").join(" · ");
+    try {
+      addActivity("تعديل حمولة رحلة", "سيارة " + car + " — رحلة #" + trip.id + " — عهدة " + fmt(vanLoadedCost(trip)) + " ج.م" + (diffTxt ? " — التغيير: " + diffTxt : ""));
+    } catch (e) { }
+    hideModal("mVanLoadEdit");
+    toast("اتعدّلت حمولة الرحلة #" + trip.id + " — عهدة البضاعة بقت " + fmt(vanLoadedCost(trip)) + " ج.م على حساب المندوب.", "success");
+    renderVanSales();
+    return true;
+  }
+  function saveVanLoadEdit() {
+    if (vanLoadEditBusy) return;
+    if (!vanCanEditLoad()) { toast("تعديل حمولة الرحلة بصلاحية صاحب الشركة.", "warning"); return; }
+    const trip = vanLoadEditTrip();
+    if (!trip) { toast("الرحلة مش موجودة.", "warning"); return; }
+    if (trip.status !== "open") { toast("الرحلة اتقفلت — مفيش تعديل.", "warning"); hideModal("mVanLoadEdit"); renderVanSales(); return; }
+    const passEl = $("#vanLoadEditPass");
+    const pass = String((passEl && passEl.value) || "");
+    if (!pass) { toast("اكتب كلمة سر صاحب الشركة للموافقة على التعديل.", "warning"); if (passEl) passEl.focus(); return; }
+    const rows = (vanLoadEditRows || [])
+      .filter((r) => r && Number(r.pid) && Number(r.qty) > 0)
+      .map((r) => ({ pid: Number(r.pid), qty: Math.round((Number(r.qty) || 0) * 100) / 100 }));
+    if (!rows.length) { toast("الرحلة لازم يفضل فيها صنف واحد على الأقل.", "warning"); return; }
+    const changed = rows.some((r) => Math.abs(r.qty - vanLoadEditBaseQty(trip, r.pid)) > 0.0001);
+    const dropped = (trip.loaded || []).some((l) => !rows.some((r) => Number(r.pid) === Number(l.productId)));
+    if (!changed && !dropped) { toast("مافيش تغيير في حمولة الرحلة.", "info"); return; }
+    // كلمة السر **قبل** أي أثر على المخزون أو القيود
+    vanLoadEditBusy = true;
+    const sv = $("#btnVanLoadEditSave");
+    if (sv) { sv.disabled = true; sv.textContent = "⏳ بنتأكد من كلمة السر..."; }
+    const done = () => { vanLoadEditBusy = false; if (sv) { sv.disabled = false; sv.textContent = "🔒 حفظ التعديل"; } };
+    let pv = null;
+    try { pv = (window.DATA && DATA.verifyPassword) ? DATA.verifyPassword(pass) : null; } catch (e) { pv = null; }
+    if (!pv || typeof pv.then !== "function") {
+      done();
+      toast("التأكيد بكلمة السر محتاج اتصال بالإنترنت — التعديل ماحصلش.", "warning");
+      return;
+    }
+    pv.then((res) => {
+      const r = res || {};
+      if (!r.ok) {
+        done();
+        if (r.empty) toast("اكتب كلمة السر.", "warning");
+        else if (r.wrong) toast("كلمة السر مش صح — التعديل ماحصلش.", "warning");
+        else toast("مش قادر أتأكد من كلمة السر دلوقتي (اتصال الإنترنت) — التعديل ماحصلش.", "warning");
+        if (passEl) { passEl.value = ""; passEl.focus(); }
+        return;
+      }
+      let ok = false;
+      try { ok = vanApplyLoadEdit(trip, rows) === true; } catch (e) { ok = false; }
+      done();
+      if (!ok) toast("حصلت مشكلة والتعديل ما اتحفظش — جرّب تاني.", "warning");
+    }, () => {
+      done();
+      toast("مش قادر أتأكد من كلمة السر دلوقتي (اتصال الإنترنت) — التعديل ماحصلش.", "warning");
+    });
   }
 
   /* ==================== شاشة البيع من السيارة ==================== */
