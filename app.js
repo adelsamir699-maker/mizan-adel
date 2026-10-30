@@ -1530,8 +1530,12 @@
        فالمندوب كان بيشوف ويبيع من العمومي. (المالك/صاحب الشركة ملهمش أي تغيير.) */
     try {
       if (vanIsRepUser()) {
+        const cars = vanRepCarNames();
+        /* 🚚 بناء 274: شاشة البيع بتثبّت مخزن العربية ⇒ الرصيد المعروض = رصيد العربية
+           المختارة بالحرف. بلا مخزن (شاشة الأصناف) = مجموع عربياته (نفس 268). */
+        if (wh && cars.some((n) => vanIdNorm(n) === vanIdNorm(wh))) return vanStockAt(p, wh);
         let mine = 0;
-        vanRepCarNames().forEach((n) => { mine += Number(vanStockAt(p, n)) || 0; });
+        cars.forEach((n) => { mine += Number(vanStockAt(p, n)) || 0; });
         return Math.round(mine * 100) / 100;
       }
     } catch (e) { }
@@ -4073,10 +4077,10 @@
      قرار المالك الحرفي: غير صاحب المؤسسة أول ما يدخل يلاقي شاشة إنشاء فاتورة مبيعات،
      وأي شاشة تانية **مقفولة افتراضيًا** لحد ما صاحب المؤسسة يمنحها له من
      «المستخدمون والصلاحيات». المصدر الوحيد للشاشة الرئيسية = `homeViewOf()`.
-     (المندوب المعيَّن على سيارة: بيته شاشة سيارته لأنه مقفول عليه البيع العام أصلًا.) */
+     🚚 بناء 274: المندوب المعيَّن على سيارة بيلاقي **نفس شاشة البيع العادية** (مخزونه
+     المثبّت = سيارة المندوب) — مش شاشة رحلات منفصلة. */
   function homeViewOf() {
     if (ownerHasAllAccess() || isCompanyOwnerAcct()) return "dashboard";
-    try { if (vanIsRepUser()) return "vanSales"; } catch (e) { }
     return "sales";
   }
   // 🆕 بناء 266: الصلاحية لازم تكون **صريحة** في بروفايل الحساب نفسه (true).
@@ -4107,9 +4111,10 @@
     // (حتى لو فُعّلت للحساب بالغلط، البوابة دي هي الحقيقة الوحيدة.)
     if (name === "dashboard" || name === "users" || name === "audit") return isCompanyOwnerAcct();
     // 🆕 بناء 266: شاشة إنشاء فاتورة مبيعات = بيت كل الأعضاء ومفتوحة دائمًا.
-    // 🛡 بناء 267 (طلب المالك): **إلا مندوب السيارة** — مخزونه هو مخزون سيارته بس،
-    // فشاشة «البيع العام» (اللي بتقرا المخزن العمومي) مقفولة عليه. شاشته = «سيارات مندوبين المبيعات».
-    if (name === "sales") { try { if (vanIsRepUser()) return false; } catch (e) { } return true; }
+    /* 🚚 بناء 274 (طلب المالك بالحرف: «شاشة مندوب المبيعات عايزها تكون هي شاشة بيع الموبايل
+       العادية بتاعة البرنامج»): شاشة البيع **مفتوحة للمندوب** كذلك — بس مخزنه المثبّت هو
+       سيارة المندوب (انظر `applyPosRepMode`) والحفظ بيطلع فاتورة سيارة (عهدة/حمولة/نقدية). */
+    if (name === "sales") return true;
     // 🆕 بناء 131: أي «لأ» صريحة (من مستوى الشركة أو مستوى الحساب) بتقطع هنا —
     // قبل أي اختصار «صاحب الشركة»، فقرار التحديد ما بيرجعش «كل الصلاحيات».
     if (permExplicitlyOff(name)) return false;
@@ -4475,12 +4480,9 @@
       toast("شاشة «القيود اليومية» متاحة لصاحب الشركة والمالك فقط", "error");
       name = homeViewOf();
     }
-    // 🚚 بناء 262: المندوب المعيَّن على سيارة — شاشة البيع العامة مقفولة عليه،
-    // ومخزونه المتاح للبيع هو مخزون سيارته فقط.
-    if (name === "sales" && vanIsRepUser()) {
-      toast("مخزونك هو مخزون سيارتك بس — البيع من شاشة «سيارات مندوبين المبيعات».", "warning");
-      name = canUseView("vanSales") ? "vanSales" : homeViewOf();
-    }
+    /* 🚚 بناء 274 (طلب المالك): مندوب السيارة بقى **بيستخدم شاشة البيع العادية** —
+       المخزن مثبّت على عربيته والحفظ بيطلع فاتورة سيارة (انظر `applyPosRepMode`
+       و`savePosInvoiceAsVan`). مفيش تحويل لشاشة تانية ولا رسالة منع. */
     // 📡 بناء 262: «متابعة مناديب السيارات» لصاحب الشركة/المالك فقط
     if (name === "vanMonitor" && !vanCanManage()) {
       toast("شاشة «متابعة مناديب السيارات» لصاحب الشركة فقط.", "error");
@@ -9071,6 +9073,7 @@
 
     fillPosDatalist();
     posUpdatePartyBalance("sale");
+    try { applyPosRepMode(); } catch (e) { }
   }
 
   /* 🧾 بناء 220 (بلاغ المالك 21/10): اقتراحات الأصناف مرتّبة بـ**كمية المخزن المختار في
@@ -9271,6 +9274,7 @@
     posUpdateBadge(null);
     renderPosItems();
     posRecalc();
+    try { applyPosRepMode(); } catch (e) { }
   }
 
   function posPaymentVisibility() {
@@ -9378,6 +9382,16 @@
        (الجرد) بس، والسطر ما ينزلش لوحده (تعديل بناء 160): المالك يرجع يكتب/يمسح الصنف بالكمية. */
     if (!(availableStock > 0) || (qty + alreadyInInvoice > availableStock)) {
       posUpdateBadge(prod);
+      /* 🚚 بناء 274: مندوب السيارة **ما بيزوّدش رصيد** من الموبايل — رصيده هو حمولة
+         عربيته، والتحميل مسؤولية صاحب الشركة من شاشة الرحلات. */
+      try {
+        if (vanIsRepUser()) {
+          toast("الكمية المتاحة من («" + (prod.nameAr || prod.code || "") + "») في سيارة " +
+            (vanRepPosCar() || "المندوب") + " هي " + fmt(Math.max(0, availableStock - alreadyInInvoice)) +
+            " — التحميل بيتم من صاحب الشركة من شاشة الرحلات.", "warning");
+          return;
+        }
+      } catch (e) { }
       posRestockPrompt(prod, qty, wh, availableStock - alreadyInInvoice, function (addedQty) {
         /* 🔴 تعديل المالك (بناء 160): «نعم» تزوّد الرصيد (الجرد) بس — والسطر ما ينزلش لوحده.
            المالك بيرجع يكتب/يمسح الصنف في الفاتورة بالكمية الصح بعد ما الرصيد بقى موجود. */
@@ -10315,14 +10329,12 @@
   }
 
   function savePosInvoice() {
-    // 🛡 بناء 267 (طلب المالك): مندوب السيارة ممنوع يبيع من المخزن العمومي — حتى لو
-    // الشاشة اتفتحت له بأي طريق (قديم/برمجي)، الحفظ نفسه بيترفض. البيع من شاشة
-    // «سيارات مندوبين المبيعات» ومخزونه هو مخزون سيارته بس.
+    /* 🚚 بناء 274 (طلب المالك: «شاشة مندوب المبيعات عايزها تكون هي شاشة بيع الموبايل
+       العادية بتاعة البرنامج»): نفس الشاشة ونفس طرق السداد المتعددة — بس الحفظ بيتحوّل
+       لفاتورة سيارة (عهدة/حمولة/نقدية) على رحلة المندوب المفتوحة، والمخزون بيتخصم من
+       عربيته. (المالك/صاحب الشركة: `vanIsRepUser()` = false ⇒ المسار العادي كما هو.) */
     try {
-      if (vanIsRepUser()) {
-        toast("مخزونك هو مخزون سيارتك بس — البيع من شاشة «سيارات مندوبين المبيعات».", "warning");
-        return;
-      }
+      if (vanIsRepUser()) { savePosInvoiceAsVan(); return; }
     } catch (e) { }
     if (posItems.length === 0) {
       toast("يرجى إضافة أصناف إلى الفاتورة أولاً.", "warning");
@@ -15669,15 +15681,17 @@ id: nextVoucherId(),
   function vanApplyRepMode() {
     try {
       if (!vanIsRepUser()) return;
-      // شاشة البيع العامة مقفولة على المندوب — مخزون سيارته هو المتاح له فقط
+      /* 🚚 بناء 274: شاشة البيع العادية بقت **بيت المندوب** (بمخزون عربيته المثبّت)،
+         وشاشة «سيارات مندوبين المبيعات» بتفضل ظاهرة لأنها مكان التصفية وسجل الرحلات. */
       const sb = document.querySelector('.nav-btn[data-view="sales"]');
-      if (sb) sb.hidden = true;
+      if (sb) sb.hidden = false;
       const vb = document.querySelector('.nav-btn[data-view="vanSales"]');
       if (vb) vb.hidden = false;
       const nw = $("#btnVanNew"); if (nw) nw.hidden = true;
-      // 🛡 بناء 267/268: لو كان واقف على «البيع العام» أو «الأصناف» وقت ما عرفنا إنه
-      // مندوب (دخل قبل ما سجل السيارات/الرحلات تنزل) → نحوّله لشاشته.
-      if (ownerCurrentView === "sales" || ownerCurrentView === "products") showView("vanSales", { history: false });
+      try { applyPosRepMode(); } catch (e) { }
+      // 🛡 بناء 267/268: لو كان واقف على «الأصناف» وقت ما عرفنا إنه مندوب
+      // (دخل قبل ما سجل السيارات/الرحلات تنزل) → نحوّله لشاشة البيع.
+      if (ownerCurrentView === "products") showView("sales", { history: false });
     } catch (e) {}
   }
   /* نقطة إقلاع واحدة: تُنادی بعد وصول أي بيانات ⇒ تعيد تقييم الهوية والبوابات والرسم.
@@ -15689,7 +15703,9 @@ id: nextVoucherId(),
       if (!vanIsRepUser()) return;
       renderVanSales();
       const cur = ownerCurrentView;
-      if (cur === "sales" || cur === "products" || !canUseView(cur)) showView("vanSales", { history: false });
+      /* 🚚 بناء 274: البيت = شاشة البيع العادية. أي شاشة مقفولة أو «الأصناف» تتحوّل لها. */
+      if (cur === "products" || !canUseView(cur)) showView("sales", { history: false });
+      else if (cur === "sales") { try { renderSalesLookups(); } catch (e) { } }
     } catch (e) { }
   }
 
@@ -17056,6 +17072,237 @@ id: nextVoucherId(),
     hideModal("mVanSale");
     vanSaleDraft = null;
     renderVanSales();
+  }
+
+  /* ==================== 🚚 بناء 274 — شاشة مندوب المبيعات = شاشة البيع العادية ====================
+     طلب المالك بالحرف: «شاشة مندوب المبيعات عايزها تكون هي شاشة بيع الموبايل العادية بتاعة
+     البرنامج» + «هيكون فيها طرق السداد المتعددة زي الفاتورة».
+     التنفيذ:
+       • المخزن مثبّت على سيارة المندوب (مش قابل للتغيير) — `applyPosRepMode`.
+       • الأصناف المعروضة = اللي في عربيته بس (`stockAt`/`vanRepVisibleProducts` من 268).
+       • الحفظ بيطلع **فاتورة سيارة** على رحلة المندوب المفتوحة — `savePosInvoiceAsVan`.
+       • النقدي فقط على ذمة المندوب · البنك/المحفظة/إنستا لخزائنها · الشيك 1.1.7 · الآجل على العميل.
+     المالك/صاحب الشركة مالهمش أي علاقة بالمسار ده (`vanIsRepUser()` = false عندهم). */
+  function vanRepOpenTrip() {
+    const rows = (carTrips || []).filter((t) => t && String(t.status || "") === "open" && vanTripIsMine(t));
+    if (!rows.length) return null;
+    const cars = vanRepCarNames().map(vanIdNorm);
+    const mine = rows.filter((t) => cars.indexOf(vanIdNorm(t.carName)) >= 0);
+    return (mine.length ? mine : rows).slice().sort((a, b) => {
+      const da = String(a.date || ""), db = String(b.date || "");
+      if (da !== db) return db.localeCompare(da);
+      return (Number(b.id) || 0) - (Number(a.id) || 0);
+    })[0] || null;
+  }
+  function vanRepPosCar() {
+    try {
+      /* 🚚 بناء 274: سيارة الشاشة = سيارة الرحلة المفتوحة (نفس اللي الحفظ هيحسب عليها)،
+         وإلا أول سيارة متعيّن عليها الحساب. */
+      const t = vanRepOpenTrip();
+      if (t && String(t.carName || "").trim()) return String(t.carName).trim();
+      const cars = vanRepCarNames();
+      if (cars.length) return String(cars[0] || "");
+      return "";
+    } catch (e) { return ""; }
+  }
+  /* تثبيت مخزن السيارة + بانر المندوب + إخفاء «إضافة صنف جديد للمخزن». */
+  function applyPosRepMode() {
+    try {
+      if (!vanIsRepUser()) {
+        const b0 = $("#posVanBanner"); if (b0) b0.hidden = true;
+        const w0 = $("#cmbPosWarehouse"); if (w0) w0.disabled = false;
+        const q0 = $("#btnQuickAddProduct"); if (q0) q0.hidden = false;
+        return;
+      }
+      const car = vanRepPosCar();
+      const wh = $("#cmbPosWarehouse");
+      if (wh) {
+        const cur = car || wh.value;
+        wh.innerHTML = "";
+        if (car) { const o = document.createElement("option"); o.value = car; o.textContent = car; wh.appendChild(o); }
+        wh.value = cur || "";
+        wh.disabled = true;   // 🚚 مخزون السيارة فقط — ثابت لا يتغير
+      }
+      const q = $("#btnQuickAddProduct"); if (q) q.hidden = true;
+      const trip = vanRepOpenTrip();
+      const b = $("#posVanBanner");
+      if (b) {
+        b.hidden = false;
+        b.innerHTML =
+          '<div class="pvb-main">🚚 <b>بيع من سيارة ' + esc(car || "—") + '</b>' +
+          (trip
+            ? ' · رحلة #' + esc(String(trip.id)) + ' · 📅 ' + esc(trip.date || "") +
+              ' · نقد متوقّع: <b>' + fmt(vanTripExpectedCash(trip)) + ' ج.م</b>'
+            : ' · <span class="pvb-warn">مفيش رحلة مفتوحة — الحفظ مقفول لحد ما صاحب الشركة يفتح رحلة ويحمّل بضاعة</span>') +
+          '</div>' +
+          '<div class="pvb-actions">' +
+          (trip ? '<button id="btnPosVanSettle" class="btn small teal" type="button">🔒 قفل وتصفية الرحلة</button>' : '') +
+          '<button id="btnPosVanScreen" class="btn small gray" type="button">🚚 شاشة الرحلات</button>' +
+          '</div>';
+        const sb = $("#btnPosVanSettle");
+        if (sb) sb.addEventListener("click", () => {
+          const t = vanRepOpenTrip();
+          if (t) openVanSettleDialog(t.id);
+          else toast("مفيش رحلة مفتوحة على حسابك.", "warning");
+        });
+        const vs = $("#btnPosVanScreen");
+        if (vs) vs.addEventListener("click", () => showView("vanSales"));
+      }
+    } catch (e) { }
+  }
+  /* حفظ فاتورة البيع من شاشة المندوب = **فاتورة سيارة** (نفس محاسبة بيع السيارة بالحرف). */
+  function savePosInvoiceAsVan() {
+    if (!posItems.length) { toast("يرجى إضافة أصناف إلى الفاتورة أولاً.", "warning"); return; }
+    const trip = vanRepOpenTrip();
+    if (!trip) {
+      toast("مفيش رحلة سيارة مفتوحة على حسابك — صاحب الشركة هو اللي بيفتح الرحلة ويحمّل البضاعة.", "warning");
+      return;
+    }
+    const car = String(trip.carName || "").trim();
+    if (!car) { toast("الرحلة مش مربوطة بسيارة.", "warning"); return; }
+    const custId = posCustId();
+    const cust = customers.find((c) => c.id === custId);
+    if (!cust) {
+      if (hasCheckEntry("sale")) checkPartyWarnShow("sale");
+      else toast("العميل مش موجود في قائمة العملاء — اكتب اسمه أو اختره من القائمة.", "warning");
+      return;
+    }
+    // الكمية المتاحة = مخزون السيارة بالحرف (بلا أي رجوع للمخزن العمومي)
+    const short = posItems.map((it) => {
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
+      const avail = p ? vanStockAt(p, car) : 0;
+      return p && avail >= it.qty ? null
+        : it.nameAr + " (المتاح في العربية: " + Number(avail).toLocaleString("en-US") + ")";
+    }).filter(Boolean);
+    if (short.length) {
+      toast("الكمية أكبر من المتاح في سيارة " + car + ":\n" + short.join("\n"), "warning");
+      return;
+    }
+    const t = posRecalc();
+    if (!(t.grand > 0)) { toast("الإجمالي صفر.", "warning"); return; }
+    const _overMsg = posPayOverError("sale", t.grand);
+    if (_overMsg) { alert(_overMsg); return; }
+    const _trMsg = posPayTreasuryError("sale", t);
+    if (_trMsg) { alert(_trMsg); return; }
+    const _chkFields = payCheckFieldsError(t);
+    if (_chkFields) { checkPartyWarnShow("sale", _chkFields); return; }
+    const _chkParty = payCheckPartyError("sale", t, cust);
+    if (_chkParty) { checkPartyWarnShow("sale", _chkParty); return; }
+    if (t.due > 0.0001 && cust.protected) { checkPartyWarnShow("sale", ""); return; }
+    const payLines = Array.isArray(t.payments) ? t.payments : [];
+    const payment = t.due > 0
+      ? "آجل"
+      : (((payLines.find((p) => !posPayMode(p.method).isAjal)) || {}).method || "نقداً");
+    if (payment === "آجل" && !ajalPaidGate("sale", t)) return;
+    const invNo = $("#txtInvoiceNo").value || nextInvoiceNumber();
+    if (!invoiceNoGuard("sale", invNo)) return;
+    const invDate = todayISO();
+    ensureJrnStd();
+    const repAcc = vanRepAcc(trip.repName);
+    /* 💵 توزيع التحصيل: النقدي على ذمة المندوب · البنك/المحفظة/إنستا لخزائنها ·
+       الشيك على 1.1.7 · الآجل على حساب العميل. (نفس بناء 271 بالحرف.) */
+    const resolved = payLines.map((p) => {
+      const md = posPayMode(p.method);
+      let tid = (p.treasuryId != null ? p.treasuryId : null);
+      if (!md.isCash && !md.isCheck && !md.isAjal) {
+        const tr = posTreasuryForPay("sale", p);
+        if (tr) tid = tr.id;
+      }
+      return { line: p, md: md, tid: tid };
+    });
+    // تكلفة البيع من طبقات الحمولة (نفس شاشة بيع السيارة) — قبل أي خصم مخزون
+    try {
+      if (vanTripHasLoadJrn(trip)) vanSaleCostAlloc(trip, posItems);
+      else saleCostAlloc(posItems);
+    } catch (e) { }
+    const invoice = {
+      id: idFloorTake("sales", sales),
+      invoiceNumber: invNo, invoiceNo: invNo,
+      invoiceDate: invDate, date: invDate,
+      customerId: cust.id, customerName: cust.nameAr, customer: cust.nameAr,
+      warehouse: car, store: car,
+      paymentMethod: payment, treasuryId: null,
+      discountAmount: t.extra, discount: t.extra,
+      taxAmount: t.tax, tax: t.tax,
+      subTotal: t.sub, grandTotal: t.grand,
+      paidAmount: t.paid, dueAmount: t.due,
+      partyPrevBalance: cust.protected ? null : (Math.round((Number(cust.currentBalance) || 0) * 100) / 100),
+      isVan: true, vanTripId: trip.id, repName: trip.repName, vanRepAccountId: repAcc.id,
+      // 🚚 بصمة 273: تخلّي الفاتورة ترجع «فاتورة سيارة» من السحابة (بلا أعمدة جديدة)
+      notes: "[[VAN|trip=" + Number(trip.id) + "|rep=" + encodeURIComponent(trip.repName || "") +
+        "|acc=" + Number(repAcc.id || 0) + "]]",
+      savedAt: shiftNowISO(),
+      items: posItems.map((it, idx) => ({
+        id: idx + 1, productId: it.productId, code: it.code, nameAr: it.nameAr, unit: lineUnit(it),
+        qty: it.qty, price: it.price, discount: it.discount, tax: it.tax, total: it.total,
+        costTotal: (it.costTotal != null ? it.costTotal : undefined)
+      }))
+    };
+    try { stampShiftOn(invoice); } catch (e) { }
+    invoice.status = "posted";
+    invoice.payments = resolved.map((r) => ({
+      method: r.md.isAjal ? "ajal" : r.md.isCheck ? "check" : r.md.isBank ? "bank"
+        : r.md.isInsta ? "instapay" : r.md.isWallet ? "wallet" : "cash",
+      amount: round2(r.line.amount),
+      treasuryId: (r.md.isCash || r.md.isCheck || r.md.isAjal) ? null : r.tid,
+      bankName: r.line.bankName || "", checkNo: r.line.checkNo || "", dueDate: r.line.dueDate || ""
+    }));
+    if (jrnBlocked("فاتورة السيارة", invoiceJrnPlan("sale", invoice, null))) return;
+    // 🏦 خزائن البنك/المحفظة/إنستا فقط — النقدي مايدخلش أي خزينة (على ذمة المندوب)
+    resolved.forEach((r, i) => {
+      if (r.md.isCash || r.md.isAjal) return;
+      if (r.md.isCheck) {
+        try {
+          addCheck({
+            customerId: cust.id, customerName: cust.nameAr, bankName: r.line.bankName || "",
+            checkNo: r.line.checkNo || "", dueDate: r.line.dueDate || todayISO(),
+            amount: round2(r.line.amount), refType: "invoice", refId: String(invNo)
+          });
+        } catch (e) { }
+        return;
+      }
+      const tr = (r.tid != null) ? treasury.find((x) => Number(x.id) === Number(r.tid)) : posTreasuryForPay("sale", r.line);
+      if (!tr) return;
+      tr.balance = round2((Number(tr.balance) || 0) + round2(r.line.amount));
+      if (invoice.payments && invoice.payments[i]) invoice.payments[i].treasuryId = tr.id;
+      if (!invoice.treasuryId) invoice.treasuryId = tr.id;
+      try { syncTreasuryItemToSett(tr); } catch (e) { }
+    });
+    if (invoice.treasuryId) saveTreasury();
+    // الآجل يزيد رصيد العميل (نفس الفاتورة العادية)
+    if (t.due > 0) {
+      cust.currentBalance = Math.round(((Number(cust.currentBalance) || 0) + t.due) * 100) / 100;
+      txs.push({
+        id: nextTxId(), customerId: cust.id, date: invDate,
+        desc: "فاتورة مبيعات آجلة (سيارة " + car + ") رقم " + invNo,
+        debit: t.due, credit: 0, treasuryId: null, treasuryName: "", paymentMethod: "آجل مندوب"
+      });
+      recalculateCustomerBalances();
+      saveCustomers();
+      saveTxs();
+    }
+    // خصم مخزون السيارة
+    posItems.forEach((it) => {
+      const p = products.find((x) => Number(x.id) === Number(it.productId));
+      if (p) addStockAt(p, car, -it.qty);
+    });
+    saveProducts();
+    sales.push(invoice);
+    saveSales();
+    commitInvoiceSeq("sale", invEncodedOf(invNoOf(invoice)));
+    const postedJ = postInvoiceJournal("sale", invoice, null);
+    try { postCogsJournal(invoice); } catch (e) { }
+    consumeAvgForItems(posItems);
+    try {
+      addActivity("بيع من سيارة", "سيارة " + car + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" +
+        payment + ")" + (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : ""));
+    } catch (e) { }
+    toast("تم حفظ البيع (" + invNo + ")" +
+      (postedJ && postedJ.j ? " وترحيله للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
+    try { if (autoPrintSaleInvoice()) printInvoice(invoice); } catch (e) { }
+    try { fillPosDatalist(); } catch (e) { }
+    posNewInvoice();
+    try { renderVanSales(); } catch (e) { }
   }
 
   /* ==================== تصفية حساب السيارة (آخر اليوم) ==================== */

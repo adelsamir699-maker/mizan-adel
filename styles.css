@@ -2955,3 +2955,40 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
   #vanRepBanner .btn { flex: 1 1 100%; min-height: 48px; font-size: 15px; font-weight: 800; }
   #viewVanSales .view-actions .btn { min-height: 42px; font-size: 13px; }
 }
+/* ================= بناء 274 — شاشة مندوب السيارة = شاشة البيع العادية ================= */
+.pos-van-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid #99F6E4;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #F0FDFA 0%, #ECFEFF 100%);
+  color: #134E4A;
+  font-weight: 700;
+}
+.pos-van-banner .pvb-main { font-size: 14px; line-height: 1.6; }
+.pos-van-banner .pvb-warn { color: #B91C1C; font-weight: 800; }
+.pos-van-banner .pvb-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pos-van-banner .btn { margin: 0; }
+/* مخزن المندوب مثبّت — الشكل بيقول للمستخدم إنه مقفول مش معطّل بالغلط */
+#cmbPosWarehouse:disabled {
+  background: #F1F5F9;
+  color: #0F172A;
+  font-weight: 800;
+  opacity: 1;
+  cursor: not-allowed;
+}
+@media (max-width: 760px) {
+  .pos-van-banner { flex-direction: column; align-items: stretch; padding: 10px; }
+  .pos-van-banner .pvb-main { font-size: 13.5px; }
+  .pos-van-banner .pvb-actions .btn {
+    flex: 1 1 45%;
+    min-height: 44px;
+    font-size: 14px;
+    font-weight: 800;
+  }
+}
