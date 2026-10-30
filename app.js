@@ -9296,7 +9296,10 @@
        فالقصّ بييجي على الاسم الطويل مش على الرصيد. */
     hint.innerHTML =
       '<span class="sh-count">📦 ' + esc(wh) + ': <b>' +
-      esc(Number(stockAt(p, wh)).toLocaleString("en-US") + " " + p.unit) + '</b></span>' +
+      /* 🧾 بناء 282: الرقم المعروض من **نفس مصدر قرار القائمة** (`vanPosAvail`) — قبل كده
+         الشارة كانت بتقرأ `products.stock[car]` على الجهاز بس، فتقول «صفر» لصنف ظاهر في
+         القائمة لأن حمولة رحلته نازلة من السحابة. غير المندوب ⇒ `stockAt` بالحرف. */
+      esc(Number(vanPosAvail(p, wh)).toLocaleString("en-US") + " " + p.unit) + '</b></span>' +
       '<span class="sh-sep"> | </span>' +
       '<span class="sh-name">🏷️ ' + esc(p.nameAr || "") + '</span>' +
       '<span class="sh-sep"> | </span>' +
@@ -9439,7 +9442,10 @@
       return;
     }
     if (!(typedPrice > 0)) $("#txtPosPrice").value = moneyStr(price);
-    const availableStock = stockAt(prod, wh);
+    /* 🧾 بناء 282: «المتاح» بقى من **مصدر قرار واحد** (`vanPosAvail`) — نفس اللي بيبني
+       قائمة الأصناف وشارة الرصيد، فمستحيل صنف يبان في القائمة والسطر يترفض.
+       غير المندوب ⇒ `stockAt` بالحرف. الكتابة على المخزون برّه القرار (`addStockAt` ما اتلمستش). */
+    const availableStock = vanPosAvail(prod, wh);
     const alreadyInInvoice = posItems.reduce((s, it) => s + (it.productId === prod.id ? it.qty : 0), 0);
     /* 🔴 طلب المالك (فاتورة المبيعات): الصنف اللي مافيش رصيد منه (أو الكمية أكبر من المتاح)
        ما ينزلش الجدول — نسأل «هل تريد إضافة رصيد له؟» ولو «نعم» نزوّد المخزن بالكمية المكتوبة
@@ -12067,6 +12073,29 @@
       if (has("products")) {
         if (v === "products" && typeof renderProducts === "function") { try { renderProducts(); } catch (e) { } }
         if (v === "stockCount" && typeof renderStockCount === "function") { try { renderStockCount(); } catch (e) { } }
+      }
+      /* 🧾 بناء 282 (بلاغ المالك: «الفاتورة شكلها شكل فاتورة البرنامج العادية — الجديدة مش
+         ظاهرة» **حتى بعد «تحديث من السحابة»**): `vanRepAvail*` بتقرأ `products` و`car_trips`
+         لحظة الطلب، فمجرد ما السطور تنزل القرار بيتغيّر. بس في حاجزين كانوا بيسيبوا القديم
+         قدام المستخدم حتى بعد ما التحديث يوصل:
+           (١) مذكّرة عربيّات المندوب `VREP_MEMO` مفتوحة على بصمة أطوال
+               (`حساب|عدد السيارات|عدد الرحلات`)، والرحلة لما صاحب الشركة يزوّدها بصنف
+               **بيفضل عدد سطورها كما هو** ⇒ البصمة ما تتغيّرش والمذكّرة تقعد قديمة؛
+           (٢) لوحة اقتراحات الأصناف لو كانت **مفتوحة وقت النزول** بترسم مرة واحدة وما ترجعش
+               ترسم نفسها ⇒ المستخدم يشوف نفس النصف قدامه وهو مصدّق إن التحديث ما وصلش.
+         ⇒ بعد أي نزول يمسّ الأصناف أو الرحلات: تُصفَّر المذكّرة، ولو اللوحة مفتوحة تُعاد رسمها.
+         **غير المندوب: صفر أثر** (`vanIsRepUser()` = false ⇒ لا المذكّرة ولا اللوحة تتلمس).
+         الكتابة على المخزون والفلترة بره `products`/`car_trips` ما اتغيّرش. */
+      if (has("products") || has("car_trips")) {
+        try { vanRepInvalidate(); } catch (e) { }
+        try {
+          if (vanIsRepUser()) {
+            const drop = $(scanDropSel(PROD_DROP_FIELD.sale));
+            if (drop && !drop.hidden && drop.querySelector("[data-prod-pick]")) {
+              try { productSuggestShow("sale"); } catch (e) { }
+            }
+          }
+        } catch (e) { }
       }
       if (typeof updateUpPendingBanner === "function") updateUpPendingBanner();
     } catch (e) { console.warn("refreshAfterPull:", e); }
@@ -15767,12 +15796,71 @@ id: nextVoucherId(),
       return vanRepCarNames().map((n) => Number(vanStockAt(p, n)).toLocaleString("en-US") + "@" + n).join("   ");
     } catch (e) { return ""; }
   }
-  /* قائمة أصناف المندوب: اللي في عربيته بس. غير المندوب ⇒ القائمة زي ما هي. */
+  /* 🧾 بناء 282 (بلاغ المالك حرفي: «الفاتورة اللي شكل فاتورة البرنامج العادية مش ظاهر فيها
+     إلا أصناف الرحلة القديمة، أما الجديدة مش ظاهرة» — حتى بعد «تحديث من السحابة»).
+     ══ الجذر المقيس ══
+     إتاحة الصنف للمندوب كانت بتتقرا من **`products.stock[car]` على جهازه لوحدها**، وده بينكسر
+     على الموبايل لثنتين مقاستين في `app.js`/`cloud.js`:
+       (١) الأصناف بتنزل **بالسحب اليدوي بس** (`PULL_TABLES_EXTRA` — قائمة `PULL_TABLES`
+           الدورية الـ١٤ ما فيهاش `products`)؛
+       (٢) كل بيع من العربية بيسخّط سطر الصنف (`addStockAt` ⇒ `saveProducts`)، والطابور
+           **بيتفرّغ قبل الرفع** (`productsFlush`: `productsDirty.clear()` ثم `pushRows`)
+           والرفع **upsert لصف كامل** (`onConflict:"id"` و`stock: r.stock || {}` في `cloud.js`)
+           ⇒ رصيد العربية على السحابة بيرجع لقراءة قديمة، و`mergePulled` بيدي **الأولوية
+           للمحلي المسخّط** ⇒ الصنف اللي صاحب الشركة حمّله للتو يوصل الموبايل برصيد صفر ⇒ **مختفي**.
+     ══ القرار ══
+     رحلة العربية (`car_trips.loaded`) هي **مصدر الحقيقة**، وهي اللي بتوصل الموبايل نضيفة:
+     `car_trips` جوه السحب الدوري الـ١٤، والمندوب **ما بيكتبش عليها في نص البيع**
+     (`savePosInvoiceAsVan` ما بتناديش `saveTrips`) ⇒ سطورها مش مسخّطة فما يتعرض عليها
+     `mergePulled`. والكتابة على المخزون **ما اتغيّرتش** (`addStockAt` بالحرف).
+     `Math.max` مقصود: أي صنف كان ظاهر قبل الترقية يفضل ظاهر ⇒ **مافيش صنف بيختفي بيها**،
+     وهي بتضيف بس اللي الرحلة بتقول إنهم على العربية. */
+  function vanRepAvailQty(p, car, trip) {
+    if (!p) return 0;
+    let stock = 0, tripRem = 0;
+    /* قراءة متسامّحة بالمفتاح المطبّع (درس 279) — **قراءة بس**: ممنوع على `vanStockAt`/`vanMoveStock`
+       لأن الحركة بتكتب بالمفتاح الحقيقي، والقراءة المتسامحة هناك = سطر مخزون مكرر. */
+    try { stock = Number(vanStockQtyLoose(p, car)) || 0; } catch (e) { stock = 0; }
+    try { tripRem = trip ? Number(vanSaleRemaining(trip, p)) || 0 : 0; } catch (e) { tripRem = 0; }
+    if (!(stock > 0)) stock = 0;   // الرصيد السالب القديم ما يزودش السقف
+    if (!(tripRem > 0)) tripRem = 0;
+    return Math.round(Math.max(stock, tripRem) * 100) / 100;
+  }
+  /* نفس القرار للمندوب من غير ما نعرف العربية/الرحلة: عربيته + رحلته المفتوحة. */
+  function vanRepAvailTotal(p) {
+    if (!p) return 0;
+    let best = 0;
+    try { best = Math.max(0, Number(vanRepStockQty(p)) || 0); } catch (e) { best = 0; }
+    try {
+      const t = vanRepOpenTrip();
+      const car = (t && String(t.carName || "").trim()) || vanRepPosCar();
+      const one = vanRepAvailQty(p, car, t);
+      if (one > best) best = one;
+    } catch (e) { }
+    return best;
+  }
+  /* قائمة أصناف المندوب: اللي في عربيته أو في رحلته المفتوحة. غير المندوب ⇒ القائمة زي ما هي. */
   function vanRepVisibleProducts(list) {
     try {
       if (!vanIsRepUser()) return list;
-      return (list || []).filter((p) => vanRepStockQty(p) > 0);
+      return (list || []).filter((p) => vanRepAvailTotal(p) > 0);
     } catch (e) { return list; }
+  }
+  /* 🧾 بناء 282 — **مصدر قرار وحيد** لإتاحة الصنف في أي شاشة بيع (قائمة + شارة + بوابة الإضافة):
+       • غير المندوب ⇒ `stockAt(p, wh)` **بالحرف** ⇒ صفر تغيير على المالك وصاحب الشركة والكاشير.
+       • المندوب ⇒ `vanRepAvailTotal(p)` = أوسع قراءة بين عربيته ورحلته المفتوحة، وهي **دايمًا
+         أكبر أو مساوية** لـ`stockAt` اللي كانت مستخدمة قبل 282 ⇒ **مافيش صنف ولا كمية اتقفلت
+         بيها** (الترقية بتفتح بس اللي الرحلة بتقول إنه على العربية).
+     ⚠️ الحفظ (`savePosInvoiceAsVan`) لسه بيفحص على **عربية الرحلة نفسها** بالمتبقي منها
+     (`vanRepAvailQty(p, car, trip)`) ⇒ الباب ده ما يفتحش بيع صنف من عربية تانية.
+     ⚠️ السالب المحتمَل على `stock[car]` هو **نفس سلوك شاشة «بيع السيارة»** القائمة
+     (سطر 17534: `addStockAt(p, trip.carName, -qty)` بسقفها = متبقي الرحلة)، وقرار 196 إن
+     السالب مقصود عشان حذف الفاتورة يرجّع بالظبط. */
+  function vanPosAvail(p, wh) {
+    try {
+      if (vanIsRepUser()) return vanRepAvailTotal(p);
+    } catch (e) { }
+    try { return stockAt(p, wh); } catch (e2) { return 0; }
   }
   function vanApplyRepMode() {
     try {
@@ -17629,10 +17717,15 @@ id: nextVoucherId(),
       else toast("العميل مش موجود في قائمة العملاء — اكتب اسمه أو اختره من القائمة.", "warning");
       return;
     }
-    // الكمية المتاحة = مخزون السيارة بالحرف (بلا أي رجوع للمخزن العمومي)
+    /* الكمية المتاحة = **حمولة الرحلة دي** على عربية الرحلة نفسها (بلا أي رجوع للمخزن العمومي).
+       🧾 بناء 282: `vanStockAt` الخام وحده كان بيقرا `products.stock[car]` **على الجهاز ده بس**
+       — وده اللي بيخلي صنف صاحبه الشركة حمّله للتو يبان «المتاح: 0» مع إن المندوب شايفه في
+       القائمة (الرحلة نازلة نضيفة، وسطر الصنف على الموبايل قديم). `vanRepAvailQty(p, car, trip)`
+       بتاخد **أوسع** القراءة بين رصيد الجهاز ومتبقي الحمولة، و**للعربية دي بالذات** ⇒
+       ممنوع يفتح بيع صنف من عربية تانية. الكتابة تحت (`addStockAt(p, car, -qty)` ما اتغيّرتش). */
     const short = posItems.map((it) => {
       const p = products.find((x) => Number(x.id) === Number(it.productId));
-      const avail = p ? vanStockAt(p, car) : 0;
+      const avail = vanRepAvailQty(p, car, trip);
       return p && avail >= it.qty ? null
         : it.nameAr + " (المتاح في العربية: " + Number(avail).toLocaleString("en-US") + ")";
     }).filter(Boolean);

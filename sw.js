@@ -9,7 +9,7 @@
  */
 "use strict";
 
-const SW_VERSION = "281";
+const SW_VERSION = "282";
 
 self.addEventListener("install", (event) => {
   // من غير انتظار: فعّل النسخة الجديدة فورًا
