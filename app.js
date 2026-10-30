@@ -3432,10 +3432,12 @@
   /* ================== النوافذ ================== */
   function showModal(id) {
     $("#" + id).hidden = false;
+    pageBackSync();   // 🧭 بناء 284: النافذة المفتوحة = حاجة نرجع منها
   }
 
   function hideModal(id) {
     $("#" + id).hidden = true;
+    pageBackSync();
   }
 
   /* ========== «انشر على الفاتورة» — اختيار صاحب الشركة (ترحيل ٣٣) ========== */
@@ -4442,6 +4444,155 @@
     viewBackUpdate();
     showView(prev && prev.name ? prev.name : (fallback || homeViewOf()), { history: false });
   }
+
+  /* ==========================================================================================
+     🧭 بناء 284 (#358) — زرار الرجوع في أندرويد يرجّع للشاشة اللي قبلها، مش يقفل البرنامج.
+     ------------------------------------------------------------------------------------------
+     البلاغ: «زرار الرجوع في أندرويد يرجّع للشاشة السابقة (مش يقفل التطبيق)».
+     الحقيقة المقاسة: البرنامج ما كانش بيستخدم تاريخ المتصفح خالص (صفر `pushState`/`popstate`
+     في كل ملفات البرنامج) ⇒ زرار الرجوع كان دايمًا بيطلع بره الصفحة، حتى وفيه نافذة مفتوحة
+     أو المستخدم واقف على شاشة داخلية.
+     الحل: «خطوة تاريخ محجوزة» واحدة (حرس) بنسلّحها **بس** لما يكون فيه حاجة نرجع منها:
+       نافذة مفتوحة (`.modal-overlay` ظاهرة) · الكاميرا (`#scanCam`) · شاشة اتفتحت من شاشة
+       تانية (`viewBackStack`) · شاشة فرعية في الدخول (`#orgScreen`/`#memberScreen`).
+     أول دوسة رجوع بتستهلك الخطوة دي: تقفل أعلى نافذة، أو ترجّع للشاشة السابقة — وبعدين
+     بنعيد التسليح لو لسه فيه حاجة. لو مافيش حاجة نرجع منها الخطوة بتتشال خالص ⇒ الرجوع
+     بيطلع من البرنامج زي الطبيعي (يعني مفيش «دوسة رجوع ميتة»).
+     ملاحظة تنفيذ: كل تغييرات النوافذ في البرنامج بتتم بـ `.hidden` من ١٣٠+ موضع، فبدل ما
+     نعدّلهم كلهم بنراقب الخاصية دي + دخول/خروج النوافذ اللي بتتعمل ديناميكيًا.
+     ========================================================================================== */
+  const PAGE_BACK = { armed: false, wired: false, timer: 0, dropAt: 0, retry: 0, mo: null };
+  const PAGE_BACK_SEL = ".modal-overlay, #scanCam";
+  const PAGE_BACK_DROP_MS = 700;   // نافذة زمنية نتجاهل فيها الـpopstate اللي جاي من إسقاطنا إحنا
+
+  // النوافذ الظاهرة دلوقتي (بترتيب الصفحة)
+  function pageBackOpenOverlays() {
+    const out = [];
+    document.querySelectorAll(PAGE_BACK_SEL).forEach((el) => { if (!el.hidden) out.push(el); });
+    return out;
+  }
+  // أعلى نافذة ظاهرة = الأعلى في z-index (ولو متساويين: الأخيرة في الصفحة = الأحدث)
+  function pageBackTopOverlay() {
+    const list = pageBackOpenOverlays();
+    if (!list.length) return null;
+    let best = list[list.length - 1], bestZ = null;
+    list.forEach((el) => {
+      let z = -1;
+      try {
+        z = parseInt(getComputedStyle(el).zIndex, 10);
+        if (!Number.isFinite(z)) z = -1;
+      } catch (e) { z = -1; }
+      if (bestZ === null || z >= bestZ) { bestZ = z; best = el; }
+    });
+    return best;
+  }
+  // شاشة فرعية في الدخول (اختيار الشركة/الحساب) — الرجوع منها بيرجّع لشاشة الدخول
+  function pageBackLoginUp() {
+    const org = $("#orgScreen"), mem = $("#memberScreen");
+    return (!!org && !org.hidden) || (!!mem && !mem.hidden);
+  }
+  function pageBackCloseLogin() {
+    try { hideLoginExpiry(); } catch (e) { }
+    const org = $("#orgScreen"), mem = $("#memberScreen"), login = $("#loginScreen");
+    if (org) org.hidden = true;
+    if (mem) mem.hidden = true;
+    if (login) login.hidden = false;
+  }
+  function pageBackWanted() {
+    return pageBackOpenOverlays().length > 0 || viewBackStack.length > 0 || pageBackLoginUp();
+  }
+  // قفل أعلى نافذة: الكاميرا ليها دالتها (بتطفي الستريم)، والنافذة الديناميكية بتتشال،
+  // والنافذة الثابتة بتتخفي بنفس طريقة `hideModal`
+  function pageBackCloseOverlay(el) {
+    if (!el) return;
+    if (el.id === "scanCam") { scanCamClose(); return; }
+    if (!el.id) { el.remove(); return; }
+    el.hidden = true;
+  }
+  // تسليح خطوة تاريخ واحدة (بس لو مسلّحش أصلًا)
+  function pageBackApply() {
+    if (!PAGE_BACK.wired) return;
+    // خطوة «إسقاط» لسه ماشية ⇒ ما نبناش خطوة فوقها (كانت هتطلع خطوة شبح).
+    if (Date.now() - PAGE_BACK.dropAt < PAGE_BACK_DROP_MS) {
+      if (!PAGE_BACK.retry) {
+        PAGE_BACK.retry = setTimeout(() => { PAGE_BACK.retry = 0; pageBackApply(); }, PAGE_BACK_DROP_MS + 20);
+      }
+      return;
+    }
+    if (pageBackWanted()) {
+      if (!PAGE_BACK.armed) {
+        try {
+          history.pushState({ mizanBack: 1 }, "");
+          PAGE_BACK.armed = true;
+        } catch (e) { PAGE_BACK.armed = false; }
+      }
+    } else if (PAGE_BACK.armed) {
+      // مافيش حاجة نرجع منها ⇒ نشيل خطوتنا عشان الرجوع يطلع بره البرنامج عادي
+      PAGE_BACK.armed = false;
+      PAGE_BACK.dropAt = Date.now();
+      try { if (history.state && history.state.mizanBack) history.back(); } catch (e) { }
+    }
+  }
+  // مجدولة (مجمّعة) — عشان فتح/قفل نافذتين ورا بعض في نفس اللحظة يتحسبوا مرة واحدة
+  function pageBackSync() {
+    if (!PAGE_BACK.wired || PAGE_BACK.timer) return;
+    PAGE_BACK.timer = setTimeout(() => { PAGE_BACK.timer = 0; pageBackApply(); }, 0);
+  }
+  function pageBackOnPop() {
+    // الـpopstate اللي جاي من إسقاطنا إحنا = مش دوسة المستخدم ⇒ ما نعملش حاجة
+    if (PAGE_BACK.dropAt && Date.now() - PAGE_BACK.dropAt < PAGE_BACK_DROP_MS) {
+      PAGE_BACK.dropAt = 0;
+      PAGE_BACK.armed = false;
+      return;
+    }
+    PAGE_BACK.dropAt = 0;
+    PAGE_BACK.armed = false;
+    if (!PAGE_BACK.wired) return;
+    const top = pageBackTopOverlay();
+    if (top) { pageBackCloseOverlay(top); pageBackSync(); return; }
+    if (pageBackLoginUp()) { pageBackCloseLogin(); pageBackSync(); return; }
+    if (viewBackStack.length) { viewBackGo(homeViewOf()); pageBackSync(); return; }
+    pageBackSync();   // مافيش حاجة نرجع منها: المتصفح يكمل طريقه
+  }
+  function pageBackMutations(recs) {
+    for (let i = 0; i < recs.length; i++) {
+      const r = recs[i];
+      if (r.type === "attributes") {
+        const t = r.target;
+        // شاشات الدخول الفرعية مش «نوافذ» (مابتتقفلش بـ hidden)، بس الرجوع منها لازم
+        // يرجّع لشاشة الدخول — فبنراقب ظهورها كمان مش بس النوافذ والكاميرا.
+        if (t && t.nodeType === 1 && t.matches && (t.matches(PAGE_BACK_SEL) || t.id === "orgScreen" || t.id === "memberScreen")) { pageBackSync(); return; }
+        continue;
+      }
+      const added = r.addedNodes || [], removed = r.removedNodes || [];
+      let k;
+      for (k = 0; k < added.length; k++) {
+        const n = added[k];
+        if (n && n.nodeType === 1 && n.classList && n.classList.contains("modal-overlay")) { pageBackSync(); return; }
+      }
+      for (k = 0; k < removed.length; k++) {
+        const n = removed[k];
+        if (n && n.nodeType === 1 && n.classList && n.classList.contains("modal-overlay")) { pageBackSync(); return; }
+      }
+    }
+  }
+  function pageBackWire() {
+    if (PAGE_BACK.wired) return;
+    PAGE_BACK.wired = true;
+    try { window.addEventListener("popstate", pageBackOnPop); } catch (e) { }
+    try {
+      if (window.MutationObserver && document.body) {
+        PAGE_BACK.mo = new MutationObserver(pageBackMutations);
+        PAGE_BACK.mo.observe(document.body, {
+          attributes: true, attributeFilter: ["hidden"], subtree: true, childList: true
+        });
+      }
+    } catch (e) { PAGE_BACK.mo = null; }
+    // 🧹 خطوة محجوزة من جلسة سابقة (إعادة تحميل الصفحة) — نفضّي علامتها بدل ما تفضل شبح
+    try { if (history.state && history.state.mizanBack) history.replaceState(null, ""); } catch (e) { }
+    pageBackApply();
+  }
+
   function showView(name, opts) {
     opts = opts || {};
     const prevView = ownerCurrentView;
@@ -4592,6 +4743,8 @@
     if (name === "admin") { startPresenceView(); refreshPresenceCard(); }
     if (name !== "admin") stopPresenceView();
     viewBackUpdate();
+    // 🧭 بناء 284: أي انتقال شاشة = نعيد حساب خطوة الرجوع (لسه فيه شاشات ورا؟)
+    pageBackSync();
   }
 
   /* ================== لوحة التحكم ================== */
@@ -6669,6 +6822,7 @@
     if (scanCam.on && scanCam.fieldId === fieldId) { scanCamClose(); return false; }
     if (scanCam.on) scanCamClose();
     panel.hidden = false;
+    pageBackSync();   // 🧭 بناء 284: الكاميرا المفتوحة = أول حاجة نقفلها بالرجوع
     panel.className = "cam-panel";
     scanCam.on = true;      // اللوحة مفتوحة من دلوقتي — العدّاد يلحق لما الستريم يوصل
     scanCam.fieldId = fieldId;
@@ -6744,6 +6898,7 @@
     scanCam.last = ""; scanCam.lastAt = 0;
     const panel = $("#scanCam");
     if (panel) { panel.hidden = true; panel.className = "cam-panel"; }
+    pageBackSync();   // 🧭 بناء 284: الكاميرا اتقفلت — نعيد حساب خطوة الرجوع
   }
 
   function scanCamToggle(fieldId) {
@@ -26538,6 +26693,7 @@ id: nextVoucherId(),
     $("#loginScreen").hidden = true;
     $("#orgScreen").hidden = false;
     $("#memberScreen").hidden = true;
+    pageBackSync();   // 🧭 بناء 284: شاشة فرعية في الدخول = حاجة نرجع منها
   }
   function hideScreens() {
     hideLoginExpiry();
@@ -26784,6 +26940,10 @@ const pwEye = document.getElementById("btnShowPass");
     // 🛡 نخفي شاشات البرنامج القديمة حتى لا تبقى خلف شاشة الدخول
     ownerCurrentView = "";   // 🛡 بناء 121: مافيش شاشة «نشطة» دلوقتي ⇒ الحارس ما يعاندش إخفاء اللوحات
     document.querySelectorAll(".view").forEach((v) => { v.hidden = true; });
+    // 🧭 بناء 284: مكدّس رجوع الشاشات يخص الجلسة السابقة ⇒ يتفضّى مع الخروج
+    // (كان ما بيتفضاش خالص ⇒ زرار الرجوع بعد الدخول بيفضل شايف شاشات حساب قديم)
+    viewBackStack.length = 0;
+    pageBackSync();
   }
 
   // 🛡 عزل الشركات: أي حالة محلية (ذاكرة + localStorage) مش مختومة بالشركة اللي
@@ -27013,6 +27173,7 @@ const pwEye = document.getElementById("btnShowPass");
   function showMembersScreen() {
     hideScreens();
     $("#memberScreen").hidden = false;
+    pageBackSync();   // 🧭 بناء 284: شاشة «حسابات شركتك» = حاجة نرجع منها
     const info = $("#memberOrgName");
     const cnt = $("#memberCount");
     const lst = $("#memberList");
@@ -30597,6 +30758,9 @@ const pwEye = document.getElementById("btnShowPass");
   /* ================== البداية ================== */
   function init() {
     wireTopNav();
+    // 🧭 بناء 284 (#358): تسليح زرار الرجوع في أندرويد — يتوصّل مرة واحدة عند الإقلاع،
+    // قبل أي مسار دخول (سحابي/أوفلاين) عشان يشتغل في الحالتين.
+    pageBackWire();
     /* 146: الختم من `verLabel()` = **رقم التحديث** (أمر المالك 07/10 ≈21:36: «ماتكتبش 1.4.1
        اكتب 146»)، مش من `APP_VERSION` (رقم المنتج). مقاس في كروم الحقيقي: السطحين بياخدوا
        من نفس مصدر `window.mizanVerLabel()`، وده بيتنفذ **قبل** ختم `index.html` (آخر مكتِب). */
