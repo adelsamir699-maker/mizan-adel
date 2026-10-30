@@ -17678,6 +17678,24 @@ id: nextVoucherId(),
     const expected = vanTripExpectedCash(trip);
     if (!wh) { toast("اختر المخزن.", "warning"); return; }
     if (!vanCanSettle(trip)) { toast("التصفية لصاحب الشركة/المدير أو مندوب الرحلة نفسه.", "warning"); return; }
+    /* 🧱 بناء 278 — بند ١: «تصفية الرحلة» بقت مستندًا محروسًا زي الفاتورة والمرتجع والسند.
+       الجذر المقاس قبل 278 (مراجعة الترحيلات): saveVanSettle كانت بتحرّك كمية المخزون ونقدية
+       الخزينة **قبل** أي فحص، وبتنده قيد الرجوع وحفظ السند وقيد التوريد جوّه ٣ try/catch
+       **فاضية**، وبعدهم trip.status = "settled" مهما حصل ⇒ رحلة مقفولة ونقدية دخلت الخزينة
+       وقيدها ناقص بلا أي كلمة للمستخدم، ومفيش أي مسار بيعيد المحاولة.
+       الترتيب مقصود: البوابة **قبل أي أثر** (كمية أو نقدية) — نفس بوابة 158/187.
+       المطلوب للقيدين: «ذمم مناديب البيع» (بيتنشأ تلقائيًا باسم المندوب) + «المخزون/النقدية»
+       من ensureJrnStd() ⇒ اللي بيتقفل فعلًا: خزينة اتشالت/مختارةش، أو دليل حسابات ناقص.
+       بعد البوابة، أي فشل غير متوقّع **بيتنطق** في تحذير بعد الحفظ: trip.status بيفضل
+       "settled" لأن حركة المخزون والنقدية بقت واقعًا فعليًا — رجوعها بيكرّر الحركة نفسها. */
+    ensureJrnStd();
+    const repAcc = vanRepAcc(trip.repName);
+    const tr0 = treasury.find((x) => Number(x.id) === tid);
+    if (counted > 0) {
+      if (!tr0) { toast("اختر خزينة التوريد من القائمة الأول.", "warning"); return; }
+      if (jrnBlocked("توريد نقدية الرحلة", voucherJrnPlan("in", accForTreasuryAcc(tr0), repAcc, counted))) return;
+    }
+    const jrnIssues = [];
     // 1) إرجاع الباقي من السيارة للمخزن
     let returned = 0;
     (trip.loaded || []).forEach((l) => {
@@ -17689,17 +17707,19 @@ id: nextVoucherId(),
     saveProducts();
     // 🆕 262: قيد رجوع الباقي — مدين المخزون / دائن ذمم المندوب (بالتكلفة المسجّلة وقت التحميل)
     let rj = null;
-    try { rj = postVanReturnJournal(trip, wh); } catch (e) {}
+    try { rj = postVanReturnJournal(trip, wh); } catch (e) { rj = null; }
+    if (!rj && vanReturnedCost(trip) > 0 && !vanJrnOf(vanReturnKey(trip))) jrnIssues.push("قيد رجوع الباقي للمخزن");
     // 2) توريد النقدية: سند قبض Dr خزينة / Cr ذمم المندوب
-    const repAcc = vanRepAcc(trip.repName);
     if (counted > 0) {
-      const tr = treasury.find((x) => Number(x.id) === tid);
+      const tr = tr0;
       const baseId = nextVoucherId() - 1;
       const v = { id: baseId + 1, type: "in", treasuryId: tid, date: todayISO(), amount: counted, desc: "توريد نقدية سيارة " + trip.carName + " — مندوب " + trip.repName + " — رحلة #" + trip.id, refType: "تصفية رحلة سيارة — #" + trip.id };
       vouchers.push(v);
-      try { saveVouchers(); } catch (e) {}
+      try { saveVouchers(); } catch (e) { jrnIssues.push("حفظ سند التوريد"); }
       if (tr) { tr.balance = Math.round(((Number(tr.balance) || 0) + counted) * 100) / 100; try { saveTreasury(); } catch (e) {} try { syncTreasuryItemToSett(tr); } catch (e) {} }
-      try { postVoucherJournal(v, tr, repAcc); } catch (e) {}
+      let pv = null;
+      try { pv = postVoucherJournal(v, tr, repAcc); } catch (e) { pv = null; }
+      if (!pv) jrnIssues.push("قيد توريد النقدية");
     }
     trip.status = "settled";
     trip.settledAt = shiftNowISO();
@@ -17719,9 +17739,17 @@ id: nextVoucherId(),
     saveCarTrips();
     try { addActivity("تصفية رحلة سيارة", "سيارة " + trip.carName + " - مندوب " + trip.repName + " - نقد " + fmt(counted) + " ج.م" + (trip.diff ? " (فرق " + fmt(trip.diff) + ")" : "")); } catch (e) {}
     hideModal("mVanSettle");
-    toast("اتصفّت رحلة السيارة " + trip.carName + " — رجع " + returned + " صنف للمخزن واتورّد " + fmt(counted) + " ج.م" +
+    let settleMsg = "اتصفّت رحلة السيارة " + trip.carName + " — رجع " + returned + " صنف للمخزن واتورّد " + fmt(counted) + " ج.م" +
       (rj ? " — قيد رجوع العهدة " + rj.number : "") +
-      (trip.km != null ? " — مسافة " + fmt(trip.km) + " كم" : "") + ".", "success");
+      (trip.km != null ? " — مسافة " + fmt(trip.km) + " كم" : "") + ".";
+    /* 🧱 بناء 278: لو حاجة من القيود ما كملتش، المستخدم لازم يعرف — مش يتقال له «تمت» وهو ناقص. */
+    if (jrnIssues.length) {
+      settleMsg += " ⚠️ لكن " + jrnIssues.join(" و ") + " ما اكتملش. البرنامج بيعيد المحاولة لوحده؛" +
+        " ولو لسه ناقص بعد ما تفتح البرنامج تاني، ابعتلنا الرسالة دي في الدعم.";
+      toast(settleMsg, "warning");
+    } else {
+      toast(settleMsg, "success");
+    }
     renderVanSales();
   }
 
