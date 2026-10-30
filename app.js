@@ -14677,6 +14677,8 @@ id: nextVoucherId(),
         : (out ? checksPayableAcc() : checksAcc()));
     /* 🧱 بناء 257 (بند #10): كان النداء جوه try/catch فاضي — سند التحصيل والخزينة بيتحفظوا
        والقيد يضيع بلا رسالة. دلوقتي الفشل يتعلن ويُسجَّل (jrnFailNotify). */
+    // 🆕 بناء 280: الحساب المقابل يتخزّن على السند — مرجع التصحيح الذاتي بلا أي تخمين
+    v.accountId = (Number(counterAcc && counterAcc.id) || 0) || undefined;
     try { postVoucherJournal(v, t, counterAcc); }
     catch (e) { jrnFailNotify((out ? "صرف" : "تحصيل") + " شيك #" + (c.checkNo || c.id), e); }
     if (unap && amount > 0) {
@@ -17762,7 +17764,9 @@ id: nextVoucherId(),
     if (counted > 0) {
       const tr = tr0;
       const baseId = nextVoucherId() - 1;
-      const v = { id: baseId + 1, type: "in", treasuryId: tid, date: todayISO(), amount: counted, desc: "توريد نقدية سيارة " + trip.carName + " — مندوب " + trip.repName + " — رحلة #" + trip.id, refType: "تصفية رحلة سيارة — #" + trip.id };
+      const v = { id: baseId + 1, type: "in", treasuryId: tid, date: todayISO(), amount: counted, desc: "توريد نقدية سيارة " + trip.carName + " — مندوب " + trip.repName + " — رحلة #" + trip.id, refType: "تصفية رحلة سيارة — #" + trip.id,
+        // 🆕 بناء 280: حساب المندوب المقابل على السند — مرجع التصحيح الذاتي
+        accountId: repAcc ? Number(repAcc.id) : undefined };
       vouchers.push(v);
       try { saveVouchers(); } catch (e) { jrnIssues.push("حفظ سند التوريد"); }
       if (tr) { tr.balance = Math.round(((Number(tr.balance) || 0) + counted) * 100) / 100; try { saveTreasury(); } catch (e) {} try { syncTreasuryItemToSett(tr); } catch (e) {} }
@@ -18334,7 +18338,10 @@ id: nextVoucherId(),
       amount: Math.round(amount * 100) / 100,
       desc: vDesc,
       refType: (isTfKw || isAssetAcc) ? "تحويل بين الحسابات" : undefined,
-      refId: (isTfKw || isAssetAcc) ? "TFV:" + vId : undefined
+      refId: (isTfKw || isAssetAcc) ? "TFV:" + vId : undefined,
+      // 🆕 بناء 280: الحساب المقابل يتخزّن على السند نفسه (عمود قائم في السحابة) عشان
+      // «التصحيح الذاتي» يقدر يرجّع قيد السند لو وقته كان الدليل مش جاهز — بلا أي تخمين.
+      accountId: chAcc ? Number(chAcc.id) : undefined
     };
     vouchers.push(vRow);
     saveTreasury();
@@ -19319,7 +19326,9 @@ id: nextVoucherId(),
       treasuryId: Number(t.id),
       date: date,
       amount: amount,
-      desc: vDesc
+      desc: vDesc,
+      // 🆕 بناء 280: البند المقابل (حساب الإيراد/المصروف) يتخزّن على السند — مرجع التصحيح الذاتي
+      accountId: Number(itemAcc.id)
     };
     vouchers.push(seV);
     saveVouchers();
@@ -19448,7 +19457,9 @@ id: nextVoucherId(),
     if (!dep && fundsBlocked(t, amount, { focusSel: "#ownerTreasury" })) return;
     const note = $("#ownerNotes").value.trim();
     const vDesc = (dep ? "إيداع أصحاب المؤسسة: " : "سحب أصحاب المؤسسة: ") + ownerName + (note ? " — " + note : "");
-    const v = { id: nextVoucherId(), type: dep ? "in" : "out", treasuryId: Number(t.id), date: date, amount: amount, desc: vDesc };
+    const v = { id: nextVoucherId(), type: dep ? "in" : "out", treasuryId: Number(t.id), date: date, amount: amount, desc: vDesc,
+      // 🆕 بناء 280: حساب الشريك المقابل يتخزّن على السند — مرجع التصحيح الذاتي
+      accountId: Number(itemAcc.id) };
     vouchers.push(v);
     saveVouchers();
     recalculateTreasuryBalances();
@@ -20803,6 +20814,8 @@ id: nextVoucherId(),
   }
 
   /* ================== 🆕 بناء 170 — «التصحيح الذاتي» ==================
+     🆕 بناء 280: بقى يغطّي كمان **مصروفات رحلات السيارات (VEX:)** و**قيد رجوع باقي العهدة (VR:)**
+     و**السندات/الإيراد-المصروف المبسّط (VC:/SE:)** — التفاصيل في تعليقات `healVanTrip`/`healVoucherRow`.
      أي حركة طرف (تحصيل/سداد) أو فاتورة (بيع/شراء) أو مرتجع اتسجّل **قبل ما محرّك القيود
      يشتغل** فبقى **بلا قيد** (بلاغ المالك 11/10: فرق العملاء 42,501.50) بيتصحّح لوحده عند
      التحميل، بنفس نمط `reconcileTreasuryWithTxs`: بنلفّ على المستندات، ولو لقينا مستندًا مالوش
@@ -20902,17 +20915,89 @@ id: nextVoucherId(),
       journalEntries.push(entry);
       posted++;
     };
+    /* 🆕 بناء 280 — السندات والإيراد/المصروف المبسّط (VC:/SE:).
+       السند اللي اتحفظ في لحظة كان فيها الحساب المقابل ناقص أو الدليل مش جاهز بيفضل **بلا قيد**
+       (`postVoucherJournal` بترجع null وقتها) — والسند محفوظ والنقدية اتحرّكت فعلًا ⇒ فرق دائم
+       في الأستاذ مقابل الخزينة. المفتاح اللي بيمنع أي تخمين: السند الجديد بيحفظ `accountId` =
+       الحساب المقابل اللي اترحّل بيه، وده **عمود قائم في السحابة** (map السندات في `cloud.js`
+       بيودّيه ويرجّعه) ⇒ بيعود مع أي سحب بلا ترقية SQL.
+       ⚠ سند بلا `accountId` (سندات الورديات/التحويلات/ضريبة الدفع القديمة) **ما بيُترحّلش هنا**
+       خالص ⇒ صفر اختراع لطرف مقابل.
+       ⚠ التحويلات مستثناة (`trMoveIsTransfer`): ساقاها ليهم قيد واحد بمفتاح TF: ووسم TFV: مشترك. */
+    const healVoucherRow = (v) => {
+      if (!v || !(Number(v.id) > 0)) return;
+      if (voucherJrnsOf(v.id).length) return;
+      if (trMoveIsTransfer(v)) return;
+      if (v.type !== "in" && v.type !== "out") return;
+      const amount = round2(v.amount);
+      if (!(amount > 0)) return;
+      const tr = (treasury || []).find((x) => x && Number(x.id) === Number(v.treasuryId));
+      if (!tr) return;
+      const cashAcc = accForTreasuryAcc(tr);
+      if (!cashAcc) return;
+      if (!(Number(v.accountId) > 0)) return;
+      const other = (accounts || []).find((a) => a && Number(a.id) === Number(v.accountId) && a.isActive !== false);
+      if (!other) return;
+      if (Number(other.id) === Number(cashAcc.id)) return;
+      const plan = voucherJrnPlan(v.type, cashAcc, other, amount);
+      if (!plan || plan.error) return;
+      /* سند «الإيراد/المصروف المبسّط» مالوش `refType` على السند (الحقل مش بيتحفظ) — الوسم
+         الوحيد اللي بيعود من السحابة هو نص البيان `إيراد: …` / `مصروف: …` (نفس نص `saveSimpleEntry`).
+         ومفتاحه في الأستاذ «SE:» مش «VC:» — فما يتصحّحش أبدًا كسند عادي (عشان مسطرة الترحيل
+         وحذف السند يفضلوا شايفينه زي ما هو). */
+      const descStr = String(v.desc || "");
+      const seIn = /^إيراد: /.test(descStr);
+      const isSe = seIn || /^مصروف: /.test(descStr);
+      // «إيراد» لازم يكون قبض و«مصروف» صرف — أي تعارض (سند معدّل يدويًا) ⇒ نتخطّاه بلا حكم
+      if (isSe && ((v.type === "in") !== seIn)) return;
+      const ref = isSe ? (seIn ? "تسجيل إيرادات" : "تسجيل مصروفات") : voucherJrnRef(v.type);
+      const refId = (isSe ? "SE:" : "VC:") + Number(v.id);
+      const entry = jrnHealEntry(isSe ? descStr : ref + " — " + descStr + " — " + fmt(amount) + " ج.م",
+        v.date, ref, refId, plan);
+      settleJrnLines(entry.lines, 1);
+      journalEntries.push(entry);
+      posted++;
+    };
+    /* 🆕 بناء 280 — رحلات سيارات المناديب:
+       (١) **مصروف الرحلة (VEX:)** — مصروف مسجّل على المندوب بلا قيد معناه إن نصيبه من النقد
+            بيفضل زايد في حساب العهدة للأبد (توريد النقد بيتحسب بيه).
+       (٢) **رجوع باقي العهدة (VR:)** — بيتعمل **وقت التصفية بس**، وللرحلات اللي **ليها قيد تحميل
+            (VL:)** فعلًا؛ رحلات ما قبل بناء 262 مالهاش قيد تحميل ⇒ مفيش ذمة أصلًا ⇒ ممنوع أي
+            ترحيل رجعي (نفس عرف الملف: الرحلات القديمة تفضل على سلوكها).
+       ⛔ **ممنوع تصحيح VL: هنا:** بناء 269 بيعدّل حمولة رحلة قديمة ويكتب `cost: 0`/`costTotal`
+          عمدًا بلا إعادة ترحيل (القيد الأصلي بتكلفته التاريخية) — ترحيله بأثر رجعي = رقم متخيّل.
+       ⚠ الحذف محمي طبيعيًا: حذف المصروف/الرحلة بيشيل قيده معه في نفس العملية ⇒ مافيش إحياء. */
+    const healVanTrip = (trip) => {
+      if (!trip) return;
+      (vanTripExpenses(trip) || []).forEach((exp) => {
+        if (!exp || !(Number(exp.id) > 0)) return;
+        if (!(round2(exp.amount) > 0)) return;
+        const key = "VEX:" + trip.id + ":" + exp.id;
+        if ((journalEntries || []).some((j) => j && String(j.refId || "") === key)) return;
+        let j = null;
+        try { j = postVanExpenseJrn(trip, exp); } catch (e) { j = null; }
+        if (j) posted++;
+      });
+      if (String(trip.status || "") !== "settled") return;
+      if (!vanTripHasLoadJrn(trip)) return;
+      if (vanJrnOf(vanReturnKey(trip))) return;
+      if (!bigDataLoaded("sales")) return;   // المبيع لازم يكون نازل قبل حساب الباقي
+      if (!(vanReturnedCost(trip) > 0)) return;
+      try { if (postVanReturnJournal(trip, trip.settleWarehouse || "")) posted++; } catch (e) { }
+    };
     (sales || []).forEach((inv) => healInvoice("sale", inv));
     (purchases || []).forEach((inv) => healInvoice("purchase", inv));
     (txs || []).forEach((t) => healParty("cust", t, "customerId", customers));
     (supplierTxs || []).forEach((t) => healParty("supp", t, "supplierId", suppliers));
     (saleReturns || []).forEach((r) => healReturn("sale", r, sales, "saleId"));
     (purchaseReturns || []).forEach((r) => healReturn("purchase", r, purchases, "purchaseId"));
+    (vouchers || []).forEach((v) => healVoucherRow(v));
+    (carTrips || []).forEach((trip) => healVanTrip(trip));
     if (posted > 0) {
       persistJournal();
       saveAccounts();
       try { renderJournal(); } catch (e) { }
-      try { addActivity("تصحيح ذاتي للقيود", "رجّعنا " + posted + " قيد ناقص لمستندات/حركات قديمة (السداد والآجل ورصيد الطرف)."); } catch (e) { }
+      try { addActivity("تصحيح ذاتي للقيود", "رجّعنا " + posted + " قيد ناقص لمستندات/حركات قديمة (الفواتير والسداد والآجل ورصيد الطرف والسندات ومصروفات/عهدة رحلات السيارات)."); } catch (e) { }
     }
     return posted;
   }
