@@ -3294,6 +3294,21 @@
       .trim()
       .toLowerCase();
   }
+  /* 🔎 بناء 279 (بلاغ المالك: «مش بتتحدث بكتابة الحروف»): تطبيع بحث **ودود** زيادة على
+     normalizeAr — بيشيل التشكيل والتطويل (ـ) والعلامات الخفية، ويحوّل الأرقام العربية
+     والفارسية لاتينية، ويضغط المسافات. **مقصود إنها دالة مستقلة و`normalizeAr` ما اتلمستش**
+     لأنها مستخدمة في عشرات الشاشات ومفاتيح هوية/كاش (vanIdNorm) — أي تغيير فيها أثر جانبي. */
+  function arDigitsToLatin(s) {
+    return String(s == null ? "" : s)
+      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06F0));
+  }
+  function arFold(s) {
+    let t = arDigitsToLatin(s);
+    t = t.replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/g, "");  // حركات/تشكيل
+    t = t.replace(/[\u0640\u200B-\u200F\u2060\uFEFF\u00AD]/g, "");          // تطويل/عرض صفري
+    return String(normalizeAr(t) || "").replace(/\s+/g, " ").trim();
+  }
 
   function nextCustomerId() {
     // 🔒 إصلاح «المسح بعد الكتابة»: رقم 1 محجوز لكيان «العميل النقدي» النظامي
@@ -9143,14 +9158,16 @@
     const wh = (whSel && whSel.value) || WAREHOUSES[0];
     /* 🛡 بناء 268: المندوب بيقترحله **أصناف عربيته بس** — كان بيرجع الكتالوج كامل. */
     const all = vanRepVisibleProducts(productsByStockQty(wh));
-    const q = normalizeAr(String(raw || "").trim());
+    /* 🔎 بناء 279: البحث بيطبّع بنفس `arFold` (تطويل/تشكيل/أرقام عربية) عشان الكتابة تلاقي
+       حتى لو الاسم متكتب بـ «ـ» أو الأرقام عربية — كان `normalizeAr` بيسيبهم فالقائمة تفضل ثابتة. */
+    const q = arFold(raw);
     // فاضي (ضغط على الخانة/السهم) ⇒ كل الأصناف مرتّبة بكمية المخزن المختار
     if (!q) return all;
     const hit = [];
     all.forEach((p) => {
-      const name = normalizeAr(p.nameAr || "");
-      const code = normalizeAr(String(p.code == null ? "" : p.code));
-      const bc = normalizeAr(String(p.barcode == null ? "" : p.barcode));
+      const name = arFold(p.nameAr);
+      const code = arFold(p.code == null ? "" : p.code);
+      const bc = arFold(p.barcode == null ? "" : p.barcode);
       if (name.indexOf(q) >= 0 || code.indexOf(q) >= 0 || bc.indexOf(q) >= 0) hit.push(p);
     });
     return hit;
@@ -15706,11 +15723,41 @@ id: nextVoucherId(),
   }
   function vanRepCarNames() { return vanRepCarsOfMe().map((c) => c.name); }
   function vanIsRepMode() { try { return vanIsRepUser(); } catch (e) { return false; } }
+  /* 🔑 بناء 279 (بلاغ «القائمة مش بتظهر كلها»): قراءة رصيد **بهوية البرنامج نفسها** —
+     اسم السيارة ممكن يتكتب في التعيين «سيارة 1» وفي الرحلة «سيارة  1» (مسافة زيادة)؛
+     `vanIdNorm` بتعتبرهم **نفس العربية** (بتضغط المسافات) لكن `vanStockAt` بتقرا بالمفتاح
+     الحرفي فتلاقي صفر ⇒ القائمة تطلع ناقصة أو فاضية.
+     **مقصود إن المفتاح هنا = `vanIdNorm` بالحرف** (مش تطبيع أوسع): أي اسمين البرنامج نفسه
+     بيعتبرهم عربية واحدة يتقرأوا سوا، وأي اسمين مختلفين عند البرنامج يفضلوا مختلفين
+     ⇒ ممنوع عدّ مخزون عربية تانية بالغلط.
+     ⚠️ **ممنوع استخدامها في vanStockAt/vanMoveStock**: الحركة بتكتب بالمفتاح الحقيقي؛
+     قراءة متسامحة هناك تخلّي الكتابة تحت مفتاح تاني = سطر مخزون مكرر أو رصيد سالب. */
+  function vanKeyNorm(v) {
+    try { return vanIdNorm(v); } catch (e) { return String(v == null ? "" : v).trim().toLowerCase(); }
+  }
+  function vanStockQtyLoose(p, car) {
+    if (!p || !car) return 0;
+    if (!p.stock || typeof p.stock !== "object") return 0;
+    const want = vanKeyNorm(car);
+    if (!want) return 0;
+    let q = 0;
+    Object.keys(p.stock).forEach((k) => {
+      if (vanKeyNorm(k) !== want) return;
+      q += Number(p.stock[k]) || 0;
+    });
+    return Math.round(q * 100) / 100;
+  }
   /* رصيد الصنف عند المندوب = مجموع كميات عربيته بس (صفر لو مش فيها). */
   function vanRepStockQty(p) {
     if (!p) return 0;
     let q = 0;
-    vanRepCarNames().forEach((n) => { q += Number(vanStockAt(p, n)) || 0; });
+    const seen = {};
+    vanRepCarNames().forEach((n) => {
+      const k = vanKeyNorm(n);
+      if (!k || seen[k]) return;   // اسمين بيتطبّعوا لنفس المفتاح ⇒ ما نعدّش نفس الرصيد مرتين
+      seen[k] = 1;
+      q += Number(vanStockQtyLoose(p, n)) || 0;
+    });
     return Math.round(q * 100) / 100;
   }
   function vanRepStockLine(p) {
@@ -17077,13 +17124,15 @@ id: nextVoucherId(),
     if (!box) return;
     const trip = vanTripById(vanSaleDraft && vanSaleDraft.tripId);
     if (!trip) { box.innerHTML = ""; return; }
-    const q = normalizeAr(($("#vanSaleSearch") && $("#vanSaleSearch").value) || "");
+    const q = arFold(($("#vanSaleSearch") && $("#vanSaleSearch").value) || "");
     box.innerHTML = "";
     let any = false;
     (trip.loaded || []).forEach((l) => {
       const p = products.find((x) => Number(x.id) === Number(l.productId));
       if (!p) return;
-      if (q && normalizeAr(p.nameAr || "").indexOf(q) < 0 && String(p.code || "").indexOf(q) < 0) return;
+      /* 🔎 بناء 279: نفس تطبيع البحث — كان الكود بيتقارن خام (حروف لاتينية كبيرة/أرقام عربية
+         ما بتطابقش) فالقائمة ما بتتحدثش مع الكتابة. */
+      if (q && arFold(p.nameAr).indexOf(q) < 0 && arFold(p.code).indexOf(q) < 0) return;
       const rem = vanSaleRemaining(trip, p);
       if (!(rem > 0)) return;
       any = true;
