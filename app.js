@@ -9134,6 +9134,9 @@
   /* 🧾 بناء 211: الـ`datalist` اتشال من الشاشتين (كان بيعرض الأكواد/الباركود «أرقام» وبيخطف
      Enter في RTL) — القائمة بقت لوحة `.prod-drop` تحت الخانة بنفس عرضها، أسماء فقط. */
   const PROD_DROP_FIELD = { sale: "txtPosSearch", purchase: "txtPPSearch" };
+  /* ⌨️ بناء 276 (طلب المالك: «زرارين الكيبورد لأعلى ولأسفل تعمل أيضًا لاختيار الصنف من القائمة»):
+     مؤشر التحديد داخل لوحة الاقتراحات — -1 = مفيش تحديد (Enter يضيف السطر زي الأول). */
+  const prodDropIdx = { sale: -1, purchase: -1 };
   function productSuggestItems(raw, kind) {
     /* بناء 220: الترتيب بمخزن الشاشة نفسها (بيع/شراء) — نفس الرصيد اللي المستخدم شايفه. */
     const whSel = kind === "sale" ? $("#cmbPosWarehouse") : $("#cmbPPWarehouse");
@@ -9155,6 +9158,7 @@
   function productSuggestHide(kind) {
     const el = $(scanDropSel(PROD_DROP_FIELD[kind]));
     if (el) { el.hidden = true; el.innerHTML = ""; }
+    prodDropIdx[kind] = -1;
   }
   function productSuggestShow(kind) {
     const fieldId = PROD_DROP_FIELD[kind];
@@ -9168,6 +9172,49 @@
       "<button type='button' class='scan-act' data-prod-pick='" + esc(p.id) + "'>" + esc(p.nameAr || "") + "</button>"
     ).join("");
     el.hidden = false;
+    // ⌨️ بناء 276: أي إعادة بناء للقائمة (كتابة/فتح) بتبدأ بلا تحديد — الأسهم هي اللي بتحدد.
+    prodDropIdx[kind] = -1;
+    productSuggestHighlight(kind);
+  }
+  /* ⌨️ بناء 276: تلوين السطر المحدد + تمريره لمكانه المرئي داخل اللوحة */
+  function productSuggestHighlight(kind) {
+    const el = $(scanDropSel(PROD_DROP_FIELD[kind]));
+    if (!el) return;
+    const btns = el.querySelectorAll("[data-prod-pick]");
+    for (let i = 0; i < btns.length; i++) {
+      if (i === prodDropIdx[kind]) btns[i].classList.add("active");
+      else btns[i].classList.remove("active");
+    }
+    const act = btns[prodDropIdx[kind]];
+    if (act && act.scrollIntoView) { try { act.scrollIntoView({ block: "nearest" }); } catch (e) { } }
+  }
+  /* ⌨️ بناء 276: تحريك التحديد بسهم أعلى/أسفل — اللوحة مقفولة؟ تتفتح الأول. */
+  function productSuggestMove(kind, dir) {
+    const el = $(scanDropSel(PROD_DROP_FIELD[kind]));
+    if (!el) return false;
+    if (el.hidden || !el.querySelector("[data-prod-pick]")) productSuggestShow(kind);
+    const btns = el.querySelectorAll("[data-prod-pick]");
+    if (!btns.length) return false;
+    let i = prodDropIdx[kind];
+    if (i < 0) i = dir > 0 ? 0 : btns.length - 1;
+    else {
+      i += dir;
+      if (i < 0) i = 0;
+      if (i >= btns.length) i = btns.length - 1;
+    }
+    prodDropIdx[kind] = i;
+    productSuggestHighlight(kind);
+    return true;
+  }
+  /* ⌨️ بناء 276: Enter والسطر محدد ⇒ اختياره (بدل إضافة سطر جديد بلا اختيار) */
+  function productSuggestPickActive(kind) {
+    const el = $(scanDropSel(PROD_DROP_FIELD[kind]));
+    const i = prodDropIdx[kind];
+    if (!el || i < 0) return false;
+    const b = el.querySelectorAll("[data-prod-pick]")[i];
+    if (!b) return false;
+    productSuggestPick(kind, b.getAttribute("data-prod-pick"));
+    return true;
   }
   function productSuggestPick(kind, id) {
     const p = products.find((x) => Number(x.id) === Number(id));
@@ -25290,8 +25337,15 @@ id: nextVoucherId(),
     $("#txtPosCode").addEventListener("paste", () => scanPasteRun("txtPosCode", posCodeEnter));
     $("#txtPosSearch").addEventListener("input", (e) => { scanKey("txtPosSearch", e); posOnSearch(); });
     $("#txtPosSearch").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); productSuggestHide("sale"); posSearchEnter(); }
-      else if (e.key === "ArrowDown") { e.preventDefault(); productSuggestShow("sale"); }
+      /* ⌨️ بناء 276: السهمين بيمشّوا التحديد داخل قائمة الأصناف، وEnter بيختار المحدد. */
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (productSuggestPickActive("sale")) return;
+        productSuggestHide("sale");
+        posSearchEnter();
+      }
+      else if (e.key === "ArrowDown") { e.preventDefault(); productSuggestMove("sale", 1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); productSuggestMove("sale", -1); }
       else if (e.key === "Escape") { productSuggestHide("sale"); }
     });
     $("#txtPosSearch").addEventListener("focus", () => { productSuggestShow("sale"); });
@@ -25489,8 +25543,15 @@ id: nextVoucherId(),
     $("#txtPPCode").addEventListener("paste", () => scanPasteRun("txtPPCode", ppCodeEnter));
     $("#txtPPSearch").addEventListener("input", (e) => { scanKey("txtPPSearch", e); ppOnSearch(); });
     $("#txtPPSearch").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); productSuggestHide("purchase"); ppSearchEnter(); }
-      else if (e.key === "ArrowDown") { e.preventDefault(); productSuggestShow("purchase"); }
+      /* ⌨️ بناء 276: نفس سلوك شاشة البيع — أسهم لأعلى/لأسفل تحدد الصنف وEnter يختاره. */
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (productSuggestPickActive("purchase")) return;
+        productSuggestHide("purchase");
+        ppSearchEnter();
+      }
+      else if (e.key === "ArrowDown") { e.preventDefault(); productSuggestMove("purchase", 1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); productSuggestMove("purchase", -1); }
       else if (e.key === "Escape") { productSuggestHide("purchase"); }
     });
     $("#txtPPSearch").addEventListener("focus", () => { productSuggestShow("purchase"); });

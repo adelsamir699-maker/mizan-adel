@@ -3039,3 +3039,12 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
   #mVanExpense .modal-actions .btn, #mVanRepLog .modal-actions .btn { min-height: 44px; font-size: 14px; font-weight: 800; }
   #mVanExpense .van-grid3, #mVanExpense .van-grid4 { grid-template-columns: 1fr 1fr; }
 }
+/* ⌨️ بناء 276 — اختيار الصنف من قائمة الاقتراحات بأسهم الكيبورد (لأعلى/لأسفل) */
+.prod-drop .scan-act.active,
+.prod-drop .scan-act:focus {
+  background: #E0F2FE;
+  border-color: #0284C7;
+  color: #075985;
+  outline: 2px solid #7DD3FC;
+  outline-offset: -2px;
+}
