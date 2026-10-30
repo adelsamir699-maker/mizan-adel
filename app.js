@@ -15771,8 +15771,10 @@ id: nextVoucherId(),
     const j = {
       id: nextJournalId(),
       number: jrnNo(),
-      date: todayISO(),
-      desc: "مصروف سيارة " + trip.carName + " — " + exp.category + " — مندوب " + trip.repName + " — رحلة #" + trip.id,
+      date: (exp && exp.date) || todayISO(),
+      desc: "مصروف سيارة " + trip.carName + " — " + exp.category +
+        (exp.receiptNo ? " (إيصال " + exp.receiptNo + ")" : "") +
+        " — مندوب " + trip.repName + " — رحلة #" + trip.id,
       ref: "مصروف سيارة", refType: "مصروف سيارة", refId: key,
       lines: [
         { accountId: Number(acc.id), debit: amt, credit: 0 },
@@ -15811,14 +15813,22 @@ id: nextVoucherId(),
     const sel = $("#vanExpCat");
     sel.innerHTML = "";
     VAN_EXP_CATS.forEach((c) => { const o = document.createElement("option"); o.value = c; o.textContent = c; sel.appendChild(o); });
-    const amt = $("#vanExpAmount"); if (amt) amt.value = "";
-    const ltr = $("#vanExpLiters"); if (ltr) ltr.value = "";
-    const prc = $("#vanExpPrice"); if (prc) prc.value = "";
-    const nt = $("#vanExpNote"); if (nt) nt.value = "";
+    vanExpenseFormReset();
     const m = $("#mVanExpense"); if (m) m.dataset.tid = String(tid);
     renderVanExpenseList(trip);
     showModal("mVanExpense");
   }
+  /* 💸 بناء 275: تفريغ فورم المصروف + إلغاء وضع التعديل */
+  function vanExpenseFormReset() {
+    const m = $("#mVanExpense"); if (m) m.dataset.editId = "";
+    const set = (id, v) => { const el = $("#" + id); if (el) el.value = v; };
+    set("vanExpAmount", ""); set("vanExpLiters", ""); set("vanExpPrice", "");
+    set("vanExpNote", ""); set("vanExpReceipt", ""); set("vanExpOdo", "");
+    set("vanExpDate", todayISO());
+    const btn = $("#btnVanExpAdd"); if (btn) btn.textContent = "➕ أضف المصروف";
+    const cc = $("#btnVanExpCancelEdit"); if (cc) cc.hidden = true;
+  }
+  /* 💸 بناء 275: جدول مصروفات احترافي — تاريخ/إيصال/عدّاد/لترات/مبلغ + تعديل وحذف */
   function renderVanExpenseList(trip) {
     const box = $("#vanExpList");
     const info = $("#vanExpInfo");
@@ -15827,13 +15837,53 @@ id: nextVoucherId(),
     if (!box) return;
     const list = vanTripExpenses(trip);
     if (!list.length) { box.innerHTML = '<p class="login-sub">لا توجد مصروفات مسجّلة على الرحلة دي.</p>'; return; }
-    box.innerHTML = list.map((e) =>
-      '<div class="van-exp-row"><span>' + esc(e.category) +
-      (Number(e.liters) > 0 ? " — " + fmt(e.liters) + " لتر × " + fmt(e.literPrice) : "") +
-      (e.note ? " — " + esc(e.note) : "") + '</span>' +
-      '<b>' + fmt(e.amount) + ' ج.م</b>' +
-      '<button class="btn small red" type="button" data-vexdel="' + esc(e.id) + '">❌</button></div>'
-    ).join("");
+    const rows = list.slice().sort((a, b) => String(b.date || b.at || "").localeCompare(String(a.date || a.at || "")) || (Number(b.id) || 0) - (Number(a.id) || 0));
+    box.innerHTML = '<div class="van-list-wrap"><table class="dgv" id="dgvVanExp"><thead><tr>' +
+      '<th style="width:5%">#</th><th style="width:12%">التاريخ</th><th style="width:16%">النوع</th>' +
+      '<th style="width:11%">إيصال</th><th style="width:9%">عدّاد</th><th style="width:9%">لترات</th>' +
+      '<th style="width:12%">المبلغ</th><th style="width:16%">بيان</th><th style="width:10%">إجراءات</th>' +
+      '</tr></thead><tbody>' + rows.map((e, i) =>
+        '<tr>' +
+        '<td>' + (i + 1) + '</td>' +
+        '<td>' + esc(String(e.date || e.at || "").slice(0, 10)) + '</td>' +
+        '<td>' + esc(e.category || "") + '</td>' +
+        '<td>' + esc(e.receiptNo || "—") + '</td>' +
+        '<td>' + (Number(e.odo) > 0 ? fmt(e.odo) : "—") + '</td>' +
+        '<td>' + (Number(e.liters) > 0 ? fmt(e.liters) + " × " + fmt(e.literPrice) : "—") + '</td>' +
+        '<td><b>' + fmt(e.amount) + '</b></td>' +
+        '<td>' + esc(e.note || "—") + '</td>' +
+        '<td class="cell-actions">' +
+        '<button class="btn small sky" type="button" data-vexedit="' + esc(e.id) + '">✏️</button>' +
+        '<button class="btn small red" type="button" data-vexdel="' + esc(e.id) + '">❌</button>' +
+        '</td></tr>'
+      ).join("") + '</tbody></table></div>' +
+      '<div class="van-exp-total">إجمالي المصروفات: <b>' + fmt(vanTripExpensesTotal(trip)) + ' ج.م</b></div>';
+  }
+  function vanEditExpense(expId) {
+    const m = $("#mVanExpense");
+    const trip = vanTripById(m && m.dataset.tid);
+    if (!trip || trip.status !== "open") { toast("الرحلة مقفولة.", "warning"); return; }
+    const exp = vanTripExpenses(trip).find((e) => Number(e.id) === Number(expId));
+    if (!exp) return;
+    const set = (id, v) => { const el = $("#" + id); if (el) el.value = v; };
+    set("vanExpCat", exp.category || "مصروفات أخرى");
+    set("vanExpDate", exp.date || todayISO());
+    set("vanExpAmount", exp.amount != null ? String(exp.amount) : "");
+    set("vanExpReceipt", exp.receiptNo || "");
+    set("vanExpOdo", exp.odo != null ? String(exp.odo) : "");
+    set("vanExpLiters", exp.liters != null ? String(exp.liters) : "");
+    set("vanExpPrice", exp.literPrice != null ? String(exp.literPrice) : "");
+    set("vanExpNote", exp.note || "");
+    if (m) m.dataset.editId = String(exp.id);
+    const btn = $("#btnVanExpAdd"); if (btn) btn.textContent = "💾 حفظ التعديل";
+    const cc = $("#btnVanExpCancelEdit"); if (cc) cc.hidden = false;
+    const amt = $("#vanExpAmount"); if (amt) amt.focus();
+  }
+  function vanCancelExpenseEdit() {
+    const m = $("#mVanExpense");
+    const trip = vanTripById(m && m.dataset.tid);
+    vanExpenseFormReset();
+    if (trip) renderVanExpenseList(trip);
   }
   function saveVanExpense() {
     const m = $("#mVanExpense");
@@ -15846,18 +15896,39 @@ id: nextVoucherId(),
     // ⛽ بناء 262: لو كتب اللترات وسعر اللتر ⇒ المبلغ بيتحسب تلقائي (liters × price)
     if (liters > 0 && literPrice > 0) amount = round2(liters * literPrice);
     const note = ($("#vanExpNote") && $("#vanExpNote").value) || "";
+    const receiptNo = ($("#vanExpReceipt") && $("#vanExpReceipt").value || "").trim();
+    const odo = Math.round((parseMoney(($("#vanExpOdo") && $("#vanExpOdo").value) || 0) || 0) * 100) / 100;
+    const date = ($("#vanExpDate") && $("#vanExpDate").value) || todayISO();
     if (!(amount > 0)) { toast("اكتب مبلغ المصروف.", "warning"); return; }
-    const exp = { id: nextVanExpenseId(trip), category: cat, amount: amount, note: note, at: shiftNowISO(), by: activityUser() };
-    if (liters > 0) { exp.liters = liters; exp.literPrice = literPrice; }
+    const editId = m && m.dataset.editId ? Number(m.dataset.editId) : 0;
+    const exp = editId
+      ? vanTripExpenses(trip).find((e) => Number(e.id) === Number(editId))
+      : null;
+    if (editId && !exp) { toast("المصروف مش موجود — أعد فتح النافذة.", "warning"); return; }
+    if (exp) {
+      // ✏️ بناء 275: تعديل = عكس القيد القديم ثم إعادة ترحيله بنفس المفتاح VEX
+      try { removeVanExpenseJrn(trip, exp); } catch (e) { }
+      exp.category = cat; exp.amount = amount; exp.note = note;
+      exp.receiptNo = receiptNo; exp.odo = odo > 0 ? odo : null; exp.date = date;
+      exp.editedAt = shiftNowISO(); exp.editedBy = activityUser();
+      if (liters > 0) { exp.liters = liters; exp.literPrice = literPrice; }
+      else { delete exp.liters; delete exp.literPrice; }
+      const j = postVanExpenseJrn(trip, exp);
+      saveCarTrips();
+      try { addActivity("تعديل مصروف سيارة", "سيارة " + trip.carName + " - " + cat + " - " + fmt(amount) + " ج.م" + (j ? " - قيد " + j.number : "")); } catch (e) { }
+      vanExpenseFormReset();
+      renderVanExpenseList(trip);
+      toast("اتحفظ تعديل المصروف (" + fmt(amount) + " ج.م).", "success");
+      return;
+    }
+    const ne = { id: nextVanExpenseId(trip), category: cat, amount: amount, note: note, receiptNo: receiptNo, odo: odo > 0 ? odo : null, date: date, at: shiftNowISO(), by: activityUser() };
+    if (liters > 0) { ne.liters = liters; ne.literPrice = literPrice; }
     if (!Array.isArray(trip.expenses)) trip.expenses = [];
-    trip.expenses.push(exp);
-    const j = postVanExpenseJrn(trip, exp);
+    trip.expenses.push(ne);
+    const j = postVanExpenseJrn(trip, ne);
     saveCarTrips();
-    try { addActivity("مصروف سيارة", "سيارة " + trip.carName + " - " + cat + " - " + fmt(amount) + " ج.م" + (j ? " - قيد " + j.number : "")); } catch (e) {}
-    $("#vanExpAmount").value = "";
-    $("#vanExpNote").value = "";
-    const lf = $("#vanExpLiters"); if (lf) lf.value = "";
-    const pf = $("#vanExpPrice"); if (pf) pf.value = "";
+    try { addActivity("مصروف سيارة", "سيارة " + trip.carName + " - " + cat + " - " + fmt(amount) + " ج.م" + (j ? " - قيد " + j.number : "")); } catch (e) { }
+    vanExpenseFormReset();
     renderVanExpenseList(trip);
     toast("اتسجّل مصروف " + cat + " بمبلغ " + fmt(amount) + " ج.م — هيُخصم من نقد عهدة المندوب.", "success");
   }
@@ -15873,8 +15944,128 @@ id: nextVoucherId(),
     removeVanExpenseJrn(trip, exp);
     trip.expenses.splice(i, 1);
     saveCarTrips();
+    vanExpenseFormReset();
     renderVanExpenseList(trip);
     toast("اتحذف المصروف.", "success");
+  }
+
+  /* ==================== 📋 بناء 275 — سجل حركات المندوب على الموبايل ====================
+     طلب المالك: «عايز إن المندوب يستعلم في أي وقت من موبايله عن الحركات اللي تمت».
+     السجل بيقرأ من نفس بيانات الرحلة (sales/expenses/loaded/settle) — **بلا أي جدول أو
+     عمود جديد على السحابة**، فمفيش أي خطر على بيانات قائمة. */
+  function vanRepTripsList() {
+    const rows = (carTrips || []).filter((t) => t && (!vanIsRepUser() || vanTripIsMine(t)));
+    return rows.slice().sort((a, b) => {
+      const da = String(a.date || ""), db = String(b.date || "");
+      if (da !== db) return db.localeCompare(da);
+      return (Number(b.id) || 0) - (Number(a.id) || 0);
+    });
+  }
+  function openVanRepLog(tid) {
+    const trips = vanRepTripsList();
+    const sel = $("#vanLogTrip");
+    if (sel) {
+      sel.innerHTML = "";
+      if (!trips.length) { const o = document.createElement("option"); o.value = ""; o.textContent = "لا توجد رحلات"; sel.appendChild(o); }
+      trips.forEach((t) => {
+        const o = document.createElement("option");
+        o.value = String(t.id);
+        o.textContent = "#" + t.id + " · " + (t.carName || "") + " · " + (t.date || "") + " · " + vanStatusLabel(t.status);
+        sel.appendChild(o);
+      });
+      const want = (tid != null && vanTripById(tid)) ? Number(tid) : ((vanRepOpenTrip() || trips[0] || {}).id);
+      sel.value = want != null ? String(want) : "";
+    }
+    const ty = $("#vanLogType"); if (ty) ty.value = "all";
+    const fr = $("#vanLogFrom"); if (fr) fr.value = "";
+    const m = $("#mVanRepLog"); if (m) m.dataset.tid = String((sel && sel.value) || "");
+    renderVanRepLog();
+    showModal("mVanRepLog");
+  }
+  function vanRepLogRows(trip) {
+    const rows = [];
+    if (!trip) return rows;
+    const push = (r) => rows.push(r);
+    // تحميل البضاعة
+    if (Array.isArray(trip.loaded) && trip.loaded.length) {
+      push({
+        type: "load", kind: "📦 تحميل", date: trip.date || "", at: trip.createdAt || "",
+        label: "تحميل بضاعة الرحلة (" + fmt(vanTripLoadedCount(trip)) + " وحدة) من " + (trip.loadWarehouse || "المخزن"),
+        amount: round2(vanLoadedCost(trip)), effect: null
+      });
+    }
+    // المبيعات
+    vanTripSales(trip).forEach((s) => {
+      const no = s.invoiceNumber || s.invoiceNo || "";
+      const pm = s.paymentMethod || "";
+      const cash = vanSaleCashPaidOf(s);
+      push({
+        type: "sale", kind: "🧾 بيع", date: s.invoiceDate || s.date || "", at: s.savedAt || "",
+        label: "فاتورة #" + no + " — " + (s.customerName || s.customer || "") + (pm ? " — " + pm : ""),
+        amount: round2(s.grandTotal), effect: cash > 0 ? cash : null
+      });
+    });
+    // المصروفات
+    vanTripExpenses(trip).forEach((e) => {
+      push({
+        type: "expense", kind: "💸 مصروف", date: e.date || String(e.at || "").slice(0, 10), at: e.at || "",
+        label: (e.category || "مصروف") + (e.receiptNo ? " — إيصال " + e.receiptNo : "") + (e.note ? " — " + e.note : ""),
+        amount: round2(e.amount), effect: -round2(e.amount)
+      });
+    });
+    // التوريد / التصفية
+    if (trip.status === "settled" || Number(trip.countedCash) > 0) {
+      push({
+        type: "settle", kind: "🏦 توريد", date: String(trip.settledAt || "").slice(0, 10) || trip.date || "", at: trip.settledAt || "",
+        label: "توريد نقدية وتصفية الرحلة" + (trip.settleWarehouse ? " — رجوع بضاعة لـ " + trip.settleWarehouse : "") +
+          (Number(trip.diff) ? " — فرق تصفية " + fmt(trip.diff) + " ج.م" : ""),
+        amount: round2(trip.countedCash), effect: -round2(trip.countedCash)
+      });
+    }
+    return rows;
+  }
+  function renderVanRepLog() {
+    const sel = $("#vanLogTrip");
+    const trip = vanTripById(sel && sel.value);
+    const type = ($("#vanLogType") && $("#vanLogType").value) || "all";
+    const from = ($("#vanLogFrom") && $("#vanLogFrom").value) || "";
+    const sumBox = $("#vanLogSummary");
+    const body = $("#vanLogBody");
+    if (!trip) {
+      if (sumBox) sumBox.innerHTML = '<div class="van-log-empty">مفيش رحلة متاحة على حسابك.</div>';
+      if (body) body.innerHTML = "";
+      return;
+    }
+    const salesTotal = round2(vanTripSales(trip).reduce((m, s) => m + (Number(s.grandTotal) || 0), 0));
+    const cashIn = round2(vanTripCashSales(trip));
+    const expTotal = round2(vanTripExpensesTotal(trip));
+    const deposited = round2(Number(trip.countedCash) || 0);
+    if (sumBox) {
+      sumBox.innerHTML =
+        '<div><span>إجمالي المبيعات</span><b>' + fmt(salesTotal) + ' ج.م</b></div>' +
+        '<div><span>نقد محصّل</span><b>' + fmt(cashIn) + ' ج.م</b></div>' +
+        '<div><span>المصروفات</span><b class="van-log-neg">' + fmt(expTotal) + ' ج.م</b></div>' +
+        '<div><span>المورَّد / التصفية</span><b>' + fmt(deposited) + ' ج.م</b></div>' +
+        '<div><span>نقد متوقّع</span><b class="van-log-pos">' + fmt(vanTripExpectedCash(trip)) + ' ج.م</b></div>' +
+        '<div><span>عهدة البضاعة</span><b>' + fmt(vanTripCustodyBalance(trip)) + ' ج.م</b></div>';
+    }
+    if (!body) return;
+    let rows = vanRepLogRows(trip);
+    if (type !== "all") rows = rows.filter((r) => r.type === type);
+    if (from) rows = rows.filter((r) => String(r.date || "") >= from);
+    rows.sort((a, b) => (String(b.date || "") + " " + String(b.at || "")).localeCompare(String(a.date || "") + " " + String(a.at || "")));
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="6" class="login-sub" style="text-align:center">لا توجد حركات مطابقة للفلتر.</td></tr>'; return; }
+    body.innerHTML = rows.map((r, i) => {
+      const eff = (r.effect == null) ? "—"
+        : (r.effect >= 0 ? '<span class="van-log-pos">+' + fmt(r.effect) + '</span>' : '<span class="van-log-neg">' + fmt(r.effect) + '</span>');
+      return '<tr>' +
+        '<td>' + (i + 1) + '</td>' +
+        '<td>' + esc(String(r.date || "").slice(0, 10)) + (r.at ? '<span class="van-log-time">' + esc(String(r.at).slice(11, 16)) + '</span>' : '') + '</td>' +
+        '<td>' + r.kind + '</td>' +
+        '<td>' + esc(r.label) + '</td>' +
+        '<td><b>' + fmt(r.amount) + '</b></td>' +
+        '<td>' + eff + '</td></tr>';
+    }).join("");
   }
 
   /* 🛡 بناء 268: مفاتيح الهوية كانت ضيّقة/خامّة — المندوب ممكن يكون معرّف بالبريد أو
@@ -16058,6 +16249,7 @@ id: nextVoucherId(),
         banner.hidden = false;
         banner.innerHTML = '🚚 رحلة سيارتك <b>' + esc(mine.carName) + '</b> مفتوحة النهاردة — ' +
           '<button class="btn small green" type="button" data-vanact="sell" data-tid="' + esc(mine.id) + '">🧾 ابدأ البيع</button> ' +
+          '<button class="btn small teal" type="button" data-vanact="log" data-tid="' + esc(mine.id) + '">📋 سجل حركاتي</button> ' +
           '<button class="btn small van-settle-btn" type="button" data-vanact="settle" data-tid="' + esc(mine.id) + '">🔒 قفل وتصفية الرحلة</button>';
       } else { banner.hidden = true; banner.innerHTML = ""; }
     }
@@ -16128,6 +16320,7 @@ id: nextVoucherId(),
       const tid = Number(b.getAttribute("data-tid"));
       if (act === "sell") openVanSaleDialog(tid);
       else if (act === "settle") openVanSettleDialog(tid);
+      else if (act === "log") openVanRepLog(tid);
     });
     // نوافذ التحميل
     add("btnVanLoadCancel", "click", () => hideModal("mVanLoad"));
@@ -16235,6 +16428,7 @@ id: nextVoucherId(),
       if (m && !m.hidden) updateVanSettleSummary();
     });
     add("btnVanExpAdd", "click", saveVanExpense);
+    add("btnVanExpCancelEdit", "click", vanCancelExpenseEdit);
     // ⛽ بناء 262: لترات × سعر اللتر ⇒ المبلغ تلقائي
     const vanFuelAuto = () => {
       const l = parseMoney(($("#vanExpLiters") && $("#vanExpLiters").value) || 0) || 0;
@@ -16247,8 +16441,18 @@ id: nextVoucherId(),
     });
     const ebox = $("#vanExpList");
     if (ebox) ebox.addEventListener("click", (ev) => {
+      const ed = ev.target.closest("[data-vexedit]");
+      if (ed) { vanEditExpense(Number(ed.getAttribute("data-vexedit"))); return; }
       const b = ev.target.closest("[data-vexdel]");
       if (b) vanDeleteExpense(Number(b.getAttribute("data-vexdel")));
+    });
+    // 📋 بناء 275: سجل حركات المندوب
+    add("btnVanLog", "click", () => openVanRepLog());
+    add("btnVanLogClose", "click", () => hideModal("mVanRepLog"));
+    add("btnVanLogRefresh", "click", renderVanRepLog);
+    ["vanLogTrip", "vanLogType", "vanLogFrom"].forEach((id) => {
+      const el = $("#" + id);
+      if (el) el.addEventListener("change", renderVanRepLog);
     });
     // نافذة التقرير
     add("btnVanReportClose", "click", () => hideModal("mVanReport"));
@@ -17136,9 +17340,22 @@ id: nextVoucherId(),
             : ' · <span class="pvb-warn">مفيش رحلة مفتوحة — الحفظ مقفول لحد ما صاحب الشركة يفتح رحلة ويحمّل بضاعة</span>') +
           '</div>' +
           '<div class="pvb-actions">' +
+          (trip ? '<button id="btnPosVanLog" class="btn small sky" type="button">📋 سجل حركاتي</button>' : '') +
+          (trip ? '<button id="btnPosVanExp" class="btn small blue" type="button">💸 مصروفات السيارة</button>' : '') +
           (trip ? '<button id="btnPosVanSettle" class="btn small teal" type="button">🔒 قفل وتصفية الرحلة</button>' : '') +
           '<button id="btnPosVanScreen" class="btn small gray" type="button">🚚 شاشة الرحلات</button>' +
           '</div>';
+        const lg = $("#btnPosVanLog");
+        if (lg) lg.addEventListener("click", () => {
+          const t = vanRepOpenTrip();
+          openVanRepLog(t ? t.id : null);
+        });
+        const ex = $("#btnPosVanExp");
+        if (ex) ex.addEventListener("click", () => {
+          const t = vanRepOpenTrip();
+          if (t) openVanExpenseDialog(t.id);
+          else toast("مفيش رحلة مفتوحة على حسابك.", "warning");
+        });
         const sb = $("#btnPosVanSettle");
         if (sb) sb.addEventListener("click", () => {
           const t = vanRepOpenTrip();

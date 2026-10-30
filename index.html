@@ -11,7 +11,7 @@
   <script>
     // المصدر الوحيد للنسخة: عدّل هنا بس
     window.MIZAN_VERSION = "1.4.1"; // رقم المنتج (داخلي — قرار المالك ما بيتغيرش كل نشر)
-    window.MIZAN_BUILD = 274;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
+    window.MIZAN_BUILD = 275;       // 🔴 رقم التحديث — **اللي يشوفه العميل على الشاشة**، وبيتزيد كل نشر
 
     /* 🆕 بناء 185: تنظيف الكاش القديم تلقائيًا أول ما البرنامج يفتح — بلا مسّ الجلسة
        (مهم: ما نلمسش mizan_session_v1 ولا مفاتيح بيانات المستخدم). لما رقم البناء يتغيّر
@@ -81,7 +81,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="stylesheet" href="styles.css?v=274" />
+  <link rel="stylesheet" href="styles.css?v=275" />
 </head>
 <body>
 
@@ -1388,6 +1388,7 @@
         <div class="view-header">
           <div class="view-actions">
             <button id="btnVanNew" class="btn green" type="button">➕ فتح رحلة سيارة (تحميل)</button>
+            <button id="btnVanLog" class="btn teal" type="button">📋 سجل حركاتي</button>
             <button id="btnVanFuel" class="btn sky" type="button">⛽ استهلاك البنزين</button>
             <button id="btnVanRefresh" class="btn gray" type="button">تحديث 🔄</button>
           </div>
@@ -3124,9 +3125,29 @@
       <p class="login-sub">أي مصروف المندوب يدفعه في الطريق (بنزين/صيانة/زيت/كاوتش/أي حاجة) يتسجّل هنا. بيُخصم من نقدية العهدة اللي هو سيدفعها آخر اليوم، وبيترحّل مصروفًا للشركة.</p>
       <div id="vanExpInfo" class="van-info"></div>
       <div class="sett-box">
-        <label class="filter-label" for="vanExpCat">نوع المصروف</label>
-        <select id="vanExpCat"></select>
         <div class="van-grid3">
+          <div>
+            <label class="filter-label" for="vanExpCat">نوع المصروف</label>
+            <select id="vanExpCat"></select>
+          </div>
+          <div>
+            <label class="filter-label" for="vanExpDate">تاريخ المصروف</label>
+            <input type="date" id="vanExpDate" />
+          </div>
+          <div>
+            <label class="filter-label" for="vanExpAmount">المبلغ (ج.م)</label>
+            <input type="text" id="vanExpAmount" inputmode="decimal" autocomplete="off" placeholder="0.00" />
+          </div>
+        </div>
+        <div class="van-grid4">
+          <div>
+            <label class="filter-label" for="vanExpReceipt">رقم الإيصال (اختياري)</label>
+            <input type="text" id="vanExpReceipt" autocomplete="off" placeholder="مثال: 12345" />
+          </div>
+          <div>
+            <label class="filter-label" for="vanExpOdo">عدّاد السيارة (كم)</label>
+            <input type="text" id="vanExpOdo" inputmode="decimal" autocomplete="off" placeholder="0" />
+          </div>
           <div>
             <label class="filter-label" for="vanExpLiters">لترات البنزين (لو بنزين)</label>
             <input type="text" id="vanExpLiters" inputmode="decimal" autocomplete="off" placeholder="0" />
@@ -3135,18 +3156,63 @@
             <label class="filter-label" for="vanExpPrice">سعر اللتر (ج.م)</label>
             <input type="text" id="vanExpPrice" inputmode="decimal" autocomplete="off" placeholder="0.00" />
           </div>
-          <div>
-            <label class="filter-label" for="vanExpAmount">المبلغ (ج.م)</label>
-            <input type="text" id="vanExpAmount" inputmode="decimal" autocomplete="off" placeholder="0.00" />
-          </div>
         </div>
         <label class="filter-label" for="vanExpNote">بيان المصروف (اختياري)</label>
         <input type="text" id="vanExpNote" autocomplete="off" placeholder="مثال: بنزين محطة ... / تغيير زيت ..." />
       </div>
       <div id="vanExpList" class="van-exp-list"></div>
       <div class="modal-actions">
+        <button id="btnVanExpCancelEdit" class="btn gray" type="button" hidden>↩️ إلغاء التعديل</button>
         <button id="btnVanExpClose" class="btn gray" type="button">إغلاق</button>
         <button id="btnVanExpAdd" class="btn green" type="button">➕ أضف المصروف</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 📋 بناء 275: سجل حركات المندوب على الموبايل (مبيعات · مصروفات · توريد · تحميل) -->
+  <div class="modal-overlay" id="mVanRepLog" hidden data-tid="">
+    <div class="modal m720" id="mVanRepLogBox">
+      <h3>📋 سجل حركاتي</h3>
+      <p class="login-sub">كل حركة على عهدتك بترتيب زمني: مبيعات، مصروفات، توريد/تصفية، وتحميل بضاعة — مع إجماليات الرحلة.</p>
+      <div class="sett-box">
+        <div class="van-grid3">
+          <div>
+            <label class="filter-label" for="vanLogTrip">الرحلة</label>
+            <select id="vanLogTrip"></select>
+          </div>
+          <div>
+            <label class="filter-label" for="vanLogType">نوع الحركة</label>
+            <select id="vanLogType">
+              <option value="all">كل الحركات</option>
+              <option value="sale">مبيعات</option>
+              <option value="expense">مصروفات</option>
+              <option value="settle">توريد / تصفية</option>
+              <option value="load">تحميل بضاعة</option>
+            </select>
+          </div>
+          <div>
+            <label class="filter-label" for="vanLogFrom">من تاريخ</label>
+            <input type="date" id="vanLogFrom" />
+          </div>
+        </div>
+      </div>
+      <div id="vanLogSummary" class="van-log-sum"></div>
+      <div class="van-list-wrap">
+        <table class="dgv" id="dgvVanLog">
+          <thead><tr>
+            <th style="width:6%">#</th>
+            <th style="width:15%">التاريخ</th>
+            <th style="width:12%">النوع</th>
+            <th style="width:33%">البيان</th>
+            <th style="width:13%">المبلغ</th>
+            <th style="width:21%">الأثر على العهدة</th>
+          </tr></thead>
+          <tbody id="vanLogBody"></tbody>
+        </table>
+      </div>
+      <div class="modal-actions">
+        <button id="btnVanLogClose" class="btn gray" type="button">إغلاق</button>
+        <button id="btnVanLogRefresh" class="btn sky" type="button">🔄 تحديث</button>
       </div>
     </div>
   </div>
@@ -4025,14 +4091,14 @@
     </div>
   </div>
 
-  <script src="lib_supabase.js?v=274"></script>
-  <script src="supabase.config.js?v=274"></script>
-  <script src="data.js?v=274"></script>
-  <script src="cloud.js?v=274"></script>
-  <script src="install.js?v=274"></script>
-  <script src="vendor/exceljs.min.js?v=274"></script>
-  <script src="excel_import.js?v=274"></script>
-  <script src="app.js?v=274"></script>
+  <script src="lib_supabase.js?v=275"></script>
+  <script src="supabase.config.js?v=275"></script>
+  <script src="data.js?v=275"></script>
+  <script src="cloud.js?v=275"></script>
+  <script src="install.js?v=275"></script>
+  <script src="vendor/exceljs.min.js?v=275"></script>
+  <script src="excel_import.js?v=275"></script>
+  <script src="app.js?v=275"></script>
   <script>
     /* كاشف أخطاء على الشاشة — بقى **للمالك بس** (طلب المالك الحرفي 07/10: رسالة إنجليزية
        حمراء `TypeError …` ظهرت للبائع وهو بيكتب صنف في الفاتورة، وقاعدته السارية

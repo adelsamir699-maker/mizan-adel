@@ -2992,3 +2992,50 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
     font-weight: 800;
   }
 }
+/* ================= بناء 275 — سجل حركات المندوب + مصروفات احترافية ================= */
+.van-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 6px 0; }
+.van-grid4 > div { min-width: 0; }
+.van-log-sum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.van-log-sum > div {
+  display: flex; flex-direction: column; gap: 2px;
+  background: #F8FAFC; border: 1px solid var(--border); border-radius: 10px;
+  padding: 8px 10px; font-size: 12px; color: #475569;
+}
+.van-log-sum > div b { font-size: 15px; color: #0F172A; font-variant-numeric: tabular-nums; }
+.van-log-pos { color: #047857; font-weight: 800; }
+.van-log-neg { color: #B91C1C; font-weight: 800; }
+.van-log-time { display: block; font-size: 11px; color: #64748B; font-weight: 600; }
+.van-log-empty { grid-column: 1 / -1; text-align: center; color: #64748B; font-size: 13px; padding: 8px; }
+.van-exp-total { text-align: left; font-size: 13px; color: #334155; padding: 6px 2px; }
+#dgvVanExp td, #dgvVanLog td { font-variant-numeric: tabular-nums; }
+#dgvVanExp .cell-actions { white-space: nowrap; }
+@media (max-width: 860px) { .van-grid4 { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 760px) {
+  .van-grid4 { grid-template-columns: 1fr 1fr; }
+  .van-log-sum { grid-template-columns: 1fr 1fr; }
+  #dgvVanLog, #dgvVanExp { display: block; width: 100%; }
+  #dgvVanLog thead, #dgvVanExp thead { display: none; }
+  #dgvVanLog tbody, #dgvVanLog tr, #dgvVanLog td,
+  #dgvVanExp tbody, #dgvVanExp tr, #dgvVanExp td { display: block; width: 100%; }
+  #dgvVanLog tr, #dgvVanExp tr {
+    border: 1px solid var(--border); border-radius: 12px; background: #fff;
+    margin: 0 0 10px; padding: 8px 10px; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  #dgvVanLog td, #dgvVanExp td { border: 0; padding: 4px 2px; text-align: right; font-size: 14px; }
+  #dgvVanLog td:nth-child(2)::before { content: "📅 "; color: #64748B; }
+  #dgvVanLog td:nth-child(3)::before { content: ""; }
+  #dgvVanLog td:nth-child(5)::before { content: "المبلغ: "; color: #64748B; }
+  #dgvVanLog td:nth-child(6)::before { content: "الأثر على العهدة: "; color: #64748B; }
+  #dgvVanExp td:nth-child(1)::before { content: "مصروف #"; color: #64748B; }
+  #dgvVanExp td:nth-child(2)::before { content: "📅 "; color: #64748B; }
+  #dgvVanExp td:nth-child(4)::before { content: "إيصال: "; color: #64748B; }
+  #dgvVanExp td:nth-child(5)::before { content: "عدّاد: "; color: #64748B; }
+  #dgvVanExp td:nth-child(6)::before { content: "لترات: "; color: #64748B; }
+  #dgvVanExp td:nth-child(7)::before { content: "المبلغ: "; color: #64748B; }
+  #dgvVanExp .cell-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  #dgvVanExp .cell-actions .btn.small {
+    flex: 1 1 45%; min-height: 44px; font-size: 14px; font-weight: 800; padding: 10px 12px; margin: 0;
+  }
+  #mVanExpense .modal-actions .btn, #mVanRepLog .modal-actions .btn { min-height: 44px; font-size: 14px; font-weight: 800; }
+  #mVanExpense .van-grid3, #mVanExpense .van-grid4 { grid-template-columns: 1fr 1fr; }
+}
