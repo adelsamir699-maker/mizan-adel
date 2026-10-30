@@ -15844,7 +15844,7 @@ id: nextVoucherId(),
       '<th style="width:12%">المبلغ</th><th style="width:16%">بيان</th><th style="width:10%">إجراءات</th>' +
       '</tr></thead><tbody>' + rows.map((e, i) =>
         '<tr>' +
-        '<td>' + (i + 1) + '</td>' +
+        '<td>' + (i + 1) + "</td>" +
         '<td>' + esc(String(e.date || e.at || "").slice(0, 10)) + '</td>' +
         '<td>' + esc(e.category || "") + '</td>' +
         '<td>' + esc(e.receiptNo || "—") + '</td>' +
@@ -16054,12 +16054,12 @@ id: nextVoucherId(),
     if (type !== "all") rows = rows.filter((r) => r.type === type);
     if (from) rows = rows.filter((r) => String(r.date || "") >= from);
     rows.sort((a, b) => (String(b.date || "") + " " + String(b.at || "")).localeCompare(String(a.date || "") + " " + String(a.at || "")));
-    if (!rows.length) { body.innerHTML = '<tr><td colspan="6" class="login-sub" style="text-align:center">لا توجد حركات مطابقة للفلتر.</td></tr>'; return; }
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="' + 6 + '" class="login-sub" style="text-align:center">لا توجد حركات مطابقة للفلتر.</td></tr>'; return; }
     body.innerHTML = rows.map((r, i) => {
       const eff = (r.effect == null) ? "—"
         : (r.effect >= 0 ? '<span class="van-log-pos">+' + fmt(r.effect) + '</span>' : '<span class="van-log-neg">' + fmt(r.effect) + '</span>');
       return '<tr>' +
-        '<td>' + (i + 1) + '</td>' +
+        '<td>' + (i + 1) + "</td>" +
         '<td>' + esc(String(r.date || "").slice(0, 10)) + (r.at ? '<span class="van-log-time">' + esc(String(r.at).slice(11, 16)) + '</span>' : '') + '</td>' +
         '<td>' + r.kind + '</td>' +
         '<td>' + esc(r.label) + '</td>' +
