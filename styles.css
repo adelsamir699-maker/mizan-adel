@@ -2923,6 +2923,30 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
   #dgvVanTrips .cell-actions { min-width: 130px; }
   #dgvVanTrips .cell-actions .btn.small { padding: 4px 6px; font-size: 11px; margin: 2px; }
 }
+/* ================= بناء 277 — زرار «تصفية الرحلة» ما ينزلش مع قائمة الأصناف =================
+   كان الزرار جوه `.modal-actions` في آخر نافذة `#mVanSettle`، والنافذة نفسها `.modal`
+   بلا سقف ارتفاع وبلا سكرول (styles.css: `.modal` مالوش max-height/overflow) ⇒ قائمة
+   «باقي البضاعة صنفًا صنفًا» (#vanSettleGoods، بناء 270) + ١١ سطر ملخص كانوا بيدفعوه
+   لتحت الشاشة على 1366×768.
+   الحل (نطاقه النافذة دي بس): النافذة بتسكرول جوّاها بسقف 92vh، وشريط الزراير بقى
+   لاصق في قاع النافذة (position:sticky) ⇒ الأصناف بتعدّي وراه والزرار واقف مكانه. */
+#mVanSettleBox {
+  max-height: 92vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 0;
+}
+#mVanSettleBox > .modal-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  background: #fff;
+  margin-top: 14px;
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -10px 16px -12px rgba(15, 23, 42, 0.28);
+}
+
 /* ================= بناء 273 — موبايل المندوب: أزرار كبيرة وواضحة ================= */
 @media (max-width: 760px) {
   /* شاشة رحلات السيارات: كروت بدل جدول 9 أعمدة — كل زرار بعرض مريح للإصبع */
