@@ -16093,7 +16093,8 @@ id: nextVoucherId(),
     // المبيعات
     vanTripSales(trip).forEach((s) => {
       const no = s.invoiceNumber || s.invoiceNo || "";
-      const pm = s.paymentMethod || "";
+      // 🧾 281: كل وسائل الدفع اللي دفع بيها العميل (مش أول وسيلة بس) — طلب المالك
+      const pm = vanSalePayLabels(s);
       const cash = vanSaleCashPaidOf(s);
       push({
         type: "sale", kind: "🧾 بيع", date: s.invoiceDate || s.date || "", at: s.savedAt || "",
@@ -16127,9 +16128,11 @@ id: nextVoucherId(),
     const from = ($("#vanLogFrom") && $("#vanLogFrom").value) || "";
     const sumBox = $("#vanLogSummary");
     const body = $("#vanLogBody");
+    const payBox = $("#vanLogPay");
     if (!trip) {
       if (sumBox) sumBox.innerHTML = '<div class="van-log-empty">مفيش رحلة متاحة على حسابك.</div>';
       if (body) body.innerHTML = "";
+      if (payBox) { payBox.innerHTML = ""; payBox.hidden = true; }
       return;
     }
     const salesTotal = round2(vanTripSales(trip).reduce((m, s) => m + (Number(s.grandTotal) || 0), 0));
@@ -16144,6 +16147,15 @@ id: nextVoucherId(),
         '<div><span>المورَّد / التصفية</span><b>' + fmt(deposited) + ' ج.م</b></div>' +
         '<div><span>نقد متوقّع</span><b class="van-log-pos">' + fmt(vanTripExpectedCash(trip)) + ' ج.م</b></div>' +
         '<div><span>عهدة البضاعة</span><b>' + fmt(vanTripCustodyBalance(trip)) + ' ج.م</b></div>';
+    }
+    /* 🧾 بناء 281 — «كل اللي مع المندوب من شيكات أو غيرها من طرق الدفع» في شاشة الاستعلام.
+       بيتعرض البنك/المحفظة/إنستا/الشيك/الآجل + كل شيك ببياناته وحالته. لو مفيش غير النقد
+       البلوك بيفضل مخفي (صفر تغيير في الشكل). */
+    if (payBox) {
+      const bk = vanTripPayBreakdown(trip);
+      const payHtml = vanPayLinesHtml(bk, VAN_PAY_EXTRA_KEYS.concat(["ajal"])) + vanPayChecksHtml(bk);
+      payBox.innerHTML = payHtml;
+      payBox.hidden = !payHtml;
     }
     if (!body) return;
     let rows = vanRepLogRows(trip);
@@ -16295,6 +16307,141 @@ id: nextVoucherId(),
     let c = 0;
     vanTripSales(trip).forEach((s) => { c += Number(s.dueAmount) || 0; });
     return round2(c);
+  }
+  /* 🧾 بناء 281 — بند ٢ (طلب المالك: «وسائل الدفع تكون موضّحة في التقرير» + «في شاشات
+     تصفية الرحلة أو الاستعلام يظهر كل اللي مع المندوب من شيكات أو غيرها من طرق الدفع
+     كلها اللي حصل بيها من العملاء»). مصدر واحد للتلات شاشات: التقرير/التصفية/السجل.
+     التفريع **مطابق** لـ`vanSaleCashPaidOf`: لو الفاتورة فيها `payments[]` (فاتورة الكاشير
+     متعددة الدفع) بنقرا سطورها، وإلا بنرجع لوسيلة الفاتورة الواحدة (`paymentMethod`).
+     والآجل بيتقرا من `dueAmount` — نفس مصدر `vanTripCredit`، بس **بشرطين مقاسين**:
+     (١) «نقداً» هنا = `vanTripCashSales` **بالحرف** (نفس تفريع `vanSaleCashPaidOf`).
+     (٢) لو `dueAmount > 0` فـ«آجل» = `vanTripCredit` **بالحرف**؛ ولو `dueAmount` صفر
+         والفاتورة فيها سطر «آجل» صريح جوّه `payments[]` بنحسبه من السطر ده — **ده قصد**:
+         `vanTripCredit` ما بيشوفش السطر ده فكان رقم الآجل يضيع من التقرير.
+     البنك/المحفظة/إنستا والشيك **مش عهدة نقدية** على المندوب (دخلوا خزائنهم/١.١.٧)
+     ⇒ بيتعرضوا كتفصيل وما بيدخلوش في «المتوقّع تسليمه». */
+  const VAN_PAY_METHODS = [
+    { key: "cash", label: "نقداً", re: /نقد|cash/i },
+    { key: "bank", label: "تحويل بنكي", re: /بنك|bank/i },
+    { key: "wallet", label: "محافظ إلكترونية", re: /محافظ|محفظ|wallet/i },
+    { key: "instapay", label: "إنستا باي", re: /إنستا|انستا|insta/i },
+    { key: "check", label: "شيك", re: /شيك|check/i },
+    { key: "ajal", label: "آجل", re: /آجل|اجل|ajal|credit/i }
+  ];
+  const VAN_PAY_EXTRA_KEYS = ["bank", "wallet", "instapay", "check", "other"];
+  function vanPayKeyOf(method) {
+    const t = String(method == null ? "" : method).trim();
+    if (!t) return "other";
+    for (let i = 0; i < VAN_PAY_METHODS.length; i++) {
+      if (VAN_PAY_METHODS[i].re.test(t)) return VAN_PAY_METHODS[i].key;
+    }
+    return "other";
+  }
+  function vanPayKeyLabel(k) {
+    for (let i = 0; i < VAN_PAY_METHODS.length; i++) { if (VAN_PAY_METHODS[i].key === k) return VAN_PAY_METHODS[i].label; }
+    return "أخرى";
+  }
+  function vanCheckRowStatus(invNo, checkNo, amount) {
+    const no = String(checkNo || "");
+    const amt = round2(Number(amount) || 0);
+    const hit = (checks || []).find((x) => x && !x.deleted &&
+      String(x.direction || "in") === "in" &&
+      String(x.refType || "") === "invoice" &&
+      String(x.refId || "") === String(invNo == null ? "" : invNo) &&
+      (!no || String(x.checkNo || "") === no) &&
+      Math.abs(Number(x.amount) - amt) < 0.005);
+    return hit ? String(hit.status || "pending") : "";
+  }
+  function vanTripPayBreakdown(trip) {
+    const bk = { cash: 0, bank: 0, wallet: 0, instapay: 0, check: 0, ajal: 0, other: 0, paid: 0, grand: 0, count: 0, checkCount: 0, checks: [] };
+    const add = (k, amt) => { if (amt > 0) bk[k] = round2(bk[k] + amt); };
+    vanTripSales(trip).forEach((s) => {
+      if (!s) return;
+      bk.count += 1;
+      bk.grand = round2(bk.grand + (Number(s.grandTotal) || 0));
+      const cust = s.customerName || s.customer || "عميل";
+      const invNo = s.invoiceNumber || s.invoiceNo || "";
+      const lines = Array.isArray(s.payments) ? s.payments : [];
+      let paidHere = 0, ajalLine = 0;
+      const pushCheck = (bankName, checkNo, dueDate, amount) => {
+        const amt = round2(Number(amount) || 0);
+        if (!(amt > 0)) return;
+        const st = vanCheckRowStatus(invNo, checkNo, amt);
+        bk.checkCount += 1;
+        bk.checks.push({
+          customer: cust, invoiceNo: invNo,
+          bankName: String(bankName || ""), checkNo: String(checkNo || ""), dueDate: String(dueDate || ""),
+          amount: amt, status: st, statusLabel: st ? checkStatusLabel(st) : ""
+        });
+      };
+      if (lines.length) {
+        lines.forEach((p) => {
+          const k = vanPayKeyOf(p && p.method);
+          const amt = round2(Number(p && p.amount) || 0);
+          if (!(amt > 0)) return;
+          if (k === "ajal") { ajalLine = round2(ajalLine + amt); return; }
+          add(k, amt);
+          paidHere = round2(paidHere + amt);
+          if (k === "check") pushCheck(p.bankName, p.checkNo, p.dueDate, amt);
+        });
+      } else {
+        const k = vanPayKeyOf(s.paymentMethod);
+        const paidAmt = round2(Number(s.paidAmount) || 0);
+        const dueAmt = round2(Number(s.dueAmount) || 0);
+        if (k === "ajal") ajalLine = round2(ajalLine + (dueAmt > 0 ? dueAmt : paidAmt));
+        else if (k === "other") {
+          if (paidAmt > 0) { add("other", paidAmt); paidHere = round2(paidHere + paidAmt); }
+          else if (dueAmt > 0) ajalLine = round2(ajalLine + dueAmt);
+        } else {
+          if (paidAmt > 0) { add(k, paidAmt); paidHere = round2(paidHere + paidAmt); }
+          if (k === "check") pushCheck(s.bankName, s.checkNo, s.checkDue, paidAmt);
+        }
+      }
+      const due = round2(Number(s.dueAmount) || 0);
+      bk.ajal = round2(bk.ajal + (due > 0 ? due : ajalLine));
+      bk.paid = round2(bk.paid + paidHere);
+    });
+    return bk;
+  }
+  /* وسيلة/وسائل الفاتورة بالعربي — للبيان في سجل المندوب (بدل نص `paymentMethod` الخام) */
+  function vanSalePayLabels(s) {
+    const lines = Array.isArray(s && s.payments) ? s.payments : [];
+    const out = [];
+    const push = (v) => { const t = String(v || "").trim(); if (t && out.indexOf(t) < 0) out.push(t); };
+    if (lines.length) lines.forEach((p) => push(vanPayKeyLabel(vanPayKeyOf(p && p.method))));
+    else if (s && s.paymentMethod) push(s.paymentMethod);
+    return out.join(" + ");
+  }
+  /* سطور «وسائل الدفع» بترتيب ثابت — اللي مبلغه صفر ما بيتعرضش */
+  function vanPayLines(bk, keys) {
+    const out = [];
+    (keys || []).forEach((k) => {
+      const amt = round2((bk && bk[k]) || 0);
+      if (!(amt > 0)) return;
+      let lbl = vanPayKeyLabel(k);
+      if (k === "check") lbl = "شيكات" + (bk.checkCount ? " (" + bk.checkCount + ")" : "");
+      if (k === "ajal") lbl = "آجل (على حساب العملاء)";
+      out.push({ key: k, label: lbl, amount: amt });
+    });
+    return out;
+  }
+  function vanPayLinesHtml(bk, keys) {
+    return vanPayLines(bk, keys).map((r) =>
+      '<div class="shift-kv"><span>' + esc(r.label) + '</span><b>' + fmt(r.amount) + ' ج.م</b></div>').join("");
+  }
+  function vanPayChecksHtml(bk) {
+    const list = (bk && Array.isArray(bk.checks)) ? bk.checks : [];
+    if (!list.length) return "";
+    let h = '<div class="van-rep-sum van-pay-chks"><b>🧾 شيكات مستلمة من العملاء (' + list.length + '):</b>';
+    list.forEach((c) => {
+      h += '<div class="shift-kv"><span>' + esc(c.customer) +
+        ' · ' + esc(c.bankName || "بنك غير مذكور") +
+        ' · رقم ' + esc(c.checkNo || "—") +
+        (c.dueDate ? ' · استحقاق ' + esc(c.dueDate) : '') +
+        (c.statusLabel ? ' · ' + esc(c.statusLabel) : '') +
+        '</span><b>' + fmt(c.amount) + ' ج.م</b></div>';
+    });
+    return h + '</div>';
   }
   function vanTripLoadedCount(trip) {
     return (trip && trip.loaded ? trip.loaded : []).reduce((m, l) => m + (Number(l.qty) || 0), 0);
@@ -17703,11 +17850,15 @@ id: nextVoucherId(),
     const left = round2(-diff);   // موجب = عليه · سالب = له
     const odoEnd = Math.round((parseMoney(($("#vanSettleOdo") && $("#vanSettleOdo").value) || 0) || 0) * 100) / 100;
     const km = (Number(trip.odoStart) > 0 && odoEnd > 0 && odoEnd >= Number(trip.odoStart)) ? round2(odoEnd - Number(trip.odoStart)) : null;
+    /* 🧾 بناء 281 — وسائل الدفع اللي حصّل بها المندوب (بنك/محفظة/إنستا/شيك) + الآجل،
+       وكل شيك ببياناته — عشان «تصفية الرحلة» تورّي كل اللي معاه مش النقد بس. */
+    const payBk = vanTripPayBreakdown(trip);
     box.innerHTML =
       '<div class="shift-kv"><span>عهدة البضاعة المحمّلة (بالتكلفة)</span><b>' + fmt(loadCost) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>تكلفة البضاعة المبيعة</span><b>' + fmt(soldCost) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>باقي بضاعة بالسيارة (يرجع للمخزن)</span><b>' + fmt(goodsLeft) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>نقد المبيعات</span><b>' + fmt(vanTripCashSales(trip)) + ' ج.م</b></div>' +
+      vanPayLinesHtml(payBk, VAN_PAY_EXTRA_KEYS.concat(["ajal"])) +
       '<div class="shift-kv"><span>مصروفات الرحلة (بنزين/صيانة/نثريات...)</span><b>− ' + fmt(vanTripExpensesTotal(trip)) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>المتوقّع تسليمه</span><b>' + fmt(expected) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>المعدود فعليًا</span><b>' + fmt(counted) + ' ج.م</b></div>' +
@@ -17716,7 +17867,9 @@ id: nextVoucherId(),
         (left >= 0 ? fmt(left) + ' عليه' : fmt(Math.abs(left)) + ' له') + '</b></div>' +
       '<div class="shift-kv"><span>عداد أول الرحلة</span><b>' + (Number(trip.odoStart) > 0 ? fmt(trip.odoStart) : "—") + '</b></div>' +
       '<div class="shift-kv"><span>عداد آخر الرحلة / المسافة</span><b>' +
-        (odoEnd > 0 ? fmt(odoEnd) + (km != null ? " · " + fmt(km) + " كم" : "") : "—") + '</b></div>';
+        (odoEnd > 0 ? fmt(odoEnd) + (km != null ? " · " + fmt(km) + " كم" : "") : "—") + '</b></div>' +
+      // 🧾 بناء 281 — الشيكات تفصيلًا (بنك/رقم/استحقاق/حالة) بعد كل الملخص، بلا أي سطر مكرر.
+      vanPayChecksHtml(payBk);
   }
   function saveVanSettle() {
     const m = $("#mVanSettle");
@@ -17871,6 +18024,9 @@ id: nextVoucherId(),
       '<div class="shift-kv"><span>إجمالي المبيعات (قبل ض.ق.م)</span><b>' + fmt(sub) + ' ج.م</b></div>' +
       (tax > 0 ? '<div class="shift-kv"><span>ضريبة القيمة المضافة</span><b>' + fmt(tax) + ' ج.م</b></div>' : '') +
       '<div class="shift-kv"><span>الإجمالي</span><b>' + fmt(grand) + ' ج.م</b></div>' +
+      // 🧾 بناء 281 — بند ٢: باقي وسائل الدفع (بنك/محفظة/إنستا/شيك/أخرى) موضّحة في التقرير.
+      // النقد والآجل ليهم سطورهم تحت أصلًا ⇒ بنزوّد الباقي بس (بلا تكرار وبلا رقمين متضاربين).
+      vanPayLinesHtml(vanTripPayBreakdown(trip), VAN_PAY_EXTRA_KEYS) +
       '<div class="shift-kv"><span>نقدي (على ذمة المندوب)</span><b>' + fmt(vanTripCashSales(trip)) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>آجل (على حساب العملاء)</span><b>' + fmt(credit) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>مصروفات السيارة</span><b>− ' + fmt(vanTripExpensesTotal(trip)) + ' ج.م</b></div>' +
@@ -17894,6 +18050,8 @@ id: nextVoucherId(),
           (leftR >= 0 ? fmt(leftR) + ' عليه' : fmt(Math.abs(leftR)) + ' له') + '</b></div>';
     }
     h += '</div>';
+    // 🧾 بناء 281 — شيكات العملاء اللي مع المندوب: كل شيك ببنكه ورقمه واستحقاقه وحالته
+    h += vanPayChecksHtml(vanTripPayBreakdown(trip));
     const custs = Object.keys(custNames);
     h += '<div class="van-rep-custs"><b>العملاء اللي باع لهم (' + custs.length + '):</b> ' + (custs.length ? custs.map(esc).join(" ، ") : "-") + '</div>';
     if (trip.notes) h += '<p class="login-sub">ملاحظات: ' + esc(trip.notes) + '</p>';

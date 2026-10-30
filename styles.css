@@ -3072,3 +3072,53 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
   outline: 2px solid #7DD3FC;
   outline-offset: -2px;
 }
+/* 🧾 بناء 281 — «كل وسائل الدفع اللي مع المندوب» ظهرت في الاستعلام/التقرير
+   (طلب المالك: «عايز يظهر في شاشات تصفية الرحلة أو الاستعلام اللي موجود على
+   الموبايل كل اللى مع المندوب من شيكات أو غيرها من طرق الدفع كلها اللي حصل بيها
+   من العملاء» + «وسائل الدفع تكون موضّحة في التقرير»).
+   المشكلة إن السطور زادت (نقدي + بنك + محفظة + إنستا + شيك + آجل + بلوك الشيكات
+   سطر-سطر) — ونفس عطل بناء 277 بالظبط بيرجع: `.modal-overlay` ثابتة وموسّطة عمودية
+   و`.modal` مالهاش max-height/overflow ⇒ النافذة بتتمدد برّه الشاشة وزراير
+   «إغلاق/تحديث» بتقع تحتها ومفيش سكرول يوصّلها.
+   الحل نفس مقاس 277 المقيّس، وبالنطاق الضيّق: النافذتين اللي بناء 281 زاد فيهم
+   سطور بس (`#mVanRepLogBox` الاستعلام · `#mVanReportBox` التقرير) — باقي الشاشات
+   بما فيها شاشة بيع المندوب ما اتلمستش خالص. */
+#mVanRepLogBox,
+#mVanReportBox {
+  max-height: 92vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 0;
+}
+#mVanRepLogBox > .modal-actions,
+#mVanReportBox > .modal-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  background: #fff;
+  margin-top: 14px;
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -10px 16px -12px rgba(15, 23, 42, .28);
+}
+/* بلوك وسائل الدفع في الاستعلام (`#vanLogPay`) — بياخد شكل `.van-info` من فوق (سطر 2415)
+   وبيفضل مسؤول عن نفسه بس: سقف داخلي عشان لو الشيكات كتير ما تدفعش جدول السجل تحت الشاشة. */
+#vanLogPay {
+  max-height: 34vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* بلوك الشيكات تفصيلًا (عميل · بنك · رقم · استحقاق · حالة) — بيقعد بعد الملخص
+   بفاصل منقّط عشان يتفرّق عن سطور الأرقام. */
+.van-pay-chks {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.van-pay-chks > b {
+  display: block;
+  margin-bottom: 4px;
+}
+.van-pay-chks .shift-kv span {
+  color: #475569;
+}
