@@ -17757,7 +17757,9 @@ id: nextVoucherId(),
     if (!sel) return;
     const mode = posPayMode(sel.value);
     const show = (id, on) => { const el = $(id); if (el) el.hidden = !on; };
-    show("#vanSaleCustField", mode.isAjal);
+    // 💳 بناء 285 (طلب المالك): «تحديد اسم العميل في حالة الشيك» زي شاشة البيع — حقل العميل
+    // يظهر للآجل وللشيك (الشيك لازم يكون باسم عميل مسجّل، وممنوع على العميل النقدي).
+    show("#vanSaleCustField", mode.isAjal || mode.isCheck);
     show("#vanSaleBankField", mode.isBank);
     show("#vanSaleWalletField", mode.isWallet);
     show("#vanSaleInstaField", mode.isInsta);
@@ -17770,7 +17772,7 @@ id: nextVoucherId(),
       if (mode.isInsta) posFillTreasurySelect($("#vanSaleInsta"), "instapay");
     } catch (e) { }
     const csel = $("#vanSaleCustomer");
-    if (!mode.isAjal && csel) {
+    if (!mode.isAjal && !mode.isCheck && csel) {
       const cashCust = (customers || []).find((c) => c && c.protected);
       if (cashCust) csel.value = String(cashCust.id);
     }
@@ -17901,7 +17903,11 @@ id: nextVoucherId(),
       paidAmount: paid, dueAmount: due,
       payments: resolved.map((r) => ({
         method: r.md.isAjal ? "ajal" : r.md.isCheck ? "check" : r.md.isBank ? "bank" : r.md.isInsta ? "instapay" : r.md.isWallet ? "wallet" : "cash",
-        amount: round2(r.p.amount), treasuryId: null,
+        amount: round2(r.p.amount),
+        // 💳 بناء 285: خزينة سطر البنك/المحفظة/إنستا تتكتب من الحقل من أول لحظة — بوابة القيد
+        // (invoiceJrnPlan) بتحسب حساب الطرف من treasuryId قبل أي كتابة، فممنوع يتسجل فارغ
+        // (لو سجلها فارغ كان السطر البنكي يترحّل على حساب الصندوق — عيب ترحيل قُفل هنا).
+        treasuryId: (r.md.isCash || r.md.isCheck || r.md.isAjal) ? null : r.tid,
         bankName: r.p.bankName || "", checkNo: r.p.checkNo || "", dueDate: r.p.dueDate || ""
       })),
       isVan: true, vanTripId: trip.id, repName: trip.repName, vanRepAccountId: repAcc.id,
