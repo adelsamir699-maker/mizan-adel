@@ -16893,6 +16893,8 @@ id: nextVoucherId(),
     add("btnVanSaleSave", "click", saveVanSale);
     const ssearch = $("#vanSaleSearch"); if (ssearch) ssearch.addEventListener("input", renderVanSaleProducts);
     const spay = $("#vanSalePay"); if (spay) spay.addEventListener("change", vanSalePayVisibility);
+    // 💳 بناء 285: سطور السداد الإضافية في بيع السيارة (زرار الإضافة + قائمة السطور)
+    vanBindExtraPays();
     const scart = $("#vanSaleCart");
     if (scart) scart.addEventListener("click", (ev) => {
       const b = ev.target.closest("[data-cact]");
@@ -17500,6 +17502,8 @@ id: nextVoucherId(),
       if (cashCust) csel.value = String(cashCust.id);
     }
     const pay = $("#vanSalePay"); if (pay) pay.value = "نقداً";
+    // 💳 بناء 285: تصفير سطور السداد الإضافية لكل فاتورة جديدة
+    vanSaleExtraPays = []; vanRenderExtraPays();
     // 🆕 بناء 271: تصفير بيانات الشيك + إظهار/إخفاء الحقول حسب الوسيلة
     const ck = { vanSaleCheckBank: "", vanSaleCheckNo: "", vanSaleCheckDue: "" };
     Object.keys(ck).forEach((id) => { const el = $("#" + id); if (el) el.value = ck[id]; });
@@ -17586,6 +17590,165 @@ id: nextVoucherId(),
     }
     renderVanSaleCart();
   }
+  /* ====================== 💳 بناء 285 — تعدد طرق السداد في بيع السيارة ======================
+     (طلب المالك: «الفاتورة التانية مفيهاش تعدد طرق الدفع») — نفس منظومة شاشة البيع 199/205:
+     الطريقة الأساسية (قائمة «طريقة الدفع») بتدفع **الباقي** بعد سطور السداد، وكل سطر إضافي
+     بمبلغه اللي كتبه، وممنوع أي قصّ صامت (لو الزيادة استمرت: رسالة صريحة ومنع الحفظ).
+     كل سطر يروح لنفس حسابه: النقدي على ذمة المندوب · البنك/المحفظة/إنستا لخزائنها ·
+     الشيك على «شيكات لدى العملاء» (1.1.7) ببياناته كاملة · الآجل على حساب العميل.
+     بلا سطور إضافية = نفس سلوك بناء 271 بالحرف. */
+  const VAN_EXTRA_METHODS = ["تحويل بنكي", "محافظ إلكترونية", "إنستا باي", "شيك", "آجل"];
+  let vanSaleExtraPays = [];
+  function vanPayCleanName(md) {
+    return md.isAjal ? "آجل" : md.isCheck ? "شيك" : md.isBank ? "تحويل بنكي" :
+      md.isInsta ? "إنستا باي" : md.isWallet ? "محافظ إلكترونية" : "نقداً";
+  }
+  function vanPayNames(cp) {
+    const seen = [], out = [];
+    ((cp && cp.list) || []).forEach((p) => {
+      if (seen.indexOf(p.method) < 0) { seen.push(p.method); out.push(p.method); }
+    });
+    return out.length ? out.join(" + ") : "نقداً";
+  }
+  // يجمع سطور سداد بيع السيارة: سطر الأساسية («طريقة الدفع» بتدفع الباقي) + سطور الإضافية
+  function vanSaleCollect() {
+    const grand = vanSaleTotals().grand;
+    const md = posPayMode(($("#vanSalePay") && $("#vanSalePay").value) || "نقداً");
+    const extras = (vanSaleExtraPays || []).map((p) => ({
+      method: p.method || "تحويل بنكي",
+      amount: posExtraAmount(p),
+      treasuryId: (p.treasuryId != null ? p.treasuryId : null),
+      bankName: p.bankName || "", checkNo: p.checkNo || "", dueDate: p.dueDate || ""
+    })).filter((p) => p.amount > 0);
+    const extrasTotal = round2(extras.reduce((m, p) => m + p.amount, 0));
+    let primaAmt = round2(grand - extrasTotal);
+    // 🆕 بناء 199 (نفس الأساس): مافيش قصّ صامت — الزيادة تُرجَّع بالأرقام وتمنع الحفظ
+    const overBy = primaAmt < -0.001 ? round2(-primaAmt) : 0;
+    if (primaAmt < 0) primaAmt = 0;
+    const primaLine = {
+      method: vanPayCleanName(md), amount: primaAmt, treasuryId: null,
+      bankName: md.isCheck ? (($("#vanSaleCheckBank") && $("#vanSaleCheckBank").value) || "").trim() : "",
+      checkNo: md.isCheck ? (($("#vanSaleCheckNo") && $("#vanSaleCheckNo").value) || "").trim() : "",
+      dueDate: md.isCheck ? (($("#vanSaleCheckDue") && $("#vanSaleCheckDue").value) || "") : ""
+    };
+    const list = [primaLine].concat(extras).filter((p) => p.amount > 0.0001);
+    const paid = round2(list.filter((p) => !posPayMode(p.method).isAjal).reduce((m, p) => m + p.amount, 0));
+    const due = round2(grand - paid);
+    return { grand: grand, list: list, overBy: overBy, primaAmt: primaAmt, primaMd: md, paid: paid, due: due };
+  }
+  function vanPayOverText(cp) {
+    if (!(cp && cp.overBy > 0.001)) return "";
+    return "المبلغ المسدد أكبر من مبلغ الفاتورة.\n\n" +
+      "الفاتورة: " + fmt(cp.grand) + " ج.م — سطور السداد: " + fmt(round2(cp.grand + cp.overBy)) + " ج.م" +
+      " (زيادة " + fmt(cp.overBy) + " ج.م).\nعدّل مبالغ السطور (أو خليها تغطي الفاتورة بالظبط) وحاول تاني.";
+  }
+  function vanRenderExtraPays() {
+    const listEl = $("#vanPayExtraList");
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    (vanSaleExtraPays || []).forEach((p, i) => {
+      // سطر قديم محفوظ بطريقة «نقداً» ⇒ يتحوّل لأول طريقة إضافية (نفس قاعدة شاشة البيع)
+      const method = posPayMode(p.method).isCash ? VAN_EXTRA_METHODS[0] : p.method;
+      const mode = posPayMode(method);
+      const row = document.createElement("div");
+      row.className = "pay-line";
+      row.dataset.idx = i;
+      row.innerHTML =
+        '<select class="pl-method">' + VAN_EXTRA_METHODS.map((m) => '<option' + (m === method ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select>' +
+        '<select class="pl-treasury"' + ((mode.isCheck || mode.isAjal) ? ' hidden' : '') + '></select>' +
+        '<input class="pl-bank" type="text" placeholder="اسم البنك" value="' + esc(p.bankName || '') + '"' + (mode.isCheck ? '' : ' hidden') + ' />' +
+        '<input class="pl-no" type="text" placeholder="رقم الشيك" value="' + esc(p.checkNo || '') + '"' + (mode.isCheck ? '' : ' hidden') + ' />' +
+        '<input class="pl-due" type="date" value="' + esc(p.dueDate || todayISO()) + '"' + (mode.isCheck ? '' : ' hidden') + ' />' +
+        '<input class="pl-amount" type="text" placeholder="المبلغ" value="' + esc(p.amount == null ? '' : p.amount) + '" autocomplete="off" />' +
+        '<button class="btn small red" type="button" data-pldel="1" title="حذف السطر">❌</button>';
+      listEl.appendChild(row);
+      if (!mode.isCheck && !mode.isAjal) {
+        const wantType = mode.isBank ? "bank" : mode.isInsta ? "instapay" : mode.isWallet ? "wallet" : "cash";
+        posFillTreasurySelect(row.querySelector(".pl-treasury"), wantType, p.treasuryId);
+      }
+    });
+  }
+  function vanAddExtraPay() {
+    // السطر الجديد يبدأ بالباقي (الإجمالي − مجموع السطور) — والمستخدم يعدّله أو يبدّل طريقته
+    const grand = vanSaleTotals().grand;
+    const lines = (vanSaleExtraPays || (vanSaleExtraPays = []));
+    const sumAll = round2(lines.reduce((m, p) => m + posExtraAmount(p), 0));
+    const remain = round2(Math.max(grand - sumAll, 0));
+    lines.push({ method: VAN_EXTRA_METHODS[0], amount: remain > 0 ? remain : "", treasuryId: null, bankName: "", checkNo: "", dueDate: todayISO() });
+    vanRenderExtraPays();
+    vanPayRefresh();
+  }
+  function vanBindExtraPays() {
+    const listEl = $("#vanPayExtraList");
+    const addBtn = $("#btnVanAddPay");
+    if (addBtn && !addBtn.__bound) { addBtn.__bound = true; addBtn.addEventListener("click", () => vanAddExtraPay()); }
+    if (listEl && !listEl.__bound) {
+      listEl.__bound = true;
+      listEl.addEventListener("input", (e) => {
+        const row = e.target.closest(".pay-line"); if (!row) return;
+        const p = vanSaleExtraPays[parseInt(row.dataset.idx, 10)]; if (!p) return;
+        if (e.target.classList.contains("pl-amount")) { p.amount = e.target.value; vanPayRefresh(); return; }
+        if (e.target.classList.contains("pl-bank")) { p.bankName = e.target.value; return; }
+        if (e.target.classList.contains("pl-no")) { p.checkNo = e.target.value; return; }
+        if (e.target.classList.contains("pl-due")) { p.dueDate = e.target.value; return; }
+      });
+      listEl.addEventListener("change", (e) => {
+        const row = e.target.closest(".pay-line"); if (!row) return;
+        const p = vanSaleExtraPays[parseInt(row.dataset.idx, 10)]; if (!p) return;
+        if (e.target.classList.contains("pl-method")) {
+          p.method = e.target.value;
+          const mode = posPayMode(p.method);
+          const trSel = row.querySelector(".pl-treasury"), bk = row.querySelector(".pl-bank"), no = row.querySelector(".pl-no"), due = row.querySelector(".pl-due");
+          if (trSel) trSel.hidden = mode.isCheck || mode.isAjal;
+          if (bk) bk.hidden = !mode.isCheck;
+          if (no) no.hidden = !mode.isCheck;
+          if (due) due.hidden = !mode.isCheck;
+          if (!mode.isCheck && !mode.isAjal) {
+            const wantType = mode.isBank ? "bank" : mode.isInsta ? "instapay" : mode.isWallet ? "wallet" : "cash";
+            posFillTreasurySelect(trSel, wantType, p.treasuryId);
+          }
+          if (mode.isAjal) {
+            // 🆕 بناء 199 (نفس الأساس): اختار «آجل» ⇒ مبلغ السطر = الباقي كامل على حساب الطرف
+            p.treasuryId = null;
+            const grand = vanSaleTotals().grand;
+            const others = vanSaleExtraPays.reduce((m, q) => m + ((q === p || posPayMode(q.method).isAjal) ? 0 : posExtraAmount(q)), 0);
+            const credit = round2(Math.max(grand - others, 0));
+            p.amount = credit > 0 ? credit : "";
+            vanRenderExtraPays();
+          }
+          vanPayRefresh();
+          return;
+        }
+        if (e.target.classList.contains("pl-treasury")) { p.treasuryId = Number(e.target.value) || null; return; }
+      });
+      listEl.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-pldel]");
+        if (!b) return;
+        const row = b.closest(".pay-line"); if (!row) return;
+        const idx = parseInt(row.dataset.idx, 10);
+        if (vanSaleExtraPays[idx]) vanSaleExtraPays.splice(idx, 1);
+        vanRenderExtraPays();
+        vanPayRefresh();
+      });
+    }
+  }
+  /* 💳 بناء 285: تحديث سطر «السداد» — خانة الأساسية مقفولة (الباقي بيكتبه البرنامج) وتختفي
+     لو الوسايل التانية غطّت الفاتورة كلها · سطر الزيادة يظهر فورًا · و«الآجل على العميل»
+     بيتحدّث بالباقي الفعلي (مش الإجمالي) لكل حالات السداد الجزئي. */
+  function vanPayRefresh() {
+    if (!$("#vanPayPanel")) return;
+    const cp = vanSaleCollect();
+    const inp = $("#txtVanCashLine");
+    if (inp) { inp.readOnly = true; inp.value = String(cp.primaAmt); }
+    const row = $("#vanPaidRow"); if (row) row.hidden = !(cp.primaAmt > 0.0001);
+    const lbl = $("#vanPayPrimaryLbl"); if (lbl) lbl.textContent = vanPayCleanName(cp.primaMd);
+    const dueWrap = $("#vanSaleDueWrap"), dueEl = $("#vanSaleDue");
+    if (dueWrap) dueWrap.hidden = !(cp.due > 0.0001);
+    if (dueEl) dueEl.textContent = fmt(cp.due) + " ج.م";
+    const over = $("#vanPayOver");
+    const msg = vanPayOverText(cp);
+    if (over) { over.textContent = msg; over.hidden = !msg; }
+  }
   /* 🆕 بناء 271 (طلب المالك: «نفس شكل شاشة البيع بكل وسائل الدفع»): كل وسيلة دفع بتظهر
      حقولها بس — بنك/محفظة/إنستا/شيك — وخانة العميل تظهر للآجل فقط (النقدي على ذمة المندوب).
      وسطر «الآجل على العميل» في شريط الإجمالي بيظهر للآجل بس. */
@@ -17611,8 +17774,8 @@ id: nextVoucherId(),
       const cashCust = (customers || []).find((c) => c && c.protected);
       if (cashCust) csel.value = String(cashCust.id);
     }
-    const due = $("#vanSaleDue");
-    if (due) due.textContent = fmt(vanSaleTotals().grand) + " ج.م";
+    // 💳 بناء 285: سطر «الآجل على العميل» وباقي خانات السداد بتتحدّث من vanPayRefresh
+    vanPayRefresh();
   }
   function vanSaleAjalVisibility() { vanSalePayVisibility(); }
   function vanSaleTotals() {
@@ -17646,6 +17809,7 @@ id: nextVoucherId(),
     if (el) el.textContent = fmt(t.grand) + " ج.م" + (TAX.enabled && t.tax > 0 ? " (منها ضريبة " + fmt(t.tax) + ")" : "");
     const dueEl = $("#vanSaleDue");
     if (dueEl) dueEl.textContent = fmt(t.grand) + " ج.م";
+    vanPayRefresh();
     renderVanSaleProducts();
   }
   function saveVanSale() {
@@ -17658,7 +17822,7 @@ id: nextVoucherId(),
     if (!cust) { toast("اختر العميل.", "warning"); return; }
     const payRaw = ($("#vanSalePay") && $("#vanSalePay").value) || "نقداً";
     const md = posPayMode(payRaw);
-    const pay = md.isAjal ? "آجل" : md.isCheck ? "شيك" : md.isBank ? "تحويل بنكي" : md.isInsta ? "إنستا باي" : md.isWallet ? "محافظ إلكترونية" : "نقداً";
+    const pay = vanPayCleanName(md);
     if (md.isAjal && cust.protected) { toast("اختر عميلًا حقيقيًا للبيع الآجل.", "warning"); return; }
     // 🧾 بناء 211 (نفس شاشة البيع): الشيك لازم بياناته كاملة + عميل مسجّل
     let checkBank = "", checkNo = "", checkDue = "";
@@ -17671,6 +17835,19 @@ id: nextVoucherId(),
     }
     const t = vanSaleTotals();
     if (!(t.grand > 0)) { toast("الإجمالي صفر.", "warning"); return; }
+    /* 💳 بناء 285 (نفس بوابة شاشة البيع بالحرف): الزيادة على سطور السداد تمنع الحفظ ·
+       خزينة البنك/المحفظة/إنستا لازم تكون مسجّلة · بيانات أي شيك كاملة · والآجل (سطر الأساسية
+       أو سطر إضافي) لازم يكون على عميل مسجّل — مافيش أي رجوع صامت للصندوق. */
+    const cp = vanSaleCollect();
+    const _overMsg = vanPayOverText(cp);
+    if (_overMsg) { alert(_overMsg); return; }
+    const _trMsg = posPayTreasuryError("sale", { payments: cp.list });
+    if (_trMsg) { alert(_trMsg); return; }
+    const _chkFields = payCheckFieldsError({ payments: cp.list });
+    if (_chkFields) { checkPartyWarnShow("sale", _chkFields); return; }
+    const _chkParty = payCheckPartyError("sale", { payments: cp.list, due: cp.due }, cust);
+    if (_chkParty) { checkPartyWarnShow("sale", _chkParty); return; }
+    if (cp.due > 0.0001 && cust.protected) { checkPartyWarnShow("sale", ""); return; }
     // تحقّق من الأرصدة المتبقية بالسيارة
     const short = [];
     vanSaleDraft.items.forEach((it) => {
@@ -17678,30 +17855,31 @@ id: nextVoucherId(),
       if (it.qty > rem + 0.0001) short.push(it.nameAr + " (المتاح " + fmt(rem) + ")");
     });
     if (short.length) { toast("الكمية أكبر من المتاح بالسيارة:\n" + short.join("\n"), "warning"); return; }
-    /* 🆕 بناء 271: خزينة الوسيلة (بنك/محفظة/إنستا) لازم تكون مسجّلة في إعدادات المؤسسة —
-       ممنوع الرجوع الصامت للصندوق النقدي (نفس قاعدة شاشة البيع بناء 205). */
-    let payTr = null;
+    /* 🆕 بناء 271 → 285: خزينة سطر الأساسية (بنك/محفظة/إنستا) = اللي اختارها المستخدم من حقول
+       الوسيلة نفسها — لو مفيش حاجة مسجّلة أصلاً فبوابة posPayTreasuryError فوق هي اللي رفضت
+       بالرسالة الواضحة (ممنوع أي رجوع صامت للصندوق النقدي). */
     if (md.isBank || md.isWallet || md.isInsta) {
-      const wantType = md.isBank ? "bank" : md.isWallet ? "wallet" : "instapay";
       const selId = md.isBank ? ($("#vanSaleBank") && $("#vanSaleBank").value)
         : md.isWallet ? ($("#vanSaleWallet") && $("#vanSaleWallet").value)
           : ($("#vanSaleInsta") && $("#vanSaleInsta").value);
-      payTr = (selId && (treasury || []).find((x) => Number(x.id) === Number(selId))) ||
-        (treasury || []).find((x) => x.type === wantType) || null;
-      if (!payTr) {
-        toast("مفيش " + (md.isBank ? "حساب بنكي" : md.isWallet ? "محفظة" : "حساب إنستا باي") +
-          " مسجّل في إعدادات مؤسستك — سجّله من «الحسابات والخزائن» الأول.", "warning");
-        return;
-      }
+      if (cp.list[0]) cp.list[0].treasuryId = (selId ? Number(selId) : null);
     }
     ensureJrnStd();
     const repAcc = vanRepAcc(trip.repName);
     const invNo = nextInvoiceNumber();
-    /* 💵 توزيع التحصيل (بناء 271): النقدي **فقط** على ذمة المندوب · الآجل على حساب العميل ·
-       البنك/المحفظة/إنستا تدخل خزائنها · الشيك على حساب «شيكات لدى العملاء» (1.1.7). */
-    const paid = md.isAjal ? 0 : t.grand;
-    const due = md.isAjal ? t.grand : 0;
-    const lineMethod = md.isAjal ? "ajal" : md.isCheck ? "check" : md.isBank ? "bank" : md.isInsta ? "instapay" : md.isWallet ? "wallet" : "cash";
+    /* 💵 توزيع التحصيل (بناء 271 + سطوره الإضافية في 285): النقدي **فقط** على ذمة المندوب ·
+       الآجل على حساب العميل · البنك/المحفظة/إنستا تدخل خزائنها · الشيك على حساب «شيكات لدى
+       العملاء» (1.1.7). */
+    const resolved = cp.list.map((p) => {
+      const pmd = posPayMode(p.method);
+      let ptid = (p.treasuryId != null ? p.treasuryId : null);
+      if (pmd.isBank || pmd.isWallet || pmd.isInsta) {
+        const tr = posTreasuryForPay("sale", p);
+        if (tr) ptid = tr.id;
+      }
+      return { p: p, md: pmd, tid: ptid };
+    });
+    const paid = cp.paid, due = cp.due;
     // 🆕 بناء 262: تكلفة البيع من السيارة تُخصم من طبقات الحمولة نفسها (بالتكلفة المسجّلة
     // وقت التحميل) لو الرحلة محمّلة بقيد عهدة — كده حساب المندوب يقفل بصفر بالحرف.
     try {
@@ -17715,12 +17893,17 @@ id: nextVoucherId(),
       invoiceDate: trip.date, date: trip.date,
       customerId: cust.id, customerName: cust.nameAr, customer: cust.nameAr,
       warehouse: trip.carName, store: trip.carName,
-      paymentMethod: pay, treasuryId: (payTr ? payTr.id : null),
+      paymentMethod: (due > 0.0001 ? "آجل" : (((cp.list.find((p) => !posPayMode(p.method).isAjal)) || {}).method || pay)),
+      treasuryId: null,
       discountAmount: 0, discount: 0,
       taxAmount: t.tax, tax: t.tax,
       subTotal: t.sub, grandTotal: t.grand,
       paidAmount: paid, dueAmount: due,
-      payments: [{ method: lineMethod, amount: t.grand, treasuryId: (payTr ? payTr.id : null), bankName: checkBank, checkNo: checkNo, dueDate: checkDue }],
+      payments: resolved.map((r) => ({
+        method: r.md.isAjal ? "ajal" : r.md.isCheck ? "check" : r.md.isBank ? "bank" : r.md.isInsta ? "instapay" : r.md.isWallet ? "wallet" : "cash",
+        amount: round2(r.p.amount), treasuryId: null,
+        bankName: r.p.bankName || "", checkNo: r.p.checkNo || "", dueDate: r.p.dueDate || ""
+      })),
       isVan: true, vanTripId: trip.id, repName: trip.repName, vanRepAccountId: repAcc.id,
       // 🚚 بناء 273: بصمة مخفية تخلّي الفاتورة ترجع «فاتورة سيارة» من السحابة (بلا أعمدة جديدة)
       notes: "[[VAN|trip=" + Number(trip.id) + "|rep=" + encodeURIComponent(trip.repName || "") + "|acc=" + Number(repAcc.id || 0) + "]]",
@@ -17734,27 +17917,34 @@ id: nextVoucherId(),
       }))
     };
     invoice.status = "posted";
-    if (jrnBlocked("فاتورة السيارة", invoiceJrnPlan("sale", invoice, payTr))) return;
+    if (jrnBlocked("فاتورة السيارة", invoiceJrnPlan("sale", invoice, null))) return;
     // خصم مخزون السيارة
     vanSaleDraft.items.forEach((it) => {
       const p = products.find((x) => Number(x.id) === Number(it.productId));
       if (p) addStockAt(p, trip.carName, -it.qty);
     });
     saveProducts();
-    // 🆕 بناء 271: البنك/المحفظة/إنستا تدخل خزينتها فعلًا · الشيك على 1.1.7 (بلا خزينة)
-    if (payTr) {
-      payTr.balance = Math.round(((Number(payTr.balance) || 0) + t.grand) * 100) / 100;
-      saveTreasury();
-      try { syncTreasuryItemToSett(payTr); } catch (e) { }
-    }
-    if (md.isCheck) {
-      try {
-        addCheck({
-          customerId: cust.id, customerName: cust.nameAr, bankName: checkBank, checkNo: checkNo,
-          dueDate: checkDue || todayISO(), amount: t.grand, refType: "invoice", refId: String(invNo)
-        });
-      } catch (e) { }
-    }
+    // 🏦 بناء 271 + سطوره الإضافية (285): البنك/المحفظة/إنستا تدخل خزينتها فعلًا ·
+    // الشيك على 1.1.7 (بلا خزينة) · النقدي على ذمة المندوب · الآجل على حساب العميل
+    resolved.forEach((r, i) => {
+      if (r.md.isCash || r.md.isAjal) return;
+      if (r.md.isCheck) {
+        try {
+          addCheck({
+            customerId: cust.id, customerName: cust.nameAr, bankName: r.p.bankName || "", checkNo: r.p.checkNo || "",
+            dueDate: r.p.dueDate || todayISO(), amount: round2(r.p.amount), refType: "invoice", refId: String(invNo)
+          });
+        } catch (e) { }
+        return;
+      }
+      const tr = (r.tid != null) ? treasury.find((x) => Number(x.id) === Number(r.tid)) : posTreasuryForPay("sale", r.p);
+      if (!tr) return;
+      tr.balance = round2((Number(tr.balance) || 0) + round2(r.p.amount));
+      if (invoice.payments && invoice.payments[i]) invoice.payments[i].treasuryId = tr.id;
+      if (!invoice.treasuryId) invoice.treasuryId = tr.id;
+      try { syncTreasuryItemToSett(tr); } catch (e) { }
+    });
+    if (invoice.treasuryId) saveTreasury();
     // الآجل يزيد رصيد العميل
     if (due > 0) {
       cust.currentBalance = Math.round(((Number(cust.currentBalance) || 0) + due) * 100) / 100;
@@ -17766,11 +17956,11 @@ id: nextVoucherId(),
     sales.push(invoice);
     saveSales();
     commitInvoiceSeq("sale", invEncodedOf(invNoOf(invoice)));
-    const postedJ = postInvoiceJournal("sale", invoice, payTr);
+    const postedJ = postInvoiceJournal("sale", invoice, null);
     // 🔧 بناء 259 (بند #16): تكلفة مبيعات بيع السيارة (نفس قيد البيع العادي بالحرف)
     try { postCogsJournal(invoice); } catch (e) { }
     consumeAvgForItems(vanSaleDraft.items);
-    try { addActivity("بيع من سيارة", "سيارة " + trip.carName + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + pay + ")" + (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : "")); } catch (e) {}
+    try { addActivity("بيع من سيارة", "سيارة " + trip.carName + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + vanPayNames(cp) + ")" + (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : "")); } catch (e) {}
     toast("تم حفظ البيع (" + invNo + ")" + (postedJ && postedJ.j ? " وترحيله للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
     hideModal("mVanSale");
     vanSaleDraft = null;
