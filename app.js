@@ -12107,6 +12107,7 @@
     $("#invActTotal").value = fmt(inv.grandTotal) + " ج.م";
     $("#btnInvActPdf").hidden = !isSales;
     $("#btnInvActDel").hidden = !canDeleteInvoices();
+    $("#btnInvActDelLine").hidden = !(isSales && canDeleteInvoices());   // 🗑️ بناء 287: حذف منتج منها — مبيعات بس
     $("#btnInvActRet").hidden = !(canManageReturns() && !allRet);
     showModal("mInvActions");
   }
@@ -13031,6 +13032,212 @@
     toast("تم حذف فاتورة (" + num + ") بنجاح وتراجع أثرها بالكامل" +
       (goneJ ? " بما فيه القيد (" + goneJ.number + ")" : "") + backTxt + ".", "success");
     renderInvoiceQuery();
+  }
+
+  /* ================== 🗑️ بناء 287 — حذف منتج من فاتورة مبيعات محفوظة ==================
+     أمر المالك الحرفي (التسليم-31-10.md «287 | حذف فاتورة / حذف منتج منها بنفس منطق
+     البرنامج»): حذف الفاتورة الكاملة موجود من قبل (`deleteInvoiceQuery` — بناءات
+     196/192/216/218/226) ⇒ الجديد هنا = **حذف سطر منتج واحد منها** بترجمته المحاسبية
+     كاملة **بنفس المنطق بالحرف**: المخزون يرجع (نفس L12801) · سطر الطرف بيتعدّل/يُشال
+     بنفس مفتاح `dueDescOk` للفاتورة نفسها (نفس L12816) · القيد بيرجع ويتكتب من جديد
+     (`removeInvoiceJournal` ثم `postInvoiceJournal` بنفس مفتاح `refId` — القيد بعد
+     الإزالة) · وقيد التكلفة `CG:` نفس الشيء (`removeCogsJournal` ثم `postCogsJournal`).
+     🚚 للفواتير مبيعات فقط (بناء 287): فاتورة شراء معناها ترجّع تكلفة شراء لقطة مخصومة
+     من طولها — مش مستحقة منطق الحذف الجزئي، والحذف الكامل بتاعها موجود.
+     🚫 ممنوع لو الفاتورة عليها مرتجعات (بناء 108) أو المدفوع أكبر من الإجمالي الجديد أو
+     الفاتورة سطر واحد. صفر لمس خزائن: المدفوع ما بيقلّش، والربح بيتبع الإجمالي. */
+  function invLineDeleteCanTouch(inv, isSales) {
+    if (!canDeleteInvoices()) { toast("صلاحية حذف الفواتير لصاحب الشركة ومالك البرنامج فقط.", "error"); return false; }
+    if (!inv) return false;
+    if (!isSales) { toast("حذف منتج منها متاح لفواتير المبيعات — فاتورة الشراء يُحذف منها من زرار «🗑️ حذف» لحذفها كاملة.", "warning"); return false; }
+    if (invoiceHasReturns(true, inv)) {
+      toast("الفاتورة دي عليها مرتجعات مسجّلة في تبويب «🔁 المرتجعات» — احذف المرتجع أولًا، وبعدها تقدر تحذف منتج منها.", "warning");
+      return false;
+    }
+    return true;
+  }
+  /* المدفوع وقت الحفظ بنفس ترتيب مصداقية الحذف الكامل (بناء 196 — نقيسها مش نخمّنها):
+     (أ) سطر الطرف في كشف العميل = المتبقي ⇒ المدفوع = الإجمالي − المتبقي (أدق مصدر)؛
+     (ب) القيد: مجموع المدين − سطر «مديونيات العملاء»؛
+     (ج) حقل paidAmount على الفاتورة لو موجود فعلًا (بناء 190 يكتبه)؛
+     (د) احتياط: آجل = صفر، غير كده الإجمالي. */
+  function invLineDeletePaidOf(inv, amt, dueDescOk) {
+    const num = String(inv.invoiceNumber || inv.invoiceNo || "");
+    let dueTx = null;
+    for (let i = txs.length - 1; i >= 0; i--) {
+      const t = txs[i];
+      if (t && Number(t.customerId) === Number(inv.customerId) && dueDescOk(t.desc, "فاتورة مبيعات آجلة")) { dueTx = t; break; }
+    }
+    const r2n = (n) => Math.round(Number(n || 0) * 100) / 100;
+    if (dueTx) return { paid: Math.min(r2n(amt), Math.max(0, r2n(r2n(amt) - r2n(dueTx.debit)))), ajalAtSave: r2n(dueTx.debit) };
+    const dueAcc = accByCode("1.1.5", "مديونيات العملاء");
+    const jOfInv = invoiceJrnOf("sale", inv);
+    let paidFromJrn = null;
+    if (jOfInv && Array.isArray(jOfInv.lines) && jOfInv.lines.length) {
+      let side = 0, dueSide = 0;
+      jOfInv.lines.forEach((l) => {
+        const v = r2n(l && l.debit);
+        if (!(v > 0)) return;
+        side = r2n(side + v);
+        if (dueAcc && Number(l.accountId) === Number(dueAcc.id)) dueSide = r2n(dueSide + v);
+      });
+      const cand = r2n(side - dueSide);
+      if (cand >= 0 && cand <= r2n(amt)) paidFromJrn = cand;
+    }
+    const hasPaidField = Object.prototype.hasOwnProperty.call(inv, "paidAmount") && Number.isFinite(Number(inv.paidAmount));
+    if (paidFromJrn != null) return { paid: paidFromJrn, ajalAtSave: r2n(Math.max(0, r2n(amt) - paidFromJrn)) };
+    if (hasPaidField) return { paid: Math.min(r2n(amt), r2n(inv.paidAmount)), ajalAtSave: r2n(Math.max(0, r2n(amt) - r2n(inv.paidAmount))) };
+    return { paid: String(inv.paymentMethod || "") === "آجل" ? 0 : r2n(amt), ajalAtSave: String(inv.paymentMethod || "") === "آجل" ? r2n(amt) : 0 };
+  }
+  function deleteInvoiceLine(inv, isSales, idx) {
+    if (!invLineDeleteCanTouch(inv, isSales)) return;
+    const items = (inv && inv.items) || [];
+    const it = items[idx];
+    if (!it) { toast("السطر ده مش موجود في الفاتورة (يمكن اتحدّث على جهاز تاني) — افتح النافذة من جديد.", "warning"); return; }
+    const amt = Math.round((Number(inv.grandTotal) || 0) * 100) / 100;
+    const num = String(inv.invoiceNumber || inv.invoiceNo || "-");
+    const who = inv.customerName || inv.customer || "-";
+    // 🚚 بناء 274: فاتورة السيارة مخزونها اسم العربة (`trip.carName`) — زي ما اتنقص منها الحفظ
+    let wh = inv.warehouse || inv.store || "";
+    try {
+      if (inv.isVan && inv.vanTripId) {
+        const vTrip = vanTripById(inv.vanTripId);
+        if (vTrip && vTrip.carName) wh = vTrip.carName;
+      }
+    } catch (e) { }
+    // 🚫 الفاتورة سطر واحد ⇒ حذف السطر = حذف الفاتورة كلها — توجه المستخدم للزرار الصح
+    if (items.length <= 1) {
+      toast("الفاتورة دي سطر واحد بس («" + (it.nameAr || it.code || "صنف") + "») — استخدم زرار «🗑️ حذف» لحذف الفاتورة كاملة وتراجع أثرها بالكامل.", "warning");
+      return;
+    }
+    // القيم المخزّنة على السطر وقت الحفظ (بناء 205): total = sub + tax للسطر نفسه — صفر تخمين
+    const lineTax = round2(Number(it.tax) || 0);
+    const lineSub = Number.isFinite(Number(it.sub))
+      ? round2(Number(it.sub))
+      : Math.max(Math.round(((Number(it.qty) || 0) * (Number(it.price) || 0) - (Number(it.discount) || 0)) * 100) / 100, 0);
+    const lineTotal = Number.isFinite(Number(it.total)) ? round2(Number(it.total)) : round2(lineSub + lineTax);
+    let newGrand = round2(amt - lineTotal);
+    if (newGrand < 0) newGrand = 0;
+    const newSubTotal = Math.max(round2(round2(Number(inv.subTotal) || (amt - round2(Number(inv.taxAmount) || 0))) - lineSub), 0);
+    let newTax = Math.max(round2(round2(Number(inv.taxAmount) || 0) - lineTax), 0);
+    /* 🚫 مدفوع الفاتورة ما بيقلّش: لو الإجمالي بعد حذف السطر بقى أقل من المدفوع ⇒ مرفوض —
+       لولا الرّد كان محتاج خزائن وشيكات وتسويات، ده مش «حذف منتج» ده «مرتجع». */
+    const p = invLineDeletePaidOf(inv, amt, (d, word) => {
+      const s = String(d || "");
+      const shortWord = word.replace(" آجلة", "");
+      if (!(s.startsWith(word) || s.startsWith(shortWord))) return false;
+      if (s.endsWith(" رقم " + num)) return true;
+      const re = new RegExp(" رقم " + num.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?!\\d)");
+      return re.test(s);
+    });
+    if (p.paid - newGrand > 0.0001) {
+      toast("ممنوع الحذف: المدفوع على الفاتورة (" + fmt(p.paid) + " ج.م) أكبر من الإجمالي بعد حذف السطر (" + fmt(newGrand) + " ج.م) — لو عايز ترجّع فلوس للعميل استخدم المرتجع أو حذف الفاتورة كاملة.", "warning");
+      return;
+    }
+    const newDue = round2(Math.max(0, round2(newGrand - p.paid)));
+    const deltaDue = round2(Math.max(0, round2(p.ajalAtSave - newDue)));
+
+    /* 1) المخزون: بنفس حرف الحذف الكامل (L12801): بيع ⇒ الكمية تترجع (لعربيته لو فاتورة سيارة) */
+    const prod = products.find((x) => Number(x.id) === Number(it.productId));
+    if (prod) addStockAt(prod, wh, Number(it.qty) || 0);
+    if (prod) saveProducts();
+
+    /* 2) القيد القديم يتراجع كله الأول (بنية نفس مفتاح refId — إزالة قبل الكتابة) */
+    const goneJ = removeInvoiceJournal("sale", inv);
+    if (isSales) { try { removeCogsJournal(cogsKeyOf(inv)); } catch (e) { } }
+
+    /* 3) تعديل الفاتورة نفسها: سطر الشيل + إجمالياتها بالمقدار المخزّن على السطر حرفًا */
+    inv.items = items.filter((x, i) => i !== idx);
+    inv.subTotal = newSubTotal;
+    inv.taxAmount = newTax; inv.tax = newTax;
+    inv.grandTotal = newGrand;
+    if (Object.prototype.hasOwnProperty.call(inv, "dueAmount")) inv.dueAmount = newDue;
+    /* 🧾 بناء 199: سطر «آجل» في payments هو اللي على حساب العميل — بيصير بقيمة المتبقي الجديد،
+        ولو اتصلّف (مافيش متبقي) بيُشال تمامًا؛ سطور السداد المدفوعة ما بتتلمسش (المدفوع ثابت). */
+    if (Array.isArray(inv.payments)) {
+      for (let i = inv.payments.length - 1; i >= 0; i--) {
+        const pl = inv.payments[i];
+        if (pl && posPayMode(pl.method).isAjal) {
+          if (!(newDue > 0.0001)) inv.payments.splice(i, 1);
+          else pl.amount = newDue;
+        }
+      }
+    }
+
+    /* 4) سطر الطرف: نفس مفتاح الحذف الكامل (بناء 192/216) — بيقلّ بالفرق أو بيُشال لو اتصفّى */
+    if (p.ajalAtSave > 0.0001) {
+      const dueDescOk = (d, word) => {
+        const s = String(d || "");
+        const shortWord = word.replace(" آجلة", "");
+        if (!(s.startsWith(word) || s.startsWith(shortWord))) return false;
+        if (s.endsWith(" رقم " + num)) return true;
+        const re = new RegExp(" رقم " + num.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?!\\d)");
+        return re.test(s);
+      };
+      let done = false;
+      for (let i = txs.length - 1; i >= 0; i--) {
+        const t = txs[i];
+        if (t && Number(t.customerId) === Number(inv.customerId) && dueDescOk(t.desc, "فاتورة مبيعات آجلة")) {
+          if (!(newDue > 0.0001)) { txs.splice(i, 1); bumpIdFloor("tx", t.id); }
+          else t.debit = newDue;
+          done = true;
+          break;   // سطر واحد لكل فاتورة (مفتاح الرقم الصارم — بناء 192)
+        }
+      }
+      if (done) { recalculateCustomerBalances(); saveCustomers(); saveTxs(); }
+    }
+
+    /* 5) القديد البيع بعد الإزالة: `postInvoiceJournal` بيقرا الحقول الجديدة ويكتب القيد
+        بنفس `refId` (بناء 134/190/199/210/248/271 كلها مشيّة) — وقيد التكلفة `CG:` كذلك
+        يترحّل تاني بمجموع `costTotal` للسطور الباقية (بناء 259/262). */
+    try { postInvoiceJournal("sale", inv, null); } catch (e) { }
+    try { postCogsJournal(inv); } catch (e) { }
+    saveSales();
+
+    /* 6) اللوج بالطابع الودّي لنفس البنية (صفر اصطلاح تقني) — زي الحذف الكامل L13015 */
+    const bits = [];
+    bits.push("شيلنا «" + (it.nameAr || it.code || "صنف") + "» (" + Number(it.qty) + " " + (it.unit || "وحدة") + ")");
+    bits.push("وترجّعت كميتها للمخزن" + (wh ? " «" + wh + "»" : ""));
+    if (deltaDue > 0.0001) bits.push("وطلعنا " + fmt(deltaDue) + " ج.م من مديونية " + who);
+    if (goneJ) bits.push("وقيدها (" + goneJ.number + ") اتراجع واتكتب من جديد على الإجمالي الجديد");
+    addActivity("حذف منتج من فاتورة", "حذف «" + (it.nameAr || it.code || "صنف") + "» من فاتورة مبيعات رقم (" + num + ") - " + who + " — الإجمالي بقى " + fmt(newGrand) + " ج.م (" + bits.join("، ") + ")");
+    toast("تم حذف المنتج من فاتورة (" + num + ") — الإجمالي بقى " + fmt(newGrand) + " ج.م" + (deltaDue > 0.0001 ? " والمديونية بقالها " + fmt(deltaDue) + " ج.م أقل" : "") + ".", "success");
+    hideModal("mInvDelLine");
+    renderInvoiceQuery();
+  }
+  /* 🗑️ بناء 287: نافذة سطور الفاتورة المحفوظة — زرار 🗑️ لكل سطر (مبيعات بس). */
+  let invDelLineCtx = null;
+  function openInvDelLine(inv, isSales) {
+    if (!invLineDeleteCanTouch(inv, isSales)) return;
+    invDelLineCtx = inv;
+    $("#invDelLineNo").value = String(inv.invoiceNumber || inv.invoiceNo || "-");
+    $("#invDelLineParty").value = String(inv.customerName || inv.customer || "-");
+    renderInvDelLineRows(inv);
+    showModal("mInvDelLine");
+  }
+  function renderInvDelLineRows(inv) {
+    const tbody = $("#dgvInvDelLine tbody");
+    if (!tbody || !inv || !Array.isArray(inv.items)) return;
+    tbody.innerHTML = "";
+    (inv.items || []).forEach((it, idx) => {
+      const tr = document.createElement("tr");
+      tr.style.borderBottom = "1px solid #e3e6ee";
+      tr.innerHTML =
+        '<td style="padding:6px 8px">' + esc((it && (it.nameAr || it.code)) || "صنف") + "</td>" +
+        '<td style="padding:6px 8px;text-align:center">' + esc(Number((it && it.qty) || 0)) + " " + esc((it && it.unit) || "") + "</td>" +
+        '<td style="padding:6px 8px;text-align:center">' + fmt((it && it.price) || 0) + "</td>" +
+        '<td style="padding:6px 8px;text-align:center">' + fmt((it && it.total) || 0) + ' ج.م</td>' +
+        '<td style="padding:6px 8px;text-align:center"><button class="btn small red" type="button" data-dl="' + idx + '">🗑️</button></td>';
+      tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll("button[data-dl]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const ctx = invDelLineCtx;
+        if (!ctx) return;
+        hideModal("mInvActions");
+        deleteInvoiceLine(ctx, true, Number(b.dataset.dl));
+      });
+    });
   }
 
   /* ================== 🔁 المرتجعات (بناء 108) ================== */
@@ -26695,6 +26902,13 @@ id: nextVoucherId(),
       const c = invActCtx; hideModal("mInvActions");
       deleteInvoiceQuery(c.inv, c.isSales);
     });
+    /* 🗑️ بناء 287: حذف منتج منها — نافذة سطور الفاتورة (مبيعات بس) */
+    $("#btnInvActDelLine").addEventListener("click", () => {
+      if (!invActCtx) return;
+      const c = invActCtx; hideModal("mInvActions");
+      openInvDelLine(c.inv, c.isSales);
+    });
+    $("#btnInvDelLineClose").addEventListener("click", () => hideModal("mInvDelLine"));
     $("#btnInvActClose").addEventListener("click", () => hideModal("mInvActions"));
 
     /* 🆕 (المهمة المزدوجة) لو غيّر المستخدم تاريخ الفاتورة، يتولّد رقم جديد بنفس التاريخ
