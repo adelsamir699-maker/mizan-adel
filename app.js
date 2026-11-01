@@ -3876,6 +3876,128 @@
     setTimeout(cleanup, 900);
   }
 
+  /* ==================== 🧾 بناء 286 — PDF للفاتورة ومشاركته واتس (يُولَّد عند الطلب من داتا البرنامج) ====================
+     الشكل المطلوب: «PDF من الموبايل يرسل واتس» — **نفس ورقة الطباعة بالحرف**:
+     نفس ملء الفاتورة (fillInvoiceSheet) + نفس أنماط @media print بتتقسم من styles.css وقت التوليد
+     (صفر تكرار أنماط ⇒ مافيش انحراف بين ورقة الطباعة وورقة الـPDF).
+     المكتبات محليًا: vendor/jspdf.umd.min.js + vendor/html2canvas.min.js — رخصهم MIT (زي EXCELJS).
+     «زي القاعدة»: مافيش ملف PDF محفوظ في البرنامج — كل ضغطة بتولّد من داتا الفاتورة وقتها.
+     واتس = نافذة مشاركة النظام (Web Share بملف) لو متاحة، وإلا تنزيل الـPDF + رسالة نصية على wa.me.
+     صفر API سحابي جديد وصفر كتابة. */
+  function pdfLibsReady() {
+    return !!(window.jspdf && typeof window.jspdf.jsPDF === "function" &&
+      typeof window.html2canvas === "function");
+  }
+  function collectPrintCss() {
+    let out = "";
+    for (const sh of document.styleSheets) {
+      let rules;
+      try { rules = sh.cssRules; } catch (e) { continue; }
+      if (!rules) continue;
+      for (const r of rules) {
+        if (r && r.media && /\bprint\b/i.test(r.media.mediaText)) {
+          out += (r.cssText || "").replace(/^@media[^{]*\{/, "").replace(/\}\s*$/, "") + "\n";
+        }
+      }
+    }
+    return out;
+  }
+  function scopeCssToHolder(css, scope) {
+    const parts = [];
+    css.split("}").forEach((chunk) => {
+      const i = chunk.indexOf("{");
+      if (i < 0) return;
+      const sel = chunk.slice(0, i).trim().replace(/\/\*[\s\S]*?\*\//g, "").trim();
+      const body = chunk.slice(i + 1).trim();
+      if (!sel || !body || sel.indexOf("{") >= 0) return;
+      if (sel.indexOf("@") === 0) return;
+      const scoped = sel.split(",").map((s) => { s = s.trim(); return s ? scope + " " + s : s; }).filter(Boolean).join(",");
+      if (!scoped) return;
+      parts.push(scoped + "{" + body + "}");
+    });
+    return parts.join("\n");
+  }
+  async function invoicePdfBlob(inv) {
+    if (!inv) throw new Error("فاتورة غير موجودة");
+    if (!pdfLibsReady()) throw new Error("ملفات PDF مش محمّلة — افتح البرنامج متصل مرة واحدة.");
+    /* نفس الورقة بالحرف: نفس الملء + نفس أنماط الطباعة */
+    fillInvoiceSheet(inv);
+    const holder = document.createElement("div");
+    holder.id = "pdfHold";
+    holder.setAttribute("dir", "rtl");
+    holder.style.cssText = "position:absolute;left:-12000px;top:0;width:210mm;background:#fff;color:#000;overflow:hidden;";
+    holder.innerHTML = '<style>' + scopeCssToHolder(collectPrintCss(), "#pdfHold") +
+      '\n#pdfHold .print-only{display:block !important;}\n</style>' +
+      $("#invoicePage").outerHTML;
+    document.body.appendChild(holder);
+    try {
+      const target = holder.querySelector("#invoicePage") || holder;
+      const canvas = await window.html2canvas(target, {
+        scale: 2, backgroundColor: "#ffffff", logging: false, useCORS: false
+      });
+      const pdf = new window.jspdf.jsPDF({ orientation: "p", unit: "mm", format: "a4", compress: true });
+      const w = pdf.internal.pageSize.getWidth();
+      const h = pdf.internal.pageSize.getHeight();
+      const iw = w; /* الورقة بنفس عرض A4 — الطول على طول المحتوى */
+      const mmPerPx = iw / canvas.width;
+      const imgH = canvas.height * mmPerPx;
+      if (imgH <= h + 0.5) {
+        pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, iw, imgH);
+      } else {
+        /* فاتورة طويلة ⇒ صفحات متتالية: قص الكانفس على ارتفاع صفحة A4 بالظبط */
+        const pagePx = Math.floor(h / mmPerPx);
+        let y = 0, page = 0;
+        const crop = document.createElement("canvas");
+        const cctx = crop.getContext("2d");
+        while (y < canvas.height) {
+          const ph = Math.min(pagePx, canvas.height - y);
+          if (ph <= 0) break;
+          crop.width = canvas.width; crop.height = ph;
+          cctx.fillStyle = "#ffffff"; cctx.fillRect(0, 0, crop.width, crop.height);
+          cctx.drawImage(canvas, 0, y, canvas.width, ph, 0, 0, canvas.width, ph);
+          if (page > 0) pdf.addPage();
+          pdf.addImage(crop.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, iw, ph * mmPerPx);
+          y += ph; page++;
+        }
+      }
+      return pdf.output("blob");
+    } finally {
+      holder.remove();
+    }
+  }
+  function pdfFileSafeName(no) {
+    return String(no || "فاتورة").replace(/[\\/:*?"<>|]/g, "-");
+  }
+  async function shareInvoicePdf(inv, shareTextExtra) {
+    try {
+      toast("جاري توليد PDF الفاتورة…", "info");
+      const blob = await invoicePdfBlob(inv);
+      const name = pdfFileSafeName(inv.invoiceNumber || inv.invoiceNo) + ".pdf";
+      const file = new File([blob], name, { type: "application/pdf" });
+      const title = "فاتورة " + (inv.invoiceNumber || "");
+      const text = title + " — الإجمالي " + fmt(inv.grandTotal) + " ج.م" + (shareTextExtra || "");
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: title, text: text });
+        try { addActivity("مشاركة PDF", title); } catch (e) { }
+        toast("نافذة المشاركة اتفتحت — اختار واتساب وابعت الفاتورة.", "success");
+        return;
+      }
+      /* بره الموبايل/متصفح بلا مشاركة ملفات: تنزيل PDF + رسالة نصية على واتس (بلا أي API سحابي) */
+      try {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) { } }, 5000);
+      } catch (e) { }
+      window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank");
+      try { addActivity("مشاركة PDF", title + " (تنزيل + واتس)"); } catch (e) { }
+      toast("PDF اتنزّل على جهازك — واتس فتح برسالة، ابعت الملف من ملفات التنزيلة.", "success");
+    } catch (e) {
+      toast("PDF ما اتولّدش: " + ((e && e.message) || "خطأ غير معروف"), "warning");
+    }
+  }
+
   /* ================== الروترة بين الشاشات ================== */
   const BUILT_VIEWS = ["dashboard", "customers", "products", "sales", "purchases", "suppliers", "returns", "returnsReg", "treasury", "accounts", "journal", "balance", "treasuryStatements", "reports", "users", "audit", "settings", "clientSettings",
 
@@ -10817,7 +10939,9 @@
         '<div class="bc-num">' + esc(s) + '</div>')
       : "";
   }
-  function printInvoice(inv) {
+  /* 🧱 بناء 286: نفس ملء الفاتورة بالحرف اتنقل لـ fillInvoiceSheet (مصدر واحد للورقة)
+     وprintInvoice بقى = ملء + طباعة — شكل الفاتورة المطبوعة والورقة زي ما هما بالحرف. */
+  function fillInvoiceSheet(inv) {
     $("#invNoPrint").textContent = inv.invoiceNumber;
     $("#invDatePrint").textContent = inv.invoiceDate;
     fillInvBarcode("invBarcode", inv.invoiceNumber);
@@ -10848,6 +10972,9 @@
     const nt = $("#invNotesPrint");
     if (nt) nt.innerHTML = invNotesHtml(true);
     $("#invFootPrint").innerHTML = invTotalsHtml(invTotalRows(true, inv));
+  }
+  function printInvoice(inv) {
+    fillInvoiceSheet(inv);
     printSection($("#invoicePage"));
   }
 
@@ -11978,6 +12105,7 @@
     $("#invActPartyLbl").textContent = isSales ? "العميل:" : "المورد:";
     $("#invActParty").value = String((isSales ? (inv.customerName || inv.customer) : (inv.supplierName || inv.supplier)) || "-");
     $("#invActTotal").value = fmt(inv.grandTotal) + " ج.م";
+    $("#btnInvActPdf").hidden = !isSales;
     $("#btnInvActDel").hidden = !canDeleteInvoices();
     $("#btnInvActRet").hidden = !(canManageReturns() && !allRet);
     showModal("mInvActions");
@@ -16155,6 +16283,16 @@ id: nextVoucherId(),
   function nextVanExpenseId(trip) {
     return idFloorTake("vanExp", vanTripExpenses(trip));
   }
+  /* 🧾 بناء 286: نافذة مشاركة PDF بعد كل بيع سيارة — أرقام الفاتورة والإجمالي يتعروا من داتا الفاتورة نفسها.
+     زرار «PDF واتس» بيولّد الـPDF نهاري من داتا البرنامج (زي القاعدة، مافيش ملف محفوظ) وبيفتح نافذة مشاركة النظام. */
+  let vanPdfCtx = null;
+  function openVanSalePdfDialog(inv) {
+    vanPdfCtx = inv || null;
+    if (!inv) return;
+    const no = $("#vanPdfNo"); if (no) no.value = String(inv.invoiceNumber || inv.invoiceNo || "-");
+    const tot = $("#vanPdfTotal"); if (tot) tot.value = fmt(inv.grandTotal) + " ج.م";
+    showModal("mVanSalePdf");
+  }
   function openVanExpenseDialog(tid) {
     const trip = vanTripById(tid);
     if (!trip) { toast("الرحلة مش موجودة.", "warning"); return; }
@@ -16353,7 +16491,7 @@ id: nextVoucherId(),
       push({
         type: "sale", kind: "🧾 بيع", date: s.invoiceDate || s.date || "", at: s.savedAt || "",
         label: "فاتورة #" + no + " — " + (s.customerName || s.customer || "") + (pm ? " — " + pm : ""),
-        amount: round2(s.grandTotal), effect: cash > 0 ? cash : null
+        amount: round2(s.grandTotal), effect: cash > 0 ? cash : null, sid: String(s.id || "")
       });
     });
     // المصروفات
@@ -16424,7 +16562,10 @@ id: nextVoucherId(),
         '<td>' + (i + 1) + "</td>" +
         '<td>' + esc(String(r.date || "").slice(0, 10)) + (r.at ? '<span class="van-log-time">' + esc(String(r.at).slice(11, 16)) + '</span>' : '') + '</td>' +
         '<td>' + r.kind + '</td>' +
-        '<td>' + esc(r.label) + '</td>' +
+        '<td>' + esc(r.label) +
+        // 🧾 بناء 286: زرار PDF واتس لسطور بيع الرحلة — يولّد من داتا الفاتورة وقت ضغطه (زي القاعدة)
+        (r.type === "sale" && r.sid ? ' <button class="btn small sky" type="button" data-vanlogpdf="' + esc(r.sid) + '">📄 واتس</button>' : '') +
+        '</td>' +
         '<td><b>' + fmt(r.amount) + '</b></td>' +
         '<td>' + eff + '</td></tr>';
     }).join("");
@@ -16895,6 +17036,27 @@ id: nextVoucherId(),
     const spay = $("#vanSalePay"); if (spay) spay.addEventListener("change", vanSalePayVisibility);
     // 💳 بناء 285: سطور السداد الإضافية في بيع السيارة (زرار الإضافة + قائمة السطور)
     vanBindExtraPays();
+    // 🧾 بناء 286: نافذة مشاركة PDF بعد بيع السيارة (من الموبايل لواتس — يُولَّد عند الطلب)
+    add("btnVanPdfShare", "click", () => {
+      const inv = vanPdfCtx; vanPdfCtx = null; hideModal("mVanSalePdf");
+      if (inv) shareInvoicePdf(inv);
+    });
+    add("btnVanPdfPrint", "click", () => {
+      const inv = vanPdfCtx; vanPdfCtx = null; hideModal("mVanSalePdf");
+      if (inv) printInvoice(inv);
+    });
+    add("btnVanPdfClose", "click", () => { vanPdfCtx = null; hideModal("mVanSalePdf"); });
+    // 🧾 بناء 286: PDF واتس لكل فاتورة من سجل حركات المندوب (زرار «📄 واتس» جوّه سطر الفاتورة)
+    const vLogBody = $("#vanLogBody");
+    if (vLogBody) {
+      vLogBody.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-vanlogpdf]");
+        if (!b) return;
+        const inv = (sales || []).find((x) => x && String(x.id) === b.getAttribute("data-vanlogpdf"));
+        if (!inv) { toast("الفاتورة مش موجودة على الجهاز.", "warning"); return; }
+        shareInvoicePdf(inv);
+      });
+    }
     const scart = $("#vanSaleCart");
     if (scart) scart.addEventListener("click", (ev) => {
       const b = ev.target.closest("[data-cact]");
@@ -17969,6 +18131,8 @@ id: nextVoucherId(),
     try { addActivity("بيع من سيارة", "سيارة " + trip.carName + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + vanPayNames(cp) + ")" + (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : "")); } catch (e) {}
     toast("تم حفظ البيع (" + invNo + ")" + (postedJ && postedJ.j ? " وترحيله للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
     hideModal("mVanSale");
+    // 🧾 بناء 286: PDF واتس للموبايل — نافذة مشاركة بعد كل بيع سيارة (يُولَّد عند الطلب من داتا الفاتورة)
+    try { openVanSalePdfDialog(invoice); } catch (e) { }
     vanSaleDraft = null;
     renderVanSales();
   }
@@ -26514,6 +26678,12 @@ id: nextVoucherId(),
       if (!invActCtx) return;
       const c = invActCtx; hideModal("mInvActions");
       if (c.isSales) printInvoice(c.inv); else printPurchaseInvoice(c.inv);
+    });
+    // 🧾 بناء 286: «PDF واتس» — للفساتير ونفس ورقة الطباعة بالحرف (المشتريات لسه مفيهاش زرار)
+    $("#btnInvActPdf").addEventListener("click", () => {
+      if (!invActCtx) return;
+      const c = invActCtx; hideModal("mInvActions");
+      if (c.isSales) shareInvoicePdf(c.inv);
     });
     $("#btnInvActRet").addEventListener("click", () => {
       if (!invActCtx) return;
