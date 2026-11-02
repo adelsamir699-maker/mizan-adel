@@ -16955,7 +16955,9 @@ id: nextVoucherId(),
     return hit ? String(hit.status || "pending") : "";
   }
   function vanTripPayBreakdown(trip) {
-    const bk = { cash: 0, bank: 0, wallet: 0, instapay: 0, check: 0, ajal: 0, other: 0, paid: 0, grand: 0, count: 0, checkCount: 0, checks: [] };
+    /* 🧾 بناء 289: `counts` = عدد الفواتير لكل وسيلة · `paidCount` = عدد الفواتير اللي عليها مسلّم
+       — نفس شروط المبالغ بالحرف، عشان التقرير الجديد (جدول القفل) يطلع مزامن مع الأرقام. */
+    const bk = { cash: 0, bank: 0, wallet: 0, instapay: 0, check: 0, ajal: 0, other: 0, paid: 0, grand: 0, count: 0, checkCount: 0, checks: [], counts: {}, paidCount: 0 };
     const add = (k, amt) => { if (amt > 0) bk[k] = round2(bk[k] + amt); };
     vanTripSales(trip).forEach((s) => {
       if (!s) return;
@@ -16965,6 +16967,7 @@ id: nextVoucherId(),
       const invNo = s.invoiceNumber || s.invoiceNo || "";
       const lines = Array.isArray(s.payments) ? s.payments : [];
       let paidHere = 0, ajalLine = 0;
+      const seen = {};   /* بناء 289: وسائل الفاتورة دي — كل واحدة بتُعدّ مرة واحدة لكل فاتورة */
       const pushCheck = (bankName, checkNo, dueDate, amount) => {
         const amt = round2(Number(amount) || 0);
         if (!(amt > 0)) return;
@@ -16981,6 +16984,7 @@ id: nextVoucherId(),
           const k = vanPayKeyOf(p && p.method);
           const amt = round2(Number(p && p.amount) || 0);
           if (!(amt > 0)) return;
+          seen[k] = true;
           if (k === "ajal") { ajalLine = round2(ajalLine + amt); return; }
           add(k, amt);
           paidHere = round2(paidHere + amt);
@@ -16990,16 +16994,19 @@ id: nextVoucherId(),
         const k = vanPayKeyOf(s.paymentMethod);
         const paidAmt = round2(Number(s.paidAmount) || 0);
         const dueAmt = round2(Number(s.dueAmount) || 0);
-        if (k === "ajal") ajalLine = round2(ajalLine + (dueAmt > 0 ? dueAmt : paidAmt));
+        if (k === "ajal") { ajalLine = round2(ajalLine + (dueAmt > 0 ? dueAmt : paidAmt)); if (dueAmt > 0 || paidAmt > 0) seen.ajal = true; }
         else if (k === "other") {
-          if (paidAmt > 0) { add("other", paidAmt); paidHere = round2(paidHere + paidAmt); }
-          else if (dueAmt > 0) ajalLine = round2(ajalLine + dueAmt);
+          if (paidAmt > 0) { add("other", paidAmt); paidHere = round2(paidHere + paidAmt); seen.other = true; }
+          else if (dueAmt > 0) { ajalLine = round2(ajalLine + dueAmt); seen.ajal = true; }
         } else {
-          if (paidAmt > 0) { add(k, paidAmt); paidHere = round2(paidHere + paidAmt); }
+          if (paidAmt > 0) { add(k, paidAmt); paidHere = round2(paidHere + paidAmt); seen[k] = true; }
           if (k === "check") pushCheck(s.bankName, s.checkNo, s.checkDue, paidAmt);
         }
       }
       const due = round2(Number(s.dueAmount) || 0);
+      if (due > 0 || ajalLine > 0) seen.ajal = true;
+      Object.keys(seen).forEach((k2) => { bk.counts[k2] = (bk.counts[k2] || 0) + 1; });
+      if (paidHere > 0) bk.paidCount += 1;
       bk.ajal = round2(bk.ajal + (due > 0 ? due : ajalLine));
       bk.paid = round2(bk.paid + paidHere);
     });
@@ -17014,22 +17021,52 @@ id: nextVoucherId(),
     else if (s && s.paymentMethod) push(s.paymentMethod);
     return out.join(" + ");
   }
-  /* سطور «وسائل الدفع» بترتيب ثابت — اللي مبلغه صفر ما بيتعرضش */
-  function vanPayLines(bk, keys) {
+  /* سطور «وسائل الدفع» بترتيب ثابت — اللي مبلغه صفر ما بيتعرضش (بناء 281).
+     🧾 بناء 289: بارامتر ثالث `forceAll` (يُستخدم في جدول قفل الرحلة بس) — يعرض الوسيلة
+     حتى لو صفر، ومع كل سطر `count` = عدد الفواتير (من `bk.counts` بتاع 289). */
+  function vanPayLines(bk, keys, forceAll) {
     const out = [];
     (keys || []).forEach((k) => {
       const amt = round2((bk && bk[k]) || 0);
-      if (!(amt > 0)) return;
+      const cnt = Number((bk && bk.counts && bk.counts[k]) || 0);
+      if (!(amt > 0) && !forceAll) return;
       let lbl = vanPayKeyLabel(k);
       if (k === "check") lbl = "شيكات" + (bk.checkCount ? " (" + bk.checkCount + ")" : "");
       if (k === "ajal") lbl = "آجل (على حساب العملاء)";
-      out.push({ key: k, label: lbl, amount: amt });
+      out.push({ key: k, label: lbl, amount: amt, count: cnt });
     });
     return out;
   }
   function vanPayLinesHtml(bk, keys) {
     return vanPayLines(bk, keys).map((r) =>
       '<div class="shift-kv"><span>' + esc(r.label) + '</span><b>' + fmt(r.amount) + ' ج.م</b></div>').join("");
+  }
+  /* 🧾 بناء 289 (طلب المالك من تسليم 31-10: «تقرير قفل الرحلة يوضح كل طرق الدفع
+     (شيكات/نقدية/محافظ/باقي) شكلاً ومضموناً») — جدول واحد مرتب في نافذة تصفية الرحلة:
+     **كل الوسائل دايمًا ظاهرة حتى لو صفر** (بعدّاد الفواتير + المبلغ) + الوسائل غير
+     القياسية تحت «أخرى»، وتحت الإجماليات: المبيعات مقابل المسلّم. الأرقام من داتا
+     الفواتير نفسها (`vanTripPayBreakdown`) — نفس مصدر الحسابات اللي يترحّل بالحرف. */
+  function vanPayTableHtml(bk) {
+    const b = bk || {}, cts = b.counts || {};
+    const row = (key, label) => {
+      const amt = round2(b[key] || 0);
+      const cnt = Number(cts[key] || 0);
+      const zero = !(amt > 0);
+      return '<tr' + (zero ? ' class="zero"' : '') + '><td>' + esc(label) +
+        '</td><td class="c">' + cnt + '</td><td class="amt">' + fmt(amt) + ' ج.م</td></tr>';
+    };
+    return '<div class="pay-tbl"><div class="pay-tbl-title">💳 طرق الدفع في الرحلة (كل الوسائل — الصفر ظاهر)</div>' +
+      '<table><thead><tr><th>وسيلة الدفع</th><th>عدد الفواتير</th><th>المبلغ</th></tr></thead><tbody>' +
+      row("cash", "نقدية (محصّلة على ذمة المندوب)") +
+      row("bank", "تحويل بنكي") +
+      row("wallet", "محافظ إلكترونية") +
+      row("instapay", "إنستا باي") +
+      row("check", "شيكات" + (b.checkCount ? " (" + Number(b.checkCount) + " شيك)" : "")) +
+      row("ajal", "آجل (على حساب العملاء)") +
+      row("other", "أخرى") +
+      '<tr class="tot"><td>إجمالي المبيعات</td><td class="c">' + Number(b.count || 0) + '</td><td class="amt">' + fmt(b.grand || 0) + ' ج.م</td></tr>' +
+      '<tr class="tot"><td>إجمالي المسلّم (بلا آجل)</td><td class="c">' + Number(b.paidCount || 0) + '</td><td class="amt">' + fmt(b.paid || 0) + ' ج.م</td></tr>' +
+      '</tbody></table></div>';
   }
   function vanPayChecksHtml(bk) {
     const list = (bk && Array.isArray(bk.checks)) ? bk.checks : [];
@@ -18687,7 +18724,8 @@ id: nextVoucherId(),
       '<div class="shift-kv"><span>تكلفة البضاعة المبيعة</span><b>' + fmt(soldCost) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>باقي بضاعة بالسيارة (يرجع للمخزن)</span><b>' + fmt(goodsLeft) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>نقد المبيعات</span><b>' + fmt(vanTripCashSales(trip)) + ' ج.م</b></div>' +
-      vanPayLinesHtml(payBk, VAN_PAY_EXTRA_KEYS.concat(["ajal"])) +
+      /* 🧾 بناء 289: جدول قفل الرحلة — كل طرق الدفع شكلًا (دايمًا ظاهرة) ومضمونًا (بعدّاد الفواتير) */
+      vanPayTableHtml(payBk) +
       '<div class="shift-kv"><span>مصروفات الرحلة (بنزين/صيانة/نثريات...)</span><b>− ' + fmt(vanTripExpensesTotal(trip)) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>المتوقّع تسليمه</span><b>' + fmt(expected) + ' ج.م</b></div>' +
       '<div class="shift-kv"><span>المعدود فعليًا</span><b>' + fmt(counted) + ' ج.م</b></div>' +

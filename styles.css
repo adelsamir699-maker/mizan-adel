@@ -3133,3 +3133,18 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
   .modal-overlay > .modal { margin: auto; }
   .modal-tall { max-height: none; }
 }
+
+/* 🧾 بناء 289 — جدول «طرق الدفع في الرحلة» في نافذة تصفية الرحلة (طلب المالك:
+   «تقرير قفل الرحلة يوضح كل طرق الدفع شكلاً ومضموناً»). كل الوسائل دايمًا ظاهرة
+   حتى لو صفر (صف مبهم)، بعمود عدد الفواتير وعمود المبلغ، والإجماليات في الذيل. */
+.pay-tbl { margin: 8px 0 2px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.pay-tbl-title { background: var(--bg); color: var(--primary-dark); font-size: 12.5px; font-weight: bold; padding: 6px 10px; border-bottom: 2px solid var(--primary-dark); }
+.pay-tbl table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.pay-tbl th { background: var(--bg); color: var(--text-secondary); font-size: 11px; padding: 4px 10px; border-bottom: 1px solid var(--border); text-align: right; }
+.pay-tbl th.c { width: 70px; text-align: center; }
+.pay-tbl th.amt { width: 110px; text-align: left; }
+.pay-tbl td { padding: 4px 10px; border-bottom: 1px dashed var(--border); }
+.pay-tbl td.c { width: 70px; text-align: center; color: var(--text-secondary); }
+.pay-tbl td.amt { width: 110px; text-align: left; font-weight: bold; white-space: nowrap; }
+.pay-tbl tr.zero td { color: var(--text-muted); }
+.pay-tbl tr.tot td { border-top: 2px solid var(--primary-dark); border-bottom: none; font-weight: bold; color: var(--primary-dark); }
