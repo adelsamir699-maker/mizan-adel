@@ -9188,6 +9188,68 @@
        نفس الشركة (نفس الطريقة للاتنين)، بلا أي تغيير Schema. */
   const INV_KIND_DIGIT = { purchase: "1", sale: "2", purchase_return: "3", sale_return: "4" };
 
+  /* 🧾 بناء 290 (أمر المالك): شكل الترقيم الجديد = <نوع 1><سنة شهر يوم 6><مستخدم 3><بصمة جهاز 2><ترقيم يومي 3+>
+     مثال: 2 261102 005 A1 001 = «2261102005A1001» (بيع 2026-11-02 · المستخدم 5 · جهاز A1 · أول فاتورة يومه)
+     (١) السنة 26 بدل 2026 — الرقم يصغر تهور (مصلح بما ليست موثوقة دائما في مكان واحد).
+     (٢) رقم المستخدم = حرا التفريد الشخصي بين حسابات الشركة (خانات 3).
+     (٣) بصمة الجهاز = حرف+رقم قياسي من data.js deviceId() — يفرّد جهازين بنفس الحساب أوفلاين.
+     (٤) الترقيم اليومي يبدأ  و File هو مألوفات لكل (مستخدم + جهاز + يوم) — namespace مستقل.
+     (٥) الفواتير القديمة (شكل 254) زي ما هي — القارئ الجديد يفهم الاثنين.
+     ممنوع أي تخزين سحابي جديد — بصمة الجهاز محلية (localStorage + deviceId() القديم). */
+  const INV2_RE = /^([1-4])(\d{6})(\d{3})([0-9A-Z]{2})(\d{3,})$/;
+  function invParseNew2(s) {
+    const m = String(s == null ? "" : s).trim().match(INV2_RE);
+    return m ? { digit: m[1], stamp: m[2], user: m[3], dev: m[4], seq: parseInt(m[5], 10) || 0 } : null;
+  }
+  /* بصمة اليوم yymmdd (٦ أرقام) — القديم كان yyyymmdd بالحرف. */
+  function invStamp6(dateISO) {
+    return invStampOf(dateISO).slice(2);
+  }
+  /* رقم المستخدم (٣ خانات) — ثابت لكل اسم دخول على الجهاز: أول استعمال يخصص ترقيم فارغ يتسق. */
+  function invUserNo() {
+    let uname = "";
+    try {
+      const DE = window.DATA || {};
+      const a = currentAcct() || {};
+      const p = (DE.me && DE.me()) || (DE.getProfile && DE.getProfile()) || {};
+      uname = a.username || p.username || a.full_name || p.full_name || "";
+      if (!uname && DE.email && DE.email()) uname = String(DE.email()).replace(/@mizan\.app$/i, "");
+    } catch (e) { }
+    uname = String(uname || "").trim().toLowerCase();
+    if (!uname) return "001";
+    let map = {};
+    try { map = JSON.parse(localStorage.getItem("mizan_userNo") || "{}") || {}; } catch (e) { }
+    if (!(map[uname] > 0)) {
+      const used = Object.keys(map).map((k) => Number(map[k])).filter((n) => n > 0);
+      let n = 1; while (used.indexOf(n) >= 0 && n < 999) n++;
+      map[uname] = n;
+      try { localStorage.setItem("mizan_userNo", JSON.stringify(map)); } catch (e) { }
+    }
+    return ("000" + Number(map[uname])).slice(-3);
+  }
+  /* بصمة الجهاز (حرفين [0-9A-Z]) — مشتقة دائمًا من deviceId() (بصمة الجهاز الأصلية)
+     بهاش FNV ثابت: نفس الجهاز = نفس البصمة بعد كل إقلاع، بلا زراعة عشوائية في الترحيلات. */
+  function invDevStamp() {
+    const CH = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    try {
+      const DE = window.DATA || {};
+      const did = (DE.deviceId && DE.deviceId()) || "";
+      if (did) {
+        let h = 5381;
+        for (let i = 0; i < did.length; i++) { h = (((h << 5) + h) + did.charCodeAt(i)) >>> 0; }
+        return CH[h % 36] + CH[(h >> 5) % 36];
+      }
+    } catch (e) { }
+    /* اضمان: deviceId() غير متاح ⇒ بصمة محلية ثابتة تُصنع مرة واحدة على الجهاز نفسه */
+    let v = "";
+    try { v = localStorage.getItem("mizan_devStamp") || ""; } catch (e) { }
+    if (!v) {
+      v = CH[Math.floor(Math.random() * 36)] + CH[Math.floor(Math.random() * 36)];
+      try { localStorage.setItem("mizan_devStamp", v); } catch (e) { }
+    }
+    return v;
+  }
+
   // رقم المستند (فاتورة/مرتجع) كنصّ مهما كان الشكل القديم أو الجديد
   function invNoOf(r) {
     if (!r) return "";
@@ -9209,31 +9271,42 @@
      مش كائن الفاتورة. تمرير الكائن كان بيتحوّل "[object Object]" ⇒ `invParseNew` ترجّع null ⇒ صفر
      ⇒ `commitInvoiceSeq` ما بترفعش العدّاد المحلي ولا السحابي أبدًا، والحماية من تصادم الأرقام بين
      أجهزة نفس الشركة تبقى وهمية (كل جهاز يعتمد على بياناته المحلية بس). أي منادٍ جديد يمرّر النص. */
+  /* 🧾 بناء 290: ترميز مركز العدّاد — يفهم الشكلين (254 القديم و290 الجديد):
+     القديم = stamp8×10000+seq · الجديد = stamp6×100000+seq (يتسق numeric —的特征
+     بيتساو فحص القديم `floor(hw/10000)===stamp8` — فمافيش تضارب بين النطاقين). */
   function invEncodedOf(s) {
+    const p2 = invParseNew2(s);
+    if (p2) return Number(p2.stamp) * 100000 + p2.seq;
     const p = invParseNew(s);
     return p ? (Number(p.stamp) * 10000 + p.seq) : 0;
   }
   function invPadSeq(n) { const s = String(n); return s.length >= 3 ? s : ("000" + s).slice(-3); }
+  /* 🧾 بناء 290: الجديد بواسطة الشكل: نوع + تاريخ ٦ + مستخدم ٣ + جهاز ٢ + ترقيم ٣+ */
   function invNumberFor(kind, seq, dateISO) {
-    return (INV_KIND_DIGIT[kind] || "2") + invStampOf(dateISO) + invPadSeq(Math.max(1, Number(seq) || 1));
+    return (INV_KIND_DIGIT[kind] || "2") + invStamp6(dateISO) + invUserNo() + invDevStamp() +
+      invPadSeq(Math.max(1, Number(seq) || 1));
   }
-  // الرقم اليومي التالي = أعلى (من بيانات الشركة لنفس اليوم + الحدّ الأعلى السحابي لنفس اليوم) + 1
+  // الرقم اليومي التالي = أعلى ترقيم في **نفس namespace** (اليوم + المستخدم + الجهاز)
+  // من بيانات الشركة — القديم (شكل 254) ما بيدخلش الحساب بعد اليوم؛ الحد السحابي القديم
+  // طبيعيًا ما يطابقش stamp6 (هو شبه stamp8 ولا يلتفس إلا 8 أرقام) — فمافيش تضارب.
   function invSeqBase(kind, dateISO) {
     const arr = (kind === "purchase" ? purchases
       : kind === "sale_return" ? saleReturns
       : kind === "purchase_return" ? purchaseReturns
       : sales) || [];
-    const stamp = invStampOf(dateISO);
+    const stamp = invStamp6(dateISO);
+    const user = invUserNo();
+    const dev = invDevStamp();
+    const kd = INV_KIND_DIGIT[kind] || "2";
     let localMax = 0;
     arr.forEach(function (r) {
-      const p = invParseNew(invNoOf(r));
-      if (p && p.stamp === stamp && p.seq > localMax) localMax = p.seq;
+      const p = invParseNew2(invNoOf(r));
+      if (p && p.digit === kd && p.stamp === stamp && p.user === user && p.dev === dev && p.seq > localMax) localMax = p.seq;
     });
-    const hw = Number((settings && settings.invSeq && settings.invSeq[kind])) || 0;
-    const hwSeq = (Math.floor(hw / 10000) === Number(stamp)) ? (hw % 10000) : 0;
-    return Math.max(localMax, hwSeq);
+    return localMax;
   }
   function invNextNumber(kind, dateISO) {
+    /* 🧾 بناء 290: الجديد بواسطة الشكل. القديم (شكل 254) بيدخل داخل حيث شخصياً (سطر ParseNew القديم متوثّق سطر 9203). */
     return invNumberFor(kind, invSeqBase(kind, dateISO) + 1, dateISO);
   }
   function commitInvoiceSeq(kind, n) {
@@ -12083,7 +12156,8 @@
   let invActCtx = null;
   function openInvByScan(no) {
     const s = String(no == null ? "" : no).trim();
-    const p = invParseNew(s);
+    /* 🧾 بناء 290: القارئ يفهم الشكلين (254 القديم + 290 الجديد) — الكود ما بيتكسرش */
+    const p = invParseNew2(s) || invParseNew(s);
     if (!p) { toast("الرقم " + s + " مش رقم فاتورة صحيح (المتوقّع: نوع+تاريخ+رقم).", "warning"); return; }
     const isSale = (p.digit === "2" || p.digit === "4");
     let inv = null;
@@ -26953,12 +27027,12 @@ id: nextVoucherId(),
        (الرقم بيحمل التاريخ وهو بصمة اليوم) — بشرط إن الرقم الحالي بنفس شكل النوع. */
     const dtpDateEl = $("#dtpDate");
     if (dtpDateEl) dtpDateEl.addEventListener("change", () => {
-      const p = invParseNew($("#txtInvoiceNo").value);
+      const p = invParseNew2($("#txtInvoiceNo").value) || invParseNew($("#txtInvoiceNo").value);
       if (p && p.digit === "2") $("#txtInvoiceNo").value = invNextNumber("sale", $("#dtpDate").value || todayISO());
     });
     const dtpPDateEl = $("#dtpPDate");
     if (dtpPDateEl) dtpPDateEl.addEventListener("change", () => {
-      const p = invParseNew($("#txtPInvNo").value);
+      const p = invParseNew2($("#txtPInvNo").value) || invParseNew($("#txtPInvNo").value);
       if (p && p.digit === "1") $("#txtPInvNo").value = invNextNumber("purchase", $("#dtpPDate").value || todayISO());
     });
 
