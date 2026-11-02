@@ -3122,3 +3122,14 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .van-pay-chks .shift-kv span {
   color: #475569;
 }
+
+/* 📱 بناء 288 — سكرول شاشات الموبايل (طلب المالك 2/11: «سكرول كل شاشات الموبايل …
+   خاصة فواتير مندوب السيارة»). العلّة المقيسة: .modal-overlay ثابتة (fixed inset:0)
+   بلا overflow — فالنافذة الطويلة (بيع السيارة m900 · التعبئة m900 · الأصناف m640
+   · القيد · الجرد · نافذة الحذف…) بتتقص من فوق ومن تحت ومفيش طريقة توصل للمحتوى.
+   الترميم مقيس ومقفول على مقاس الموبايل (≤860px) — الديسكتوب والورق ما اتلمسوا أبدًا: */
+@media (max-width: 860px) {
+  .modal-overlay { align-items: flex-start; overflow: auto; -webkit-overflow-scrolling: touch; padding: 10px; }
+  .modal-overlay > .modal { margin: auto; }
+  .modal-tall { max-height: none; }
+}
