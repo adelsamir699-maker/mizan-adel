@@ -4044,6 +4044,26 @@
     return !!(window.jspdf && typeof window.jspdf.jsPDF === "function" &&
       typeof window.html2canvas === "function");
   }
+  /* 📲 بناء 292: لو سكربتات الـPDF سقطت عند الإقلاع (شبكة واقفة/ضعيفة — والـSW network-only
+     مافيش كاش) بنحاول نحمّلها **وقت الطلب نفسه** — بدل ما كل دوسة تفشل لحد ما المالك
+     يعيد فتح البرنامج متصل. تحميل من نفس المستودع المحلي (vendor/) — صفر API سحابي. */
+  function ensurePdfLibs() {
+    if (pdfLibsReady()) return Promise.resolve(true);
+    const one = (src, test) => new Promise((res) => {
+      if (test()) return res(true);
+      try {
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = () => res(!!test());
+        s.onerror = () => res(false);
+        document.head.appendChild(s);
+      } catch (e) { res(false); }
+    });
+    const v = "?v=" + (window.MIZAN_BUILD || "");
+    return one("vendor/jspdf.umd.min.js" + v, () => !!(window.jspdf && window.jspdf.jsPDF))
+      .then((ok) => ok ? one("vendor/html2canvas.min.js" + v, () => typeof window.html2canvas === "function") : false)
+      .then(() => pdfLibsReady());
+  }
   function collectPrintCss() {
     let out = "";
     for (const sh of document.styleSheets) {
@@ -4127,18 +4147,27 @@
   async function shareInvoicePdf(inv, shareTextExtra) {
     try {
       toast("جاري توليد PDF الفاتورة…", "info");
+      /* 📲 بناء 292: لو المكتبات سقطت عند الإقلاع — محاولة تحميلها الأول (وقت الطلب) */
+      try { await ensurePdfLibs(); } catch (e) { }
       const blob = await invoicePdfBlob(inv);
       const name = pdfFileSafeName(inv.invoiceNumber || inv.invoiceNo) + ".pdf";
       const file = new File([blob], name, { type: "application/pdf" });
       const title = "فاتورة " + (inv.invoiceNumber || "");
       const text = title + " — الإجمالي " + fmt(inv.grandTotal) + " ج.م" + (shareTextExtra || "");
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: title, text: text });
-        try { addActivity("مشاركة PDF", title); } catch (e) { }
-        toast("نافذة المشاركة اتفتحت — اختار واتساب وابعت الفاتورة.", "success");
-        return;
+        try {
+          await navigator.share({ files: [file], title: title, text: text });
+          try { addActivity("مشاركة PDF", title); } catch (e) { }
+          toast("نافذة المشاركة اتفتحت — اختار واتساب وابعت الفاتورة.", "success");
+          return;
+        } catch (e) {
+          /* 📲 بناء 292: قفل المستخدم لنافذة المشاركة (AbortError) = إلغاء محترم — لا رسالة كاذبة ولا تنزيل */
+          if (e && e.name === "AbortError") { toast("اتلغت المشاركة.", "info"); return; }
+          /* أية رفض أخرى (انتهت تسكّند اللمس/تعارض/قيود) ⇒ نكمّل للمسار البديل تحت —
+             بدل رسالة «ما اتولّدش» كاذبة (التوليد نجح فعلًا) */
+        }
       }
-      /* بره الموبايل/متصفح بلا مشاركة ملفات: تنزيل PDF + رسالة نصية على واتس (بلا أي API سحابي) */
+      /* بره الموبايل/متصفح بلا مشاركة ملفات/رفض المشاركة: تنزيل PDF + رسالة نصية على واتس (بلا أي API سحابي) */
       try {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");

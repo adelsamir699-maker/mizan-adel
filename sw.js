@@ -9,7 +9,7 @@
  */
 "use strict";
 
-const SW_VERSION = "291";
+const SW_VERSION = "292";
 
 self.addEventListener("install", (event) => {
   // من غير انتظار: فعّل النسخة الجديدة فورًا
@@ -30,6 +30,29 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  /* 📲 بناء 292: مكتبات الـPDF الثابتة (vendor/ — جافاسكربت رخص MIT، ليست بيانات مستخدم)
+     بيتحفظ كاش-أول — عشان إقلاع أوفلاين بالـPWA ما يسّبش «ملفات PDF مش محمّلة»
+     (بلاغ المالك الحرفي: «الpdf مش بيتخلق»). باقي الطلبات كلّها network-only بالحرف —
+     مافيش أي كاش لبيانات المستخدم زي ما هو. */
+  const u = new URL(event.request.url);
+  if (event.request.method === "GET" && u.origin === self.location.origin &&
+    u.pathname.indexOf("/vendor/") === 0) {
+    event.respondWith(
+      (async () => {
+        try {
+          const c = await caches.open("mizan-vendor-" + SW_VERSION);
+          const hit = await c.match(u.pathname);
+          if (hit) return hit;
+          const r = await fetch(event.request);
+          if (r && r.ok) { try { await c.put(u.pathname, r.clone()); } catch (e) { } }
+          return r;
+        } catch (e) {
+          try { return fetch(event.request); } catch (e2) { return Response.error(); }
+        }
+      })()
+    );
+    return;
+  }
   // network-only: مرّر الطلب للشبكة من غير كاش.
   // ده بيحقّق شرط "service worker له fetch handler" المطلوب للتثبيت،
   // ومن غير ما يغيّر سلوك التحميل/الكاش الحالي للتطبيق.
