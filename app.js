@@ -2852,9 +2852,26 @@
     // («لسه ما وصلش للسحابة — متقفلش البرنامج») كانت بتخوّفه وبتامره، والحفظ على الجهاز
     // بقى دايمًا سابق الرفعة و الطابور دايمًا على القرص (بناء 241) ⇒ قفل البرنامج مش خطر.
     // الشريط ما اتشالوش ومافيش إخفاء: صمت التعديلات المعلقة = نفس جريمة بناء 240.
-    el.textContent = online
-      ? "🔄 " + n + " تعديل بيتحدّث على السحابة دلوقتي — شغلك على جهازك محفوظ."
-      : "💾 " + n + " تعديل محفوظ على جهازك — ينزل السحابة لوحده أول ما الشبكة ترجع.";
+    // 📤 بناء 291: زرار «🧾 طابور الفواتير» جوّه الشريط نفسه — يفتح شاشة الطابور (قراءة).
+    el.textContent = "";
+    let msgEl = null;
+    try {
+      msgEl = document.createElement("span");
+      msgEl.textContent = online
+        ? "🔄 " + n + " تعديل بيتحدّث على السحابة دلوقتي — شغلك على جهازك محفوظ."
+        : "💾 " + n + " تعديل محفوظ على جهازك — ينزل السحابة لوحده أول ما الشبكة ترجع.";
+      el.appendChild(msgEl);
+      const btn = document.createElement("button");
+      btn.className = "btn small";
+      btn.type = "button";
+      btn.id = "btnUpQueue";
+      btn.style.marginInlineStart = "8px";
+      btn.textContent = "🧾 طابور الفواتير";
+      btn.addEventListener("click", function () { try { openInvQueue(); } catch (e) { } });
+      el.appendChild(btn);
+    } catch (e) {
+      try { el.textContent = online ? "🔄 تعديلات بتتحدّث — محفوظة على جهازك." : "💾 تعديلات محفوظة على جهازك — ترفع أول ما الشبكة ترجع."; } catch (e2) { }
+    }
   }
   // 🧱 إعادة المحاولة الدورية: الطابور كان بيرجع الصفوف لـ dirty بصمت ومافيش حد بينادي queue() تاني
   //    غير «زرّ online» بتاع المتصفح. من هنا المراقب نفسه هو اللي بيدق — فما يبقى معلّق لأبد.
@@ -2898,6 +2915,145 @@
       try { syncToLocalDisk(); } catch (e) { }
     });
   } catch (e) { }
+
+  /* ================== 📤 بناء 291 — شاشة الطابور للفواتير (طلب المالك بالحرف: «ابدا») ==================
+     * العلة: الشريط اليومي (240) يقول «N تعديل معلّق» من غير ما يقول **إيه** هو المعلّق ولا **ليه** فشل.
+     * الشاشة بتقس الفواتير (مبيعات · مشتريات · مرتجع بيع · مرتجع شراء) لكل صف من **مصادر الرفع
+       نفسها** — مافيش تخمين ولا مصدر تاني للحقيقة:
+         ✅ رُفعت = «وصل السحابة فعلًا» (ختم 256 syncedHas) أو البصمة في ذاكرة الطابور (snap).
+         🕐 مستني = في dirty / removed ومش في قايمة الفشل (والحذف المعلّق كذلك).
+         ❌ فشل   = في W.pushFailed[name] (مقيس 243: «السطر البايظ مش بيحجز الجدول»).
+     * زرار إعادة الرفع = نفس النبضة الموجودة (queue(0) للطابور اللي فيه معلّق) — مافيش أرضية
+       رفع جديدة ولا كتابة سحابية إضافية. أول ما الشبكة ترجع الرفع يتنفّذ لوحده كمان.
+     * الشاشة شغّالة أوفلاين (قراءة محلية فقط) وعلى الموبايل زي الديسكتوب. */
+  const INV_QUEUE_TABLES = [
+    { name: "sales", pusher: salesPusher, label: "المبيعات" },
+    { name: "purchases", pusher: purchasePusher, label: "المشتريات" },
+    { name: "sale_returns", pusher: saleReturnPusher, label: "مرتجع البيع" },
+    { name: "purchase_returns", pusher: purchaseReturnPusher, label: "مرتجع الشراء" }
+  ];
+  function invQFailedArr(name) {
+    let a = null;
+    try {
+      const w = window.CLOUD && window.CLOUD.state;
+      a = (w && w.pushFailed && w.pushFailed[name]) || null;
+    } catch (e) { a = null; }
+    return Array.isArray(a) ? a.map(Number) : [];
+  }
+  function invQState(t, r) {
+    const id = Number(r.id);
+    const d = t.pusher.state;
+    if (invQFailedArr(t.name).indexOf(id) >= 0) return "fail";
+    if (d.removed && d.removed.has(id)) return "drop";
+    if (d.dirty && d.dirty.has(id)) return "wait";
+    try { if (typeof syncedHas === "function" && syncedHas(t.name, id)) return "ok"; } catch (e) { }
+    try { if (d.snap && d.snap.has(id)) return "ok"; } catch (e) { }
+    return "wait";
+  }
+  function invQChip(s) {
+    return s === "ok" ? '<span class="invq-st ok">✅ رُفعت</span>'
+      : s === "fail" ? '<span class="invq-st fail">❌ فشل</span>'
+      : s === "drop" ? '<span class="invq-st wait">🕐 حذفها مستني</span>'
+      : '<span class="invq-st wait">🕐 مستني</span>';
+  }
+  function ensureInvQueueModal() {
+    let ov = document.getElementById("mUpQueue");
+    if (ov) return ov;
+    ov = document.createElement("div");
+    ov.className = "modal-overlay";
+    ov.id = "mUpQueue";
+    ov.hidden = true;
+    ov.innerHTML =
+      '<div class="modal modal-tall" id="mUpQueueBox">' +
+      '  <h3>📤 طابور رفع الفواتير</h3>' +
+      '  <div class="invq-chips" id="invQSummary"></div>' +
+      '  <div class="invq-body" id="invQBody"></div>' +
+      '  <div class="invq-actions">' +
+      '    <button id="btnInvQRetry" class="btn green" type="button">🔄 إعادة رفع المعلّق/الفاشل</button>' +
+      '    <button id="btnInvQClose" class="btn" type="button">إغلاق</button>' +
+      '  </div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    $("#btnInvQClose").addEventListener("click", function () { hideModal("mUpQueue"); });
+    $("#btnInvQRetry").addEventListener("click", function () { try { invQueueRetry(); } catch (e) { } });
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) hideModal("mUpQueue"); });
+    return ov;
+  }
+  function renderInvQueue() {
+    const ov = ensureInvQueueModal();
+    const sum = $("#invQSummary"), body = $("#invQBody");
+    if (!sum || !body) return;
+    const online = isUpOnline();
+    let nOk = 0, nWait = 0, nFail = 0, nDrop = 0;
+    let html = "";
+    INV_QUEUE_TABLES.forEach(function (t) {
+      let rows = [];
+      try {
+        /* نفس مصدر قائمة الصفوف اللي الطابور شايله — عيّنة الحقيقة الوحيدة */
+        rows = (INV_QUEUE_TABLES_META[t.name] || function () { return []; })();
+      } catch (e) { rows = []; }
+      let sec = "";
+      rows.forEach(function (r) {
+        if (!r || r.id == null) return;
+        const s = invQState(t, r);
+        if (s === "ok") nOk++; else if (s === "fail") nFail++; else if (s === "drop") nDrop++; else nWait++;
+        const no = invNoOf(r);
+        const date = String(r.date || "").slice(0, 10);
+        const party = String((t.name === "purchases" || t.name === "purchase_returns") ? (r.supplierName || "") : (r.customerName || "")) || "—";
+        const amt = Number(r.grandTotal);
+        sec += '<div class="invq-row' + (s === "fail" ? " fail" : "") + '">' +
+          '<span class="invq-no">' + esc(no || "بلا رقم") + '</span>' +
+          '<span class="invq-meta">' + esc(date) + " · " + esc(party) + " · " + esc(fmt(isNaN(amt) ? 0 : amt)) + '</span>' +
+          invQChip(s) + '</div>';
+      });
+      if (sec) {
+        html += '<div class="invq-sec">' + t.label + ' (' + rows.filter(function (r) { return r && r.id != null; }).length + ')</div>' + sec;
+      }
+    });
+    sum.innerHTML =
+      '<span class="invq-chip ok">✅ مرفوعة: ' + nOk + '</span>' +
+      '<span class="invq-chip wait">🕐 مستنية: ' + (nWait + nDrop) + '</span>' +
+      '<span class="invq-chip fail">❌ فاشلة: ' + nFail + '</span>' +
+      '<span class="invq-chip ' + (online ? "ok" : "warn") + '">' + (online ? "🌐 متصل" : "📴 أوفلاين — الرفع أول ما الشبكة ترجع") + '</span>';
+    body.innerHTML = html ||
+      '<div class="invq-empty">مافيش فواتير مفتوحة في الطابور حاليًا — كل الشغل محفوظ.</div>';
+    const btnR = $("#btnInvQRetry");
+    if (btnR) btnR.disabled = (nWait + nDrop + nFail) === 0;
+  }
+  /* ممرّر قوائم الصفوف لعينة الحقيقة — نفس القوائم اللي الطوابير نفسها بتتغذي منها بالحرف */
+  const INV_QUEUE_TABLES_META = {
+    sales: function () { return sales || []; },
+    purchases: function () { return purchases || []; },
+    sale_returns: function () { return saleReturns || []; },
+    purchase_returns: function () { return purchaseReturns || []; }
+  };
+  let invQueueTimer = null;
+  function openInvQueue() {
+    ensureInvQueueModal();
+    renderInvQueue();
+    showModal("mUpQueue");
+    if (!invQueueTimer) invQueueTimer = setInterval(function () {
+      try {
+        const ov = document.getElementById("mUpQueue");
+        if (!ov || ov.hidden) { clearInterval(invQueueTimer); invQueueTimer = null; return; }
+        renderInvQueue();
+      } catch (e) { }
+    }, 5000);
+  }
+  function invQueueRetry() {
+    let n = 0;
+    INV_QUEUE_TABLES.forEach(function (t) {
+      try {
+        if (t.pusher.state.dirty.size || t.pusher.state.removed.size) { t.pusher.queue(0); n++; }
+      } catch (e) { }
+    });
+    toast(n ? (isUpOnline() ? "إعادة الرفع مقرّرة — بتنفّذ الآن." : "إعادة مقرّرة — تنفّذ أول ما الشبكة ترجع.")
+      : "مافيش حاجة معلّقة — كله واصل.", n ? "success" : "info");
+    setTimeout(function () { try { renderInvQueue(); } catch (e) { } }, 600);
+    setTimeout(function () { try { renderInvQueue(); } catch (e) { } }, 2500);
+  }
+  /* تشخيص/قياس بالكونسول — نفس أسلوب mizanPendingBreakdown (قراءة فقط) */
+  window.mizanInvQueue = { open: openInvQueue, render: renderInvQueue, tables: INV_QUEUE_TABLES, state: invQState };
 
   function salesSyncInit() { salesPusher.init(); }
   function salesMarkAllDirty() { salesPusher.markAllDirty(); }

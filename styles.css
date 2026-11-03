@@ -3148,3 +3148,25 @@ tr.jrn-reversed td { color: var(--text-secondary); text-decoration: line-through
 .pay-tbl td.amt { width: 110px; text-align: left; font-weight: bold; white-space: nowrap; }
 .pay-tbl tr.zero td { color: var(--text-muted); }
 .pay-tbl tr.tot td { border-top: 2px solid var(--primary-dark); border-bottom: none; font-weight: bold; color: var(--primary-dark); }
+
+/* 📤 بناء 291 — شاشة الطابور للفواتير (طلب المالك بالحرف: «ابدا»).
+   حالة الصف مقيسة من نفس مصادر الرفع (syncedHas / dirty / pushFailed):
+   ✅ مرفوعة (success) · 🕐 مستنية (warning) · ❌ فاشلة (danger). الديسكتوب والموبايل نفس الشكل. */
+.invq-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 6px; }
+.invq-chip { background: var(--bg); border: 1.5px solid var(--border); border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: bold; color: var(--text-secondary); }
+.invq-chip.ok { color: var(--success); border-color: var(--success); }
+.invq-chip.fail { color: var(--danger); border-color: var(--danger); }
+.invq-chip.warn { color: var(--warning); border-color: var(--warning); }
+.invq-body { max-height: 52vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 4px 10px; -webkit-overflow-scrolling: touch; }
+.invq-sec { font-weight: bold; color: var(--primary-dark); font-size: 12.5px; border-bottom: 2px solid var(--primary-dark); padding: 8px 0 4px; }
+.invq-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 1px; border-bottom: 1px dashed var(--border); font-size: 12.5px; }
+.invq-row:last-child { border-bottom: none; }
+.invq-row.fail { background: rgba(239,68,68,.08); border-radius: 6px; }
+.invq-no { font-weight: bold; white-space: nowrap; }
+.invq-meta { color: var(--text-secondary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.invq-st { font-weight: bold; white-space: nowrap; font-size: 11.5px; }
+.invq-st.ok { color: var(--success); }
+.invq-st.wait { color: var(--warning); }
+.invq-st.fail { color: var(--danger); }
+.invq-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.invq-empty { padding: 18px 6px; text-align: center; color: var(--text-secondary); }
