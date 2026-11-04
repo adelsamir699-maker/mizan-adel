@@ -7700,7 +7700,16 @@
   }
 
   function warehouseList() {
-    /* 🛡 بناء 268: مندوب السيارة قائمة مخازنه = عربيته بس (مش قابل للتغيير في الرحلة). */
+    /* 🛡 بناء 268: مندوب السيارة قائمة مخازنه = عربيته بس (مش قابل للتغيير في الرحلة).
+       🧾 بناء 294: وضع «البيع من السيارة على شاشة البرنامج» (المالك فتح رحلة «بيع») —
+       نفس القيد بالحرف: المخزن = عربية الرحلة، عشان الفاتورة تتسجّل على العربية الصح
+       والكمية تتخصم من حمولتها. خارج الوضع ده ⇒ قائمة مخازن الشركة زي ما هي. */
+    try {
+      if (vanInVanSaleMode()) {
+        const cn = String(vanSaleModeCar() || "").trim();
+        if (cn) return [cn];
+      }
+    } catch (e) { }
     try {
       if (vanIsRepUser()) {
         const cn = vanRepCarNames();
@@ -7920,7 +7929,7 @@
 
     /* 🛡 بناء 268: شاشة «الأصناف والمخزون» عند المندوب = أصناف عربيته بس،
        وعمود الرصيد = كمية عربيته، والتفصيل باسم عربيته (مش كل المخازن). */
-    const filtered = vanRepVisibleProducts(productsFilteredList());
+    const filtered = vanRepVisibleProducts(productsFilteredList(), true);
     const repOn = vanIsRepMode();
 
     filtered.forEach((p) => {
@@ -9540,14 +9549,69 @@
         Number(r.id) !== Number(skipId || 0);
     }) || null;
   }
-  function invoiceNoGuard(kind, no, skipId) {
+  /* 🧾 بناء 293 (بلاغ شركة تيست): الرسالة وحدها لم تعد كافية — المالك ما يضلش يعيد
+     كتابة الرقم بيدو. بعد الرفض الحارس يُصلح الخانة تلقائيًا بالرقم المقترح
+     (fieldId محدد من المُنادي) والرسالة تعلِم أنه أصبح جاهزًا للضغط «حفظ». */
+  function invoiceNoGuard(kind, no, skipId, fieldId) {
     const dup = invoiceNoTaken(kind, no, skipId);
     if (!dup) return true;
     const next = invNextNumber(kind, todayISO());
+    const fld = fieldId ? document.getElementById(fieldId) : null;
+    let fixed = "";
+    if (fld) {
+      fld.value = next;
+      fixed = "\n✏️ عدّلنا الخانة تلقائيًا بالرقم المقترح — اضغط «حفظ» من جديد.";
+    }
     toast("🚫 رقم الفاتورة " + no + " مستخدم بالفعل (فاتورة #" + dup.id + " — " +
-      (dup.invoiceDate || dup.date || "") + ").\nاقتراح: " + next +
-      " — أو اضغط «فاتورة جديدة» لتصفير النموذج قبل الحفظ.", "error");
+      (dup.invoiceDate || dup.date || "") + ").\nاقتراح: " + next + fixed +
+      "\n🔧 وللتغيير في فاتورة محفوظة: شاشة الفواتير ← «🔧 تغيير الرقم».", "error");
     return false;
+  }
+
+  /* 🧾 بناء 294 (قرار المالك 03/11 بالحرف: «يخد الرقم الفاضي ويحفظ لوحده»):
+     رقم فاتورة **مضمون التفرّد وقت الحفظ** — مش من خانة ممكن تكون اتقديمة.
+     العلة المقاسة: المسارين بيقرأوا `$("#txtInvoiceNo").value || nextInvoiceNumber()`
+     (11031 و18907) فالخانة ليها الأسبقية، والخانة دي بتتعبّى **مرة واحدة** أول ما شاشة
+     البيع تتفتح (`posInitialized` عند 4994) ومن ساعتها مافيش حاجة تعيد حسابها غير حفظ
+     ناجح أو زرار «فاتورة جديدة» — وعلى الموبايل التطبيق يقلع والداتا لسه بتنزل، فالتُرقيم
+     بيتحسب على قائمة ناقص وبعدين كل ضغطة حفظ ترفض برسالة «مستخدم بالفعل».
+     كمان `invoiceNoGuard` كان بيرشّح `invNextNumber` اللي بيقرا نفس البيانات المحلية،
+     فالاقتراح نفسه ممكن يكون مستخدم. الدالة دي بتتقدّم ترقيم واحد-واحد لحد أقرب رقم
+     **فاضي فعلاً** وبتكتبه في الخانة ⇒ الحفظ يكمّل لوحده بلا مقاطعة المندوب. */
+  function invNextFreeNumber(kind, dateISO, fieldId, maxTries) {
+    const stamp = dateISO || todayISO();
+    const base = invSeqBase(kind, stamp);
+    const limit = Math.max(1, Number(maxTries) || 400);
+    for (let seq = base + 1, tries = 0; tries < limit; seq++, tries++) {
+      const no = invNumberFor(kind, seq, stamp);
+      if (invoiceNoTaken(kind, no, 0)) continue;
+      const fld = fieldId ? document.getElementById(fieldId) : null;
+      if (fld) fld.value = no;
+      return { no: no, seq: seq, takenBefore: seq - (base + 1) };
+    }
+    /* احتياطي: 400 رقم ورا بعض مستخدمين (مستحيل عمليًا) ⇒ نرجّع الرقم اللي الحارس
+       `invoiceNoGuard` هيرفضه برسالة ودّية بدل ما نسكّت حفظًا مكسورًا. */
+    return { no: invNumberFor(kind, base + 1, stamp), seq: base + 1, takenBefore: 0 };
+  }
+
+  /* 🧾 بناء 294: رسالة ودّية بس — المندوب يعرف إن الرقم اتظبط لوحده (بلا تشخيص تقني). */
+  function posNoAutoFixedMsg(no) {
+    try { toast("🧾 رقم الفاتورة كان مشغول على جهاز تاني — كمّلناه على أقرب رقم فاضي: " + no, "info"); } catch (e) { }
+  }
+
+  /* 🧾 بناء 294: لو بيانات السحابة نزّلت فاتورة بتطابق رقم الخانة (الحالة اللي وقّعت
+     المندوب في الحلقة)، الخانة تتبدّل لأقرب رقم فاضي فورًا — والمندوب ما يحسش إنه واقف.
+     بتتنادى من `refreshAfterPull` (بعد أي نزول فعلى لجدول المبيعات) ومن `posNewInvoice`. */
+  function posRefreshInvoiceNoIfTaken() {
+    try {
+      const fld = document.getElementById("txtInvoiceNo");
+      if (!fld) return;
+      const cur = String(fld.value || "").trim();
+      if (!cur) return;
+      if (!invoiceNoTaken("sale", cur, 0)) return;
+      const d = document.getElementById("dtpDate");
+      invNextFreeNumber("sale", (d && d.value) || todayISO(), "txtInvoiceNo");
+    } catch (e) { }
   }
 
   function activeDiscountPct(p) {
@@ -9624,6 +9688,10 @@
     fillPosDatalist();
     posUpdatePartyBalance("sale");
     try { applyPosRepMode(); } catch (e) { }
+    /* 🧾 بناء 294: كل ما بيانات تنزل أو الشاشة تتعاد ترميمها (`renderSalesLookups` بتتنادى
+       من `refreshAfterPull` ومن فتح الشاشة)، لو رقم الفاتورة اللي في الخانة بقى مشغول
+       يتبدّل بأقرب رقم فاضي — وإلا المندوب يفضل محبوس في «مستخدم بالفعل». */
+    try { posRefreshInvoiceNoIfTaken(); } catch (e) { }
   }
 
   /* 🧾 بناء 220 (بلاغ المالك 21/10): اقتراحات الأصناف مرتّبة بـ**كمية المخزن المختار في
@@ -9863,8 +9931,10 @@
   function posNewInvoice() {
     posItems = [];
     productSuggestHide("sale");
-    $("#txtInvoiceNo").value = nextInvoiceNumber();
+    /* 🧾 بناء 294: التاريخ الأول، وبعدين الرقم = أقرب رقم **فاضي فعلاً** (كان
+       `nextInvoiceNumber()` بس، فأي رقم مشاغلته البيانات المحلية الجديدة كان بيرجّع رفض). */
     $("#dtpDate").value = todayISO();
+    invNextFreeNumber("sale", todayISO(), "txtInvoiceNo");
     $("#cmbPaymentMethod").value = "نقداً";
     $("#txtPosDiscount").value = "0";
     $("#txtPosSearch").value = "";
@@ -9992,11 +10062,11 @@
       /* 🚚 بناء 274: مندوب السيارة **ما بيزوّدش رصيد** من الموبايل — رصيده هو حمولة
          عربيته، والتحميل مسؤولية صاحب الشركة من شاشة الرحلات. */
       try {
-        if (vanIsRepUser()) {
+        if (vanInVanSaleMode()) {
           /* 🧾 بناء 283: رسالتان — صنف **مش في حمولة** رحلة عربيته المفتوحة أصلًا، أو صنف
              في الحمولة لكن المتبقي منه أقل من المطلوب. (بناء 282 كان بيرشّح رسالة واحدة.) */
           const nm = prod.nameAr || prod.code || "";
-          const carNm = vanRepPosCar() || "المندوب";
+          const carNm = vanSaleModeCar() || "المندوب";
           if (!vanRepInLoad(prod)) {
             toast("الصنف («" + nm + "») مش في حمولة رحلة سيارة " + carNm +
               " الحالية — التحميل بيتم من صاحب الشركة من شاشة الرحلات.", "warning");
@@ -10949,7 +11019,7 @@
        لفاتورة سيارة (عهدة/حمولة/نقدية) على رحلة المندوب المفتوحة، والمخزون بيتخصم من
        عربيته. (المالك/صاحب الشركة: `vanIsRepUser()` = false ⇒ المسار العادي كما هو.) */
     try {
-      if (vanIsRepUser()) { savePosInvoiceAsVan(); return; }
+      if (vanInVanSaleMode()) { savePosInvoiceAsVan(); return; }
     } catch (e) { }
     if (posItems.length === 0) {
       toast("يرجى إضافة أصناف إلى الفاتورة أولاً.", "warning");
@@ -11019,10 +11089,17 @@
     }
     // 🆕 بناء 191: آجل + «مدفوع» = سؤال صريح قبل أي أثر (بلاغ شركة محمد رافت)
     if (payment === "آجل" && !ajalPaidGate("sale", t)) return;
-    const invNo = $("#txtInvoiceNo").value || nextInvoiceNumber();
-    // 🧱 بناء 257 (بند #9): الفحص **قبل أي أثر** (مخزون/خزينة/قيد) — رقم مستخدم = رفض برسالة
-    if (!invoiceNoGuard("sale", invNo)) return;
     const invDate = $("#dtpDate").value || todayISO();
+    /* 🧾 بناء 294 (قرار المالك: «يخد الرقم الفاضي ويحفظ لوحده»): الرقم يتحسب **وقت الحفظ**
+       وعلى تاريخ الفاتورة نفسها — أقرب رقم فاضي فعلاً، وبيتكتب في الخانة. (كان بيقرأ
+       `$("#txtInvoiceNo").value` أولًا، والخانة بتتعبّى مرة واحدة أول ما الشاشة تتفتح ⇒
+       على الموبايل رقم قديم يتكرر والرفض يعيد نفسه كل ضغطة.) */
+    const _no294 = invNextFreeNumber("sale", invDate, "txtInvoiceNo");
+    const invNo = _no294.no;
+    if (_no294.takenBefore > 0) posNoAutoFixedMsg(invNo);
+    // 🧱 بناء 257 (بند #9): الفحص **قبل أي أثر** (مخزون/خزينة/قيد) — رقم مستخدم = رفض برسالة
+    // 🧾 بناء 293: الرفض يُصلح الخانة تلقائيًا بالرقم المقترح
+    if (!invoiceNoGuard("sale", invNo, 0, "txtInvoiceNo")) return;
     const invoice = {
       // 🟥 بناء 240 (F2): رقم الفاتورة من الأرضية الدائمة `idFloorTake` — ممنوع
       // «أكبر id + 1» لأنه بعد مسح الحالة كان يعيد رقمًا الـuuid بتاعه على السحابة.
@@ -11740,7 +11817,8 @@
     if (payment === "آجل" && !ajalPaidGate("purchase", t)) return;
     const invNo = $("#txtPInvNo").value || nextPurchaseInvoiceNumber();
     // 🧱 بناء 257 (بند #9): نفس حارس البيع — الفحص قبل أي أثر على المخزون/الخزينة/القيد
-    if (!invoiceNoGuard("purchase", invNo)) return;
+    // 🧾 بناء 293: الرفض يُصلح الخانة تلقائيًا بالرقم المقترح
+    if (!invoiceNoGuard("purchase", invNo, 0, "txtPInvNo")) return;
     const invDate = $("#dtpPDate").value || todayISO();
     const invoice = {
       // 🟥 بناء 240 (F2): رقم من الأرضية الدائمة (شوف فاتورة البيع)
@@ -12368,7 +12446,117 @@
     $("#btnInvActDel").hidden = !canDeleteInvoices();
     $("#btnInvActDelLine").hidden = !(isSales && canDeleteInvoices());   // 🗑️ بناء 287: حذف منتج منها — مبيعات بس
     $("#btnInvActRet").hidden = !(canManageReturns() && !allRet);
+    // 🧾 بناء 293: زرار «🔧 تغيير الرقم» — لصاحب الشركة والمالك فقط (نفس بوابة الحذف)
+    $("#btnInvActNoFix").hidden = !canFixInvoiceNos();
     showModal("mInvActions");
+  }
+
+  /* =========================== 🧾 بناء 293 ===========================
+     أداة المالك: «🔧 تغيير الرقم» — تصليح ذاتي لرقم فاتورة محفوظة (صفر SQL).
+     الطلب الحرفي: «مازال بيقول لى رقم الفاتورة مستخدم بالفعل… عايز الحل علشان
+     لو اتكررت تانى يكون التصليح فى ايدى». القياس أثبت: مافيش أي مسار تغيير لرقم
+     فاتورة محفوظة، والحارس (257) يرفض دون إصلاح القديم. الأداة:
+       • نفس بوابة صاحب الشركة والمالك (زي حذف الفاتورة) — فحص ثانٍ جوه الدالة.
+       • تتشيك من التفرّد قبل أي لمس: الرقم الجديد match مع فاتورة تانية = رفض.
+       • تعرض فواتير مكرّرة بنفس الرقم (إن وُجدت) عشان المالك يشوف التصادم بعينه.
+       • الحفظ = تحديث arrays + saveSales()/savePurchases() (رفع عادي مع الطابور
+         والمرآة والديسك) — مافيش أي كتابة سحابية مباشرة من هنا.
+       • آثار القيد/الطباعة/المرتجع تُقرأ من نفس السطر بالمفتاح id+invoiceNumber —
+         رينوم الرقم نصيًا ما يمسّش أي أثر محاسبي (الرقم حقل نسخي). ==================*/
+  function canFixInvoiceNos() { return isCompanyOwnerAcct() || isSuperAcct(); }
+  let invFixCtx = null;
+  function openInvNoFix(inv, isSales) {
+    if (!inv) return;
+    if (!canFixInvoiceNos()) {
+      toast("🔧 «تغيير الرقم» متاح لصاحب الشركة والمالك فقط.", "error");
+      return;
+    }
+    invFixCtx = { inv: inv, isSales: isSales };
+    const kind = isSales ? "sale" : "purchase";
+    const arr = isSales ? sales : purchases;
+    const no = String(inv.invoiceNumber || inv.invoiceNo || "");
+    $("#invFixTitle").textContent = isSales
+      ? "🔧 تغيير رقم فاتورة مبيعات"
+      : "🔧 تغيير رقم فاتورة مشتريات";
+    $("#invFixInfo").textContent =
+      "#" + inv.id + " · بتاريخ " + (inv.invoiceDate || inv.date || "-") + " · " +
+      (isSales ? (inv.customerName || inv.customer || "-") : (inv.supplierName || inv.supplier || "-")) +
+      " · الإجمالي " + fmt(inv.grandTotal) + " ج.م";
+    // الرقم المقترح = نفس محرّك الترقيم 290/254
+    $("#inpInvFixNo").value = invNextNumber(kind, inv.invoiceDate || inv.date || todayISO());
+    // كشف التكرار بنفس الرقم الحالي: أختَ من السطر نفسه (skip = مؤشر الفاتورة محلّ الإصلاح)
+    const dups = (arr || []).filter(function (r) {
+      return r && Number(r.id) !== Number(inv.id) &&
+        String(invNoOf(r) || "").trim() === no;
+    });
+    const dupsEl = $("#invFixDups");
+    if (dups.length) {
+      dupsEl.hidden = false;
+      $("#invFixDupsList").textContent = dups.map(function (r) {
+        return "#" + r.id + " (" + (r.invoiceDate || r.date || "-") + " — " +
+          (isSales ? (r.customerName || r.customer || "-") : (r.supplierName || r.supplier || "-")) + ")";
+      }).join(" · ");
+    } else {
+      dupsEl.hidden = true;
+      $("#invFixDupsList").textContent = "";
+    }
+    // انقضاء فحص التفرّد باقٍ ظاهرًا أولًا (صفر تنفيذ قبل «تنفيذ»)
+    $("#invFixStatus").textContent = "";
+    $("#invFixStatus").className = "login-sub";
+    showModal("mInvNoFix");
+  }
+  // فحص فوري أثناء الكتابة — برقم الفاتورة المستهدفة كـskip (تعديل نفسه مسموح)
+  function invFixCheckNo() {
+    if (!invFixCtx) return;
+    const n = String($("#inpInvFixNo").value || "").trim();
+    const st = $("#invFixStatus");
+    if (!n) { st.textContent = "الرقم مطلوب."; st.className = "login-msg err"; return; }
+    if (n === String(invFixCtx.inv.invoiceNumber || invFixCtx.inv.invoiceNo || "").trim()) {
+      st.textContent = "هذا هو نفس الرقم الحالي — اكتب رقمًا مختلفًا أو الرقم المقترح.";
+      st.className = "login-sub";
+      return;
+    }
+    const dup = invoiceNoTaken(invFixCtx.isSales ? "sale" : "purchase", n, invFixCtx.inv.id);
+    if (dup) {
+      st.textContent = "الرقم مستخدم بالفعل في فاتورة #" + dup.id + " (" + (dup.invoiceDate || dup.date || "-") + ") — اختار رقمًا آخر.";
+      st.className = "login-msg err";
+    } else {
+      st.textContent = "✓ الرقم متاح، مصرّح بالتنفيذ.";
+      st.className = "login-msg ok";
+    }
+  }
+  function applyInvNoFix() {
+    if (!invFixCtx) return;
+    if (!canFixInvoiceNos()) {
+      toast("🔧 «تغيير الرقم» متاح لصاحب الشركة والمالك فقط.", "error");
+      return;
+    }
+    const inv = invFixCtx.inv, isSales = invFixCtx.isSales;
+    const n = String($("#inpInvFixNo").value || "").trim();
+    if (!n) { toast("اكتب الرقم الجديد أولًا.", "warning"); return; }
+    if (n === String(inv.invoiceNumber || inv.invoiceNo || "").trim()) {
+      toast("هذا هو نفس الرقم الحالي.", "warning");
+      return;
+    }
+    // حارس التفرّد نفسه (نمط 257): skip = الفاتورة المُصلَّحة
+    if (!invoiceNoGuard(isSales ? "sale" : "purchase", n, inv.id, null)) return;
+    const oldNo = String(inv.invoiceNumber || inv.invoiceNo || "");
+    // 🎯 اللمس الوحيد: الحقلان النسخيان (نفس مسار الحفظ في 11030-11031)
+    inv.invoiceNumber = n;
+    inv.invoiceNo = n;
+    // الرفع العادي (طابور المزامنة + المرآة + الديسك — بداخل saveSales/savePurchases) — صفر SQL؛ صفر اتصال مباشر
+    const saving = isSales ? saveSales() : savePurchases();
+    // مرآة العدّاد (نفس إقرار مسارات الحفظ) — الرقم الجديد لو أعلى يُرفع للسحابة بمعرّفه
+    try { commitInvoiceSeq(isSales ? "sale" : "purchase", invEncodedOf(n)); } catch (e) { }
+    invFixCtx = null;
+    hideModal("mInvNoFix");
+    if (isSales) renderInvoiceQuery();   // التجديد الظاهري على نفس الجدول
+    const doneMsg = "✓ غيّرنا رقم الفاتورة من «" + oldNo + "» إلى «" + n + "»";
+    Promise.resolve(saving || null).then(function () {
+      toast(doneMsg + " — واتم الرفع العادي.", "success");
+    }).catch(function () {
+      toast(doneMsg + " — الرفع في الطابور وسيُعاد تلقائيًا.", "success");
+    });
   }
 
   /* 🆕 سطر ٢ من طلب المالك (09/10): «بالنسبة للاستعلام عن الفواتير خلال فترة محددة من و الى
@@ -12990,7 +13178,9 @@
           '<td>' + esc(inv.paymentMethod) + '</td>' +
           '<td class="cell-actions"><button class="btn small sky" type="button" data-act="print">🖨️ طباعة</button>' +
           (canRet && !allRet ? ' <button class="btn small green" type="button" data-act="ret">🔁 مرتجع</button>' : '') +
-          (canDel ? ' <button class="btn small red" type="button" data-act="del">🗑️ حذف</button>' : '') + '</td>';
+          (canDel ? ' <button class="btn small red" type="button" data-act="del">🗑️ حذف</button>' : '') +
+          /* 🧾 بناء 293: أداة المالك — «🔧 تغيير الرقم» لصاحب الشركة والمالك فقط */
+          (canFixInvoiceNos() ? ' <button class="btn small teal" type="button" data-act="numfix">🔧 تغيير الرقم</button>' : '') + '</td>';
         tr.dataset.iid = inv.id;
         tr.dataset.typ = isSales ? "s" : "p";
         tbody.appendChild(tr);
@@ -16201,7 +16391,6 @@ id: nextVoucherId(),
 
   const VAN_CONTROL_CODE = "1.1.6";
   const VAN_CONTROL_NAME = "ذمم مناديب البيع";
-  let vanSaleDraft = null;
   let vanRepCache = null;
 
   function nextCarTripId() {
@@ -16587,7 +16776,9 @@ id: nextVoucherId(),
   function vanRepAvailTotal(p) {
     if (!p) return 0;
     try {
-      const t = vanRepOpenTrip();
+      /* 🧾 بناء 294: الرحلة من `vanSaleModeTrip()` — رحلته المفتوحة للمندوب، والرحلة اللي
+         المالك دوس «بيع» عليها في وضع البيع من السيارة. بلا رحلة ⇒ صفر (زي 283 بالحرف). */
+      const t = vanSaleModeTrip();
       if (!t) return 0;
       const car = String(t.carName || "").trim() || vanRepPosCar();
       return vanRepAvailQty(p, car, t);
@@ -16597,15 +16788,18 @@ id: nextVoucherId(),
      و«الكمية أكبر من المتبقي» — قراءة بس، صفر أثر على المخزون.) */
   function vanRepInLoad(p) {
     try {
-      const t = vanRepOpenTrip();
+      const t = vanSaleModeTrip();
       if (!t || !p) return false;
       return Number(vanTripLoadedQty(t, p.id)) > 0;
     } catch (e) { return false; }
   }
-  /* قائمة أصناف المندوب: اللي ليه متبقي في **رحلة عربيته المفتوحة** بس. غير المندوب ⇒ القائمة زي ما هي. */
-  function vanRepVisibleProducts(list) {
+  /* قائمة أصناف المندوب: اللي ليه متبقي في **رحلة عربيته المفتوحة** بس. غير المندوب ⇒ القائمة زي ما هي.
+     🧾 بناء 294: في شاشات البيع بنوسّع الفلتر لوضع «البيع من السيارة» بتاع المالك كمان
+     (`vanInVanSaleMode`)؛ وشاشة «المخزون» بتفضل على القراءة القديمة (`onlyRep = true`)
+     عشان المالك ما يلاقيش كشف الأصناف بتاعه اتقصّ وهو بيشوف العربية. */
+  function vanRepVisibleProducts(list, onlyRep) {
     try {
-      if (!vanIsRepUser()) return list;
+      if (onlyRep ? !vanIsRepUser() : !vanInVanSaleMode()) return list;
       return (list || []).filter((p) => vanRepAvailTotal(p) > 0);
     } catch (e) { return list; }
   }
@@ -16618,7 +16812,9 @@ id: nextVoucherId(),
      إن السالب مقصود عشان حذف الفاتورة يرجّع بالظبط. */
   function vanPosAvail(p, wh) {
     try {
-      if (vanIsRepUser()) return vanRepAvailTotal(p);
+      /* 🧾 بناء 294: وضع البيع من السيارة (المندوب **أو** المالك على رحلة مختارة)
+         ⇒ نفس السقف: متبقي حمولة الرحلة. غير الوضع ده ⇒ `stockAt` بالحرف. */
+      if (vanInVanSaleMode()) return vanRepAvailTotal(p);
     } catch (e) { }
     try { return stockAt(p, wh); } catch (e2) { return 0; }
   }
@@ -17446,7 +17642,7 @@ id: nextVoucherId(),
       if (!b) return;
       const act = b.getAttribute("data-vanact");
       const tid = Number(b.getAttribute("data-tid"));
-      if (act === "sell") openVanSaleDialog(tid);
+      if (act === "sell") vanSellOnScreen(tid);
       else if (act === "expense") openVanExpenseDialog(tid);
       else if (act === "loadedit") openVanLoadEditDialog(tid);
       else if (act === "settle") openVanSettleDialog(tid);
@@ -17459,7 +17655,7 @@ id: nextVoucherId(),
       if (!b) return;
       const act = b.getAttribute("data-vanact");
       const tid = Number(b.getAttribute("data-tid"));
-      if (act === "sell") openVanSaleDialog(tid);
+      if (act === "sell") vanSellOnScreen(tid);
       else if (act === "settle") openVanSettleDialog(tid);
       else if (act === "log") openVanRepLog(tid);
     });
@@ -17532,13 +17728,6 @@ id: nextVoucherId(),
         renderVanLoadEditRows();
       });
     }
-    // نوافذ البيع
-    add("btnVanSaleCancel", "click", () => hideModal("mVanSale"));
-    add("btnVanSaleSave", "click", saveVanSale);
-    const ssearch = $("#vanSaleSearch"); if (ssearch) ssearch.addEventListener("input", renderVanSaleProducts);
-    const spay = $("#vanSalePay"); if (spay) spay.addEventListener("change", vanSalePayVisibility);
-    // 💳 بناء 285: سطور السداد الإضافية في بيع السيارة (زرار الإضافة + قائمة السطور)
-    vanBindExtraPays();
     // 🧾 بناء 286: نافذة مشاركة PDF بعد بيع السيارة (من الموبايل لواتس — يُولَّد عند الطلب)
     add("btnVanPdfShare", "click", () => {
       const inv = vanPdfCtx; vanPdfCtx = null; hideModal("mVanSalePdf");
@@ -17560,23 +17749,6 @@ id: nextVoucherId(),
         shareInvoicePdf(inv);
       });
     }
-    const scart = $("#vanSaleCart");
-    if (scart) scart.addEventListener("click", (ev) => {
-      const b = ev.target.closest("[data-cact]");
-      if (b && b.getAttribute("data-cact") === "del") vanCartDel(Number(b.getAttribute("data-idx")));
-    });
-    if (scart) scart.addEventListener("input", (ev) => {
-      const inp = ev.target.closest("[data-cf]");
-      if (!inp) return;
-      const idx = Number(inp.getAttribute("data-idx"));
-      const f = inp.getAttribute("data-cf");
-      vanCartEdit(idx, f, inp.value);
-    });
-    const sprods = $("#vanSaleProds");
-    if (sprods) sprods.addEventListener("click", (ev) => {
-      const b = ev.target.closest("[data-addpid]");
-      if (b) vanCartAdd(Number(b.getAttribute("data-addpid")));
-    });
     // نافذة التصفية
     add("btnVanSettleCancel", "click", () => hideModal("mVanSettle"));
     add("btnVanSettleSave", "click", saveVanSettle);
@@ -18141,44 +18313,6 @@ id: nextVoucherId(),
     });
   }
 
-  /* ==================== شاشة البيع من السيارة ==================== */
-  function openVanSaleDialog(tid) {
-    const trip = vanTripById(tid);
-    if (!trip) { toast("الرحلة مش موجودة.", "warning"); return; }
-    if (trip.status !== "open") { toast("الرحلة مقفولة بالفعل.", "warning"); return; }
-    if (!(vanCanManage() || vanTripIsMine(trip))) { toast("البيع من الرحلة دي مسموح لمندوبها أو المالك بس.", "warning"); return; }
-    vanSaleDraft = { tripId: Number(tid), items: [] };
-    const ttl = $("#vanSaleTitle");
-    if (ttl) ttl.textContent = "🧾 بيع من سيارة " + trip.carName + " — مندوب " + trip.repName;
-    const info = $("#vanSaleInfo");
-    if (info) info.innerHTML = "🚚 <b>" + esc(trip.carName) + "</b> · 🧑‍💼 " + esc(trip.repName) + " · 📅 " + esc(trip.date) +
-      " · المخزن المصدر: " + esc(trip.loadWarehouse || "-");
-    // عميل
-    const csel = $("#vanSaleCustomer");
-    if (csel) {
-      csel.innerHTML = "";
-      (customers || []).forEach((c) => {
-        const o = document.createElement("option");
-        o.value = String(c.id);
-        o.textContent = (c.protected ? "🧾 " : "") + (c.nameAr || c.name || "");
-        csel.appendChild(o);
-      });
-      const cashCust = (customers || []).find((c) => c.protected) || (customers || [])[0];
-      if (cashCust) csel.value = String(cashCust.id);
-    }
-    const pay = $("#vanSalePay"); if (pay) pay.value = "نقداً";
-    // 💳 بناء 285: تصفير سطور السداد الإضافية لكل فاتورة جديدة
-    vanSaleExtraPays = []; vanRenderExtraPays();
-    // 🆕 بناء 271: تصفير بيانات الشيك + إظهار/إخفاء الحقول حسب الوسيلة
-    const ck = { vanSaleCheckBank: "", vanSaleCheckNo: "", vanSaleCheckDue: "" };
-    Object.keys(ck).forEach((id) => { const el = $("#" + id); if (el) el.value = ck[id]; });
-    vanSalePayVisibility();
-    const s = $("#vanSaleSearch"); if (s) s.value = "";
-    const m = $("#mVanSale"); if (m) m.dataset.tid = String(tid);
-    renderVanSaleProducts();
-    renderVanSaleCart();
-    showModal("mVanSale");
-  }
   function vanSaleRemaining(trip, p) {
     // بناء 178: بيقبل صنف المخزن (p.id) أو سطر عربة البيع (line.productId) — بدون كده
     // كان تعديل الكمية في العربة بيقصّها لصفر (line.id = undefined) فيمسح السطر.
@@ -18191,454 +18325,6 @@ id: nextVoucherId(),
     (trip && trip.loaded ? trip.loaded : []).forEach((l) => { if (Number(l.productId) === Number(pid)) q += Number(l.qty) || 0; });
     return Math.round(q * 100) / 100;
   }
-  function renderVanSaleProducts() {
-    const box = $("#vanSaleProds");
-    if (!box) return;
-    const trip = vanTripById(vanSaleDraft && vanSaleDraft.tripId);
-    if (!trip) { box.innerHTML = ""; return; }
-    const q = arFold(($("#vanSaleSearch") && $("#vanSaleSearch").value) || "");
-    box.innerHTML = "";
-    let any = false;
-    (trip.loaded || []).forEach((l) => {
-      const p = products.find((x) => Number(x.id) === Number(l.productId));
-      if (!p) return;
-      /* 🔎 بناء 279: نفس تطبيع البحث — كان الكود بيتقارن خام (حروف لاتينية كبيرة/أرقام عربية
-         ما بتطابقش) فالقائمة ما بتتحدثش مع الكتابة. */
-      if (q && arFold(p.nameAr).indexOf(q) < 0 && arFold(p.code).indexOf(q) < 0) return;
-      const rem = vanSaleRemaining(trip, p);
-      if (!(rem > 0)) return;
-      any = true;
-      const el = document.createElement("button");
-      el.type = "button";
-      el.className = "van-prod";
-      el.setAttribute("data-addpid", String(p.id));
-      el.innerHTML = '<span class="vp-name">' + esc(p.nameAr) + '</span><span class="vp-meta">' + esc(p.code) + ' · متاح ' + fmt(rem) + ' · ' + fmt(p.salePrice) + ' ج.م</span>';
-      box.appendChild(el);
-    });
-    if (!any) box.innerHTML = '<p class="login-sub">لا توجد أصناف متاحة بالسيارة.</p>';
-  }
-  function vanCartAdd(pid) {
-    const trip = vanTripById(vanSaleDraft && vanSaleDraft.tripId);
-    const p = products.find((x) => Number(x.id) === Number(pid));
-    if (!trip || !p) return;
-    const rem = vanSaleRemaining(trip, p);
-    let line = vanSaleDraft.items.find((it) => Number(it.productId) === Number(pid));
-    if (!line) {
-      line = { productId: p.id, code: p.code, nameAr: p.nameAr, unit: p.unit, qty: 0, price: Number(p.salePrice) || 0 };
-      vanSaleDraft.items.push(line);
-    }
-    const inCart = vanSaleDraft.items.filter((it) => Number(it.productId) === Number(pid)).reduce((m, it) => m + it.qty, 0);
-    if (inCart + 1 > rem + 0.0001) { toast("الكمية المطلوبة أكبر من المتاح بالسيارة (" + fmt(rem) + ").", "warning"); return; }
-    line.qty = Math.round((line.qty + 1) * 100) / 100;
-    renderVanSaleCart();
-  }
-  function vanCartDel(idx) {
-    if (!vanSaleDraft) return;
-    vanSaleDraft.items.splice(idx, 1);
-    renderVanSaleCart();
-  }
-  function vanCartEdit(idx, field, val) {
-    if (!vanSaleDraft) return;
-    const line = vanSaleDraft.items[idx];
-    if (!line) return;
-    const trip = vanTripById(vanSaleDraft.tripId);
-    if (field === "qty") {
-      let q = Math.round((parseMoney(val) || 0) * 100) / 100;
-      const rem = vanSaleRemaining(trip, line);
-      if (q > rem) q = rem;
-      if (q < 0) q = 0;
-      line.qty = q;
-    } else if (field === "price") {
-      let pr = Math.round((parseMoney(val) || 0) * 100) / 100;
-      if (pr < 0) pr = 0;
-      line.price = pr;
-    }
-    renderVanSaleCart();
-  }
-  /* ====================== 💳 بناء 285 — تعدد طرق السداد في بيع السيارة ======================
-     (طلب المالك: «الفاتورة التانية مفيهاش تعدد طرق الدفع») — نفس منظومة شاشة البيع 199/205:
-     الطريقة الأساسية (قائمة «طريقة الدفع») بتدفع **الباقي** بعد سطور السداد، وكل سطر إضافي
-     بمبلغه اللي كتبه، وممنوع أي قصّ صامت (لو الزيادة استمرت: رسالة صريحة ومنع الحفظ).
-     كل سطر يروح لنفس حسابه: النقدي على ذمة المندوب · البنك/المحفظة/إنستا لخزائنها ·
-     الشيك على «شيكات لدى العملاء» (1.1.7) ببياناته كاملة · الآجل على حساب العميل.
-     بلا سطور إضافية = نفس سلوك بناء 271 بالحرف. */
-  const VAN_EXTRA_METHODS = ["تحويل بنكي", "محافظ إلكترونية", "إنستا باي", "شيك", "آجل"];
-  let vanSaleExtraPays = [];
-  function vanPayCleanName(md) {
-    return md.isAjal ? "آجل" : md.isCheck ? "شيك" : md.isBank ? "تحويل بنكي" :
-      md.isInsta ? "إنستا باي" : md.isWallet ? "محافظ إلكترونية" : "نقداً";
-  }
-  function vanPayNames(cp) {
-    const seen = [], out = [];
-    ((cp && cp.list) || []).forEach((p) => {
-      if (seen.indexOf(p.method) < 0) { seen.push(p.method); out.push(p.method); }
-    });
-    return out.length ? out.join(" + ") : "نقداً";
-  }
-  // يجمع سطور سداد بيع السيارة: سطر الأساسية («طريقة الدفع» بتدفع الباقي) + سطور الإضافية
-  function vanSaleCollect() {
-    const grand = vanSaleTotals().grand;
-    const md = posPayMode(($("#vanSalePay") && $("#vanSalePay").value) || "نقداً");
-    const extras = (vanSaleExtraPays || []).map((p) => ({
-      method: p.method || "تحويل بنكي",
-      amount: posExtraAmount(p),
-      treasuryId: (p.treasuryId != null ? p.treasuryId : null),
-      bankName: p.bankName || "", checkNo: p.checkNo || "", dueDate: p.dueDate || ""
-    })).filter((p) => p.amount > 0);
-    const extrasTotal = round2(extras.reduce((m, p) => m + p.amount, 0));
-    let primaAmt = round2(grand - extrasTotal);
-    // 🆕 بناء 199 (نفس الأساس): مافيش قصّ صامت — الزيادة تُرجَّع بالأرقام وتمنع الحفظ
-    const overBy = primaAmt < -0.001 ? round2(-primaAmt) : 0;
-    if (primaAmt < 0) primaAmt = 0;
-    const primaLine = {
-      method: vanPayCleanName(md), amount: primaAmt, treasuryId: null,
-      bankName: md.isCheck ? (($("#vanSaleCheckBank") && $("#vanSaleCheckBank").value) || "").trim() : "",
-      checkNo: md.isCheck ? (($("#vanSaleCheckNo") && $("#vanSaleCheckNo").value) || "").trim() : "",
-      dueDate: md.isCheck ? (($("#vanSaleCheckDue") && $("#vanSaleCheckDue").value) || "") : ""
-    };
-    const list = [primaLine].concat(extras).filter((p) => p.amount > 0.0001);
-    const paid = round2(list.filter((p) => !posPayMode(p.method).isAjal).reduce((m, p) => m + p.amount, 0));
-    const due = round2(grand - paid);
-    return { grand: grand, list: list, overBy: overBy, primaAmt: primaAmt, primaMd: md, paid: paid, due: due };
-  }
-  function vanPayOverText(cp) {
-    if (!(cp && cp.overBy > 0.001)) return "";
-    return "المبلغ المسدد أكبر من مبلغ الفاتورة.\n\n" +
-      "الفاتورة: " + fmt(cp.grand) + " ج.م — سطور السداد: " + fmt(round2(cp.grand + cp.overBy)) + " ج.م" +
-      " (زيادة " + fmt(cp.overBy) + " ج.م).\nعدّل مبالغ السطور (أو خليها تغطي الفاتورة بالظبط) وحاول تاني.";
-  }
-  function vanRenderExtraPays() {
-    const listEl = $("#vanPayExtraList");
-    if (!listEl) return;
-    listEl.innerHTML = "";
-    (vanSaleExtraPays || []).forEach((p, i) => {
-      // سطر قديم محفوظ بطريقة «نقداً» ⇒ يتحوّل لأول طريقة إضافية (نفس قاعدة شاشة البيع)
-      const method = posPayMode(p.method).isCash ? VAN_EXTRA_METHODS[0] : p.method;
-      const mode = posPayMode(method);
-      const row = document.createElement("div");
-      row.className = "pay-line";
-      row.dataset.idx = i;
-      row.innerHTML =
-        '<select class="pl-method">' + VAN_EXTRA_METHODS.map((m) => '<option' + (m === method ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select>' +
-        '<select class="pl-treasury"' + ((mode.isCheck || mode.isAjal) ? ' hidden' : '') + '></select>' +
-        '<input class="pl-bank" type="text" placeholder="اسم البنك" value="' + esc(p.bankName || '') + '"' + (mode.isCheck ? '' : ' hidden') + ' />' +
-        '<input class="pl-no" type="text" placeholder="رقم الشيك" value="' + esc(p.checkNo || '') + '"' + (mode.isCheck ? '' : ' hidden') + ' />' +
-        '<input class="pl-due" type="date" value="' + esc(p.dueDate || todayISO()) + '"' + (mode.isCheck ? '' : ' hidden') + ' />' +
-        '<input class="pl-amount" type="text" placeholder="المبلغ" value="' + esc(p.amount == null ? '' : p.amount) + '" autocomplete="off" />' +
-        '<button class="btn small red" type="button" data-pldel="1" title="حذف السطر">❌</button>';
-      listEl.appendChild(row);
-      if (!mode.isCheck && !mode.isAjal) {
-        const wantType = mode.isBank ? "bank" : mode.isInsta ? "instapay" : mode.isWallet ? "wallet" : "cash";
-        posFillTreasurySelect(row.querySelector(".pl-treasury"), wantType, p.treasuryId);
-      }
-    });
-  }
-  function vanAddExtraPay() {
-    // السطر الجديد يبدأ بالباقي (الإجمالي − مجموع السطور) — والمستخدم يعدّله أو يبدّل طريقته
-    const grand = vanSaleTotals().grand;
-    const lines = (vanSaleExtraPays || (vanSaleExtraPays = []));
-    const sumAll = round2(lines.reduce((m, p) => m + posExtraAmount(p), 0));
-    const remain = round2(Math.max(grand - sumAll, 0));
-    lines.push({ method: VAN_EXTRA_METHODS[0], amount: remain > 0 ? remain : "", treasuryId: null, bankName: "", checkNo: "", dueDate: todayISO() });
-    vanRenderExtraPays();
-    vanPayRefresh();
-  }
-  function vanBindExtraPays() {
-    const listEl = $("#vanPayExtraList");
-    const addBtn = $("#btnVanAddPay");
-    if (addBtn && !addBtn.__bound) { addBtn.__bound = true; addBtn.addEventListener("click", () => vanAddExtraPay()); }
-    if (listEl && !listEl.__bound) {
-      listEl.__bound = true;
-      listEl.addEventListener("input", (e) => {
-        const row = e.target.closest(".pay-line"); if (!row) return;
-        const p = vanSaleExtraPays[parseInt(row.dataset.idx, 10)]; if (!p) return;
-        if (e.target.classList.contains("pl-amount")) { p.amount = e.target.value; vanPayRefresh(); return; }
-        if (e.target.classList.contains("pl-bank")) { p.bankName = e.target.value; return; }
-        if (e.target.classList.contains("pl-no")) { p.checkNo = e.target.value; return; }
-        if (e.target.classList.contains("pl-due")) { p.dueDate = e.target.value; return; }
-      });
-      listEl.addEventListener("change", (e) => {
-        const row = e.target.closest(".pay-line"); if (!row) return;
-        const p = vanSaleExtraPays[parseInt(row.dataset.idx, 10)]; if (!p) return;
-        if (e.target.classList.contains("pl-method")) {
-          p.method = e.target.value;
-          const mode = posPayMode(p.method);
-          const trSel = row.querySelector(".pl-treasury"), bk = row.querySelector(".pl-bank"), no = row.querySelector(".pl-no"), due = row.querySelector(".pl-due");
-          if (trSel) trSel.hidden = mode.isCheck || mode.isAjal;
-          if (bk) bk.hidden = !mode.isCheck;
-          if (no) no.hidden = !mode.isCheck;
-          if (due) due.hidden = !mode.isCheck;
-          if (!mode.isCheck && !mode.isAjal) {
-            const wantType = mode.isBank ? "bank" : mode.isInsta ? "instapay" : mode.isWallet ? "wallet" : "cash";
-            posFillTreasurySelect(trSel, wantType, p.treasuryId);
-          }
-          if (mode.isAjal) {
-            // 🆕 بناء 199 (نفس الأساس): اختار «آجل» ⇒ مبلغ السطر = الباقي كامل على حساب الطرف
-            p.treasuryId = null;
-            const grand = vanSaleTotals().grand;
-            const others = vanSaleExtraPays.reduce((m, q) => m + ((q === p || posPayMode(q.method).isAjal) ? 0 : posExtraAmount(q)), 0);
-            const credit = round2(Math.max(grand - others, 0));
-            p.amount = credit > 0 ? credit : "";
-            vanRenderExtraPays();
-          }
-          vanPayRefresh();
-          return;
-        }
-        if (e.target.classList.contains("pl-treasury")) { p.treasuryId = Number(e.target.value) || null; return; }
-      });
-      listEl.addEventListener("click", (e) => {
-        const b = e.target.closest("[data-pldel]");
-        if (!b) return;
-        const row = b.closest(".pay-line"); if (!row) return;
-        const idx = parseInt(row.dataset.idx, 10);
-        if (vanSaleExtraPays[idx]) vanSaleExtraPays.splice(idx, 1);
-        vanRenderExtraPays();
-        vanPayRefresh();
-      });
-    }
-  }
-  /* 💳 بناء 285: تحديث سطر «السداد» — خانة الأساسية مقفولة (الباقي بيكتبه البرنامج) وتختفي
-     لو الوسايل التانية غطّت الفاتورة كلها · سطر الزيادة يظهر فورًا · و«الآجل على العميل»
-     بيتحدّث بالباقي الفعلي (مش الإجمالي) لكل حالات السداد الجزئي. */
-  function vanPayRefresh() {
-    if (!$("#vanPayPanel")) return;
-    const cp = vanSaleCollect();
-    const inp = $("#txtVanCashLine");
-    if (inp) { inp.readOnly = true; inp.value = String(cp.primaAmt); }
-    const row = $("#vanPaidRow"); if (row) row.hidden = !(cp.primaAmt > 0.0001);
-    const lbl = $("#vanPayPrimaryLbl"); if (lbl) lbl.textContent = vanPayCleanName(cp.primaMd);
-    const dueWrap = $("#vanSaleDueWrap"), dueEl = $("#vanSaleDue");
-    if (dueWrap) dueWrap.hidden = !(cp.due > 0.0001);
-    if (dueEl) dueEl.textContent = fmt(cp.due) + " ج.م";
-    const over = $("#vanPayOver");
-    const msg = vanPayOverText(cp);
-    if (over) { over.textContent = msg; over.hidden = !msg; }
-  }
-  /* 🆕 بناء 271 (طلب المالك: «نفس شكل شاشة البيع بكل وسائل الدفع»): كل وسيلة دفع بتظهر
-     حقولها بس — بنك/محفظة/إنستا/شيك — وخانة العميل تظهر للآجل فقط (النقدي على ذمة المندوب).
-     وسطر «الآجل على العميل» في شريط الإجمالي بيظهر للآجل بس. */
-  function vanSalePayVisibility() {
-    const sel = $("#vanSalePay");
-    if (!sel) return;
-    const mode = posPayMode(sel.value);
-    const show = (id, on) => { const el = $(id); if (el) el.hidden = !on; };
-    // 💳 بناء 285 (طلب المالك): «تحديد اسم العميل في حالة الشيك» زي شاشة البيع — حقل العميل
-    // يظهر للآجل وللشيك (الشيك لازم يكون باسم عميل مسجّل، وممنوع على العميل النقدي).
-    show("#vanSaleCustField", mode.isAjal || mode.isCheck);
-    show("#vanSaleBankField", mode.isBank);
-    show("#vanSaleWalletField", mode.isWallet);
-    show("#vanSaleInstaField", mode.isInsta);
-    show("#vanSaleCheckField", mode.isCheck);
-    show("#vanSaleDueWrap", mode.isAjal);
-    // الخزائن من إعدادات المؤسسة (نفس مصدر شاشة البيع بالحرف)
-    try {
-      if (mode.isBank) posFillTreasurySelect($("#vanSaleBank"), "bank");
-      if (mode.isWallet) posFillTreasurySelect($("#vanSaleWallet"), "wallet");
-      if (mode.isInsta) posFillTreasurySelect($("#vanSaleInsta"), "instapay");
-    } catch (e) { }
-    const csel = $("#vanSaleCustomer");
-    if (!mode.isAjal && !mode.isCheck && csel) {
-      const cashCust = (customers || []).find((c) => c && c.protected);
-      if (cashCust) csel.value = String(cashCust.id);
-    }
-    // 💳 بناء 285: سطر «الآجل على العميل» وباقي خانات السداد بتتحدّث من vanPayRefresh
-    vanPayRefresh();
-  }
-  function vanSaleAjalVisibility() { vanSalePayVisibility(); }
-  function vanSaleTotals() {
-    let sub = 0;
-    (vanSaleDraft ? vanSaleDraft.items : []).forEach((it) => { sub += (Number(it.qty) || 0) * (Number(it.price) || 0); });
-    sub = Math.round(sub * 100) / 100;
-    const tax = TAX.enabled ? Math.round(sub * (TAX.rate || 0) * 100) / 100 : 0;
-    const grand = Math.round((sub + tax) * 100) / 100;
-    return { sub: sub, tax: tax, grand: grand };
-  }
-  function renderVanSaleCart() {
-    const body = $("#vanSaleCart");
-    if (!body || !vanSaleDraft) return;
-    body.innerHTML = "";
-    vanSaleDraft.items.forEach((it, idx) => {
-      const tot = Math.round((Number(it.qty) || 0) * (Number(it.price) || 0) * 100) / 100;
-      const tr = document.createElement("tr");
-      tr.innerHTML =
-        // 🔢 بناء 270: سطر فاتورة بيع السيارة مرقّم مسلسل
-        '<td class="c-serial">' + (idx + 1) + '</td>' +
-        '<td>' + esc(it.nameAr) + '</td>' +
-        '<td><input class="cell-input" type="text" inputmode="decimal" data-cf="qty" data-idx="' + idx + '" value="' + esc(it.qty) + '" /></td>' +
-        '<td><input class="cell-input" type="text" inputmode="decimal" data-cf="price" data-idx="' + idx + '" value="' + esc(it.price) + '" /></td>' +
-        '<td>' + fmt(tot) + '</td>' +
-        '<td class="cell-actions"><button class="btn small red" type="button" data-cact="del" data-idx="' + idx + '">❌</button></td>';
-      body.appendChild(tr);
-    });
-    if (!vanSaleDraft.items.length) body.innerHTML = '<tr><td colspan="6" class="login-sub" style="text-align:center">الفاتورة فاضية — اضغط على صنف من الشمال.</td></tr>';
-    const t = vanSaleTotals();
-    const el = $("#vanSaleTotal");
-    if (el) el.textContent = fmt(t.grand) + " ج.م" + (TAX.enabled && t.tax > 0 ? " (منها ضريبة " + fmt(t.tax) + ")" : "");
-    const dueEl = $("#vanSaleDue");
-    if (dueEl) dueEl.textContent = fmt(t.grand) + " ج.م";
-    vanPayRefresh();
-    renderVanSaleProducts();
-  }
-  function saveVanSale() {
-    if (!vanSaleDraft || !vanSaleDraft.items.length) { toast("أضف أصناف للفاتورة الأول.", "warning"); return; }
-    const trip = vanTripById(vanSaleDraft.tripId);
-    if (!trip || trip.status !== "open") { toast("الرحلة مقفولة.", "warning"); return; }
-    const csel = $("#vanSaleCustomer");
-    const custId = Number(csel && csel.value);
-    const cust = customers.find((c) => Number(c.id) === custId);
-    if (!cust) { toast("اختر العميل.", "warning"); return; }
-    const payRaw = ($("#vanSalePay") && $("#vanSalePay").value) || "نقداً";
-    const md = posPayMode(payRaw);
-    const pay = vanPayCleanName(md);
-    if (md.isAjal && cust.protected) { toast("اختر عميلًا حقيقيًا للبيع الآجل.", "warning"); return; }
-    // 🧾 بناء 211 (نفس شاشة البيع): الشيك لازم بياناته كاملة + عميل مسجّل
-    let checkBank = "", checkNo = "", checkDue = "";
-    if (md.isCheck) {
-      if (cust.protected) { toast("الشيك لازم يكون باسم عميل مسجّل (مش العميل النقدي).", "warning"); return; }
-      checkBank = (($("#vanSaleCheckBank") && $("#vanSaleCheckBank").value) || "").trim();
-      checkNo = (($("#vanSaleCheckNo") && $("#vanSaleCheckNo").value) || "").trim();
-      checkDue = ($("#vanSaleCheckDue") && $("#vanSaleCheckDue").value) || "";
-      if (!checkBank || !checkNo || !checkDue) { toast("اكتب بيانات الشيك كاملة: البنك + رقم الشيك + تاريخ الاستحقاق.", "warning"); return; }
-    }
-    const t = vanSaleTotals();
-    if (!(t.grand > 0)) { toast("الإجمالي صفر.", "warning"); return; }
-    /* 💳 بناء 285 (نفس بوابة شاشة البيع بالحرف): الزيادة على سطور السداد تمنع الحفظ ·
-       خزينة البنك/المحفظة/إنستا لازم تكون مسجّلة · بيانات أي شيك كاملة · والآجل (سطر الأساسية
-       أو سطر إضافي) لازم يكون على عميل مسجّل — مافيش أي رجوع صامت للصندوق. */
-    const cp = vanSaleCollect();
-    const _overMsg = vanPayOverText(cp);
-    if (_overMsg) { alert(_overMsg); return; }
-    const _trMsg = posPayTreasuryError("sale", { payments: cp.list });
-    if (_trMsg) { alert(_trMsg); return; }
-    const _chkFields = payCheckFieldsError({ payments: cp.list });
-    if (_chkFields) { checkPartyWarnShow("sale", _chkFields); return; }
-    const _chkParty = payCheckPartyError("sale", { payments: cp.list, due: cp.due }, cust);
-    if (_chkParty) { checkPartyWarnShow("sale", _chkParty); return; }
-    if (cp.due > 0.0001 && cust.protected) { checkPartyWarnShow("sale", ""); return; }
-    // تحقّق من الأرصدة المتبقية بالسيارة
-    const short = [];
-    vanSaleDraft.items.forEach((it) => {
-      const rem = vanSaleRemaining(trip, it);
-      if (it.qty > rem + 0.0001) short.push(it.nameAr + " (المتاح " + fmt(rem) + ")");
-    });
-    if (short.length) { toast("الكمية أكبر من المتاح بالسيارة:\n" + short.join("\n"), "warning"); return; }
-    /* 🆕 بناء 271 → 285: خزينة سطر الأساسية (بنك/محفظة/إنستا) = اللي اختارها المستخدم من حقول
-       الوسيلة نفسها — لو مفيش حاجة مسجّلة أصلاً فبوابة posPayTreasuryError فوق هي اللي رفضت
-       بالرسالة الواضحة (ممنوع أي رجوع صامت للصندوق النقدي). */
-    if (md.isBank || md.isWallet || md.isInsta) {
-      const selId = md.isBank ? ($("#vanSaleBank") && $("#vanSaleBank").value)
-        : md.isWallet ? ($("#vanSaleWallet") && $("#vanSaleWallet").value)
-          : ($("#vanSaleInsta") && $("#vanSaleInsta").value);
-      if (cp.list[0]) cp.list[0].treasuryId = (selId ? Number(selId) : null);
-    }
-    ensureJrnStd();
-    const repAcc = vanRepAcc(trip.repName);
-    const invNo = nextInvoiceNumber();
-    /* 💵 توزيع التحصيل (بناء 271 + سطوره الإضافية في 285): النقدي **فقط** على ذمة المندوب ·
-       الآجل على حساب العميل · البنك/المحفظة/إنستا تدخل خزائنها · الشيك على حساب «شيكات لدى
-       العملاء» (1.1.7). */
-    const resolved = cp.list.map((p) => {
-      const pmd = posPayMode(p.method);
-      let ptid = (p.treasuryId != null ? p.treasuryId : null);
-      if (pmd.isBank || pmd.isWallet || pmd.isInsta) {
-        const tr = posTreasuryForPay("sale", p);
-        if (tr) ptid = tr.id;
-      }
-      return { p: p, md: pmd, tid: ptid };
-    });
-    const paid = cp.paid, due = cp.due;
-    // 🆕 بناء 262: تكلفة البيع من السيارة تُخصم من طبقات الحمولة نفسها (بالتكلفة المسجّلة
-    // وقت التحميل) لو الرحلة محمّلة بقيد عهدة — كده حساب المندوب يقفل بصفر بالحرف.
-    try {
-      if (vanTripHasLoadJrn(trip)) vanSaleCostAlloc(trip, vanSaleDraft.items);
-      else saleCostAlloc(vanSaleDraft.items);
-    } catch (e) {}
-    const invoice = {
-      // 🧱 بناء 240: رقم فاتورة السيارة كمان من الأرضية الدائمة (نفس علة sales/purchases)
-      id: idFloorTake("sales", sales),
-      invoiceNumber: invNo, invoiceNo: invNo,
-      invoiceDate: trip.date, date: trip.date,
-      customerId: cust.id, customerName: cust.nameAr, customer: cust.nameAr,
-      warehouse: trip.carName, store: trip.carName,
-      paymentMethod: (due > 0.0001 ? "آجل" : (((cp.list.find((p) => !posPayMode(p.method).isAjal)) || {}).method || pay)),
-      treasuryId: null,
-      discountAmount: 0, discount: 0,
-      taxAmount: t.tax, tax: t.tax,
-      subTotal: t.sub, grandTotal: t.grand,
-      paidAmount: paid, dueAmount: due,
-      payments: resolved.map((r) => ({
-        method: r.md.isAjal ? "ajal" : r.md.isCheck ? "check" : r.md.isBank ? "bank" : r.md.isInsta ? "instapay" : r.md.isWallet ? "wallet" : "cash",
-        amount: round2(r.p.amount),
-        // 💳 بناء 285: خزينة سطر البنك/المحفظة/إنستا تتكتب من الحقل من أول لحظة — بوابة القيد
-        // (invoiceJrnPlan) بتحسب حساب الطرف من treasuryId قبل أي كتابة، فممنوع يتسجل فارغ
-        // (لو سجلها فارغ كان السطر البنكي يترحّل على حساب الصندوق — عيب ترحيل قُفل هنا).
-        treasuryId: (r.md.isCash || r.md.isCheck || r.md.isAjal) ? null : r.tid,
-        bankName: r.p.bankName || "", checkNo: r.p.checkNo || "", dueDate: r.p.dueDate || ""
-      })),
-      isVan: true, vanTripId: trip.id, repName: trip.repName, vanRepAccountId: repAcc.id,
-      // 🚚 بناء 273: بصمة مخفية تخلّي الفاتورة ترجع «فاتورة سيارة» من السحابة (بلا أعمدة جديدة)
-      notes: "[[VAN|trip=" + Number(trip.id) + "|rep=" + encodeURIComponent(trip.repName || "") + "|acc=" + Number(repAcc.id || 0) + "]]",
-      savedAt: shiftNowISO(),
-      partyPrevBalance: cust.protected ? null : (Math.round((Number(cust.currentBalance) || 0) * 100) / 100),
-      items: vanSaleDraft.items.map((it, idx) => ({
-        id: idx + 1, productId: it.productId, code: it.code, nameAr: it.nameAr, unit: it.unit,
-        qty: it.qty, price: it.price, discount: 0, tax: Math.round((it.qty * it.price) * (TAX.enabled ? (TAX.rate || 0) : 0) * 100) / 100,
-        total: Math.round((it.qty * it.price) * (TAX.enabled ? (1 + (TAX.rate || 0)) : 1) * 100) / 100,
-        costTotal: (it.costTotal != null ? it.costTotal : undefined)
-      }))
-    };
-    invoice.status = "posted";
-    if (jrnBlocked("فاتورة السيارة", invoiceJrnPlan("sale", invoice, null))) return;
-    // خصم مخزون السيارة
-    vanSaleDraft.items.forEach((it) => {
-      const p = products.find((x) => Number(x.id) === Number(it.productId));
-      if (p) addStockAt(p, trip.carName, -it.qty);
-    });
-    saveProducts();
-    // 🏦 بناء 271 + سطوره الإضافية (285): البنك/المحفظة/إنستا تدخل خزينتها فعلًا ·
-    // الشيك على 1.1.7 (بلا خزينة) · النقدي على ذمة المندوب · الآجل على حساب العميل
-    resolved.forEach((r, i) => {
-      if (r.md.isCash || r.md.isAjal) return;
-      if (r.md.isCheck) {
-        try {
-          addCheck({
-            customerId: cust.id, customerName: cust.nameAr, bankName: r.p.bankName || "", checkNo: r.p.checkNo || "",
-            dueDate: r.p.dueDate || todayISO(), amount: round2(r.p.amount), refType: "invoice", refId: String(invNo)
-          });
-        } catch (e) { }
-        return;
-      }
-      const tr = (r.tid != null) ? treasury.find((x) => Number(x.id) === Number(r.tid)) : posTreasuryForPay("sale", r.p);
-      if (!tr) return;
-      tr.balance = round2((Number(tr.balance) || 0) + round2(r.p.amount));
-      if (invoice.payments && invoice.payments[i]) invoice.payments[i].treasuryId = tr.id;
-      if (!invoice.treasuryId) invoice.treasuryId = tr.id;
-      try { syncTreasuryItemToSett(tr); } catch (e) { }
-    });
-    if (invoice.treasuryId) saveTreasury();
-    // الآجل يزيد رصيد العميل
-    if (due > 0) {
-      cust.currentBalance = Math.round(((Number(cust.currentBalance) || 0) + due) * 100) / 100;
-      txs.push({ id: nextTxId(), customerId: cust.id, date: invoice.invoiceDate, desc: "فاتورة مبيعات آجلة (سيارة " + trip.carName + ") رقم " + invNo, debit: due, credit: 0, treasuryId: null, treasuryName: "", paymentMethod: "آجل مندوب" });
-      recalculateCustomerBalances();
-      saveCustomers();
-      saveTxs();
-    }
-    sales.push(invoice);
-    saveSales();
-    commitInvoiceSeq("sale", invEncodedOf(invNoOf(invoice)));
-    const postedJ = postInvoiceJournal("sale", invoice, null);
-    // 🔧 بناء 259 (بند #16): تكلفة مبيعات بيع السيارة (نفس قيد البيع العادي بالحرف)
-    try { postCogsJournal(invoice); } catch (e) { }
-    consumeAvgForItems(vanSaleDraft.items);
-    try { addActivity("بيع من سيارة", "سيارة " + trip.carName + " - " + cust.nameAr + " - " + fmt(t.grand) + " ج.م (" + vanPayNames(cp) + ")" + (postedJ && postedJ.j ? " - قيد " + postedJ.j.number : "")); } catch (e) {}
-    toast("تم حفظ البيع (" + invNo + ")" + (postedJ && postedJ.j ? " وترحيله للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
-    hideModal("mVanSale");
-    // 🧾 بناء 286: PDF واتس للموبايل — نافذة مشاركة بعد كل بيع سيارة (يُولَّد عند الطلب من داتا الفاتورة)
-    try { openVanSalePdfDialog(invoice); } catch (e) { }
-    vanSaleDraft = null;
-    renderVanSales();
-  }
 
   /* ==================== 🚚 بناء 274 — شاشة مندوب المبيعات = شاشة البيع العادية ====================
      طلب المالك بالحرف: «شاشة مندوب المبيعات عايزها تكون هي شاشة بيع الموبايل العادية بتاعة
@@ -18649,6 +18335,54 @@ id: nextVoucherId(),
        • الحفظ بيطلع **فاتورة سيارة** على رحلة المندوب المفتوحة — `savePosInvoiceAsVan`.
        • النقدي فقط على ذمة المندوب · البنك/المحفظة/إنستا لخزائنها · الشيك 1.1.7 · الآجل على العميل.
      المالك/صاحب الشركة مالهمش أي علاقة بالمسار ده (`vanIsRepUser()` = false عندهم). */
+  /* 🧾 بناء 294 — طلب المالك بالحرف (03/11): «أنا مش عايز شاشة الفاتورة دي اللي هي مختلفة
+     عن شاشة البرنامج احذفها» + «المندوب يشتغل على نفس شكل الفاتورة بتاع البرنامج».
+     شاشة «🧾 بيع من السيارة» القديمة (`#mVanSale` + `saveVanSale` + كل دوالها) اتشالت،
+     وزرار «🧾 ابدأ البيع» في بانر المندوب وزرار «بيع» في جدول الرحلات بقى يودوا **نفس
+     شاشة البيع العادية بتاعة البرنامج**: المخزن يتثبّت على عربية الرحلة، والمتاح = متبقي
+     الحمولة، والحفظ يطلع فاتورة سيارة على الرحلة نفسها (نفس العهدة · نقد المندوب على
+     ذمته · البنك/المحفظة/إنستا لخزائنها · الشيك 1.1.7 · الآجل على العميل · نفس القيد).
+     `vanSellTripCtx` = الرحلة اللي صاحب الشركة اختار يبيّع عليها؛ المندوب مالوش حاجة
+     تتسجّل له — رحلته المفتوحة بتتلقّى أوتوماتيك زي بناء 274 بالحرف. */
+  let vanSellTripCtx = null;
+  function vanInVanSaleMode() { try { return vanIsRepUser() || !!vanSaleModeTrip(); } catch (e) { return false; } }
+  function vanSaleModeTrip() {
+    try {
+      if (vanSellTripCtx) {
+        const t = vanTripById(vanSellTripCtx.tripId);
+        if (t && String(t.status || "") === "open") return t;
+        vanSellTripCtx = null;                 // الرحلة اتقفلت أو اتشالت ⇒ الوضع انتهى لحاله
+      }
+      return vanIsRepUser() ? vanRepOpenTrip() : null;
+    } catch (e) { return null; }
+  }
+  function vanSaleModeCar() {
+    try {
+      const t = vanSaleModeTrip();
+      const c = t ? String(t.carName || "").trim() : "";
+      return c || (vanSellTripCtx ? String(vanSellTripCtx.car || "").trim() : "");
+    } catch (e) { return ""; }
+  }
+  function vanSellOnScreen(tid) {
+    const trip = vanTripById(tid);
+    if (!trip) { toast("الرحلة مش موجودة.", "warning"); return; }
+    if (String(trip.status || "") !== "open") { toast("الرحلة مقفولة بالفعل.", "warning"); return; }
+    if (!(vanCanManage() || vanTripIsMine(trip))) { toast("البيع من الرحلة دي مسموح لمندوبها أو المالك بس.", "warning"); return; }
+    if (!String(trip.carName || "").trim()) { toast("الرحلة مش مربوطة بسيارة.", "warning"); return; }
+    vanSellTripCtx = { tripId: Number(trip.id), car: String(trip.carName).trim() };
+    showView("sales");
+    try { renderSalesLookups(); } catch (e) { }
+    try { posNewInvoice(); } catch (e) { }
+    toast("🚚 فتحنا شاشة البيع العادية بتاعة البرنامج على عربية " + vanSellTripCtx.car +
+      " — رحلة #" + trip.id + " · مندوب " + (trip.repName || "—") +
+      "\nالمتاح = متبقي الحمولة، والحفظ بينزل فاتورة على الرحلة نفسها.", "info");
+  }
+  function vanSellModeExit() {
+    vanSellTripCtx = null;
+    try { renderSalesLookups(); } catch (e) { }
+    try { posNewInvoice(); } catch (e) { }
+    toast("خرجت من وضع البيع من السيارة ⇒ الشاشة رجعت مخازن الشركة العادية.", "info");
+  }
   function vanRepOpenTrip() {
     const rows = (carTrips || []).filter((t) => t && String(t.status || "") === "open" && vanTripIsMine(t));
     if (!rows.length) return null;
@@ -18674,13 +18408,14 @@ id: nextVoucherId(),
   /* تثبيت مخزن السيارة + بانر المندوب + إخفاء «إضافة صنف جديد للمخزن». */
   function applyPosRepMode() {
     try {
-      if (!vanIsRepUser()) {
-        const b0 = $("#posVanBanner"); if (b0) b0.hidden = true;
+      const vanCtx = vanSellTripCtx;                    // 🧾 بناء 294: صاحب الشركة على رحلة مختارة
+      if (!vanIsRepUser() && !vanCtx) {
+        const b0 = $("#posVanBanner"); if (b0) { b0.hidden = true; b0.innerHTML = ""; }
         const w0 = $("#cmbPosWarehouse"); if (w0) w0.disabled = false;
         const q0 = $("#btnQuickAddProduct"); if (q0) q0.hidden = false;
         return;
       }
-      const car = vanRepPosCar();
+      const car = vanCtx ? String(vanCtx.car || "") : vanRepPosCar();
       const wh = $("#cmbPosWarehouse");
       if (wh) {
         const cur = car || wh.value;
@@ -18690,51 +18425,60 @@ id: nextVoucherId(),
         wh.disabled = true;   // 🚚 مخزون السيارة فقط — ثابت لا يتغير
       }
       const q = $("#btnQuickAddProduct"); if (q) q.hidden = true;
-      const trip = vanRepOpenTrip();
+      const trip = vanCtx ? vanTripById(vanCtx.tripId) : vanRepOpenTrip();
       const b = $("#posVanBanner");
       if (b) {
         b.hidden = false;
         b.innerHTML =
           '<div class="pvb-main">🚚 <b>بيع من سيارة ' + esc(car || "—") + '</b>' +
+          (vanCtx && trip ? ' · مندوب ' + esc(trip.repName || "—") : '') +
           (trip
             ? ' · رحلة #' + esc(String(trip.id)) + ' · 📅 ' + esc(trip.date || "") +
               ' · نقد متوقّع: <b>' + fmt(vanTripExpectedCash(trip)) + ' ج.م</b>'
             : ' · <span class="pvb-warn">مفيش رحلة مفتوحة — الحفظ مقفول لحد ما صاحب الشركة يفتح رحلة ويحمّل بضاعة</span>') +
           '</div>' +
           '<div class="pvb-actions">' +
-          (trip ? '<button id="btnPosVanLog" class="btn small sky" type="button">📋 سجل حركاتي</button>' : '') +
+          (trip ? '<button id="btnPosVanLog" class="btn small sky" type="button">' + (vanCtx ? "📋 سجل حركة الرحلة" : "📋 سجل حركاتي") + '</button>' : '') +
           (trip ? '<button id="btnPosVanExp" class="btn small blue" type="button">💸 مصروفات السيارة</button>' : '') +
           (trip ? '<button id="btnPosVanSettle" class="btn small teal" type="button">🔒 قفل وتصفية الرحلة</button>' : '') +
+          (vanCtx ? '<button id="btnPosVanExit" class="btn small red" type="button">✕ الخروج من وضع السيارة</button>' : '') +
           '<button id="btnPosVanScreen" class="btn small gray" type="button">🚚 شاشة الرحلات</button>' +
           '</div>';
         const lg = $("#btnPosVanLog");
         if (lg) lg.addEventListener("click", () => {
-          const t = vanRepOpenTrip();
+          const t = vanSaleModeTrip();
           openVanRepLog(t ? t.id : null);
         });
         const ex = $("#btnPosVanExp");
         if (ex) ex.addEventListener("click", () => {
-          const t = vanRepOpenTrip();
+          const t = vanSaleModeTrip();
           if (t) openVanExpenseDialog(t.id);
           else toast("مفيش رحلة مفتوحة على حسابك.", "warning");
         });
         const sb = $("#btnPosVanSettle");
         if (sb) sb.addEventListener("click", () => {
-          const t = vanRepOpenTrip();
+          const t = vanSaleModeTrip();
           if (t) openVanSettleDialog(t.id);
           else toast("مفيش رحلة مفتوحة على حسابك.", "warning");
         });
+        const vx = $("#btnPosVanExit");
+        if (vx) vx.addEventListener("click", () => vanSellModeExit());
         const vs = $("#btnPosVanScreen");
-        if (vs) vs.addEventListener("click", () => showView("vanSales"));
+        if (vs) vs.addEventListener("click", () => { vanSellTripCtx = null; showView("vanSales"); });
       }
     } catch (e) { }
   }
   /* حفظ فاتورة البيع من شاشة المندوب = **فاتورة سيارة** (نفس محاسبة بيع السيارة بالحرف). */
   function savePosInvoiceAsVan() {
     if (!posItems.length) { toast("يرجى إضافة أصناف إلى الفاتورة أولاً.", "warning"); return; }
-    const trip = vanRepOpenTrip();
+    /* 🧾 بناء 294: الرحلة = رحلة المندوب المفتوحة (274) أو الرحلة اللي المالك دوس
+       «بيع» عليها من جدول الرحلات (`vanSellTripCtx`) — الاتنين بينزلوا نفس فاتورة السيارة. */
+    const trip = vanSaleModeTrip();
     if (!trip) {
-      toast("مفيش رحلة سيارة مفتوحة على حسابك — صاحب الشركة هو اللي بيفتح الرحلة ويحمّل البضاعة.", "warning");
+      toast(vanSellTripCtx
+        ? "الرحلة دي اتقفلت أو اتشالت — اقفل وضع السيارة واختار رحلة مفتوحة تانية."
+        : "مفيش رحلة سيارة مفتوحة على حسابك — صاحب الشركة هو اللي بيفتح الرحلة ويحمّل البضاعة.", "warning");
+      try { applyPosRepMode(); } catch (e) { }
       return;
     }
     const car = String(trip.carName || "").trim();
@@ -18781,8 +18525,12 @@ id: nextVoucherId(),
       ? "آجل"
       : (((payLines.find((p) => !posPayMode(p.method).isAjal)) || {}).method || "نقداً");
     if (payment === "آجل" && !ajalPaidGate("sale", t)) return;
-    const invNo = $("#txtInvoiceNo").value || nextInvoiceNumber();
-    if (!invoiceNoGuard("sale", invNo)) return;
+    /* 🧾 بناء 294: نفس قرار شاشة البيع بالحرف — الرقم **الفاضي** يتحسب وقت الحفظ
+       (مسار المندوب على الموبايل كان بيقرا الخانة القديمة نفسها). */
+    const _no294v = invNextFreeNumber("sale", todayISO(), "txtInvoiceNo");
+    const invNo = _no294v.no;
+    if (_no294v.takenBefore > 0) posNoAutoFixedMsg(invNo);
+    if (!invoiceNoGuard("sale", invNo, 0, "txtInvoiceNo")) return;
     const invDate = todayISO();
     ensureJrnStd();
     const repAcc = vanRepAcc(trip.repName);
@@ -18887,6 +18635,10 @@ id: nextVoucherId(),
     toast("تم حفظ البيع (" + invNo + ")" +
       (postedJ && postedJ.j ? " وترحيله للقيود (" + postedJ.j.number + ")" : "") + ".", "success");
     try { if (autoPrintSaleInvoice()) printInvoice(invoice); } catch (e) { }
+    /* 🧾 بناء 294: نافذة «PDF واتس» (286) كانت بتتنادى من شاشة بيع السيارة القديمة —
+       المسار الجديد على شاشة البرنامج بندعوها بنفس المكان، وبنتغاضى عنها لو الطباعة
+       التلقائية شغّالة (سطح المكتب) عشان ما تطلعش وشين في نفس اللحظة. */
+    try { if (!autoPrintSaleInvoice()) openVanSalePdfDialog(invoice); } catch (e) { }
     try { fillPosDatalist(); } catch (e) { }
     posNewInvoice();
     try { renderVanSales(); } catch (e) { }
@@ -27145,23 +26897,27 @@ id: nextVoucherId(),
     if (pushBtn) pushBtn.addEventListener("click", function () { manualCloudPush(); });
     try { refreshSyncButtons(); } catch (e) { }
     $("#dgvInvS tbody").addEventListener("click", (e) => {
-      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"]');
+      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"],[data-act="numfix"]');
       if (!btn) return;
       const tr = btn.closest("tr");
       const inv = sales.find((x) => x.id === parseInt(tr.dataset.iid, 10));
       if (!inv) return;
       if (btn.dataset.act === "ret") { openRetFor(true, inv); return; }
       if (btn.dataset.act === "del") { deleteInvoiceQuery(inv, true); return; }
+      /* 🧾 بناء 293: أداة المالك — تغيير رقم فاتورة محفوظة */
+      if (btn.dataset.act === "numfix") { openInvNoFix(inv, true); return; }
       printInvoice(inv);
     });
     $("#dgvInvP tbody").addEventListener("click", (e) => {
-      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"]');
+      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"],[data-act="numfix"]');
       if (!btn) return;
       const tr = btn.closest("tr");
       const inv = purchases.find((x) => x.id === parseInt(tr.dataset.iid, 10));
       if (!inv) return;
       if (btn.dataset.act === "ret") { openRetFor(false, inv); return; }
       if (btn.dataset.act === "del") { deleteInvoiceQuery(inv, false); return; }
+      /* 🧾 بناء 293: أداة المالك — تغيير رقم فاتورة محفوظة */
+      if (btn.dataset.act === "numfix") { openInvNoFix(inv, false); return; }
       printPurchaseInvoice(inv);
     });
 
@@ -27194,6 +26950,15 @@ id: nextVoucherId(),
       const c = invActCtx; hideModal("mInvActions");
       openRetFor(c.isSales, c.inv);
     });
+    /* 🧾 بناء 293: أداة المالك — نافذة الإجراءات ← «🔧 تغيير الرقم» */
+    $("#btnInvActNoFix").addEventListener("click", () => {
+      if (!invActCtx) return;
+      const c = invActCtx; hideModal("mInvActions");
+      openInvNoFix(c.inv, c.isSales);
+    });
+    $("#btnInvFixApply").addEventListener("click", () => { applyInvNoFix(); });
+    $("#btnInvFixClose").addEventListener("click", () => { invFixCtx = null; hideModal("mInvNoFix"); });
+    $("#inpInvFixNo").addEventListener("input", () => { invFixCheckNo(); });
     $("#btnInvActDel").addEventListener("click", () => {
       if (!invActCtx) return;
       const c = invActCtx; hideModal("mInvActions");
@@ -27213,7 +26978,7 @@ id: nextVoucherId(),
     const dtpDateEl = $("#dtpDate");
     if (dtpDateEl) dtpDateEl.addEventListener("change", () => {
       const p = invParseNew2($("#txtInvoiceNo").value) || invParseNew($("#txtInvoiceNo").value);
-      if (p && p.digit === "2") $("#txtInvoiceNo").value = invNextNumber("sale", $("#dtpDate").value || todayISO());
+      if (p && p.digit === "2") invNextFreeNumber("sale", $("#dtpDate").value || todayISO(), "txtInvoiceNo");
     });
     const dtpPDateEl = $("#dtpPDate");
     if (dtpPDateEl) dtpPDateEl.addEventListener("change", () => {
