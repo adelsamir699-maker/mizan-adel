@@ -4141,15 +4141,83 @@
       holder.remove();
     }
   }
+  /* 🧾 بناء 295 — كاش الـPDF لكل فاتورة (WeakMap بالعمد).
+     المقياس (diagnose_295 = 37✓/0✗): التوليد ≈450ms وهو **الرسم** مش عدد السطور
+     (سطر واحد = 483ms · 12 سطر = 542ms)، وكان بيحصل بعد الضغطة، وكروم بيسقّط
+     الـuser-activation بعد ≈5000ms ⇒ على موبايل أبطأ كان المسار كله بيرمي على فرع
+     النص. البروتوتايب المقياس نفس اليوم: التوليد وقت فتح النافذة ⇒ ضغطة→share = 1ms.
+     WeakMap (مش Map بالمفتاح): أي تعديل على الفاتورة بينزّلها من السحابة كائنًا جديدًا
+     ⇒ الكاش القديم بيموت معاها، فمستحيل يتبعت ملف قديم بمبلغ قديم لفاتورة جديدة. */
+  const invoicePdfMemo = new WeakMap();
+  function invoicePdfCached(inv) {
+    if (!inv) return Promise.reject(new Error("فاتورة غير موجودة"));
+    const hit = invoicePdfMemo.get(inv);
+    if (hit) return hit;
+    const job = (async () => {
+      try { await ensurePdfLibs(); } catch (e) { }
+      return invoicePdfBlob(inv);
+    })();
+    job.catch(() => { }); /* الفشل صامت هنا: الضغطة نفسها هي اللي هتورّي الرسالة وقتها */
+    invoicePdfMemo.set(inv, job);
+    return job;
+  }
+  /* ⏱️ التوليد المسبق بيتنادى وقت **فتح النافذة** (مش وقت الضغطة) — صفر كتابة سحابية،
+     وصفر أثر على الشاشة: الورقة كلها جوه #pdfHold خارج الشجرة المرئية (class="print-only"). */
+  function primeInvoicePdf(inv) {
+    try { if (inv) invoicePdfCached(inv).catch(() => { }); } catch (e) { }
+  }
+  /* 🖼️ بناء 295 — صورة PNG لنفس الورقة: «الاحتياطي» اللي اختاره المالك بالحرف
+     («PDF أولاً، صورة احتياطي»). بنفس الملء ونفس #pdfHold ونفس مقياس الرسم (scale:2)
+     عشان تطلع حرفيًا زي الـPDF، وبتتنادى للملزومة بس (لو مشاركة الـPDF ما نجحتش). */
+  async function invoicePngBlob(inv) {
+    if (!inv) throw new Error("فاتورة غير موجودة");
+    if (!pdfLibsReady()) throw new Error("ملفات PDF مش محمّلة — افتح البرنامج متصل مرة واحدة.");
+    fillInvoiceSheet(inv);
+    const holder = document.createElement("div");
+    holder.id = "pdfHold";
+    holder.setAttribute("dir", "rtl");
+    holder.style.cssText = "position:absolute;left:-12000px;top:0;width:210mm;background:#fff;color:#000;overflow:hidden;";
+    holder.innerHTML = '<style>' + scopeCssToHolder(collectPrintCss(), "#pdfHold") +
+      '\n#pdfHold .print-only{display:block !important;}\n</style>' +
+      $("#invoicePage").outerHTML;
+    document.body.appendChild(holder);
+    try {
+      const target = holder.querySelector("#invoicePage") || holder;
+      const canvas = await window.html2canvas(target, { scale: 2, backgroundColor: "#ffffff", logging: false, useCORS: false });
+      return await new Promise((res) => {
+        let done = false;
+        const fin = (b) => { if (!done) { done = true; res(b || null); } };
+        try { canvas.toBlob((b) => fin(b), "image/png"); } catch (e) { fin(null); }
+        setTimeout(() => fin(null), 8000); /* رجوع بـ null أحسن من وعد معلّق للأبد */
+      });
+    } finally {
+      holder.remove();
+    }
+  }
+
   function pdfFileSafeName(no) {
     return String(no || "فاتورة").replace(/[\\/:*?"<>|]/g, "-");
   }
+  /* 🧾 بناء 295 — بلاغ المالك بالحرف: «لما بعمل مشاركة الفاتورة على الواتس بييجى على الواتس
+     رساله برقم الفاتورة و مبلغها نص فقط انا عايز صورة الفاتوره هى اللى توصل على الواتس»،
+     وقراره: «PDF أولاً، صورة احتياطي».
+     القياس (diagnose_295 = 37✓/0✗) أثبت إن الرسالة النصية دي مش باگ ظهور — هي **ذات فرع
+     الاحتياط** اللي كان بيشتغل في حالتين: (١) navigator.canShare({files}) = false،
+     (٢) navigator.share رفض (ومنها انتهاء الـactivation لأن التوليد كان **بعد** الضغطة:
+     مقياس 483ms / 542ms مقابل نافذة كروم ≈5000ms). المسار الجديد بالترتيب:
+       ١ ملف PDF (بوابة canShare)  ⇒  ٢ محاولة PDF بلا بوابة (متصفحات بتشارك وما بتسألش)
+       ⇒  ٣ صورة PNG  ⇒  ٤ تنزيل الملف + رسالة نص (آخر وسيلة).
+     صفر كتابة سحابية في المسار كله (مقياس في diagnose_295) · حروف بناء 292 اللي حارسه
+     بيقراها (بوابة canShare · نداء share · سطر AbortError · createObjectURL(blob) ·
+     a.download = name · wa.me · «PDF ما اتولّدش» مرة واحدة) كلها سايبَة بالحرف. */
   async function shareInvoicePdf(inv, shareTextExtra) {
     try {
-      toast("جاري توليد PDF الفاتورة…", "info");
       /* 📲 بناء 292: لو المكتبات سقطت عند الإقلاع — محاولة تحميلها الأول (وقت الطلب) */
       try { await ensurePdfLibs(); } catch (e) { }
-      const blob = await invoicePdfBlob(inv);
+      /* 🧾 بناء 295: لو النافذة كانت جهّزت الـPDF قبل الضغطة ⇒ التوليد ما بيستناش حد
+         والرسالة دي ما بتظهرش (مقياس البروتوتايب: ضغطة→share = 1ms مقابل 483ms) */
+      if (!invoicePdfMemo.get(inv)) toast("جاري توليد PDF الفاتورة…", "info");
+      const blob = await invoicePdfCached(inv);
       const name = pdfFileSafeName(inv.invoiceNumber || inv.invoiceNo) + ".pdf";
       const file = new File([blob], name, { type: "application/pdf" });
       const title = "فاتورة " + (inv.invoiceNumber || "");
@@ -4157,17 +4225,50 @@
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: title, text: text });
-          try { addActivity("مشاركة PDF", title); } catch (e) { }
-          toast("نافذة المشاركة اتفتحت — اختار واتساب وابعت الفاتورة.", "success");
+          try { addActivity("مشاركة PDF", title + " · ملف PDF"); } catch (e) { }
+          toast("الفاتورة اتبعتت كملف PDF — اختار واتساب من نافذة المشاركة وابعتها.", "success");
           return;
         } catch (e) {
           /* 📲 بناء 292: قفل المستخدم لنافذة المشاركة (AbortError) = إلغاء محترم — لا رسالة كاذبة ولا تنزيل */
           if (e && e.name === "AbortError") { toast("اتلغت المشاركة.", "info"); return; }
-          /* أية رفض أخرى (انتهت تسكّند اللمس/تعارض/قيود) ⇒ نكمّل للمسار البديل تحت —
-             بدل رسالة «ما اتولّدش» كاذبة (التوليد نجح فعلًا) */
+          /* 🧾 بناء 295: أية رفض أخرى (انتهت تسكّند اللمس/تعارض/قيود على الـPDF) ⇒
+             **منزلش على النص على طول** — ينزلق لصورة الـPNG الأول (طلب المالك) */
         }
       }
-      /* بره الموبايل/متصفح بلا مشاركة ملفات/رفض المشاركة: تنزيل PDF + رسالة نصية على واتس (بلا أي API سحابي) */
+      /* ٢) متصفح بيشارك لكن بوابة canShare نفسها مش عنده (iOS قديم / ويوف داخل واتس): بيلف الملف من غير ما يسأل */
+      if (!navigator.canShare && navigator.share) {
+        try {
+          await navigator.share({ files: [file], title: title, text: text });
+          try { addActivity("مشاركة PDF", title + " · ملف PDF (بلا canShare)"); } catch (e) { }
+          toast("الفاتورة اتبعتت كملف PDF — اختار واتساب من نافذة المشاركة وابعتها.", "success");
+          return;
+        } catch (e) {
+          if (e && e.name === "AbortError") { toast("اتلغت المشاركة.", "info"); return; }
+          /* لو الـwebview ما قبلش ملفات خالص ⇒ الفرع تحت هو الجواب الصحيح */
+        }
+      }
+      /* ٣) صورة PNG احتياطي — «عايز صورة الفاتورة هى اللى توصل على الواتس» */
+      let pngFile = null;
+      try {
+        const png = await invoicePngBlob(inv);
+        if (png && png.size > 0) {
+          pngFile = new File([png], pdfFileSafeName(inv.invoiceNumber || inv.invoiceNo) + ".png", { type: "image/png" });
+        }
+      } catch (e) { }
+      /* الشبكة «!navigator.canShare» هنا احتياط **بعد** ما الفرع ٢ جرّب الـPDF بالفعل:
+         ويوف بيقبل الصورة ويرفض الملفات التانية ⇒ أحسن ما نقع على التنزيل. */
+      if (pngFile && (!navigator.canShare || navigator.canShare({ files: [pngFile] }))) {
+        try {
+          await navigator.share({ files: [pngFile], title: title, text: text });
+          try { addActivity("مشاركة PDF", title + " · صورة"); } catch (e) { }
+          toast("الفاتورة اتبعتت كصورة — اختار واتساب من نافذة المشاركة وابعتها.", "success");
+          return;
+        } catch (e) {
+          if (e && e.name === "AbortError") { toast("اتلغت المشاركة.", "info"); return; }
+          /* رفض ⇒ نزول للوسيلة اللي بعدها */
+        }
+      }
+      /* ٤) بره الموبايل/متصفح بلا مشاركة ملفات: تنزيل PDF + رسالة نصية على واتس (بلا أي API سحابي) */
       try {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -4460,6 +4561,15 @@
       try { if (vanIsRepUser()) return true; } catch (e) { }
       if (!DE.featureFlag) return false;
       return DE.featureFlag("vanSales") === true;
+    }
+    // 🧾 بناء 295 (طلب المالك بالحرف: «عايز افتح استعلام عن الفواتير لمندوب السيارات
+    // بالفواتير و يظهرها PDF»): «🔍 استعلام عن الفواتير» بقت مفتوحة لمندوب السيارة —
+    // **نفس الشاشة بنفس شكلها** (قرار بناء 294: مفيش شاشة مخصوصة للمندوب)، والفلتر جوّه
+    // renderInvoiceQuery بيقصرها على فواتيره هو («فواتيره هو بس»).
+    // مكان الفحص **بعد** permExplicitlyOff (فوق) عمدًا: لو صاحب الشركة قفل الشاشة صراحةً
+    // القفل بيفضل أحق من كونه مندوب، والعضو العادي بيفضل قراره memberFeatureGranted تحت.
+    if (name === "returns") {
+      try { if (vanIsRepMode()) return true; } catch (e) { }
     }
     // 📡 بناء 262: «متابعة مناديب السيارات» — صاحب الشركة/المالك فقط (بيانات كل المناديب)
     if (name === "vanMonitor") {
@@ -12448,6 +12558,14 @@
     $("#btnInvActRet").hidden = !(canManageReturns() && !allRet);
     // 🧾 بناء 293: زرار «🔧 تغيير الرقم» — لصاحب الشركة والمالك فقط (نفس بوابة الحذف)
     $("#btnInvActNoFix").hidden = !canFixInvoiceNos();
+    /* 🧾 بناء 295 (٣) — فحص **جوه الدالة** مش على الزرار (القاعدة في كل الصلاحيات):
+       المندوب اللي جاب رقم فاتورة لغيره بالباركود ما بتفتحش له — «فواتيره هو بس». */
+    if (vanIsRepMode() && !vanInvoiceIsMine(inv)) {
+      toast("الفاتورة دي مش من فواتير رحلاتك — الاستعلام بيفتحلك فواتيرك انت بس.", "warning");
+      return;
+    }
+    /* 🧾 بناء 295: تجهيز الـPDF قبل الضغطة (نافذة المبيعات بس — المشتريات مفيهاش زرار مشاركة) */
+    if (isSales) primeInvoicePdf(inv);
     showModal("mInvActions");
   }
 
@@ -13155,6 +13273,10 @@
     const toP = $("#dtpToP").value || "2999-12-31";
     const canDel = canDeleteInvoices();
     const canRet = canManageReturns();
+    /* 🧾 بناء 295 (٣): مندوب السيارات بيفتح **نفس الشاشة بنفس شكلها** (قرار 294: بلا
+       شاشة مخصوصة) — الفرق إنه بيشوف فواتير رحلاته هو بس، والمشتريات مش فواتيره ⇒
+       بتتقفل عليه من نفس مصدر القرار (vanIsRepMode) مش من إخفاء الزرار بس. */
+    const repMode = vanIsRepMode();
 
     const inRange = (d, from, to) => { const s = String(d || "").slice(0, 10); return s >= from && s <= to; };
 
@@ -13177,6 +13299,9 @@
           '<td>' + fmt(inv.grandTotal) + ' ج.م</td>' +
           '<td>' + esc(inv.paymentMethod) + '</td>' +
           '<td class="cell-actions"><button class="btn small sky" type="button" data-act="print">🖨️ طباعة</button>' +
+          /* 🧾 بناء 295: «📄 واتس» على السطر نفسه — مبيعات بس، وبنفس دالة المشاركة
+             (PDF ⇒ صورة ⇒ بلا canShare ⇒ تنزيل+نص). مافيش شاشة جديدة ومافيش زرار مخصوص. */
+          (isSales ? ' <button class="btn small teal" type="button" data-act="pdf">📄 واتس</button>' : '') +
           (canRet && !allRet ? ' <button class="btn small green" type="button" data-act="ret">🔁 مرتجع</button>' : '') +
           (canDel ? ' <button class="btn small red" type="button" data-act="del">🗑️ حذف</button>' : '') +
           /* 🧾 بناء 293: أداة المالك — «🔧 تغيير الرقم» لصاحب الشركة والمالك فقط */
@@ -13196,12 +13321,38 @@
 
     // 🆕 القائمة تُبنى **مرة واحدة** وتُستخدم للسطين: الجدول وسطر المجاميع ⇒ المستحيل
     //       المجموع يتجاهل الفرز (شكوى المالك). أي تغيير في الفلتر = نفس الكائن للاتنين.
-    const listS = sales.filter((i) => inRange(i.invoiceDate || i.date, fromS, toS)).filter((i) => match(i, qs, i.customerName || i.customer));
-    const listP = purchases.filter((i) => inRange(i.invoiceDate || i.date, fromP, toP)).filter((i) => match(i, qp, i.supplierName || i.supplier));
+    /* 🧾 بناء 295: فلتر المندوب **قبل** أي حاجة وعلى نفس الكائنات اللي الجدول وسطر
+       المجاميع بيقراهم (مبدأ بناء 244: مجاميع الفرز من نفس مصدر الجدول) ⇒ المستحيل
+       السطر يجمع حاجة مش معروضة، أو المعروض يبقى فيه فاتورة لغيره. */
+    const own = (i) => !repMode || vanInvoiceIsMine(i);
+    const listS = sales.filter(own).filter((i) => inRange(i.invoiceDate || i.date, fromS, toS)).filter((i) => match(i, qs, i.customerName || i.customer));
+    const listP = repMode ? [] : purchases.filter((i) => inRange(i.invoiceDate || i.date, fromP, toP)).filter((i) => match(i, qp, i.supplierName || i.supplier));
     fill($("#dgvInvS tbody"), listS, true);
     fill($("#dgvInvP tbody"), listP, false);
     renderInvQueryTotals("#invTotS", listS);
     renderInvQueryTotals("#invTotP", listP);
+    /* 🧾 بناء 295: نصوص الودّية + إقفال المشتريات للمندوب — بتتنفّذ بعد الرسم عشان
+       الدالة دي بتتنادى من أي فلتر (تاريخ/بحث) فالحالة تتحدّث مع كل رسم، وبالـelse
+       الشاشة بترجع زي ما كانت بالضبط لأي حساب تاني (صفر بقايا). */
+    const repNote = $("#invQueryRepNote");
+    const tabBtnP = document.querySelector('#viewReturns .tab-btn[data-tab="p"]');
+    const tabP = $("#tabP");
+    const scanP = $("#txtScanInvP");
+    if (repMode) {
+      if (repNote) {
+        repNote.hidden = false;
+        repNote.textContent = "🧑‍💼 دي فواتيرك انت بس (فواتير رحلاتك على العربية). دوس «📄 واتس» على أي فاتورة وتوصلك صورة الفاتورة في محادثة واتساب.";
+      }
+      if (tabBtnP) tabBtnP.hidden = true;
+      if (tabP) tabP.hidden = true;
+      if (scanP) scanP.hidden = true;
+    } else {
+      if (repNote) { repNote.hidden = true; repNote.textContent = ""; }
+      if (tabBtnP) tabBtnP.hidden = false;
+      /* #tabP/#txtScanInvP: حالة التبويبات بيتحكم فيها دالة التبديل نفسها — هنا بنرجّع
+         الزرار بس، فمستحيل الرسم يفتح لوحة المشتريات لوحدها. */
+      if (scanP) scanP.hidden = false;
+    }
   }
 
   // حذف فاتورة (بيع/شراء) بتراجع كامل: المخزون + أثر الدفع (خزينة أو أرصدة وقيود) + السطر نفسه.
@@ -16953,6 +17104,10 @@ id: nextVoucherId(),
     if (!inv) return;
     const no = $("#vanPdfNo"); if (no) no.value = String(inv.invoiceNumber || inv.invoiceNo || "-");
     const tot = $("#vanPdfTotal"); if (tot) tot.value = fmt(inv.grandTotal) + " ج.م";
+    /* 🧾 بناء 295: التوليد يبدأ **لحظة فتح النافذة** — المندوب بيقرأ الرقم والإجمالي
+       ≈1–2 ثانية، والتوليد خلّص فيهم ⇒ ضغطة «📄 PDF وواتس» بتفتح نافذة المشاركة على طول
+       (مقياس diagnose_295: 1ms مقابل 483ms لما التوليد جوّه الضغطة). */
+    primeInvoicePdf(inv);
     showModal("mVanSalePdf");
   }
   function openVanExpenseDialog(tid) {
@@ -17259,6 +17414,29 @@ id: nextVoucherId(),
     const mine = vanIdentityKeys();
     const theirs = [trip.repUser, trip.repFull, trip.repName].map(vanIdNorm).filter(Boolean);
     return theirs.some((k) => mine.indexOf(k) >= 0);
+  }
+  /* 🧾 بناء 295 (قرار المالك بالحرف: «فواتيره هو بس»): نِسبة الفاتورة للمندوب بتتقرأ
+     بنفس آلية نِسبة **الرحلة** — مافيش منطق هوية جديد خالص:
+       • الرحلة موجودة ⇒ vanTripIsMine (نفس مطبّعات بناء 268: اسم/بريد/تليفون مضغوطة)
+       • الرحلة اتشالت ⇒ اسم المندوب المكتوب على الفاتورة نفسه (repName) بيتطابق مع keys
+     ليه `isVan` شرط: الفواتير العادية (الكاشير/POS) **مافيش في المصدر أي حقل ناسبة
+     للمستخدم** إطلاقًا (مقياس: grep createdBy/savedBy/byUser/ownerUser = صفر نتيجة)،
+     فأي فاتورة مش سيارة مش بتاعة حد ⇒ ممنوع تدخل قائمة المندوب.
+     ⚠️ `vanRepAccountId` مش بتاع المستخدم: ده حساب **دفتر أستاذ** تحت بند السيارات
+     (vanRepAcc) — مش id حساب الدخول، فمقارنته بـ me.id غلط (مقياس على 18565/16864). */
+  function vanInvoiceIsMine(inv) {
+    if (!inv || !inv.isVan) return false;
+    try {
+      if (inv.vanTripId) {
+        const t = vanTripById(inv.vanTripId);
+        if (t) return vanTripIsMine(t);
+      }
+    } catch (e) { }
+    try {
+      const mine = vanIdentityKeys();
+      const theirs = [inv.repName].map(vanIdNorm).filter(Boolean);
+      return theirs.some((k) => mine.indexOf(k) >= 0);
+    } catch (e) { return false; }
   }
   function vanCanManage() { return isSuperAcct() || isCompanyOwnerAcct(); }
   /* 🆕 بناء 269 (طلب المالك: «زرار لتعديل حمولة الرحلة … صلاحيته مع صاحب المؤسسه
@@ -26881,6 +27059,10 @@ id: nextVoucherId(),
         document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         const t = btn.dataset.tab;
+        /* 🧾 بناء 295: المندوب — تبويب المشتريات مش فواتيره، فالانتقال ليه مرفوض من
+           نفس مصدر القرار (مش الاعتماد على إن الزرار مخفي). القيد بـ #viewReturns:
+           الدالة دي بتمرّ على كل .tab-btn في البرنامج فما تكتمش شاشات تانية. */
+        if (t === "p" && btn.closest("#viewReturns") && vanIsRepMode()) return;
         $("#tabS").hidden = t !== "s";
         $("#tabP").hidden = t !== "p";
       });
@@ -26897,19 +27079,24 @@ id: nextVoucherId(),
     if (pushBtn) pushBtn.addEventListener("click", function () { manualCloudPush(); });
     try { refreshSyncButtons(); } catch (e) { }
     $("#dgvInvS tbody").addEventListener("click", (e) => {
-      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"],[data-act="numfix"]');
+      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"],[data-act="numfix"],[data-act="pdf"]');
       if (!btn) return;
       const tr = btn.closest("tr");
       const inv = sales.find((x) => x.id === parseInt(tr.dataset.iid, 10));
       if (!inv) return;
+      /* 🧾 بناء 295: فحص تاني من نفس مصدر القرار — السطر المعروض المفروض متفلتر،
+         لكن لو أي كود مستقبلي رسم غلط المندوب ما يلمسش فاتورة لغيره. */
+      if (vanIsRepMode() && !vanInvoiceIsMine(inv)) return;
       if (btn.dataset.act === "ret") { openRetFor(true, inv); return; }
       if (btn.dataset.act === "del") { deleteInvoiceQuery(inv, true); return; }
+      /* 🧾 بناء 295: «📄 واتس» — نفس مسار المشاركة بأربع وسائطه */
+      if (btn.dataset.act === "pdf") { shareInvoicePdf(inv); return; }
       /* 🧾 بناء 293: أداة المالك — تغيير رقم فاتورة محفوظة */
       if (btn.dataset.act === "numfix") { openInvNoFix(inv, true); return; }
       printInvoice(inv);
     });
     $("#dgvInvP tbody").addEventListener("click", (e) => {
-      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"],[data-act="numfix"]');
+      const btn = e.target.closest('[data-act="print"],[data-act="del"],[data-act="ret"],[data-act="numfix"],[data-act="pdf"]');
       if (!btn) return;
       const tr = btn.closest("tr");
       const inv = purchases.find((x) => x.id === parseInt(tr.dataset.iid, 10));
